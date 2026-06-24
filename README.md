@@ -15,6 +15,8 @@ It is the direct successor to **[TVApp2](https://github.com/TheBinaryNinja/tvapp
 **deprecated**. masqueradarr is not a fork or a patch — it is a ground-up re-architecture of the same
 idea, carrying the project into the `*arr` self-hosted media family (Sonarr, Radarr, …) it's named for.
 
+<div style="color:cyan;">Screenshots</div>
+
 <img src="docs/img/screenshots/dashboard.png">
 
 <br >
@@ -90,6 +92,7 @@ idea, carrying the project into the `*arr` self-hosted media family (Sonarr, Rad
 <img src="docs/img/screenshots/settings-3.png">
 
 <br >
+
 
 # The evolution — from **TVApp2** to **masqueradarr**
 
@@ -186,6 +189,147 @@ masqueradarr is the successor to **[TVApp2](https://github.com/TheBinaryNinja/tv
 [TheBinaryNinja](https://github.com/TheBinaryNinja), and inherits its core aggregation framework
 (ported from the sibling project). TVApp2 remains available, archived, and deprecated —
 all new development happens here.
+
+# Features
+
+**Aggregation & delivery**
+
+- Pulls **M3U playlists** and **EPG / XMLTV** guide data from multiple IPTV providers and normalizes
+  them into one catalog.
+- **Resolve-on-demand streaming** — each stream is resolved at play time through an HLS proxy (no dead
+  URLs on disk), which is what makes **authenticated**, **token-gated**, and **rotating-mirror** sources
+  possible.
+- **Two delivery surfaces** — an in-app slide-out player and an external-client engine for TiviMate /
+  Kodi / VLC / Emby / Jellyfin / Plex.
+- **Composition + export** — builds Global, per-user, and custom `.m3u` playlists, each with a matching
+  XMLTV guide sibling advertised via `x-tvg-url`.
+
+**Pluggable sources**
+
+- A **source-agnostic adapter framework**: adding a provider is one adapter file plus one registry line;
+  the generic core (sync → normalize → dedupe → proxy) never branches per source.
+- **dulo** — authenticated, resolve-on-demand; the login session is captured in-app via a server-streamed
+  real Chromium (the password goes straight to the provider, only tokens are persisted).
+- **dlhd** — anonymous, scraped from a rotating mirror with a Referer-gated multi-hop resolve and a
+  self-built EPG. A shared **common** source tier is planned.
+
+**Management SPA** (Vue 3)
+
+- Full screens for **Dashboard, Active Streams, History / Metrics, Playlists, EPG Sources, Channel
+  Mapping, Users,** and **Settings**.
+- Channel Mapping with composite match-scoring; an editable channel store where **user edits survive
+  re-syncs**.
+
+**Users & access control**
+
+- **scrypt** authentication, **admin / user** roles, and **per-user access lists** (allowed playlists /
+  custom playlists).
+- A session-token vs. stream-token split, and per-user **tokenized M3U access** (token-free download,
+  token-gated stream).
+
+**Observability**
+
+- WebSocket-pushed **viewer / bandwidth / buffering telemetry** and **ffprobe** stream monitoring.
+- Persisted **view-session history** + per-user metrics, and **MongoDB-backed application logs** (12
+  categories, 14-day TTL) with a live log drawer.
+- A **B-Roll placeholder slate** burned into real HLS while an in-app channel is establishing or
+  re-buffering — so even headless clients see something.
+
+**Transcoding**
+
+- An optional per-playlist **ffmpeg / VLC engine** for external clients — **loopback-HLS** (default) or
+  **raw MPEG-TS** output.
+- Multi-vendor **GPU hardware acceleration** (NVENC / VAAPI / QSV) with boot-time encoder detection, so
+  the UI only offers what the host can actually do.
+
+**Scheduling**
+
+- A `croner`-backed runtime scheduler over a persisted `cronjobs` collection: playlist re-sync, EPG
+  re-sync, M3U / XMLTV recompose, and scheduled backups.
+
+# Getting started
+
+masqueradarr ships as Docker images. There are two deployment shapes.
+
+### Option A — Compose stack (app + MongoDB)
+
+1. Copy the env template and fill it in:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   At minimum set `MONGO_ROOT_USER` / `MONGO_ROOT_PASS`, your `DOMAIN`, and the host volume paths
+   (`COMPOSE_PATH`, `BACKUPS_PATH`, `MONGO_DATA_PATH`) — each host dir must be writable by **uid 1000**
+   (the container's `node` user).
+
+2. Bring it up:
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Open `http://localhost:3000` (or your `DOMAIN`). The app **self-provisions** its `config.json` from
+   the `.env` on every boot — there is no host config file to manage.
+
+### Option B — All-in-one (single container)
+
+A second image bundles **app + MongoDB + config bootstrap** into one container, so the whole stack runs
+from a single `docker run` with no external database — ideal for a quick trial or a small home server. One
+`/data` volume persists the database, exports, config, and credentials. See **Migration status** above for
+the current published image name. *(On amd64, the bundled MongoDB 7.0 requires a CPU with AVX; on hosts
+without it, use the compose stack.)*
+
+### First run
+
+On first launch there are **no users** — the app reports `needsSetup` and the SPA walks you through
+creating the **first admin account**. After that:
+
+1. **Add a playlist** — the Add Playlist modal offers every built-in source plus custom playlists
+   (clone / file / URL / HDHomeRun).
+2. For an **authenticated** source (dulo), capture a login session from **Settings** (a server-streamed
+   Chromium signs you in; only tokens are stored).
+3. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
+   **Channel Mapping** screen.
+4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
+   URL** for their IPTV client.
+
+### Configuration
+
+All runtime settings live in **MongoDB** and are editable on the **Settings** screen (domain, DNS
+nameservers, video configuration, backups, …). The `.env` only **bootstraps infrastructure on first
+boot**:
+
+| Variable | Purpose |
+|---|---|
+| `MONGO_ROOT_USER` / `MONGO_ROOT_PASS` | MongoDB root credentials; also assemble the app's `mongoUri`. |
+| `DOMAIN` | Public base URL written into composed playlist / guide links. |
+| `DISPLAY_NAME` | App display name. |
+| `TZ` | Container timezone (used by the scheduler). |
+| `COMPOSE_PATH` | Host dir for composed `.m3u` + XMLTV exports (uid-1000 writable). |
+| `BACKUPS_PATH` | Host dir for scheduled backups. |
+| `MONGO_DATA_PATH` | Host dir for persistent MongoDB data. |
+| `MONGO_HOST_PORT` | Host port mapped to mongod (default `27017`). |
+| `MONGO_URI` / `MONGO_HOST` | Optional — point the app at an external / Atlas MongoDB instead of the compose `mongo` service. |
+| `DNS_LOG_LEVEL` | Outbound-DNS trace verbosity (`1`–`3`); seeds the setting on first boot. |
+
+> App-settings vars are seeded with `$setOnInsert` — they apply on the **first provision only**. Change
+> them in the Settings UI afterward; a redeploy won't clobber UI changes.
+
+### Development
+
+The repo is **two independently-built npm packages** (not a workspace):
+
+```bash
+# Frontend (repo root) — Vite dev server on :5173, proxies /api → http://localhost:3000
+npm install && npm run dev
+
+# Backend (server/) — tsx watch on :3000 (needs a reachable MongoDB)
+cd server && npm install && npm run dev
+```
+
+There is **no test runner and no linter** — correctness is verified by `npm run build` (type-check) in
+each package and by running the app.
 
 ---
 
