@@ -1,5 +1,5 @@
 <div align="center">
-<img src="docs/img/masqueradarr.png" height="350">
+<img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
   <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/tvapp2-app-stack/dev?sort=date&style=for-the-badge&logo=Docker">
 </div>
