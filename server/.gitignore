@@ -1,0 +1,4 @@
+# Runtime-generated output dirs (never committed). NB: dist/ is intentionally NOT ignored —
+# the compiled server (server/dist) is committed in this repo.
+compose/   # composed .m3u exports (Global + Custom) — regenerated on demand by Compose/cron
+public/    # SPA static mount target at runtime (built SPA is copied in by Docker, not committed)

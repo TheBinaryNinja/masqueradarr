@@ -1,0 +1,33 @@
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// This module lives at <root>/sources/paths.{ts,js} in BOTH dev (server/src) and prod (server/dist).
+// The committed seed assets sit at server/seed-data/sources — i.e. two levels up from here, then
+// seed-data/sources. The Docker runtime stage copies server/seed-data → /app/seed-data alongside
+// /app/dist, so this same relative resolution holds in the container.
+const here = dirname(fileURLToPath(import.meta.url));
+
+/** Root of the committed seed assets (server/seed-data; copied to /app/seed-data in the Docker runtime). */
+export const SEED_DATA_DIR = resolve(here, '..', '..', 'seed-data');
+
+/** Directory holding the committed <id>.snapshot.json offline fallbacks (syncLive's offline source). */
+export const SEED_SOURCES_DIR = resolve(SEED_DATA_DIR, 'sources');
+
+export function snapshotFile(sourceId: string): string {
+  return resolve(SEED_SOURCES_DIR, `${sourceId}.snapshot.json`);
+}
+
+/**
+ * The dulo→gracenote EPG-link crosswalk (committed seed data). dulo's afterSync applies its HIGH-tier rows
+ * to never-touched dulo PlaylistChannels once per channel after a sync. Generated offline by
+ * scripts/dulo-epg-crosswalk.ts (npm run crosswalk:dulo-epg).
+ */
+export const DULO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dulo-playlist-addon.json');
+
+/**
+ * The dlhd→gracenote EPG-link crosswalk (committed seed data). dlhd's afterSync applies its HIGH-tier rows
+ * to never-touched dlhd PlaylistChannels once per channel after a sync. Generated offline by
+ * scripts/dlhd-epg-crosswalk.ts (npm run crosswalk:dlhd-epg). Same shape + apply sequence as dulo's;
+ * dlhd is anonymous and has no native guide, so its channels link to the existing US Gracenote sources.
+ */
+export const DLHD_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dlhd-playlist-addon.json');

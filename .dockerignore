@@ -1,0 +1,10 @@
+node_modules
+server/node_modules
+dist
+server/dist
+.git
+.claude
+Screenshots
+config/config.json
+config.local.json
+*.log
