@@ -1,48 +1,21 @@
-
-# Pinned image versions — bump in lockstep with docker/*.Dockerfile.
-#   MONGO = 7.0.15
-# Requires Docker Engine >= 24.0 and Docker Compose >= 2.20 (Compose Spec).
-# The legacy top-level `version:` key is intentionally omitted (deprecated in Compose v2).
-
 services:
   masqueradarr:
-    image: iflip721/masqueradarr:0.0.1-dev
+    image: iflip721/masqueradarr:latest
     user: "${APP_USER_ID:-1000}:${APP_GROUP_ID:-1000}"
-    build:
-      context: .
-      dockerfile: docker/app.Dockerfile
+    # build:
+    #   context: .
+    #   dockerfile: docker/app.Dockerfile
     environment:
-      # Infra config: the app self-provisions config.json on boot (docker/app-entrypoint.sh)
-      # from these creds — mongoUri = mongodb://<user>:<pass>@mongo:27017/masqueradarr?authSource=admin
-      # (creds URL-encoded). Same vars seed the `mongo` service's root user, so they always match.
       MONGO_ROOT_USER: ${MONGO_ROOT_USER}
       MONGO_ROOT_PASS: ${MONGO_ROOT_PASS}
-      # Optional external/remote Mongo override (e.g. Atlas). Set MONGO_URI to a full connection
-      # string (used verbatim) or just MONGO_HOST to point at a non-compose host.
-      # MONGO_URI: ${MONGO_URI:-}
-      # MONGO_HOST: ${MONGO_HOST:-mongo}
-      # App settings seeded into the Mongo `settings` doc on first provisioning ($setOnInsert — a
-      # redeploy never clobbers values changed later in the UI). Distinct from infra config
-      # (mongoUri/port/logLevel) above. See server/src/sources/seedSettings.ts.
       DISPLAY_NAME: ${DISPLAY_NAME:-masqueradarr}
       DOMAIN: ${DOMAIN:-http://localhost:3000}
       TZ: ${TZ:-America/New_York}
-      # Outbound-fetch DNS nameserver(s) for the app's OUTBOUND fetch() (IPTV catalogs, mirror
-      # directories, EPG, HLS proxy) are NO LONGER env-driven: the persisted `settings.nameservers`
-      # seeds on first provision ($setOnInsert) with a hardcoded default (8.8.8.8,8.8.4.4 — Google
-      # public DNS).
       DNS_LOG_LEVEL: ${DNS_LOG_LEVEL:-2}
     ports:
       - "3000:3000"
     volumes:
-      # Composed .m3u + XMLTV guide exports. Bind-mounted to a host path so they survive a
-      # container rebuild. Set COMPOSE_PATH in .env; the host dir must be writable by uid 1000
-      # (the container's `node` user). (config.json is no longer mounted — the app generates it
-      # internally at /app/config/config.json from the env above on every boot.)
       - ${COMPOSE_PATH:-./compose}:/app/compose:rw
-      # Scheduled-backup target (settings.backupLocation defaults to /backups). Optional bind mount
-      # so backups survive a rebuild; defaults to ./backups when BACKUPS_PATH is unset. Same uid-1000
-      # writability caveat as COMPOSE_PATH.
       - ${BACKUPS_PATH:-./backups}:/backups:rw
     depends_on:
       mongo:
@@ -73,13 +46,8 @@ services:
       MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
       MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
     ports:
-      # Expose mongod on the host. Override the host-side port with
-      # MONGO_HOST_PORT in .env (defaults to 27017).
       - "${MONGO_HOST_PORT:-27017}:27017"
     volumes:
-      # Persistent MongoDB data. Set MONGO_DATA_PATH in .env to an absolute
-      # host path (e.g. /srv/masqueradarr/mongo) for a bind mount; leave unset to
-      # use the named volume defined below.
       - ${MONGO_DATA_PATH:-mongo-data}:/data/db
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]

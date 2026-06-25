@@ -1,8 +1,8 @@
 # Multi-arch (linux/amd64 + linux/arm64) Docker build & push for masqueradarr's two images,
 # porting the manual `/docker-build-all` skill into GitHub Actions.
 #
-#   app image    : docker/app.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr-app-stack
-#   all-in-one   : docker/aio.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr
+#   app image    : docker/app.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr
+#   all-in-one   : docker/aio.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr-aio
 #
 # Rolling-tag rule (case-insensitive, identical to the skill):
 #   version contains "dev"   -> also push :dev
@@ -80,10 +80,10 @@ jobs:
       matrix:
         include:
           - image: app-stack
-            repo: masqueradarr-app-stack
+            repo: masqueradarr
             dockerfile: docker/app.Dockerfile
           - image: aio
-            repo: masqueradarr
+            repo: masqueradarr-aio
             dockerfile: docker/aio.Dockerfile
     outputs:
       digest_app: ${{ steps.expose.outputs.digest_app }}
@@ -156,7 +156,7 @@ jobs:
           cp .env.example bundle/.env.example
           # Point the app service at the just-published image; drop the local build block
           # so the bundle is pull-only and deployable as-is.
-          IMG="$ns/masqueradarr-app-stack:$version" \
+          IMG="$ns/masqueradarr:$version" \
             yq '.services.masqueradarr.image = strenv(IMG) | del(.services.masqueradarr.build)' \
             docker-compose.yml > bundle/docker-compose.yml
 
@@ -171,11 +171,11 @@ jobs:
             echo
             echo "Multi-arch (linux/amd64, linux/arm64) images on Docker Hub."
             echo
-            echo "### \`$ns/masqueradarr-app-stack\` (app + external Mongo)"
+            echo "### \`$ns/masqueradarr\` (app + external Mongo)"
             echo "- tags: $tagline"
             echo "- digest: \`${{ needs.build.outputs.digest_app }}\`"
             echo
-            echo "### \`$ns/masqueradarr\` (all-in-one)"
+            echo "### \`$ns/masqueradarr-aio\` (all-in-one)"
             echo "- tags: $tagline"
             echo "- digest: \`${{ needs.build.outputs.digest_aio }}\`"
             echo
