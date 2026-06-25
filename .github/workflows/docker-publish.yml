@@ -1,0 +1,200 @@
+# Multi-arch (linux/amd64 + linux/arm64) Docker build & push for masqueradarr's two images,
+# porting the manual `/docker-build-all` skill into GitHub Actions.
+#
+#   app image    : docker/app.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr-app-stack
+#   all-in-one   : docker/aio.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr
+#
+# Rolling-tag rule (case-insensitive, identical to the skill):
+#   version contains "dev"   -> also push :dev
+#   else contains "latest"   -> also push :latest
+#   else (plain, e.g. 2.1.0) -> push the exact version only
+#   dedupe: if the version literally IS "dev"/"latest", skip the rolling tag.
+# APP_VERSION build-arg is ALWAYS the full version, so :latest/:dev self-report the release.
+# A GitHub Release (with a deployable bundle) is created ONLY when the version contains "-latest".
+
+name: Build & Publish Docker Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag to publish (e.g. 2.1.0, 2.1.0-dev, 2.1.0-latest)"
+        required: true
+        type: string
+
+permissions:
+  contents: read            # least privilege; only the release job elevates
+
+concurrency:
+  group: docker-publish-${{ inputs.version }}
+  cancel-in-progress: false # never kill an in-flight push
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      rolling: ${{ steps.derive.outputs.rolling }}
+      is_release: ${{ steps.derive.outputs.is_release }}
+    steps:
+      - name: Validate input & derive tags
+        id: derive
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            echo "::error::version input is empty"; exit 1
+          fi
+          case "$version" in
+            *[[:space:]]*) echo "::error::version must not contain whitespace: '$version'"; exit 1 ;;
+          esac
+
+          lc="$(printf '%s' "$version" | tr '[:upper:]' '[:lower:]')"
+
+          # rolling tag (skill order: dev before latest), case-insensitive
+          case "$lc" in
+            *dev*)    rolling=dev ;;
+            *latest*) rolling=latest ;;
+            *)        rolling= ;;
+          esac
+          # dedupe: caller literally passed `dev`/`latest` as the whole version
+          if [ "$rolling" = "$version" ]; then rolling=; fi
+
+          # release gate: ONLY when the version contains "-latest"
+          case "$lc" in
+            *-latest*) is_release=true ;;
+            *)         is_release=false ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "rolling=$rolling"
+            echo "is_release=$is_release"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: version='$version' rolling='${rolling:-<none>}' is_release=$is_release"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - image: app-stack
+            repo: masqueradarr-app-stack
+            dockerfile: docker/app.Dockerfile
+          - image: aio
+            repo: masqueradarr
+            dockerfile: docker/aio.Dockerfile
+    outputs:
+      digest_app: ${{ steps.expose.outputs.digest_app }}
+      digest_aio: ${{ steps.expose.outputs.digest_aio }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3   # binfmt for the arm64 leg under emulation
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3 # docker-container driver (multi-platform)
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compose tag list
+        id: tags
+        run: |
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          repo="${{ matrix.repo }}"
+          version="${{ needs.prepare.outputs.version }}"
+          rolling="${{ needs.prepare.outputs.rolling }}"
+          {
+            echo "list<<__TAGS__"
+            echo "$ns/$repo:$version"
+            [ -n "$rolling" ] && echo "$ns/$repo:$rolling"
+            echo "__TAGS__"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Build and push
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.tags.outputs.list }}
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+          provenance: false   # plain multi-arch manifest list, matching the skill's output
+
+      - name: Expose digest
+        id: expose
+        run: |
+          if [ "${{ matrix.image }}" = "app-stack" ]; then
+            echo "digest_app=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "digest_aio=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: [prepare, build]
+    if: needs.prepare.outputs.is_release == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build deploy bundle
+        run: |
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          version="${{ needs.prepare.outputs.version }}"
+          mkdir -p bundle
+          cp .env.example bundle/.env.example
+          # Point the app service at the just-published image; drop the local build block
+          # so the bundle is pull-only and deployable as-is.
+          IMG="$ns/masqueradarr-app-stack:$version" \
+            yq '.services.masqueradarr.image = strenv(IMG) | del(.services.masqueradarr.build)' \
+            docker-compose.yml > bundle/docker-compose.yml
+
+      - name: Compose release notes
+        run: |
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          version="${{ needs.prepare.outputs.version }}"
+          rolling="${{ needs.prepare.outputs.rolling }}"
+          tagline="\`$version\`"; [ -n "$rolling" ] && tagline="$tagline, \`$rolling\`"
+          {
+            echo "## masqueradarr $version"
+            echo
+            echo "Multi-arch (linux/amd64, linux/arm64) images on Docker Hub."
+            echo
+            echo "### \`$ns/masqueradarr-app-stack\` (app + external Mongo)"
+            echo "- tags: $tagline"
+            echo "- digest: \`${{ needs.build.outputs.digest_app }}\`"
+            echo
+            echo "### \`$ns/masqueradarr\` (all-in-one)"
+            echo "- tags: $tagline"
+            echo "- digest: \`${{ needs.build.outputs.digest_aio }}\`"
+            echo
+            echo "**Deploy (compose stack):** download \`docker-compose.yml\` + \`.env.example\` below,"
+            echo "rename \`.env.example\` to \`.env\`, set \`MONGO_ROOT_USER\`/\`MONGO_ROOT_PASS\`, then \`docker compose up -d\`."
+            echo
+            echo "Built from \`${GITHUB_SHA}\` by GitHub Actions."
+          } > release-notes.md
+
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version="${{ needs.prepare.outputs.version }}"
+          if gh release view "$version" >/dev/null 2>&1; then
+            gh release edit "$version" --notes-file release-notes.md
+            gh release upload "$version" bundle/docker-compose.yml bundle/.env.example --clobber
+          else
+            gh release create "$version" --target "$GITHUB_SHA" --title "$version" \
+              --notes-file release-notes.md \
+              bundle/docker-compose.yml bundle/.env.example
+          fi
