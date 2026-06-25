@@ -1,6 +1,8 @@
 services:
   masqueradarr:
-    image: iflip721/masqueradarr:latest
+    # SPECIFY THE IMAGE TAG TO USE ':dev' or ':latest'
+    # image: iflip721/masqueradarr:latest
+    image: iflip721/masqueradarr:dev
     user: "${APP_USER_ID:-1000}:${APP_GROUP_ID:-1000}"
     # build:
     #   context: .
