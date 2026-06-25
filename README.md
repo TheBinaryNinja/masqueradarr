@@ -1,7 +1,11 @@
 <div align="center">
 <img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
-  <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/tvapp2-app-stack/dev?sort=date&style=for-the-badge&logo=Docker">
+  <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
+    <img alt="Static Badge" src="https://img.shields.io/badge/release-beta-blue?style=for-the-badge">
+    <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/dev?sort=date&style=for-the-badge&logo=Docker&color=salmon">
+    <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/latest?sort=date&style=for-the-badge&logo=Docker&color=cyan">
+  </div>
 </div>
 
 # What is `masqueradarr`
