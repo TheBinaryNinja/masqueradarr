@@ -21,6 +21,21 @@ const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
 function go(p: string) { router.push(p); }
 
+// Deterministic Code128-style barcode strip — same seed, same bars (the masqueradarr brand idiom,
+// mirroring LoginScreen/SetupScreen: seed 20240624, self-contained, no artwork fetch).
+const barcode = (() => {
+  const rects: { x: number; w: number }[] = [];
+  let seed = 20240624, x = 0, ink = true;
+  while (x < 408) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const w = 2 + (seed % 5);
+    if (ink) rects.push({ x, w });
+    x += w;
+    ink = !ink;
+  }
+  return { rects, width: x };
+})();
+
 const totalChannels = computed(() => PLAYLISTS.value.reduce((s, p) => s + p.channels, 0));
 const totalPrograms = computed(() => EPG_SOURCES.value.reduce((s, e) => s + e.programs, 0));
 // "Unmatched" = anything not EPG-matched, including the null seed state (never EPG-evaluated) —
@@ -79,7 +94,21 @@ function durLabel(ms: number) {
 // ── System Performance banner — live host/container metrics ────────────
 // Live frame over the /api/system-stats WebSocket (ref-counted singleton, admin-only — operator data). The
 // CPU% rolling series feeds the LivelineChart; the other four metrics are numeric tiles updated each tick.
-const { subscribe: subscribeSys, release: releaseSys, cpuSeries, gpuSeries } = useSystemStats();
+const { subscribe: subscribeSys, release: releaseSys, cpuSeries, gpuSeries, cpuTimes, gpuTimes } = useSystemStats();
+// LivelineChart inputs. cpuSeries/gpuSeries (+ their lockstep cpuTimes/gpuTimes arrival stamps) are refs
+// mutated IN PLACE; hand the chart finite-only samples paired with their stamps — filtered as PAIRS so
+// series and times stay index-aligned. The finite filter guards liveline's freeze-prone tick math (skill
+// §7.3); the stable per-sample stamps let a full window glide instead of snapping each tick — the jitter
+// seen on Dashboard re-entry (skill §7.1). liveline owns the 60fps glide.
+function zipFinite(vals: number[], times: number[]): { series: number[]; times: number[] } {
+  const series: number[] = [], ts: number[] = [];
+  for (let i = 0; i < vals.length; i++) {
+    if (Number.isFinite(vals[i])) { series.push(vals[i]); ts.push(times[i]); }
+  }
+  return { series, times: ts };
+}
+const cpuChart = computed(() => zipFinite(cpuSeries.value, cpuTimes.value));
+const gpuChart = computed(() => zipFinite(gpuSeries.value, gpuTimes.value));
 // Where CPU/Memory were measured: cgroup limits ('container') vs the whole machine ('host').
 const sysScope = computed(() => {
   const sc = SYSTEM_STATS.value?.scope;
@@ -193,24 +222,34 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="isAdmin" class="col" style="gap: 18px;">
+  <div v-if="isAdmin" class="col mq-dash" style="gap: 18px;">
+    <!-- masqueradarr HUD micro row — telemetry overline for the whole admin console -->
+    <div class="mq-micro-row" aria-hidden="true">
+      <span class="mq-micro-hi">MASQUERADARR // CONSOLE</span>
+      <span>MK-SYS / DASH</span>
+    </div>
+
     <!-- System Performance + GPU Performance share one row. The grid only activates when gpuActive (some
          videoconfig has HW accel on); otherwise this wrapper is a plain block and System Performance is full-width. -->
     <div :style="gpuActive ? 'display: grid; grid-template-columns: minmax(0, 2.6fr) minmax(0, 1fr); gap: 18px; align-items: stretch;' : ''">
-    <div class="card flush">
+    <div class="card flush sys-flush">
       <div class="card-hd">
         <Icon name="activity" :size="15" style="color: var(--accent);" />
         <h2>System Performance</h2>
         <span class="spacer" />
-        <span class="muted" style="font-size: var(--fs-xs);">Live · {{ sysScope }}</span>
+        <span class="mq-cap">SYS // {{ sysScope.toUpperCase() }} · LIVE</span>
       </div>
       <div style="padding: 12px var(--pad-card) 0;">
-        <LivelineChart :series="cpuSeries" :target="80" />
+        <LivelineChart :series="cpuChart.series" :times="cpuChart.times" :target="80" />
       </div>
-      <!-- 16px spacer between the CPU liveline and the metric tiles -->
-      <div style="height: 16px;" />
-      <!-- Bottom row: the 5 live metric tiles (flex: 1) + the DB Health mini-card pinned to the right. -->
-      <div style="display: flex; align-items: stretch; border-top: 1px solid var(--hairline);">
+      <!-- 32px spacer between the CPU liveline and the metric tiles (keeps the liveline's scrolling
+           y-axis numbers from overlapping the row below) -->
+      <div style="height: 32px;" />
+      <!-- Bottom row: the 5 live metric tiles (flex: 1) + the DB Health mini-card pinned to the right.
+           Wrapped in its own nested .card flush so it keeps a carded surface while the chart above
+           blends into the page (.sys-flush on the outer card). -->
+      <div class="card flush">
+      <div style="display: flex; align-items: stretch;">
       <div class="stats" style="grid-template-columns: repeat(5, 1fr); margin: 0; flex: 1; min-width: 0;">
         <div class="stat">
           <div class="lbl">CPU</div>
@@ -265,22 +304,26 @@ onBeforeUnmount(() => {
         </div>
       </div>
       </div>
+      </div>
     </div>
 
     <!-- GPU Performance — mirrors System Performance (liveline + 16px spacer + tiles); rendered only while
          gpuActive (a videoconfig has HW accel enabled). Unavailable per-vendor metrics render as '—'. -->
-    <div v-if="gpuActive" class="card flush">
+    <div v-if="gpuActive" class="card flush sys-flush">
       <div class="card-hd">
         <Icon name="activity" :size="15" style="color: var(--accent);" />
         <h2>GPU Performance</h2>
         <span class="spacer" />
-        <span class="muted" style="font-size: var(--fs-xs);">{{ gpuCaption }}</span>
+        <span class="mq-cap">{{ gpuCaption }}</span>
       </div>
       <div style="padding: 12px var(--pad-card) 0;">
-        <LivelineChart :series="gpuSeries" :target="80" />
+        <LivelineChart :series="gpuChart.series" :times="gpuChart.times" :target="80" />
       </div>
-      <div style="height: 16px;" />
-      <div class="stats" style="grid-template-columns: repeat(3, 1fr); margin: 0; border-top: 1px solid var(--hairline);">
+      <div style="height: 32px;" />
+      <!-- Bottom row: GPU metric tiles in a nested .card flush so they keep a carded surface while the
+           chart above blends into the page (.sys-flush on the outer card) — mirrors System Performance. -->
+      <div class="card flush">
+      <div class="stats" style="grid-template-columns: repeat(3, 1fr); margin: 0;">
         <div class="stat">
           <div class="lbl">Memory</div>
           <div class="val">{{ fmtPct(gpu?.memUsedPct) }}</div>
@@ -300,7 +343,15 @@ onBeforeUnmount(() => {
           <div class="delta">{{ gpu?.source || 'no live source' }}</div>
         </div>
       </div>
+      </div>
     </div>
+    </div>
+
+    <!-- spec-sheet overline above the six stat tiles -->
+    <div class="mq-overline" aria-hidden="true">
+      <span class="mq-ov-tag">SYS</span>
+      <span class="mq-ov-rule" />
+      <span class="mq-ov-dim">FLEET STATUS</span>
     </div>
 
     <div class="stats" style="grid-template-columns: repeat(6, 1fr);">
@@ -339,6 +390,19 @@ onBeforeUnmount(() => {
         <div class="lbl">Unmatched</div>
         <div class="val">{{ unmatched }}</div>
         <div class="delta bad"><Icon name="warn" :size="12" />needs mapping</div>
+      </div>
+    </div>
+
+    <!-- brand foot — deterministic barcode + mono spec strip; sits full-width above Playlists/Activity -->
+    <div class="mq-foot" aria-hidden="true">
+      <svg class="mq-barcode" :viewBox="`0 0 ${barcode.width} 26`" preserveAspectRatio="none">
+        <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
+      </svg>
+      <div class="mq-spec-strip">
+        <span><span class="mq-sp-key">PLAYLISTS</span> {{ PLAYLISTS.length }}</span>
+        <span><span class="mq-sp-key">CHANNELS</span> {{ totalChannels }}</span>
+        <span><span class="mq-sp-key">EPG</span> {{ EPG_SOURCES.length }}</span>
+        <span><span class="mq-sp-key">SYS</span> {{ sysScope.toUpperCase() }}</span>
       </div>
     </div>
 
@@ -424,7 +488,7 @@ onBeforeUnmount(() => {
         <div class="card-hd">
           <h2>Activity</h2>
           <span class="spacer" />
-          <span class="muted" style="font-size: var(--fs-xs);">Live · last 24h</span>
+          <span class="mq-cap">LIVE // LAST 24H</span>
         </div>
         <div class="activity-body">
           <!-- Active Sessions — rendered only when there are live sessions (nothing shown otherwise) -->
@@ -474,8 +538,32 @@ onBeforeUnmount(() => {
               </div>
               <div class="qoe-pill" :data-health="v.health"><span class="dot" />{{ v.qoeScore }}</div>
             </div>
-            <div v-if="recentHistory.length === 0" class="act">
-              <div class="muted" style="font-size: var(--fs-sm); padding: 4px 0;">No viewer sessions recorded yet.</div>
+            <div v-if="recentHistory.length === 0" class="mq-empty">
+              <!-- decorative SCAN FIELD micrographic plate (masqueradarr-micrographics MK-07.5) -->
+              <svg class="mq-plate mq-plate-sm" viewBox="0 0 360 230" aria-hidden="true">
+                <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
+                  <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
+                  <path d="M14 202 V216 H28" /><path d="M346 202 V216 H332" />
+                </g>
+                <g stroke="var(--mq-teal)" stroke-width="1" opacity="0.13">
+                  <line x1="20" y1="56" x2="340" y2="56" /><line x1="20" y1="84" x2="340" y2="84" />
+                  <line x1="20" y1="112" x2="340" y2="112" /><line x1="20" y1="140" x2="340" y2="140" />
+                  <line x1="20" y1="168" x2="340" y2="168" />
+                </g>
+                <line x1="20" y1="98" x2="340" y2="98" stroke="var(--mq-teal)" stroke-width="1.5" opacity="0.85" />
+                <g stroke="var(--mq-teal)" stroke-width="1.6" fill="none">
+                  <path d="M138 86 V72 H152" /><path d="M222 86 V72 H208" />
+                  <path d="M138 158 V172 H152" /><path d="M222 158 V172 H208" />
+                </g>
+                <g transform="translate(153,96) scale(0.45)">
+                  <path d="M26 94 L26 30 L60 64 L94 30 L94 94" fill="none" stroke="var(--mq-teal)"
+                        stroke-width="14" stroke-linejoin="round" stroke-linecap="round" />
+                </g>
+                <line x1="40" y1="200" x2="320" y2="200" stroke="var(--mq-steel)" stroke-width="1" />
+                <line x1="40" y1="200" x2="120" y2="200" stroke="var(--mq-teal)" stroke-width="2" />
+              </svg>
+              <div class="mq-empty-title">No viewer sessions recorded yet.</div>
+              <div class="mq-empty-sub">Live watch activity will appear here as clients connect.</div>
             </div>
           </div>
         </div>
@@ -483,13 +571,20 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <div v-else class="col" style="gap: 18px;">
+  <div v-else class="col mq-dash" style="gap: 18px;">
+    <!-- masqueradarr HUD micro row — telemetry overline for the end-user console -->
+    <div class="mq-micro-row" aria-hidden="true">
+      <span class="mq-micro-hi">MASQUERADARR // ACCOUNT</span>
+      <span>MK-SYS / DASH</span>
+    </div>
+
     <!-- 1. Welcome Card -->
-    <div class="card" style="padding: 20px; background: linear-gradient(135deg, rgba(var(--cyan-rgb), 0.1) 0%, rgba(var(--indigo-rgb), 0.1) 100%); border: 1px solid rgba(var(--cyan-rgb), 0.15); border-radius: 12px; display: flex; align-items: center; gap: 20px;">
-      <div class="avatar" style="width: 50px; height: 50px; font-size: 20px; background: var(--cyan); color: var(--bg-1); display: flex; align-items: center; justify-content: center; border-radius: 50%; font-weight: 700;">{{ userInitials }}</div>
+    <div class="card mq-welcome" style="padding: 20px; display: flex; align-items: center; gap: 20px;">
+      <!-- brand mark-in-circle avatar idiom (teal circle, obsidian glyph) — masqueradarr-logotype §3 -->
+      <div class="mq-avatar">{{ userInitials }}</div>
       <div style="flex: 1;">
-        <h2 style="margin: 0; font-size: 20px; font-weight: 700; color: var(--text-0);">Welcome, {{ currentUser?.username }}!</h2>
-        <p style="margin: 4px 0 0; font-size: 13px; color: var(--text-2);">Role: <span style="text-transform: capitalize; font-weight: 600; color: var(--cyan);">{{ currentUser?.role }}</span></p>
+        <h2 style="margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-0);">Welcome, {{ currentUser?.username }}!</h2>
+        <p style="margin: 4px 0 0; font-size: 13px; color: var(--text-2);">Role: <span style="text-transform: capitalize; font-weight: 600; color: var(--accent);">{{ currentUser?.role }}</span></p>
       </div>
       <div style="display: flex; flex-direction: column; align-items: flex-end; gap: 8px;">
         <div class="row" style="gap: 8px;">
@@ -505,7 +600,12 @@ onBeforeUnmount(() => {
 
     <!-- 2. Integration URLs -->
     <div class="card" style="padding: 20px; display: flex; flex-direction: column; gap: 16px;">
-      <div style="font-weight: 600; font-size: 16px; color: var(--text-0);">Integration URLs</div>
+      <div class="mq-overline" aria-hidden="true">
+        <span class="mq-ov-tag">LINK</span>
+        <span class="mq-ov-rule" />
+        <span class="mq-ov-dim">SECURE ENDPOINTS</span>
+      </div>
+      <div class="mq-h" style="font-size: 16px; margin-top: -8px;">Integration URLs</div>
       <div class="muted" style="font-size: 13px; margin-top: -10px;">
         Use these URLs to configure your IPTV client or media center. Keep them private as they are linked to your account.
       </div>
@@ -520,7 +620,7 @@ onBeforeUnmount(() => {
     <div style="display: grid; grid-template-columns: 1fr 1.5fr; gap: 18px;">
       <!-- Left Side: Channels List -->
       <div class="card flush" style="display: flex; flex-direction: column; padding: 16px; gap: 12px; min-height: 400px; max-height: 600px;">
-        <div style="font-weight: 600; font-size: 15px; color: var(--text-0);">Available Channels</div>
+        <div class="mq-h" style="font-size: 15px;">Available Channels</div>
         <div class="input">
           <input v-model="channelSearch" placeholder="Search channels or groups..." style="width: 100%;" />
         </div>
@@ -540,8 +640,33 @@ onBeforeUnmount(() => {
             </div>
             <StatusDot :status="c.stream.status" :pulse="c.stream.status === 'live'" />
           </div>
-          <div v-if="filteredChannels.length === 0" class="muted" style="text-align: center; padding: 20px;">
-            No channels found or assigned.
+          <div v-if="filteredChannels.length === 0" class="mq-empty">
+            <!-- decorative UPLINK micrographic plate (masqueradarr-micrographics MK-07.2) -->
+            <svg class="mq-plate mq-plate-sm" viewBox="0 0 360 230" aria-hidden="true">
+              <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
+                <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
+                <path d="M14 202 V216 H28" /><path d="M346 202 V216 H332" />
+              </g>
+              <ellipse cx="180" cy="128" rx="96" ry="40" transform="rotate(-18 180 128)"
+                       fill="none" stroke="var(--mq-teal)" stroke-width="2"
+                       stroke-dasharray="1 8" stroke-linecap="round" opacity="0.7" />
+              <ellipse cx="180" cy="128" rx="96" ry="40" transform="rotate(-18 180 128)"
+                       fill="none" stroke="var(--mq-steel)" stroke-width="1" />
+              <g stroke="var(--mq-teal)" stroke-width="1" opacity="0.55">
+                <line x1="180" y1="128" x2="92" y2="106" />
+                <line x1="180" y1="128" x2="270" y2="150" />
+                <line x1="180" y1="128" x2="206" y2="68" />
+              </g>
+              <g fill="var(--mq-teal)">
+                <circle cx="92" cy="106" r="4" /><circle cx="270" cy="150" r="4" /><circle cx="206" cy="68" r="3" />
+              </g>
+              <g transform="translate(155,103) scale(0.41667)">
+                <path d="M26 94 L26 30 L60 64 L94 30 L94 94" fill="none" stroke="var(--mq-teal)"
+                      stroke-width="14" stroke-linejoin="round" stroke-linecap="round" />
+              </g>
+            </svg>
+            <div class="mq-empty-title">No channels found or assigned.</div>
+            <div class="mq-empty-sub">Adjust your search or contact your administrator for access.</div>
           </div>
         </div>
       </div>
@@ -565,12 +690,218 @@ onBeforeUnmount(() => {
             </div>
           </div>
         </div>
-        <div v-else class="card" style="height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 40px; text-align: center; min-height: 280px;">
-          <Icon name="tv" :size="48" style="color: var(--text-3); margin-bottom: 12px;" />
+        <div v-else class="card mq-lockstate" style="height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 40px; text-align: center; min-height: 280px;">
+          <!-- decorative SIGNAL LOCK micrographic plate (masqueradarr-micrographics MK-07.3) — "waiting to lock onto a stream" -->
+          <svg class="mq-plate" viewBox="0 0 360 230" aria-hidden="true">
+            <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
+              <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
+              <path d="M14 202 V216 H28" /><path d="M346 202 V216 H332" />
+            </g>
+            <circle cx="180" cy="119" r="78" fill="none" stroke="var(--mq-teal)" stroke-width="1"
+                    stroke-dasharray="1 8" stroke-linecap="round" opacity="0.55" />
+            <circle cx="180" cy="119" r="56" fill="none" stroke="var(--mq-teal)" stroke-width="1.4"
+                    stroke-dasharray="1 8" stroke-linecap="round" opacity="0.75" />
+            <g stroke="var(--mq-teal)" stroke-width="1" opacity="0.4">
+              <line x1="180" y1="19" x2="180" y2="219" />
+              <line x1="80" y1="119" x2="280" y2="119" />
+            </g>
+            <g stroke="var(--mq-teal)" stroke-width="1.6" fill="none">
+              <path d="M138 86 V72 H152" /><path d="M222 86 V72 H208" />
+              <path d="M138 158 V172 H152" /><path d="M222 158 V172 H208" />
+            </g>
+            <g transform="translate(153,92) scale(0.45)">
+              <path d="M26 94 L26 30 L60 64 L94 30 L94 94" fill="none" stroke="var(--mq-teal)"
+                    stroke-width="14" stroke-linejoin="round" stroke-linecap="round" />
+            </g>
+            <line x1="40" y1="200" x2="320" y2="200" stroke="var(--mq-steel)" stroke-width="1" />
+            <line x1="40" y1="200" x2="180" y2="200" stroke="var(--mq-teal)" stroke-width="2" />
+          </svg>
+          <div class="mq-lock-tag" aria-hidden="true">AWAITING SIGNAL LOCK</div>
           <div style="font-weight: 600; font-size: 15px; color: var(--text-1);">No Channel Selected</div>
           <div class="muted" style="font-size: 12px; max-width: 280px; margin-top: 4px;">Select a channel from the list on the left to start streaming directly in your browser.</div>
         </div>
       </div>
     </div>
+
+    <!-- brand foot — deterministic barcode + mono spec strip -->
+    <div class="mq-foot" aria-hidden="true">
+      <svg class="mq-barcode" :viewBox="`0 0 ${barcode.width} 26`" preserveAspectRatio="none">
+        <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
+      </svg>
+      <div class="mq-spec-strip">
+        <span><span class="mq-sp-key">USER</span> {{ currentUser?.username }}</span>
+        <span><span class="mq-sp-key">ROLE</span> {{ (currentUser?.role || '').toUpperCase() }}</span>
+        <span><span class="mq-sp-key">STREAM</span> {{ currentUser?.streamTokenEnabled ? 'ENABLED' : 'DISABLED' }}</span>
+      </div>
+    </div>
   </div>
 </template>
+
+<style scoped>
+/* ── masqueradarr brand chrome (scoped exception, matching LoginScreen/HlsPlayer) ──────────
+   Two colors only (teal signal via --accent/--mq-teal, red risk via --bad/--mq-risk); two
+   fonts only (Space Grotesk display, JetBrains Mono telemetry). All hues flow through tokens. */
+
+/* ── elevation over the .mq-stage field ───────────────────────────────────────────────────
+   The dashboard sits on the lit-center / dark-edge brand stage (owned by .mq-stage in
+   styles.css). A flat --bg-1 card would float against that gradient with no separation, so
+   The base card elevation (lifted --bg-2 → --bg-1 gradient + stronger hairline + layered shadow)
+   now lives globally on .card in styles.css, so the dashboard's own cards inherit it with no
+   scoped copy here. The welcome card keeps its own teal-tint surface gradient (.mq-welcome) and
+   only borrows the lift (border + shadow), so its override remains. */
+.mq-dash .card.mq-welcome {
+  box-shadow:
+    inset 0 1px 0 var(--accent-soft),
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 14px 34px rgba(0, 0, 0, 0.34),
+    0 0 0 1px var(--accent-soft);
+}
+/* Light theme: the welcome card's teal-ring shadow needs the same softening the global .card
+   light variant applies — soften the drop shadow and lift the top highlight toward white. */
+[data-theme="light"] .mq-dash .card.mq-welcome {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.7),
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 12px 28px rgba(0, 0, 0, 0.10),
+    0 0 0 1px var(--accent-soft);
+}
+
+/* System & GPU performance cards: the outer shell is a bare container so the liveline + header blend
+   into the page (no surface / border / shadow), while the nested .card flush lower row keeps the carded
+   treatment. The flat opt-out is now the global .card.sys-flush utility in styles.css (it strips the
+   global card elevation in both themes); these shells carry the sys-flush class in the template. */
+
+/* HUD micro row — console telemetry overline */
+.mq-micro-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-family: var(--mq-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--text-3);
+}
+.mq-micro-hi { color: var(--text-2); }
+
+/* mono live caption (telemetry idiom) for card headers */
+.mq-cap {
+  font-family: var(--mq-font-mono);
+  font-size: var(--fs-xs);
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+  white-space: nowrap;
+}
+
+/* spec-sheet overline with teal rule */
+.mq-overline {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+.mq-ov-tag {
+  font-family: var(--mq-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--accent);
+}
+.mq-ov-rule { height: 1px; width: 42px; background: var(--accent); opacity: 0.5; }
+.mq-ov-dim {
+  font-family: var(--mq-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.16em;
+  color: var(--text-3);
+}
+
+/* brand display heading (Space Grotesk, tight tracking) */
+.mq-h {
+  font-family: var(--mq-font-sans);
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text-0);
+}
+
+/* end-user welcome card — brand teal tint surface (no second/third hue) */
+.mq-welcome {
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--bg-1) 100%);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius-m);
+}
+
+/* brand mark-in-circle avatar idiom — teal circle, obsidian-ish glyph */
+.mq-avatar {
+  width: 50px;
+  height: 50px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  background: var(--mq-teal);
+  color: var(--mq-obsidian);
+  font-family: var(--mq-font-sans);
+  font-size: 20px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  box-shadow: 0 0 18px var(--accent-glow);
+  flex: none;
+}
+
+/* decorative micrographic emblem plates (aria-hidden; paired with real text labels) */
+.mq-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding: 18px 16px 24px;
+  gap: 4px;
+}
+.mq-plate {
+  display: block;
+  width: 100%;
+  max-width: 340px;
+  opacity: 0.6;
+  pointer-events: none;
+}
+.mq-plate-sm { max-width: 240px; opacity: 0.5; margin-bottom: 6px; }
+.mq-empty-title {
+  font-family: var(--mq-font-sans);
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--text-1);
+}
+.mq-empty-sub {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+  max-width: 260px;
+}
+
+/* signal-lock player idle state */
+.mq-lockstate .mq-plate { max-width: 300px; opacity: 0.7; margin-bottom: 8px; }
+.mq-lock-tag {
+  font-family: var(--mq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  margin-bottom: 10px;
+}
+
+/* brand foot — deterministic barcode + mono spec strip */
+.mq-foot { margin-top: 4px; }
+.mq-barcode {
+  display: block;
+  width: 100%;
+  height: 22px;
+  opacity: 0.5;
+}
+.mq-barcode rect { fill: var(--text-2); }
+.mq-spec-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 22px;
+  margin-top: 12px;
+  font-family: var(--mq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  color: var(--text-2);
+}
+.mq-spec-strip .mq-sp-key { color: var(--text-3); margin-right: 5px; }
+</style>

@@ -108,6 +108,33 @@ const selAvg = computed(() => {
 const selMin = computed(() => (selSeries.value.length ? Math.min(...selSeries.value) : (sel.value?.bitrate || 0)));
 const selMax = computed(() => (selSeries.value.length ? Math.max(...selSeries.value) : (sel.value?.bitrate || 0)));
 
+// HUD header chrome — DERIVED from the selected stream so each stream renders its own stable barcode +
+// code tags (reads as real per-stream telemetry, never a fixed brand decoration). seedFrom() is the
+// FNV-1a 32-bit hash of a string; the barcode reuses the Dashboard's deterministic LCG (seeded from the
+// stream id) returning {rects,width}; the two code tags are 2-letter (source) + a stable id-hashed
+// number. All aria-hidden (decorative). Keyed off `sel` so they re-derive on selection change.
+const seedFrom = (s: string) => { let h = 2166136261; for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619); return h >>> 0; };
+const headerBarcode = computed(() => {
+  const rects: { x: number; w: number }[] = [];
+  let seed = seedFrom(sel.value?.id ?? 'masq') || 1, x = 0, ink = true;
+  while (x < 240) {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    const w = 2 + (seed % 5);
+    if (ink) rects.push({ x, w });
+    x += w;
+    ink = !ink;
+  }
+  return { rects, width: x };
+});
+const codeTags = computed(() => {
+  const ch = sel.value ? CHANNELS.value.find((c) => c.id === sel.value!.channelId) : undefined;
+  const src = (ch?.source || 'mq').toUpperCase();
+  const h = seedFrom(sel.value?.id ?? '');
+  const a = `${src.slice(0, 2)}-${100 + (h % 900)}`;        // e.g. DU-417
+  const b = `${src.slice(-2) || 'HL'}-${10 + ((h >>> 8) % 90)}`; // e.g. LO-62
+  return [a, b];
+});
+
 const viewStream = computed(() => liveStreams.value.find((s) => s.id === viewing.value));
 
 // Connected viewers for the selected channel (re-fetched on selection + each snapshot). A monotonic
@@ -185,7 +212,7 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
 </script>
 
 <template>
-  <div class="col" style="height: 100%; min-height: 0;">
+  <div class="col mq-active" style="height: 100%; min-height: 0;">
     <div class="stats">
       <div class="card stat">
         <div class="lbl">Live now</div>
@@ -259,7 +286,30 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
       </div>
 
       <div class="stream-detail">
+        <!-- HUD corner brackets framing the now-borderless instrument cluster -->
+        <span class="corner tl" aria-hidden="true" /><span class="corner tr" aria-hidden="true" />
+        <span class="corner bl" aria-hidden="true" /><span class="corner br" aria-hidden="true" />
         <div class="stream-detail-body" :style="{ padding: 'var(--pad-card)', display: 'flex', flexDirection: 'column', gap: '16px' }">
+          <!-- brand telemetry header → 3-column strip: stacked mono lines · per-stream barcode · derived code tags -->
+          <div class="asd-hdr-strip" aria-hidden="true">
+            <div class="asd-hdr-text">
+              <span class="mq-micro-hi">MASQUERADARR // STREAM</span>
+              <div class="mq-overline">
+                <span class="mq-ov-tag">SYS</span>
+                <span class="mq-ov-rule" />
+                <span class="mq-ov-dim">ACTIVE SESSION</span>
+              </div>
+            </div>
+            <div class="asd-hdr-bars">
+              <svg class="mq-barcode" :viewBox="`0 0 ${headerBarcode.width} 26`" preserveAspectRatio="none">
+                <rect v-for="(r, i) in headerBarcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
+              </svg>
+            </div>
+            <div class="asd-hdr-tags">
+              <span>{{ codeTags[0] }}</span>
+              <span>{{ codeTags[1] }}</span>
+            </div>
+          </div>
           <div class="row" style="gap: 14px;">
             <ChannelLogo :ch="chOf(sel)" size="lg" />
             <div style="flex: 1;">
@@ -283,37 +333,16 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <span v-if="!sel.watchers.length" class="muted" style="font-size: var(--fs-xs);">{{ sel.viewers }} viewer{{ sel.viewers === 1 ? '' : 's' }} · no account</span>
               </div>
             </div>
-            <Btn variant="primary" size="sm" icon="tv" @click="onView">View channel</Btn>
+            <button class="asd-globe" @click="onView" title="View channel" aria-label="View channel">
+              <Icon name="orbit" :size="18" />
+            </button>
           </div>
 
           <div class="stream-detail-split">
             <div class="stream-detail-main">
-          <div class="metric-grid">
-            <div class="metric">
-              <div class="lbl">Viewers</div>
-              <div class="val">{{ sel.viewers }}</div>
-              <div class="sub">peak {{ sel.peakViewers }} · session</div>
-            </div>
-            <div class="metric">
-              <div class="lbl">Bitrate</div>
-              <div class="val">{{ sel.status === 'bad' ? '—' : sel.bitrate.toFixed(1) }}<span v-if="sel.status !== 'bad'" style="font-size: 12px; color: var(--text-2); font-weight: 500;"> Mbps</span></div>
-              <div class="sub">avg {{ selAvg.toFixed(1) }} Mbps</div>
-            </div>
-            <div class="metric">
-              <div class="lbl">Uptime</div>
-              <div class="val">{{ sel.uptime }}</div>
-              <div class="sub">{{ sel.status === 'bad' ? 'offline' : 'streaming' }}</div>
-            </div>
-            <div class="metric">
-              <div class="lbl">Bandwidth</div>
-              <div class="val">{{ sel.bandwidth }}<span style="font-size: 12px; color: var(--text-2); font-weight: 500;"> Mbps</span></div>
-              <div class="sub">egress · {{ sel.viewers }} client{{ sel.viewers === 1 ? '' : 's' }}</div>
-            </div>
-          </div>
-
-          <div class="card" style="background: var(--bg-2); padding: 14px;">
-            <div class="row" style="margin-bottom: 8px;">
-              <div style="font-size: var(--fs-sm); font-weight: 600;">Bitrate · live</div>
+          <div class="card asd-label">
+            <div class="asd-label-hd">
+              <span class="asd-cap">BITRATE // LIVE</span>
               <span class="spacer" />
               <Pill tone="cyan">avg {{ selAvg.toFixed(1) }} Mbps</Pill>
               <Pill>min {{ selMin.toFixed(1) }}</Pill>
@@ -323,8 +352,8 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
           </div>
 
           <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 14px;">
-            <div class="card" style="background: var(--bg-2); padding: 14px;">
-              <div style="font-size: var(--fs-sm); font-weight: 600; margin-bottom: 12px;">Technical</div>
+            <div class="card asd-label">
+              <div class="asd-label-hd"><span class="asd-cap">TECHNICAL // DECODE</span></div>
               <div class="kv-list">
                 <div class="k">Video</div><div class="v mono">{{ selTech?.video }}</div>
                 <div class="k">Audio</div><div class="v mono">{{ selTech?.audio }}</div>
@@ -336,9 +365,10 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 </template>
                 <div class="k">Phase</div><div class="v mono">{{ sel.phase }}</div>
               </div>
+              <div class="asd-label-ft" aria-hidden="true"><span class="asd-cap-dim">DECODE SPEC</span><span class="asd-mk">MK-07.10</span></div>
             </div>
-            <div class="card" style="background: var(--bg-2); padding: 14px;">
-              <div style="font-size: var(--fs-sm); font-weight: 600; margin-bottom: 12px;">Source</div>
+            <div class="card asd-label">
+              <div class="asd-label-hd"><span class="asd-cap">SOURCE // FEED</span></div>
               <div class="kv-list">
                 <div class="k">Stream entry</div>
                 <div class="v mono" style="font-size: 11px; word-break: break-all;">{{ chOf(sel).streamEntryUrl }}</div>
@@ -356,42 +386,51 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   <Pill v-else tone="warn">unmatched</Pill>
                 </div>
               </div>
+              <div class="asd-label-ft" aria-hidden="true"><span class="asd-cap-dim">FEED SPEC</span><span class="asd-mk">MK-07.11</span></div>
             </div>
           </div>
 
-          <div class="card flush stream-sessions" style="background: var(--bg-2);">
-            <div class="card-hd" style="padding: 12px 14px;">
-              <h2 style="font-size: 13px;">Connected sessions</h2>
+          <div class="card flush stream-sessions asd-label asd-label-flush">
+            <div class="card-hd asd-label-hd" style="padding: 12px 14px;">
+              <span class="asd-cap">SESSIONS // CONNECTED</span>
               <Pill tone="cyan">{{ clients.length }}</Pill>
               <span class="spacer" />
             </div>
             <div v-if="clients.length === 0" class="empty" style="padding: 28px;">
               <div class="muted">{{ sel.status === 'bad' ? 'No viewers — stream is offline.' : 'No connected viewers right now.' }}</div>
             </div>
-            <table v-else class="tbl">
-              <thead>
-                <tr><th>User</th><th>Client IP</th><th>Location</th><th>Player</th><th>Connected</th><th>Rate</th></tr>
-              </thead>
-              <tbody>
-                <tr v-for="c in clients" :key="c.ip + c.userAgent + (c.username ?? '')">
-                  <td><Pill tone="cyan"><Icon name="check" :size="11" />{{ c.username || 'unknown' }}</Pill></td>
-                  <td class="mono">{{ c.ip }}</td>
-                  <td class="mono" style="max-width: 160px;"><div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ flagEmoji(c.countryCode) }} {{ c.location || '—' }}</div></td>
-                  <td style="max-width: 240px;">
-                    <div class="row" style="gap: 6px; align-items: center; white-space: nowrap; overflow: hidden;">
-                      <Pill :tone="c.playerType === 'externalPlayer' ? 'system' : 'cyan'">{{ playerLabel(c) }}</Pill>
-                      <span class="mono muted" style="overflow: hidden; text-overflow: ellipsis;" :title="c.userAgent">{{ c.userAgent || 'unknown' }}</span>
-                    </div>
-                  </td>
-                  <td class="mono muted">{{ sinceLabel(c.connectedAt) }}</td>
-                  <td class="mono">{{ rateKB(c.currentRate) }} KB/s</td>
-                </tr>
-              </tbody>
-            </table>
+            <!-- The ONLY scroller in the panel: capped to ~2 data rows, header pinned (sticky thead). -->
+            <div v-else class="asd-sess-scroll">
+              <table class="tbl">
+                <thead>
+                  <tr><th>User</th><th>Client IP</th><th>Location</th><th>Player</th><th>Connected</th><th>Rate</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="c in clients" :key="c.ip + c.userAgent + (c.username ?? '')">
+                    <td><Pill tone="cyan"><Icon name="check" :size="11" />{{ c.username || 'unknown' }}</Pill></td>
+                    <td class="mono">{{ c.ip }}</td>
+                    <td class="mono" style="max-width: 160px;"><div style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ flagEmoji(c.countryCode) }} {{ c.location || '—' }}</div></td>
+                    <td style="max-width: 240px;">
+                      <div class="row" style="gap: 6px; align-items: center; white-space: nowrap; overflow: hidden;">
+                        <Pill :tone="c.playerType === 'externalPlayer' ? 'system' : 'cyan'">{{ playerLabel(c) }}</Pill>
+                        <span class="mono muted" style="overflow: hidden; text-overflow: ellipsis;" :title="c.userAgent">{{ c.userAgent || 'unknown' }}</span>
+                      </div>
+                    </td>
+                    <td class="mono muted">{{ sinceLabel(c.connectedAt) }}</td>
+                    <td class="mono">{{ rateKB(c.currentRate) }} KB/s</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
             </div>
             <aside class="stream-detail-engine">
-              <div class="asd-railhd"><Icon name="topology" :size="15" /><h2>Video Engine Service</h2></div>
+              <div class="asd-railhd">
+                <Icon name="topology" :size="15" />
+                <h2>Video Engine Service</h2>
+                <span class="spacer" />
+                <span class="asd-cap">ENGINE // DECODE</span>
+              </div>
               <ActiveStreamDiagram
                 v-if="engine.length"
                 :channel="chOf(sel)" :stream="sel" :engines="engine"
@@ -539,3 +578,201 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
     </div>
   </div>
 </template>
+
+<style scoped>
+/* masqueradarr stage depth — lift the top-level surfaces off the brand gradient field. The 4 stat
+   cards + the empty state now inherit the elevation from the global .card recipe (which carries the
+   same gradient + sheen + multi-layer shadow), so their scoped copies were removed as pure duplicates.
+   The streams LIST panel is NOT a .card, so the global rule never reaches it — it keeps its explicit
+   lift here (own bg retained, elevation only). The stream-DETAIL panel is a borderless HUD instrument
+   cluster (no surface, no lift — defined by corner brackets, a brand header, and flat spec-label inner
+   cards), so it is intentionally NOT lifted here. The slide-over viewer modal is also not matched, and
+   the liveline's container is never touched. */
+.mq-active .streams-list {
+  border-color: var(--hairline-strong);
+  box-shadow:
+    inset 0 1px 0 var(--hairline-strong),
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 14px 34px rgba(0, 0, 0, 0.34);
+}
+[data-theme="light"] .mq-active .streams-list {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 12px 28px rgba(0, 0, 0, 0.10);
+}
+
+/* ───────────────────────── stream-detail → HUD instrument cluster ─────────────────────────
+   Everything below is SCOPED under .stream-detail so the globally-shared .card / .metric / .kv-list
+   rules are never altered for other screens. Definition comes from corner brackets, a brand header,
+   hairlines, teal mono captions, the metric emblems, and accent underbars — not fills/borders.
+   Theme-aware tokens only (no reference HEX), so light mode stays legible. */
+
+/* Corner brackets framing the borderless panel (the LoginScreen/SetupScreen idiom). */
+.stream-detail .corner {
+  position: absolute;
+  width: 14px;
+  height: 14px;
+  pointer-events: none;
+  z-index: 1;
+}
+.stream-detail .corner.tl { top: 9px; left: 9px; border-top: 1.5px solid var(--bracket); border-left: 1.5px solid var(--bracket); }
+.stream-detail .corner.tr { top: 9px; right: 9px; border-top: 1.5px solid var(--bracket); border-right: 1.5px solid var(--bracket); }
+.stream-detail .corner.bl { bottom: 9px; left: 9px; border-bottom: 1.5px solid var(--bracket); border-left: 1.5px solid var(--bracket); }
+.stream-detail .corner.br { bottom: 9px; right: 9px; border-bottom: 1.5px solid var(--bracket); border-right: 1.5px solid var(--bracket); }
+
+/* Brand telemetry header (mirrors the Dashboard .mq-* header chrome — those classes are scoped to the
+   Dashboard, so the equivalents are redeclared here scoped to this panel). */
+.stream-detail .asd-hdr-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 16px;
+}
+/* Left: the two stacked mono lines (brand line over the SYS / ACTIVE SESSION overline). */
+.stream-detail .asd-hdr-text {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  gap: 5px;
+  flex: none;
+}
+.stream-detail .mq-micro-hi {
+  font-family: var(--mq-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  color: var(--text-2);
+}
+.stream-detail .mq-overline { display: flex; align-items: center; gap: 9px; }
+.stream-detail .mq-ov-tag { font-family: var(--mq-font-mono); font-size: 10.5px; letter-spacing: 0.16em; color: var(--accent); }
+.stream-detail .mq-ov-rule { height: 1px; width: 42px; background: var(--accent); opacity: 0.5; }
+.stream-detail .mq-ov-dim { font-family: var(--mq-font-mono); font-size: 10.5px; letter-spacing: 0.16em; color: var(--text-3); }
+/* Middle: a per-stream deterministic barcode (fills), height = the two-line text block, faint band behind. */
+.stream-detail .asd-hdr-bars {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  padding: 0 4px;
+  border-radius: 3px;
+  background: color-mix(in oklab, var(--text-3) 6%, transparent);
+}
+.stream-detail .asd-hdr-bars .mq-barcode {
+  display: block;
+  width: 100%;
+  height: 22px;
+  opacity: 0.45;
+}
+.stream-detail .asd-hdr-bars .mq-barcode rect { fill: var(--text-2); }
+/* Right: two stacked dim mono code tags, right-aligned. */
+.stream-detail .asd-hdr-tags {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 5px;
+  font-family: var(--mq-font-mono);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--text-3);
+}
+
+/* Header action: "View channel" is now an icon-only HUD control (bracketed, teal glyph) — the
+   masqueradarr orbit-globe / UPLINK radar motif (MK-07.10) — instead of the heavy primary fill, to
+   suit the stripped panel. (Class kept as .asd-globe: it's a CSS hook, not the glyph name.) */
+.stream-detail .asd-globe {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  border: 1px solid oklch(0.82 0.13 220 / 0.35);
+  color: var(--accent-hi);
+  cursor: default;
+  transition: background .12s, border-color .12s, box-shadow .12s;
+}
+.stream-detail .asd-globe:hover {
+  background: color-mix(in oklab, var(--accent) 22%, transparent);
+  border-color: oklch(0.82 0.13 220 / 0.55);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+/* Spec-sheet "label" instruments (the MK-07.10 UPLINK SPEC idiom): flat surface, a teal mono caption
+   over a hairline, and an optional footer code-tag bar. Shared by the bitrate/technical/source cards;
+   the sessions card reuses the caption styles via .asd-label-hd on its existing .card-hd. */
+.stream-detail .asd-label {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none; /* zero the global .card elevation — these HUD labels are flat by design */
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+.stream-detail .asd-label-flush { padding: 0; }
+.stream-detail .asd-label-hd {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-bottom: 9px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid var(--hairline);
+}
+.stream-detail .asd-label-hd .spacer { flex: 1; }
+.stream-detail .card-hd.asd-label-hd { margin-bottom: 0; }
+.stream-detail .asd-cap {
+  font-family: var(--mq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  white-space: nowrap;
+}
+.stream-detail .asd-cap-dim {
+  font-family: var(--mq-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.12em;
+  color: var(--text-2);
+}
+/* Footer code-tag bar (the muse's "UPLINK SPEC · MK-07.10" footer). */
+.stream-detail .asd-label-ft {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid var(--hairline);
+}
+.stream-detail .asd-mk {
+  font-family: var(--mq-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.04em;
+  color: var(--text-3);
+}
+/* kv-list rows recast to the mono spec idiom inside the label cards. */
+.stream-detail .asd-label .kv-list .k { font-family: var(--mq-font-mono); font-size: 11px; letter-spacing: 0.04em; color: var(--text-2); }
+
+/* Connected-sessions table → mono + hairline idiom (table semantics unchanged). */
+.stream-detail .stream-sessions .tbl th {
+  font-family: var(--mq-font-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.1em;
+  color: var(--text-2);
+}
+/* The sessions table is the ONLY scroller in the panel: capped to ~2 data rows so the panel itself
+   never scrolls. The shared .tbl thead th is already position:sticky/top:0; give it an opaque bg here
+   so scrolled rows don't bleed through the borderless (transparent) panel. Density-aware via --row-h. */
+.stream-detail .stream-sessions .asd-sess-scroll {
+  max-height: calc(var(--row-h) * 2 + 38px);
+  overflow-y: auto;
+}
+.stream-detail .stream-sessions .asd-sess-scroll .tbl thead th {
+  background: var(--bg-1);
+  z-index: 1;
+}
+
+/* Engine rail header caption (the teal spec-label cue trails the existing title). */
+.stream-detail .asd-railhd .spacer { flex: 1; }
+.stream-detail .asd-railhd .asd-cap { color: var(--accent); }
+</style>

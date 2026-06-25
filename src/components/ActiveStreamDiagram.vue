@@ -267,3 +267,22 @@ function box(n: { x: number; y: number; w: number; h: number; hue: string }) {
     </div>
   </div>
 </template>
+
+<style scoped>
+/*
+  masqueradarr engine-rail harmonization. Brings the node-card headers into the spec-label idiom
+  (mono uppercase plus a teal-leaning glyph) so they read like the detail panel teal captions.
+  Surface treatment only: the node hue glow, all layout and connector geometry, and the realtime
+  table are untouched. Scoped, so the Settings encoder diagram that shares the global classes is
+  unaffected.
+*/
+.asd-hd > span {
+  font-family: var(--mq-font-mono);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-1);
+}
+.asd-hd .ico { color: var(--hue, var(--accent)); }
+</style>

@@ -8,19 +8,47 @@
   --hairline: oklch(1 0 0 / 0.07);
   --hairline-strong: oklch(1 0 0 / 0.12);
 
+  /* HUD corner-bracket marks — theme-aware structural strokes. Light mode keeps the
+     fixed dark --mq-bracket; dark mode lifts to a light gray so the brackets read on
+     the dark field instead of vanishing into it. */
+  --bracket:      var(--mq-mist);   /* #E9EDEE on the dark field */
+
   --text-0: oklch(0.98 0 0);
   --text-1: oklch(0.78 0.01 240);
   --text-2: oklch(0.58 0.012 240);
   --text-3: oklch(0.42 0.012 240);
 
-  --accent: oklch(0.82 0.13 220);
-  --accent-hi: oklch(0.88 0.13 220);
-  --accent-soft: oklch(0.82 0.13 220 / 0.14);
-  --accent-glow: oklch(0.82 0.13 220 / 0.35);
+  /* masqueradarr accent — brand teal #48D7FE · oklch(.81 .11 230) */
+  --accent: oklch(0.81 0.11 230);
+  --accent-hi: oklch(0.87 0.11 230);
+  --accent-soft: oklch(0.81 0.11 230 / 0.14);
+  --accent-glow: oklch(0.81 0.11 230 / 0.35);
 
   --good: oklch(0.78 0.16 150);
   --warn: oklch(0.82 0.15 80);
-  --bad:  oklch(0.70 0.18 25);
+  /* masqueradarr risk — brand red #E0564B (risk/critical only) */
+  --bad:  oklch(0.65 0.17 28);
+
+  /* ── masqueradarr brand reference tokens ─────────────────────────
+     The brand source of truth (HEX, from masqueradarr-logotype §0/§4).
+     The semantic accent/bg/text families above are the runtime tokens
+     screens consume; these mq- tokens are for brand-exact surfaces (the
+     lockup, micrographic plates, the brand card). Two colors only: teal
+     carries signal, red is risk/critical. */
+  --mq-teal:       #48D7FE;
+  --mq-teal-deep:  #1FAEDB;
+  --mq-teal-veil:  rgba(72, 215, 254, 0.14);
+  --mq-obsidian:   #0C0F11;
+  --mq-carbon:     #13181A;
+  --mq-slate:      #1A2124;
+  --mq-steel:      #232B2F;
+  --mq-bracket:    #2A3236;
+  --mq-dim:        #5E696E;
+  --mq-ash:        #9AA5AA;
+  --mq-mist:       #E9EDEE;
+  --mq-risk:       #E0564B;
+  --mq-font-sans:  'Space Grotesk', ui-sans-serif, system-ui, sans-serif;
+  --mq-font-mono:  'JetBrains Mono', ui-monospace, monospace;
 
   --radius-s: 8px;
   --radius-m: 12px;
@@ -75,13 +103,16 @@
 
   /* Darker semantic colors so foreground text stays legible on light backgrounds.
      The originals (used in dark mode) are too washed out on white. */
-  --accent: oklch(0.52 0.15 220);
-  --accent-hi: oklch(0.44 0.16 220);
-  --accent-soft: oklch(0.52 0.15 220 / 0.12);
-  --accent-glow: oklch(0.52 0.15 220 / 0.22);
+  --accent: oklch(0.52 0.13 230);
+  --accent-hi: oklch(0.44 0.14 230);
+  --accent-soft: oklch(0.52 0.13 230 / 0.12);
+  --accent-glow: oklch(0.52 0.13 230 / 0.22);
   --good: oklch(0.48 0.17 150);
   --warn: oklch(0.55 0.17 60);
   --bad:  oklch(0.52 0.20 25);
+
+  /* corner-bracket marks keep their fixed dark values on the light field */
+  --bracket:      var(--mq-bracket); /* #2A3236 */
 }
 
 /* Hardcoded raw-oklch text colors that bypass the tokens — re-shade in light mode */
@@ -94,8 +125,8 @@
 [data-theme="light"] .src-row .src-ico.builtin,
 [data-theme="light"] .sched-ico.builtin {
   background: var(--bg-3);
-  border-color: oklch(0.52 0.15 220 / 0.3);
-  box-shadow: inset 0 0 0 1px oklch(0.52 0.15 220 / 0.15), 0 0 18px oklch(0.52 0.15 220 / 0.18);
+  border-color: oklch(0.52 0.13 230 / 0.3);
+  box-shadow: inset 0 0 0 1px oklch(0.52 0.13 230 / 0.15), 0 0 18px oklch(0.52 0.13 230 / 0.18);
 }
 [data-theme="light"] .src-row .src-ico.builtin.epg-builtin,
 [data-theme="light"] .src-ico.builtin.epg-builtin,
@@ -109,7 +140,7 @@
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
-  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  font-family: var(--mq-font-sans);
   font-size: var(--fs-base);
   color: var(--text-0);
   background: var(--bg-0);
@@ -153,21 +184,35 @@ button, input, textarea, select { outline: none; }
 }
 .brand {
   padding: 4px 8px 8px;
-  font-weight: 700;
-  font-size: 19px;
-  letter-spacing: -0.02em;
-  color: var(--accent);
-  text-shadow: 0 0 24px var(--accent-glow);
+  font-family: var(--mq-font-sans);
+  font-weight: 600;
+  font-size: 18px;
+  letter-spacing: -0.03em;
+  color: var(--text-0);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
-.brand-dot {
-  width: 8px; height: 8px; border-radius: 50%;
-  background: var(--accent);
-  box-shadow: 0 0 12px var(--accent);
+/* Circular badge variant of the mark (masqueradarr-logotype §3 avatar):
+   teal circle, obsidian mark, ~60% inset. The mark stays the canonical
+   currentColor MasqMark primitive — the circle is chrome around it. */
+.brand-badge {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: var(--mq-teal);
+  color: var(--mq-obsidian);
+  box-shadow: 0 0 14px var(--accent-glow);
 }
-.brand-text { display: flex; flex-direction: column; gap: 1px; line-height: 1.15; }
+.brand-mark { display: block; }
+.brand-word {
+  text-transform: lowercase;
+  color: var(--text-0);
+}
+.brand-text { display: flex; flex-direction: column; gap: 1px; line-height: 1.1; }
 .brand-version {
   font-size: 10.5px;
   font-weight: 500;
@@ -235,16 +280,28 @@ button, input, textarea, select { outline: none; }
 .sidebar-foot .plan { font-size: 10.5px; color: var(--text-2); }
 
 /* Main */
+/* The brand "stage" aurora gradient is painted on the always-present main column so the
+   now-transparent header floats over it on every route and the field runs continuously from
+   the top of the header through the scrolling content as one unbroken plane. Stage routes
+   (.mq-stage) no longer re-paint it (they'd double-paint + misalign); they keep only their
+   vignette + inset content wrapper. Top aurora is anchored above the header so the lit center
+   sits where the title sits. */
 .main {
   display: flex;
   flex-direction: column;
-  background: var(--bg-0);
+  background:
+    radial-gradient(120% 70% at 50% -8%, var(--accent-soft), transparent 56%),
+    radial-gradient(90% 60% at 100% 114%, var(--mq-teal-veil), transparent 60%),
+    var(--bg-0);
   overflow: hidden;
 }
 .topbar {
   height: 56px;
   flex: none;
-  border-bottom: 1px solid var(--hairline);
+  border-bottom: none;
+  background: transparent;
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   padding: 0 var(--pad-x);
@@ -433,12 +490,82 @@ button, input, textarea, select { outline: none; }
   padding: var(--pad-x);
 }
 
+/* ── masqueradarr brand stage background ──────────────────────────
+   The full-bleed brand backdrop shared by LoginScreen and the
+   Dashboard (the `logo` agent owns this; screens opt in). Two layers
+   of depth over --bg-0: a top teal aurora (the brand "uplink" glow,
+   same recipe as the login --auth-stage) plus a faint bottom-corner
+   vignette so surfaced cards read as elevated above a receding field.
+   Edge-to-edge by design — a screen that adopts .mq-stage moves its
+   own inset to an inner content wrapper, never padding the gradient. */
+/* a .screen adopting the stage drops its own inset so the gradient bleeds
+   to all four edges; the inset is reapplied by .mq-stage-content within. */
+.mq-stage-screen { padding: 0; }
+/* The aurora gradient now lives globally on .main (see above), so a stage screen no longer
+   paints its own — it remains only to host the edge vignette (::before) and the inset content
+   wrapper that keeps stage routes edge-to-edge while their content sits inset above the field. */
+.mq-stage {
+  position: relative;
+}
+/* edge vignette — darkens the periphery so the lit center recedes,
+   adding the card-over-field separation the brand cards rely on.
+   aria-hidden, non-interactive, pinned behind all stage content. */
+.mq-stage::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  background: radial-gradient(125% 105% at 50% 36%, transparent 56%, rgb(0 0 0 / 0.28) 100%);
+}
+[data-theme="light"] .mq-stage::before {
+  background: radial-gradient(125% 105% at 50% 36%, transparent 60%, rgb(0 0 0 / 0.06) 100%);
+}
+/* the scrolling content of a stage screen sits inset above the field;
+   the gradient itself stays edge-to-edge (no padding on .screen). */
+.mq-stage > .mq-stage-content {
+  position: relative;
+  z-index: 1;
+  padding: var(--pad-x);
+}
+/* The active route is a full-height flex screen (screenFlex makes .screen a flex column and the
+   Active Streams root fills it via height:100%). Its stage-content wrapper must participate in that
+   flex chain instead of collapsing to content height; the Dashboard stage screen scrolls normally
+   and needs no fill. */
+.mq-stage-content-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
 /* ── Primitives ───────────────────────────────────────────────── */
+/* Cards read as elevated above the brand stage field everywhere: a top-lit surface gradient
+   (lifted --bg-2 → --bg-1), a stronger hairline, and a layered shadow (1px inset top highlight
+   + contact shadow + soft drop shadow) so they float over the .main aurora. All token-driven;
+   the rgba(0,0,0,…) values are shadow opacities (theme-flipped below for light). */
 .card {
-  background: var(--bg-1);
-  border: 1px solid var(--hairline);
+  background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 64%);
+  border: 1px solid var(--hairline-strong);
   border-radius: var(--radius-m);
   padding: var(--pad-card);
+  box-shadow:
+    inset 0 1px 0 var(--hairline-strong),
+    0 1px 2px rgba(0, 0, 0, 0.28),
+    0 14px 34px rgba(0, 0, 0, 0.34);
+}
+/* Light theme: the dark drop shadow + dark-tone gradient read wrong on a light field, so soften
+   the shadow and lift the top highlight toward white. --bg-2/--bg-1 + --hairline-strong already
+   theme-flip; only the shadow alpha + the inset highlight need a light recipe. */
+[data-theme="light"] .card {
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.8),
+    0 1px 2px rgba(0, 0, 0, 0.06),
+    0 12px 28px rgba(0, 0, 0, 0.10);
+}
+/* Flat opt-out — strips the elevation so a card shell blends into the page (the Dashboard
+   chart/HUD outer shells, or any screen needing a flat surface). Placed after the light-theme
+   .card block so source-order wins in both themes. */
+.card.sys-flush {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 .card.flush { padding: 0; }
 .card-hd {
@@ -2386,18 +2513,21 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .stream-item .viewer b { font-size: var(--fs-base); font-weight: 600; color: var(--text-0); display: block; }
 .stream-item .viewer span { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
 
+/* masqueradarr HUD instrument cluster — the detail panel is a BORDERLESS, background-free surface
+   (definition comes from corner brackets + a brand header + flat spec-label inner cards). Keep only
+   the scroll + flex-min behaviour. The framing chrome + inner-card restyle live scoped under
+   .stream-detail in ActiveStreamsScreen.vue so the shared .card / .metric / .kv-list rules are
+   untouched for other screens. */
 .stream-detail {
-  background: var(--bg-1);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-m);
-  overflow-y: auto;
+  position: relative;
+  overflow: hidden;
   min-height: 0;
 }
 
 /* ── Stream detail → "Video Engine Service" rail + per-stream architecture diagram ─────────────────────── */
 /* The detail panel splits below its (full-width) header: existing content on the left, the diagram rail right. */
 /* The split fills the detail panel height; both columns stretch to equal height (no dead space at the bottom). */
-.stream-detail-body { min-height: 100%; box-sizing: border-box; }
+.stream-detail-body { height: 100%; min-height: 0; box-sizing: border-box; }
 .stream-detail-split {
   display: grid;
   grid-template-columns: minmax(0, 1fr) clamp(400px, 46%, 600px);
@@ -2407,11 +2537,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   min-height: 0;
 }
 .stream-detail-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; }
-/* The Connected sessions card grows to absorb leftover height so the left column has no trailing gap. */
-.stream-sessions { flex: 1; }
+/* The Connected sessions card sizes to its content (header + the capped, self-scrolling sessions table);
+   it must NOT absorb leftover height — the panel does not scroll, the sessions table is the only scroller. */
 .stream-detail-engine {
-  background: var(--bg-2);
-  border: 1px solid var(--hairline);
+  background: none;
+  border: none;
   border-radius: var(--radius-m);
   padding: 10px;
   display: flex;
@@ -2423,16 +2553,16 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .asd-railhd h2 { font-size: 13px; font-weight: 600; margin: 0; }
 .asd-railhd .ico { color: var(--accent); }
 
-/* The diagram surface — faint technical dot-grid (mirrors .enc-canvas); the fixed-coordinate stage is centered. */
+/* The diagram surface — flattened to blend into the app (no panel fill/border/dot-grid); the node cards
+   are the instruments. overflow:auto is kept as an internal safety valve so a large diagram never forces
+   the (non-scrolling) detail panel to grow. */
 .asd-canvas {
   flex: 1;
   min-height: 360px;
-  border: 1px solid var(--hairline);
+  border: none;
   border-radius: var(--radius-m);
   overflow: auto;
-  background:
-    radial-gradient(circle at 1px 1px, var(--hairline) 1px, transparent 0) 0 0 / 22px 22px,
-    var(--bg-0);
+  background: none;
 }
 .asd-stage { position: relative; }
 

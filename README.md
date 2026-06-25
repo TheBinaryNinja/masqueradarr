@@ -15,86 +15,13 @@ It is the direct successor to **[TVApp2](https://github.com/TheBinaryNinja/tvapp
 **deprecated**. masqueradarr is not a fork or a patch — it is a ground-up re-architecture of the same
 idea, carrying the project into the `*arr` self-hosted media family (Sonarr, Radarr, …) it's named for.
 
-<div style="color:cyan;">Screenshots</div>
+<img src="docs/img/screenshots/v2-login.png">
 
-<img src="docs/img/screenshots/dashboard.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/active-streams.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/history-metrics.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/playlists.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/epg-sources.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/channel-mapping.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/users.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/settings-1.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/settings-2.png">
-
-<br >
-
----
-
-<br >
-
-<img src="docs/img/screenshots/settings-3.png">
-
-<br >
+> [!NOTE] 
+> View more [screenshots](/docs/img/screenshots) of the current system including the updated branding and layout.
 
 
-# The evolution — from **TVApp2** to **masqueradarr**
+# Evolution — **masqueradarr**
 
 ### Where it started: **TVApp2**
 
