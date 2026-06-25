@@ -75,7 +75,7 @@ __pycache__/
 .tern-port
 .cache/
 .opt-*
-
+.play*
 
 *.user
 *.exe

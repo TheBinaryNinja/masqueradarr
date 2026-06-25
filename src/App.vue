@@ -3,6 +3,7 @@ import { computed, onMounted, onBeforeUnmount, ref, provide, watch } from 'vue';
 import { useRouter, useRoute } from 'vue-router';
 import Icon from './components/Icon.vue';
 import Btn from './components/Btn.vue';
+import MasqMark from './components/MasqMark.vue';
 import TweaksPanel from './components/TweaksPanel.vue';
 import TweakSection from './components/TweakSection.vue';
 import TweakRadio from './components/TweakRadio.vue';
@@ -99,6 +100,12 @@ const screenFlex = computed(() =>
   (route.name === 'active')
     ? { display: 'flex', flexDirection: 'column' as const } : null);
 
+// Routes that adopt the masqueradarr brand stage background (the full-bleed
+// teal-aurora + vignette field shared with LoginScreen). On a stage route the
+// gradient runs edge-to-edge: .screen drops its own inset padding and the routed
+// component is wrapped in .mq-stage-content, which carries the inset above the field.
+const stageRoute = computed(() => route.name === 'dashboard' || route.name === 'active');
+
 function go(path: string) { router.push(path); channel.value = null; }
 
 // Any screen can deep-link into the Docs panel via the bus (e.g. a contextual "?"); the header button
@@ -192,9 +199,11 @@ onBeforeUnmount(() => {
   <div class="app" :style="!currentUser ? { gridTemplateColumns: '1fr', minWidth: '100%' } : undefined">
     <aside v-if="currentUser" class="sidebar">
       <div class="brand">
-        <span class="brand-dot" />
+        <span class="brand-badge" aria-hidden="true">
+          <MasqMark class="brand-mark" :size="21" />
+        </span>
         <div class="brand-text">
-          <span>TVApp2</span>
+          <span class="brand-word">masqueradarr</span>
           <span class="brand-version">{{ appVersion }}</span>
         </div>
       </div>
@@ -289,9 +298,13 @@ onBeforeUnmount(() => {
         <Btn v-slot:default v-if="route.name === 'dashboard' && currentUser?.role === 'admin'" variant="primary" icon="plus" @click="addOpen = 'playlist'">Add playlist</Btn>
       </header>
 
-      <div class="screen" :style="screenFlex || undefined">
+      <div class="screen" :class="{ 'mq-stage': stageRoute, 'mq-stage-screen': stageRoute }" :style="screenFlex || undefined">
         <router-view v-slot="{ Component }">
-          <component :is="Component" @add="(k) => addOpen = k" />
+          <div v-if="stageRoute" class="mq-stage-content"
+               :class="{ 'mq-stage-content-fill': route.name === 'active' }">
+            <component :is="Component" @add="(k) => addOpen = k" />
+          </div>
+          <component v-else :is="Component" @add="(k) => addOpen = k" />
         </router-view>
       </div>
     </main>

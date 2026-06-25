@@ -83,6 +83,13 @@ defineProps<{ name: string; size?: number }>();
       <circle cx="12" cy="12" r="9"/><path d="M3 12h18"/>
       <path d="M12 3a14 14 0 0 1 0 18"/><path d="M12 3a14 14 0 0 0 0 18"/>
     </template>
+    <!-- orbit-globe: the masqueradarr UPLINK/radar motif (MK-07.10) — nested meridian
+         ellipses + parallels, scaled into this 24×24 viewBox (r=9, factor 9/34). -->
+    <template v-else-if="name === 'orbit'">
+      <circle cx="12" cy="12" r="9"/>
+      <ellipse cx="12" cy="12" rx="3.4" ry="9"/><ellipse cx="12" cy="12" rx="7.1" ry="9"/>
+      <path d="M3 12h18"/><path d="M3.8 8h16.4"/><path d="M3.8 16h16.4"/>
+    </template>
     <template v-else-if="name === 'file'">
       <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
       <path d="M14 2v6h6"/>

@@ -12,7 +12,11 @@ import { createRoot, type Root } from 'react-dom/client';
 import { Liveline } from 'liveline';
 import { useTweaks } from '../composables/useTweaks';
 
-const props = defineProps<{ series: number[]; target: number }>();
+// `times` (optional): per-sample arrival timestamps (epoch ms), index-aligned with `series`. When a
+// consumer supplies them, each point keeps a STABLE absolute time so liveline scrolls the window
+// smoothly; without them the bridge synthesizes times from a fixed cadence (correct only at the render
+// instant — fine for a growing/short series, but a full window re-anchors and jitters; skill §7.1).
+const props = defineProps<{ series: number[]; target: number; times?: number[] }>();
 const { tweaks } = useTweaks();
 
 const SAMPLE_MS = 2500; // WS push cadence (statsHub.ts BROADCAST_MS / useStreamStats SERIES_MAX×2.5s = 150s)
@@ -32,8 +36,15 @@ const renderable = computed(() => {
   return Math.max(...s) - Math.min(...s) > 0;
 });
 
-// number[] (oldest→newest, no stored timestamps) → LivelinePoint[]; newest anchored at "now".
+// number[] (oldest→newest) → LivelinePoint[]. Prefer caller-supplied per-sample arrival timestamps
+// (`times`, epoch ms, index-aligned) — a STABLE anchor per point that lets liveline scroll the window
+// smoothly. Fall back to synthesizing times from `now` on a fixed cadence when none are passed (newest
+// at "now"); that re-anchors on every render, so steady-state consumers should pass `times` (skill §7.1).
 function toPoints(series: number[]) {
+  const t = props.times;
+  if (t && t.length === series.length) {
+    return series.map((v, i) => ({ time: t[i] / 1000, value: v }));
+  }
   const nowSec = Date.now() / 1000;
   const n = series.length;
   return series.map((v, i) => ({ time: nowSec - (n - 1 - i) * (SAMPLE_MS / 1000), value: v }));
@@ -96,7 +107,7 @@ onMounted(() => {
 // Re-render the React tree on data / target / theme / renderability change. Deep on series:
 // bitrateSeries() mutates the array in place (push/shift), so the ref identity is stable and only a
 // deep watch fires per sample. Routed through scheduleRender() so a burst collapses to one reconcile.
-watch(() => [props.series, props.target, tweaks.theme, renderable.value] as const, scheduleRender, { deep: true });
+watch(() => [props.series, props.times, props.target, tweaks.theme, renderable.value] as const, scheduleRender, { deep: true });
 
 onBeforeUnmount(() => {
   if (rafId !== null) { cancelAnimationFrame(rafId); rafId = null; }
