@@ -4,6 +4,7 @@ import { Playlist } from '../models/Playlist.js';
 import { PlaylistChannel, type PlaylistChannelDoc } from '../models/PlaylistChannel.js';
 import { parseM3u, type ParsedM3uEntry } from '../m3u/parse.js';
 import { composeM3u } from '../m3u/compose.js';
+import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath } from '../m3u/paths.js';
 import { logoColorFor, initialsFor } from '../sources/toPlaylistChannel.js';
 import { logger } from '../sources/core/logger.js';
@@ -260,6 +261,12 @@ importRouter.post('/m3u', async (req, res, next) => {
       remoteUrl: tag === 'url' ? (typeof body.url === 'string' ? body.url.trim() : null) : null,
     });
 
+    // Auto-grant the new import to every admin (Custom endpoint → allowedCustomPlaylists). Best-effort —
+    // non-fatal; admins still pass the role bypass in the meantime.
+    await grantPlaylistToAdmins(id, 'custom').catch((err) =>
+      logger.warn('users', `grantPlaylistToAdmins after import create (${id}) failed: ${(err as Error).message}`),
+    );
+
     // Best-effort: fan the import's per-user m3u files + guide sibling out now (non-fatal, mirrors clone create).
     await composeM3u(id).catch((err) =>
       logger.warn('m3u', `compose after import create failed: ${(err as Error).message}`),
@@ -367,6 +374,12 @@ importRouter.post('/hdhomerun', async (req, res, next) => {
       await cascadeDeleteCustomPlaylist(id, url).catch(() => {});
       return res.status(400).json({ error: `lineup_failed: ${(err as Error).message}` });
     }
+
+    // Auto-grant the new HDHomeRun playlist to every admin (Custom endpoint → allowedCustomPlaylists). Placed
+    // AFTER the sync succeeds so a rolled-back (lineup_failed) ghost row is never granted. Best-effort/non-fatal.
+    await grantPlaylistToAdmins(id, 'custom').catch((err) =>
+      logger.warn('users', `grantPlaylistToAdmins after hdhomerun create (${id}) failed: ${(err as Error).message}`),
+    );
 
     logger.info('import', `imported HDHomeRun "${name}" (${id}) · ${result.channels} channel(s)`);
     res.status(201).json({ id, name, slug: id, channels: result.channels, groups: result.groups, updated: now });

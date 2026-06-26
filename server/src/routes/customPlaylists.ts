@@ -4,6 +4,7 @@ import { PlaylistChannel, type PlaylistChannelDoc } from '../models/PlaylistChan
 import { User } from '../models/User.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { composeM3u, pruneCustomFile } from '../m3u/compose.js';
+import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath, CUSTOM_PLAYLIST_TYPES } from '../m3u/paths.js';
 import { logger } from '../sources/core/logger.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
@@ -163,6 +164,13 @@ customPlaylistsRouter.post('/', async (req, res, next) => {
       isAuthenticated: false,
       lastSync: now,
     });
+
+    // Auto-grant the new clone to every admin (Custom endpoint → allowedCustomPlaylists). Best-effort —
+    // non-fatal; admins still pass the role bypass in the meantime. (compose already treats admin as
+    // all-access, so this is pure array bookkeeping; no extra recompose.)
+    await grantPlaylistToAdmins(id, 'custom').catch((err) =>
+      logger.warn('users', `grantPlaylistToAdmins after clone create (${id}) failed: ${(err as Error).message}`),
+    );
 
     // Best-effort: fan the clone's per-user m3u files + guide sibling out now (non-fatal, mirrors the
     // settings/users compose contract).

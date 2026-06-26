@@ -1,22 +1,24 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
-import Icon from '../components/Icon.vue';
 import Btn from '../components/Btn.vue';
-import Pill from '../components/Pill.vue';
-import StatusDot from '../components/StatusDot.vue';
 import SearchInput from '../components/SearchInput.vue';
+import PlaylistRow from '../components/PlaylistRow.vue';
 import PlaylistStatusDrawer from '../components/PlaylistStatusDrawer.vue';
-import ProgressBar from '../components/ProgressBar.vue';
-import { playlistScheduleLabel, reloadEpgSources, type Playlist, type Channel } from '../data';
+import AssignAccessModal from '../components/AssignAccessModal.vue';
+import GetAccessModal from '../components/GetAccessModal.vue';
+import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
+import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
+import { reloadEpgSources, type Playlist, type Channel } from '../data';
 import { bus } from '../composables/bus';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
+import { isAdmin } from '../composables/useAuth';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
 const { banner } = useToast();
-const { syncingGlobal, composingGlobal, globalSyncProgress, globalComposeProgress, syncAllGlobal, composeAllGlobal } = usePlaylistActions();
+const { syncingGlobal, composingGlobal, syncAllGlobal, composeAllGlobal } = usePlaylistActions();
 
 const playlists = ref<Playlist[]>([]);
 async function reloadList(): Promise<void> {
@@ -35,10 +37,13 @@ onBeforeUnmount(() => bus.off('tvapp:auth-changed', reloadList));
 const syncingIds = ref(new Set<string>());
 const composingIds = ref(new Set<string>());
 
-async function syncRow(p: Playlist): Promise<void> {
+// Returns { failed } (the playlist name when the sync errored) so the sync-mode PlaylistOpModal can settle
+// this row red. The direct callers ignore the return; only the modal reads it.
+async function syncRow(p: Playlist): Promise<OpRunResult> {
   const src = p.source;
-  if (!src || syncingIds.value.has(p.id)) return;
+  if (!src || syncingIds.value.has(p.id)) return { failed: [] };
   syncingIds.value = new Set(syncingIds.value).add(p.id);
+  let ok = true;
   try {
     const res = await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -48,10 +53,12 @@ async function syncRow(p: Playlist): Promise<void> {
     await Promise.all([reloadList(), reloadEpgSources().catch(() => {})]);
     banner({ text: `Synced ${result.count ?? ''} channels${result.live === false ? ' (snapshot)' : ''}`.trim(), tone: 'good', icon: 'sync' });
   } catch (err) {
+    ok = false;
     banner({ text: `Sync failed: ${(err as Error).message}`, tone: 'bad', icon: 'warn' });
   } finally {
     const n = new Set(syncingIds.value); n.delete(p.id); syncingIds.value = n;
   }
+  return { failed: ok ? [] : [p.name] };
 }
 
 async function composeRow(p: Playlist): Promise<void> {
@@ -75,30 +82,26 @@ async function composeRow(p: Playlist): Promise<void> {
 // Custom rows keep the per-id behavior above. `isCustom` selects which busy source a row reads.
 const isCustom = (p: Playlist): boolean => p.endpoint === 'custom';
 
-// Per-source-type chip icon (label itself comes straight from the stored `source`).
-const SOURCE_CHIP_ICON: Record<string, string> = {
-  clone: 'copy',
-  file: 'file',
-  url: 'link',
-  hdhomerun: 'tv',
-  import: 'import', // legacy pre-file/url-split rows
-};
-
-// Leading source-type chip — ALWAYS rendered so every row shows what kind of playlist it is. Labels are
-// LOWERCASE (the repo-wide source-type normalization). The label comes STRAIGHT FROM the stored `source`
-// (clone / file / url / hdhomerun, or legacy import) — EXCEPT a registry built-in (p.builtin, i.e. id ===
-// source), which keeps its dedicated "built-in" chip. A source-unset legacy/mock row → "manual". Distinct
-// from the global/custom *endpoint* chip (where the m3u is hosted, not origination).
-function sourceChip(p: Playlist): { label: string; tone: string; icon: string } {
-  if (p.builtin) return { label: 'built-in', tone: 'system', icon: 'check' };
-  if (p.source) return { label: p.source, tone: 'system', icon: SOURCE_CHIP_ICON[p.source] ?? 'playlist' };
-  return { label: 'manual', tone: 'system', icon: 'list' };
+// Op preview modal — clicking "Sync" / "Sync Global" / "Compose" / "Compose Global" no longer fires the op
+// silently; it opens the shared PlaylistOpModal. In 'sync' mode it shows the scoped playlist list + each
+// one's sync progress/status; in 'compose' mode it shows the users (grouped by access) + per-user compose
+// progress. The modal OWNS running the op via the `run` thunk it's handed (the existing syncRow / composeRow
+// / onSyncGlobal / onComposeGlobal handlers, unchanged), so the toast + reload behavior is preserved.
+const opOpen = ref(false);
+const opMode = ref<OpMode>('compose');
+const opScope = ref<OpScope | null>(null);
+const opRun = ref<(() => Promise<OpRunResult | void> | void) | null>(null);
+function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResult | void> | void): void {
+  opMode.value = mode;
+  opScope.value = scope;
+  opRun.value = run;
+  opOpen.value = true;
 }
 
 // Rows grouped by source TYPE, headers shown alphabetically (built-in / clone / file / hdhomerun / url, plus
-// legacy 'import' only if such rows exist). The group key mirrors sourceChip(): a registry built-in (id ===
-// source) → "built-in", otherwise the stored `source` (a source-unset row falls into "other"). Only
-// non-empty groups are emitted.
+// legacy 'import' only if such rows exist). The group key mirrors PlaylistRow's source-type chip: a registry
+// built-in (id === source) → "built-in", otherwise the stored `source` (a source-unset row falls into
+// "other"). Only non-empty groups are emitted.
 const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
   const m = new Map<string, Playlist[]>();
   for (const p of playlists.value) {
@@ -112,23 +115,15 @@ const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
     .map(([key, items]) => ({ key, items }));
 });
 
-function rowBusy(p: Playlist): boolean {
-  if (isCustom(p)) return syncingIds.value.has(p.id) || composingIds.value.has(p.id);
-  return syncingGlobal.value || composingGlobal.value;
-}
-function rowProgress(p: Playlist): number | null {
-  if (isCustom(p)) return null; // single op → indeterminate
-  if (syncingGlobal.value) return globalSyncProgress.value;
-  if (composingGlobal.value) return globalComposeProgress.value;
-  return null;
-}
-
-async function onSyncGlobal(): Promise<void> {
-  if (syncingGlobal.value) return;
+// Returns { failed } (the names of global playlists whose sync errored) so the sync-mode PlaylistOpModal can
+// settle those rows red while marking the rest done.
+async function onSyncGlobal(): Promise<OpRunResult> {
+  if (syncingGlobal.value) return { failed: [] };
   const { total, failed } = await syncAllGlobal();
   await reloadList();
   if (failed.length) banner({ text: `Synced ${total - failed.length}/${total} global playlists · failed: ${failed.join(', ')}`, tone: 'warn', icon: 'warn' });
   else banner({ text: `Synced ${total} global playlist${total === 1 ? '' : 's'}`, tone: 'good', icon: 'sync' });
+  return { failed };
 }
 
 async function onComposeGlobal(): Promise<void> {
@@ -152,6 +147,37 @@ async function editRow(p: Playlist): Promise<void> {
   if (res.ok) editChannels.value = await res.json();
 }
 
+// Per-row "waffle" popup: the old inline Sync/Compose/Edit cluster collapsed into one anchored menu, one
+// open at a time (tracked by playlist id). The item set is ROW-SCOPED but the handlers are UNCHANGED — a
+// global row shows the cohort-wide "Sync Global"/"Compose Global" (still fanning out across every Global
+// playlist via the shared singleton), a clone shows Compose only (no source to sync), other custom rows
+// show per-id Sync + Compose; Edit is always last. Live inflight/disabled state mirrors the old buttons.
+const openMenuId = ref<string | null>(null);
+function toggleMenu(id: string): void {
+  openMenuId.value = openMenuId.value === id ? null : id;
+}
+
+function rowMenuItems(p: Playlist): RowActionItem[] {
+  const items: RowActionItem[] = [];
+  if (p.source && !isCustom(p)) {
+    items.push({ key: 'sync', icon: 'refresh', label: syncingGlobal.value ? 'Syncing…' : 'Sync Global', disabled: syncingGlobal.value, run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); } });
+    items.push({ key: 'compose', icon: 'file', label: composingGlobal.value ? 'Composing…' : 'Compose Global', disabled: composingGlobal.value, run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); } });
+  } else if (p.source === 'clone') {
+    items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
+  } else if (p.source) {
+    items.push({ key: 'sync', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
+    items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
+  }
+  items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { void editRow(p); } });
+  return items;
+}
+
+// Admin-only access surfaces — a Users × playlists assignment matrix ("Assign access") and a unified
+// published-URL view across every user ("Get access"). Both reuse the shared USERS singleton, so changes
+// here and on the Users screen stay in lockstep. Non-admins never see the buttons.
+const assignOpen = ref(false);
+const getOpen = ref(false);
+
 // Merge a persisted edit (drawer PUT) back into the matching list row — no full refetch needed.
 function onPlaylistUpdated(patch: Partial<Playlist>): void {
   const id = editPlaylist.value?.id;
@@ -167,75 +193,31 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
       <div class="toolbar">
         <SearchInput :value="''" @change="() => {}" placeholder="Search playlists" />
         <span class="spacer" />
+        <Btn v-if="isAdmin" variant="ghost" icon="lock" @click="assignOpen = true">Assign access</Btn>
+        <Btn v-if="isAdmin" variant="ghost" icon="link" @click="getOpen = true">Get access</Btn>
         <Btn variant="primary" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
       </div>
       <template v-for="g in groupedPlaylists" :key="g.key">
         <div class="pl-group-hdr">{{ g.key }}</div>
-        <div v-for="p in g.items" :key="p.id" class="src-row pl-row pl-grouped" @click="router.push(`/playlists/${p.id}`)">
-        <div :class="['src-ico', { builtin: p.builtin }]">
-          <Icon :name="p.builtin ? 'tv' : 'playlist'" :size="18" />
-        </div>
-        <div class="pl-row-head">
-          <div class="src-name">
-            <div class="pl-name-row">
-              <StatusDot :status="p.status" :pulse="p.status === 'good'" />
-              <span class="pl-name" :title="p.name">{{ p.name }}</span>
-            </div>
-            <div class="pl-chip-row">
-              <Pill :tone="sourceChip(p).tone"><Icon :name="sourceChip(p).icon" :size="10" />{{ sourceChip(p).label }}</Pill>
-              <Pill tone="cyan"><Icon name="refresh" :size="10" />Sync: {{ playlistScheduleLabel(p.id, 'playlist') }}</Pill>
-              <Pill tone="cyan"><Icon name="file" :size="10" />M3U: {{ playlistScheduleLabel(p.id, 'playlist-m3u') }}</Pill>
-              <Pill :tone="p.endpoint === 'custom' ? 'warn' : 'good'">
-                <Icon :name="p.endpoint === 'custom' ? 'file' : 'globe'" :size="10" />
-                {{ p.endpoint === 'custom' ? 'custom' : 'global' }}
-              </Pill>
-              <Pill v-if="p.authentication" :tone="p.isAuthenticated ? 'good' : 'warn'">
-                <Icon :name="p.isAuthenticated ? 'check' : 'lock'" :size="10" />
-                {{ p.isAuthenticated ? 'Authenticated' : 'Sign-in needed' }}
-              </Pill>
-            </div>
-          </div>
-        </div>
-        <template v-if="!rowBusy(p)">
-          <Pill :tone="p.state !== false ? 'cyan' : 'disabled'">
-            {{ p.state !== false ? 'Active' : 'Inactive' }}
-          </Pill>
-          <div class="stat-mini"><b>{{ p.channels }}</b>channels</div>
-          <div class="stat-mini"><b>{{ p.groups }}</b>groups</div>
-          <div class="stat-mini">
-            <b style="font-size: 12px; font-weight: 500; color: var(--text-1);">{{ p.lastSync }}</b>
-            last sync
-          </div>
-        </template>
-        <ProgressBar v-else class="pl-row-progress" :value="rowProgress(p)" />
-        <div class="row pl-row-actions" style="gap: 8px;" @click.stop>
-          <template v-if="p.source && !isCustom(p)">
-            <Btn variant="ghost" icon="refresh" :disabled="syncingGlobal" @click="onSyncGlobal">
-              {{ syncingGlobal ? 'Syncing…' : 'Sync Global' }}
-            </Btn>
-            <Btn variant="ghost" icon="file" :disabled="composingGlobal" @click="onComposeGlobal">
-              {{ composingGlobal ? 'Composing…' : 'Compose Global' }}
-            </Btn>
+        <PlaylistRow v-for="p in g.items" :key="p.id" :playlist="p" grouped @open="router.push(`/playlists/${p.id}`)">
+          <template #actions>
+            <Btn
+              variant="ghost"
+              size="sm"
+              icon="waffle"
+              title="Row actions"
+              aria-label="Row actions"
+              aria-haspopup="menu"
+              :aria-expanded="openMenuId === p.id"
+              @click="toggleMenu(p.id)"
+            />
+            <RowActionsMenu
+              v-if="openMenuId === p.id"
+              :items="rowMenuItems(p)"
+              @close="openMenuId = null"
+            />
           </template>
-          <template v-else-if="p.source === 'clone'">
-            <!-- A clone has no source to sync; m3u compose is manual only (interval 'none'). An invisible,
-                 non-interactive placeholder holds the Sync slot so Compose lines up with the other rows. -->
-            <Btn variant="ghost" icon="refresh" class="pl-row-spacer" disabled aria-hidden="true" tabindex="-1">Sync</Btn>
-            <Btn variant="ghost" icon="file" :disabled="composingIds.has(p.id)" @click="composeRow(p)">
-              {{ composingIds.has(p.id) ? 'Composing…' : 'Compose' }}
-            </Btn>
-          </template>
-          <template v-else-if="p.source">
-            <Btn variant="ghost" icon="refresh" :disabled="syncingIds.has(p.id)" @click="syncRow(p)">
-              {{ syncingIds.has(p.id) ? 'Syncing…' : 'Sync' }}
-            </Btn>
-            <Btn variant="ghost" icon="file" :disabled="composingIds.has(p.id)" @click="composeRow(p)">
-              {{ composingIds.has(p.id) ? 'Composing…' : 'Compose' }}
-            </Btn>
-          </template>
-          <Btn variant="primary" icon="edit" @click="editRow(p)">Edit</Btn>
-        </div>
-        </div>
+        </PlaylistRow>
       </template>
     </div>
 
@@ -245,6 +227,17 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
       :channels="editChannels"
       @updated="onPlaylistUpdated"
       @close="statusOpen = false"
+    />
+
+    <AssignAccessModal v-if="assignOpen" @close="assignOpen = false" />
+    <GetAccessModal v-if="getOpen" @close="getOpen = false" />
+
+    <PlaylistOpModal
+      v-if="opOpen && opScope && opRun"
+      :mode="opMode"
+      :scope="opScope"
+      :run="opRun"
+      @close="opOpen = false"
     />
   </div>
 </template>

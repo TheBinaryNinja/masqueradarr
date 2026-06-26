@@ -37,6 +37,7 @@ import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { Playlist } from '../models/Playlist.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { StreamSession, type StreamProbe } from '../models/StreamSession.js';
+import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 
 export const sourcesRouter = Router();
 
@@ -389,6 +390,11 @@ sourcesRouter.post('/api/sources/:id/provision', async (req, res, next) => {
     const adapter = getSource(req.params.id);
     if (!adapter || adapter.synthetic) return res.status(404).json({ error: 'unknown_source' });
     await ensureShellRow(adapter);
+    // Auto-grant the just-provisioned built-in to every admin (it hosts Global → allowedPlaylists). Best-
+    // effort — a grant hiccup must not fail the provision (admins still pass the role bypass meanwhile).
+    await grantPlaylistToAdmins(adapter.id, 'global').catch((err) =>
+      logger.warn('users', `grantPlaylistToAdmins after provision (${adapter.id}) failed: ${(err as Error).message}`),
+    );
     const doc = await Playlist.findOne({ id: adapter.id }, { _id: 0 }).lean();
     if (!doc) return res.status(500).json({ error: 'provision_failed' });
     res.status(201).json({ ...doc, channels: 0 });

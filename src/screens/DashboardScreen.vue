@@ -5,6 +5,7 @@ import Icon from '../components/Icon.vue';
 import Btn from '../components/Btn.vue';
 import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
+import PlaylistRow from '../components/PlaylistRow.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
 import HlsPlayer from '../components/HlsPlayer.vue';
 import PublishedUrlGroups from '../components/PublishedUrlGroups.vue';
@@ -417,32 +418,7 @@ onBeforeUnmount(() => {
             <Btn variant="ghost" size="sm" @click="go('/playlists')">View all</Btn>
             <Btn variant="ghost" size="sm" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
           </div>
-          <div v-for="p in PLAYLISTS" :key="p.id" class="src-row" @click="go(`/playlists/${p.id}`)">
-            <div :class="['src-ico', { builtin: p.builtin }]">
-              <Icon :name="p.builtin ? 'tv' : 'playlist'" :size="18" />
-            </div>
-            <div>
-              <div class="src-name">
-                <StatusDot :status="p.status" :pulse="p.status === 'good'" />
-                {{ p.name }}
-                <Pill v-if="p.builtin" tone="system"><Icon name="check" :size="10" />built-in</Pill>
-                <Pill tone="cyan"><Icon name="refresh" :size="10" />Sync: {{ playlistScheduleLabel(p.id, 'playlist') }}</Pill>
-                <Pill tone="cyan"><Icon name="file" :size="10" />M3U: {{ playlistScheduleLabel(p.id, 'playlist-m3u') }}</Pill>
-                <Pill v-if="p.authentication" :tone="p.isAuthenticated ? 'good' : 'warn'">
-                  <Icon :name="p.isAuthenticated ? 'check' : 'lock'" :size="10" />
-                  {{ p.isAuthenticated ? 'Authenticated' : 'Sign-in needed' }}
-                </Pill>
-              </div>
-              <div class="src-url">{{ p.url }}</div>
-            </div>
-            <div class="stat-mini"><b>{{ p.channels }}</b>channels</div>
-            <div class="stat-mini"><b>{{ p.groups }}</b>groups</div>
-            <div class="stat-mini" style="min-width: 110px;">
-              <b style="font-size: 12px; font-weight: 500; color: var(--text-1);">{{ p.lastSync }}</b>
-              last sync
-            </div>
-            <Btn variant="ghost" size="sm" icon="chevron-r" />
-          </div>
+          <PlaylistRow v-for="p in PLAYLISTS" :key="p.id" :playlist="p" compact @open="go(`/playlists/${p.id}`)" />
         </div>
 
         <div class="card flush">
