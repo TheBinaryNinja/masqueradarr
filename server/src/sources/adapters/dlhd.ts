@@ -15,6 +15,7 @@ import { readFileSync } from 'node:fs';
 import { snapshotFile, DLHD_EPG_ADDON_FILE } from '../paths.js';
 import { PlaylistChannel } from '../../models/PlaylistChannel.js';
 import { logger } from '../core/logger.js';
+import { applyEpgCrosswalk } from '../epgCrosswalk.js';
 import { syncDlhdEpg, upsertDlhdEpgSource } from '../../epg/dlhd.js';
 import { resolveProgramOffset } from '../../settings/programOffset.js';
 import {
@@ -39,8 +40,10 @@ const SNAPSHOT = snapshotFile('dlhd');
 // ── post-sync EPG hooks (two complementary guides) ───────────────────────────────────────────────────
 // dlhd carries no native guide, so after syncLive populates the channels we attach EPG data two ways, IN
 // ORDER so the richer source wins per channel and a channel is linked at most once:
-//   (1) the committed dlhd→gracenote crosswalk — links US LINEAR channels to existing Gracenote sources
-//       (full grid). See seed-data/dlhd-playlist-addon.json + scripts/dlhd-epg-crosswalk.ts.
+//   (1) the committed dlhd→gracenote crosswalk — links US LINEAR channels to EXISTING Gracenote sources
+//       (full grid). Applied via the shared GUARDED helper sources/epgCrosswalk.ts (afterSync below), which
+//       stages 'matched' only when the (epg, tvg_id) pair resolves to a real epgchannels doc. See
+//       seed-data/dlhd-playlist-addon.json + scripts/dlhd-epg-crosswalk.ts.
 //   (2) the dlhd SELF-EPG — a dedicated 'dlhd' EpgSource built from DaddyLive's live-event SCHEDULE
 //       (epg/dlhd.ts), self-linking the event/sports channels Gracenote didn't already claim.
 // Both are FILL-ONLY-IF-UNTOUCHED (filter requires epg == null AND epgState == null) — a user link sets
@@ -48,33 +51,8 @@ const SNAPSHOT = snapshotFile('dlhd');
 // failure must not fail a channel sync that succeeded. Restore Defaults drops the channels, so a re-sync
 // re-applies both onto untouched rows.
 
-// (1) Apply the committed gracenote crosswalk (unchanged behavior; HIGH-confidence rows only). Mirrors dulo.
-async function applyGracenoteCrosswalk(sourceId: string): Promise<void> {
-  type AddonRow = { id: string; tvg_id: string; epg: string; confidence: 'high' | 'medium' };
-  let rows: AddonRow[];
-  try {
-    const parsed = JSON.parse(readFileSync(DLHD_EPG_ADDON_FILE, 'utf8'));
-    rows = Array.isArray(parsed) ? parsed : [];
-  } catch (err) {
-    logger.warn('seed', `[${sourceId}] EPG crosswalk not applied (unreadable): ${(err as Error).message}`);
-    return;
-  }
-  const ops = rows
-    .filter((r) => r?.confidence === 'high' && r.id && r.tvg_id && r.epg)
-    .map((r) => ({
-      updateOne: {
-        // Untouched-only: skips user-linked (epg set) AND user-unlinked (epgState 'unmatched') channels.
-        filter: { _id: r.id, source: sourceId, epg: null, epgState: null },
-        update: { $set: { tvg_id: r.tvg_id, epg: r.epg, epgState: 'matched' as const } },
-      },
-    }));
-  if (!ops.length) return;
-  const res = await PlaylistChannel.bulkWrite(ops, { ordered: false });
-  logger.info(
-    'seed',
-    `[${sourceId}] EPG crosswalk: linked ${res.modifiedCount ?? 0} channel(s) from ${ops.length} high-confidence mapping(s)`,
-  );
-}
+// (1) The committed gracenote crosswalk is applied by applyEpgCrosswalk(sourceId, DLHD_EPG_ADDON_FILE) —
+// see the shared guarded helper in sources/epgCrosswalk.ts (called from afterSync below).
 
 // (2) Build the dlhd self-EPG from the live-event schedule, upsert the 'dlhd' EpgSource, and self-link the
 // still-untouched event channels onto it. Live-only (the caller guards on `live` so a snapshot fallback
@@ -279,12 +257,12 @@ const dlhdAdapter: SourceAdapter = {
   },
 
   // ── post-sync hooks: gracenote crosswalk (US linear) THEN dlhd self-EPG (live events) ────────────
-  // Both are non-fatal and FILL-ONLY-IF-UNTOUCHED — see applyGracenoteCrosswalk / applyDlhdSelfEpg above.
+  // Both are non-fatal and FILL-ONLY-IF-UNTOUCHED — see applyEpgCrosswalk / applyDlhdSelfEpg above.
   // Order matters: the crosswalk runs first so a Gracenote-covered channel keeps its full grid; the
   // self-EPG then claims the remaining untouched event channels. The self-EPG is LIVE-ONLY (skipped on a
   // snapshot fallback so a stale/empty schedule never replaces a good guide).
   async afterSync({ sourceId, live }) {
-    await applyGracenoteCrosswalk(sourceId).catch((err) =>
+    await applyEpgCrosswalk(sourceId, DLHD_EPG_ADDON_FILE).catch((err) =>
       logger.warn('seed', `[${sourceId}] EPG crosswalk failed (continuing): ${(err as Error).message}`),
     );
     if (live) {

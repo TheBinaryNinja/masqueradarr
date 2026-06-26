@@ -403,6 +403,12 @@ function livePr(c: Channel) {
       <div class="row" style="margin-bottom: 14px;">
         <Icon name="dashboard" :size="15" style="color: var(--accent);" />
         <span style="font-weight: 600; font-size: var(--fs-base); margin-left: 8px;">Overview</span>
+        <template v-if="!isXmlFile && !isPlaylistBound">
+          <span class="spacer" />
+          <Pill v-if="syncIsAuto" tone="cyan"><Icon name="refresh" :size="10" />{{ scheduleSummary(syncJob) }}</Pill>
+          <Pill v-else><Icon name="pause" :size="10" />manual</Pill>
+          <Btn variant="ghost" icon="sync" :disabled="epg.builtin" @click="editingSchedule = 'sync'">Sync Schedule</Btn>
+        </template>
       </div>
       <div class="epg-summary-grid">
         <div class="summary-cell">
@@ -440,53 +446,6 @@ function livePr(c: Channel) {
         <div class="summary-cell">
           <div class="summary-lbl">Guide failures</div>
           <div class="summary-val" :style="{ color: (epg.xmlFailCount ?? 0) > 0 ? 'var(--bad)' : undefined }">{{ (epg.xmlFailCount ?? 0).toLocaleString() }}</div>
-        </div>
-      </div>
-    </div>
-
-    <!-- Sync schedule. Hidden for uploaded 'xml file' sources (a static upload has nothing to re-sync) and for
-         playlist-bound sources (tubi/dlhd — their guide refreshes when the owning playlist syncs). Edit opens a
-         half-screen slide-out editor; the interval type + cron details come from MongoDB. -->
-    <div v-if="!isXmlFile && !isPlaylistBound" class="epg-schedules-row">
-      <div class="card schedule-card">
-        <div class="row" style="margin-bottom: 14px;">
-          <Icon name="sync" :size="15" style="color: var(--accent);" />
-          <span style="font-weight: 600; font-size: var(--fs-base); margin-left: 8px;">Sync schedule</span>
-          <span class="spacer" />
-          <Pill v-if="syncIsAuto" tone="cyan"><Icon name="refresh" :size="10" />Automatic</Pill>
-          <Pill v-else><Icon name="pause" :size="10" />Manual</Pill>
-        </div>
-
-        <div class="schedule-info">
-          <div class="schedule-kv">
-            <div class="schedule-k">Interval type</div>
-            <div class="schedule-v">{{ syncIsAuto ? 'Automatic' : 'Manual' }}</div>
-          </div>
-          <div class="schedule-kv">
-            <div class="schedule-k">Schedule</div>
-            <div class="schedule-v">{{ syncIsAuto ? scheduleSummary(syncJob) : '—' }}</div>
-          </div>
-          <div class="schedule-kv">
-            <div class="schedule-k">Cron</div>
-            <div class="schedule-v"><code v-if="syncIsAuto && syncJob" class="cron-chip">{{ syncJob.cron }}</code><span v-else class="muted">—</span></div>
-          </div>
-          <div class="schedule-kv">
-            <div class="schedule-k">Next run</div>
-            <div class="schedule-v">{{ syncIsAuto ? nextSync : '—' }}</div>
-          </div>
-          <div class="schedule-kv">
-            <div class="schedule-k">Last run</div>
-            <div class="schedule-v">{{ syncIsAuto ? fmtRun(syncJob?.lastRun) : '—' }}</div>
-          </div>
-        </div>
-
-        <div v-if="!syncIsAuto" class="muted" style="font-size: var(--fs-sm); margin-top: 10px;">
-          This source is synced manually with the <strong>Sync now</strong> button.
-        </div>
-
-        <div class="row schedule-ft">
-          <span class="spacer" />
-          <Btn variant="ghost" icon="edit" :disabled="epg.builtin" @click="editingSchedule = 'sync'">Edit</Btn>
         </div>
       </div>
     </div>

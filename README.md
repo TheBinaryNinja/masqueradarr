@@ -2,24 +2,34 @@
 <img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
+    <a>
+      <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/TheBinaryNinja/masqueradarr/docker-publish.yml?style=for-the-badge&logo=github&label=Build%20%26%20Release&color=cyan&logoSize=auto">
+    </a>
+    <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/dev?sort=date&style=for-the-badge&logo=Docker&color=salmon&logoSize=auto">
+    <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/latest?sort=date&style=for-the-badge&logo=Docker&color=cyan&logoSize=auto">
+  </div>
+  <br />
+  <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
     <a href="https://hub.docker.com/r/iflip721/masqueradarr">
-      <img src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr" alt="Static Badge">
+      <img src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&logoSize=auto&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr" alt="Static Badge">
     </a>
     <a href="https://github.com/TheBinaryNinja/masqueradarr/releases">
-      <img src="https://img.shields.io/badge/GitHub_Releases-masqueradarr_repo-cyan?style=for-the-badge&logo=github&link=https%3A%2F%2Fgithub.com%2FTheBinaryNinja%2Fmasqueradarr%2Freleases" alt="Static Badge">
+      <img src="https://img.shields.io/badge/GitHub_Releases-masqueradarr_repo-cyan?style=for-the-badge&logo=github&logoSize=auto&link=https%3A%2F%2Fgithub.com%2FTheBinaryNinja%2Fmasqueradarr%2Freleases" alt="Static Badge">
     </a>
-  </div><br/>
-  <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
-    <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/dev?sort=date&style=for-the-badge&logo=Docker&color=salmon">
-    <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/latest?sort=date&style=for-the-badge&logo=Docker&color=cyan">
   </div>
+  <br />
 </div>
 
 # What is `masqueradarr`
-
-<a href="https://discord.gg/baD3HGpkcD">
-  <img src="https://img.shields.io/badge/masqueradarr-join_discord-5865F2?style=for-the-badge&logo=discord&link=https%3A%2F%2Fdiscord.gg%2FUEx4fEVwg4" alt="Static Badge">
-</a>
+<div style="display:flex; justify-content:left; align-items:justify; gap:15px;">
+    <a href="https://discord.gg/baD3HGpkcD">
+      <img src="https://img.shields.io/badge/masqueradarr-join_discord-5865F2?style=for-the-badge&logo=discord&logoSize=auto&link=https%3A%2F%2Fdiscord.gg%2FUEx4fEVwg4" alt="Static Badge">
+    </a>
+    <a>
+      <img alt="Discord" src="https://img.shields.io/discord/1519879505886576690?style=for-the-badge&logo=discord&logoSize=auto&color=5865F2">
+    </a>
+    
+</div>
 
 **masqueradarr** is a self-hosted IPTV aggregator. It pulls channel playlists (M3U) and guide
 data (EPG/XMLTV) from a range of online IPTV services, normalizes them into one catalog, and
@@ -32,10 +42,10 @@ idea, carrying the project into the `*arr` self-hosted media family (Sonarr, Rad
 
 | Swag Pack | Location to full swag pack |
 | --- | --- |
-| Icon Pack | [masqueradarr icon pack](/docs/icons/README.md) |
-| Font Pack | [masqueradarr font pack](/docs/font-packs/README.md) |
-| Emblem-Sets | [masqueradarr emblem-sets](/docs/emblem-sets/README.md) |
-| Label-Sets | [masqueradarr label-sets](/docs/label-sets/README.md) |
+| 📦 Icon Pack | 🔗 [masqueradarr icon pack](/docs/icons/README.md) |
+| 📦 Font Pack | 🔗 [masqueradarr font pack](/docs/font-packs/README.md) |
+| 📦 Emblem-Sets | 🔗 [masqueradarr emblem-sets](/docs/emblem-sets/README.md) |
+| 📦 Label-Sets | 🔗 [masqueradarr label-sets](/docs/label-sets/README.md) |
 
 <img src="docs/img/screenshots/v2-login.png">
 
@@ -209,7 +219,8 @@ masqueradarr ships as Docker images. There are two deployment shapes.
 
    At minimum set `MONGO_ROOT_USER` / `MONGO_ROOT_PASS`, your `DOMAIN`, and the host volume paths
    (`COMPOSE_PATH`, `BACKUPS_PATH`, `MONGO_DATA_PATH`) — each host dir must be writable by **uid 1000**
-   (the container's `node` user).
+   (the container's `node` user). To publish on a host port other than `3000`, set `MASQUERADARR_PORT`
+   (and update `DOMAIN` to match).
 
 2. Bring it up:
 
@@ -217,8 +228,9 @@ masqueradarr ships as Docker images. There are two deployment shapes.
    docker compose up -d
    ```
 
-3. Open `http://localhost:3000` (or your `DOMAIN`). The app **self-provisions** its `config.json` from
-   the `.env` on every boot — there is no host config file to manage.
+3. Open `http://localhost:3000` (or your `DOMAIN`; the host port reflects `MASQUERADARR_PORT`). The app
+   **self-provisions** its `config.json` from the `.env` on every boot — there is no host config file to
+   manage.
 
 #### Option B — All-in-one (single container)
 
@@ -227,6 +239,9 @@ from a single `docker run` with no external database — ideal for a quick trial
 `/data` volume persists the database, exports, config, and credentials. See **Migration status** above for
 the current published image name. *(On amd64, the bundled MongoDB 7.0 requires a CPU with AVX; on hosts
 without it, use the compose stack.)*
+
+To publish on a different host port, change the left side of the `-p` mapping — e.g. `-p 8080:3000`
+(the container always serves on `3000` internally; `MASQUERADARR_PORT` only applies to the compose stack).
 
 #### First run
 
@@ -271,7 +286,12 @@ creating the **first admin account**. After that:
 # ------------------------------------------------------------------------------------------
 
 DISPLAY_NAME=masqueradarr
+# DOMAIN is the URL clients use to reach the app — keep its port in sync with MASQUERADARR_PORT
+# (e.g. http://localhost:8080 if you publish on 8080).
 DOMAIN=http://localhost:3000
+# Host port the app is published on (maps to the container's fixed internal 3000).
+# Change this if 3000 is already taken on your host, then update DOMAIN to match.
+MASQUERADARR_PORT=3000
 TZ=America/New_York
 COMPOSE_PATH=/absolute/path/to/masqueradarr-vols/compose
 BACKUPS_PATH=/absolute/path/to/masqueradarr-vols/backups
@@ -337,7 +357,7 @@ services:
       TZ: ${TZ:-America/New_York}
       DNS_LOG_LEVEL: ${DNS_LOG_LEVEL:-2}
     ports:
-      - "3000:3000"
+      - "${MASQUERADARR_PORT:-3000}:3000"
     volumes:
       - ${COMPOSE_PATH:-./compose}:/app/compose:rw
       - ${BACKUPS_PATH:-./backups}:/backups:rw

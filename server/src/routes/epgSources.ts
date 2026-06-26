@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type Request, type Response, type NextFunction } from 'express';
 import { logger } from '../sources/core/logger.js';
 import { EpgSource, type EpgSourceDoc } from '../models/EpgSource.js';
 import { Program } from '../models/Program.js';
@@ -22,6 +22,8 @@ import {
   writeXmltvEpg,
   syncXmltvUrl,
   decodeXmltvBody,
+  probeXmltvUrls,
+  type ImportProgress,
 } from '../epg/xmltvIngest.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
 import { recomposeAllExports } from '../m3u/compose.js';
@@ -44,6 +46,141 @@ async function nextOrder(): Promise<number> {
     order?: number;
   } | null;
   return (top?.order ?? -1) + 1;
+}
+
+// Upsert (or re-add) a re-fetchable XMLTV-URL EpgSource row after a sync — shared by the blocking POST /
+// remote-url/jesmann branch and the streaming POST /jesmann/create endpoint so both write the EXACT same
+// fields (idempotent by deterministic id; $setOnInsert seeds the lifetime counters + the list-order slot,
+// preserved across a re-add). All provenance fields are explicit null (an XMLTV URL has no lineup metadata).
+async function upsertXmltvUrlSource(opts: {
+  id: string;
+  name: string;
+  url: string;
+  source: string;
+  counts: { channels: number; programs: number };
+  interval: string;
+  order: number;
+}): Promise<EpgSourceDoc | null> {
+  return (await EpgSource.findOneAndUpdate(
+    { id: opts.id },
+    {
+      $set: {
+        id: opts.id,
+        name: opts.name,
+        url: opts.url,
+        channels: opts.counts.channels,
+        programs: opts.counts.programs,
+        lastSync: new Date().toISOString(),
+        status: 'good',
+        auto: false,
+        interval: opts.interval,
+        builtin: false,
+        source: opts.source, // 'remote url' or 'jesmann' — kept distinct so the SOURCE chip / sync gate differentiate them
+        location: null,
+        lineup_Type: null,
+        postalCode: null,
+        aid: null,
+        headendId: null,
+        lineupId: null,
+        country: null,
+        device: null,
+        timezone: null,
+        languagecode: null,
+      },
+      $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order: opts.order },
+    },
+    { upsert: true, new: true, projection: { _id: 0 } },
+  ).lean()) as EpgSourceDoc | null;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Live execution feedback — NDJSON streaming
+// ──────────────────────────────────────────────────────────────────────
+//
+// A create/sync can run for many seconds (a national XMLTV guide is GBs; an EPG-PW region is thousands of
+// per-channel fetches), so the Add-EPG modal opts into a STREAMING response — one JSON object per line — to
+// show real progress instead of a blocking spinner. The protocol the SPA reads:
+//   { phase: 'importing', percent?: 0..99 }          — work in flight (% omitted when total is unknown)
+//   { phase: 'done', source: {…doc, offsetDefaulted} } — the created source (modal surfaces it + closes)
+//   { phase: 'error', error: '<code>' }              — a tagged failure (modal stays open + shows it)
+// The browser shows "Downloading…" from its own initial state until the first `importing` line arrives.
+
+// Shared NDJSON streamer: commits 200 + the streaming headers immediately (so the browser starts reading),
+// hands `run` a `send(obj)` line-writer, and guarantees a terminal error line + res.end() even on an
+// unexpected throw. A mid-stream failure is reported as a `{ phase:'error' }` LINE — the 200 status is
+// already committed, so it is never an HTTP error. Used by POST /jesmann/create and the streaming POST /.
+function streamNdjson(res: Response, run: (send: (o: unknown) => void) => Promise<void>): Promise<void> {
+  res.status(200).set({
+    'Content-Type': 'application/x-ndjson; charset=utf-8',
+    'Cache-Control': 'no-cache, no-transform',
+    'X-Accel-Buffering': 'no', // disable any reverse-proxy buffering so phase lines flush immediately
+  });
+  res.flushHeaders?.();
+  const send = (o: unknown) => res.write(JSON.stringify(o) + '\n');
+  return Promise.resolve()
+    .then(() => run(send))
+    .catch((err) => {
+      logger.warn('epg', `epg stream failed: ${(err as Error).message}`);
+      try {
+        send({ phase: 'error', error: 'sync_failed' });
+      } catch {
+        /* socket already gone */
+      }
+    })
+    .finally(() => {
+      res.end();
+    });
+}
+
+// Run one create flow in EITHER mode off the same `worker`: a streaming caller (request `Accept:
+// application/x-ndjson`) gets phase/percent NDJSON + a `done`/`error` line; everyone else keeps the
+// original blocking JSON response (back-compat). The worker fetches/parses/upserts and returns the created
+// doc, threading the given `progress` sink (a no-op in blocking mode). On a sync failure: streaming emits
+// `{ phase:'error', error: errorCode|'sync_failed' }`; blocking returns `502 { error: errorCode }`, or —
+// when `errorCode` is null (the xml-file upload path) — RETHROWS so the route's catch yields the original
+// 500 (preserving that path's exact prior behavior). `offsetDefaulted` rides inside the `done`/JSON source.
+async function runCreate(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+  opts: { errorCode: string | null; offsetDefaulted: boolean },
+  worker: (progress: ImportProgress) => Promise<EpgSourceDoc | null>,
+): Promise<void> {
+  const wantsStream = (req.get('accept') ?? '').includes('application/x-ndjson');
+  if (!wantsStream) {
+    let doc: EpgSourceDoc | null;
+    try {
+      doc = await worker(() => {});
+    } catch (err) {
+      logger.warn('epg', `epg create sync failed: ${(err as Error).message}`);
+      if (opts.errorCode) {
+        res.status(502).json({ error: opts.errorCode });
+        return;
+      }
+      throw err; // null errorCode → preserve the original next(err)/500 path (xml-file upload)
+    }
+    if (!doc) {
+      next(new Error('epg source upsert returned no document'));
+      return;
+    }
+    res.json({ ...doc, offsetDefaulted: opts.offsetDefaulted });
+    return;
+  }
+  await streamNdjson(res, async (send) => {
+    let doc: EpgSourceDoc | null;
+    try {
+      doc = await worker((ev) => send(ev));
+    } catch (err) {
+      logger.warn('epg', `epg create sync failed: ${(err as Error).message}`);
+      send({ phase: 'error', error: opts.errorCode ?? 'sync_failed' });
+      return;
+    }
+    if (!doc) {
+      send({ phase: 'error', error: 'upsert_failed' });
+      return;
+    }
+    send({ phase: 'done', source: { ...doc, offsetDefaulted: opts.offsetDefaulted } });
+  });
 }
 
 // All EPG sources (read-only list), in the user's drag-defined order. Sorted by the `order` ordinal with
@@ -247,6 +384,66 @@ epgSourcesRouter.get('/epgpw/preview', async (req, res, next) => {
   }
 });
 
+// Live-probe availability + download SIZE of a region's Jesmann catalog URLs so the Add-EPG picker can list
+// real sizes and grey out missing variants. Body: { urls: string[] } (the region's variant URLs). Each is
+// SSRF-gated to epg.jesmann.com inside probeXmltvUrl, then HEAD-probed (.gz first, matching fetchXmltvStream;
+// ranged-GET fallback). Returns { results: XmltvProbeResult[] } 1:1 with the input. Per the never-block contract
+// this NEVER 502s on a dead/off-host file — that variant simply comes back available:false so the picker
+// degrades gracefully. Admin-gated + JSON-parsed by the /api/epg-sources mount.
+epgSourcesRouter.post('/jesmann/probe', async (req, res, next) => {
+  try {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const urls = Array.isArray(b.urls) ? b.urls.filter((u): u is string => typeof u === 'string') : [];
+    if (!urls.length) return res.status(400).json({ error: 'urls (string[]) required' });
+    if (urls.length > 64) return res.status(400).json({ error: 'too_many_urls' });
+    const results = await probeXmltvUrls(urls, { concurrency: 6, timeoutMs: 8000 });
+    res.json({ results });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Create a Jesmann XMLTV source while STREAMING real progress as NDJSON (via the shared streamNdjson) — the
+// Add EPG modal's Jesmann flow. A national guide downloads to GBs and parses for many seconds, so a blocking
+// POST gives the browser no progress; instead syncXmltvUrl's onProgress emits `{ phase:'importing', percent }`
+// lines (byte-based) and we finish with `{ phase:'done', source:{…doc, offsetDefaulted} }`. The browser shows
+// "Downloading…" from its own initial state until the first `importing` line lands. A pre-stream 400 (missing
+// name/url) is still a plain JSON error. Same admin gate + JSON body parsing as the rest of the mount. The
+// generic streaming POST / jesmann branch stays as a back-compat fallback.
+epgSourcesRouter.post('/jesmann/create', async (req, res, next) => {
+  const b = (req.body ?? {}) as Record<string, unknown>;
+  const url = (typeof b.url === 'string' ? b.url : '').trim();
+  const name = (typeof b.name === 'string' ? b.name : '').trim();
+  if (!url || !name) return res.status(400).json({ error: 'name and url (string) required' });
+  try {
+    const { offset, defaulted: offsetDefaulted } = await resolveProgramOffset();
+    const order = await nextOrder();
+    const id = `jesmann:${slugify(name)}`;
+    const interval = (typeof b.interval === 'string' && b.interval) || 'manual';
+
+    await streamNdjson(res, async (send) => {
+      let counts: { channels: number; programs: number };
+      try {
+        // onProgress reports a real two-phase status (importing on connect, then byte-based % per batch).
+        counts = await syncXmltvUrl(id, url, offset, (ev) => send(ev));
+      } catch (err) {
+        logger.warn('epg', `jesmann stream create failed: ${(err as Error).message}`);
+        send({ phase: 'error', error: 'xmltv_unreachable' });
+        return;
+      }
+      const doc = await upsertXmltvUrlSource({ id, name, url, source: 'jesmann', counts, interval, order });
+      if (!doc) {
+        send({ phase: 'error', error: 'upsert_failed' });
+        return;
+      }
+      // offsetDefaulted rides INSIDE the source so the SPA's warnIfOffsetDefaulted reads it off the doc.
+      send({ phase: 'done', source: { ...doc, offsetDefaulted } });
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Create (or re-add) a Gracenote EPG source and sync its programs immediately. Idempotent by deterministic
 // id = gracenote:<headendId>:<lineupId>; re-running replaces the source's programs (scoped by `source`).
 // An EPG-PW source (body.source 'epg-pw', case-insensitive) takes the EPG-PW branch (full inline channel + program sync).
@@ -280,49 +477,43 @@ epgSourcesRouter.post('/', async (req, res, next) => {
       const id = `epg-pw:lineupId:${region}-lineupId-DEFAULT`;
       const url = `https://epg.pw/index.html?lang=en`;
 
-      // Fetch + write channels/programs first so a network failure leaves no broken source behind.
-      let counts: { channels: number; programs: number };
-      try {
-        counts = await syncEpgpwSource(id, href, offset);
-      } catch (err) {
-        logger.warn('epg', `epgpw create sync failed: ${(err as Error).message}`);
-        return res.status(502).json({ error: 'epgpw_unreachable' });
-      }
-
-      const doc = (await EpgSource.findOneAndUpdate(
-        { id },
-        {
-          $set: {
-            id,
-            name: `EPG-PW-${region}`,
-            url,
-            channels: counts.channels,
-            programs: counts.programs,
-            lastSync: new Date().toISOString(),
-            status: 'good',
-            auto: false,
-            interval: 'manual',
-            builtin: false,
-            source: 'epg-pw', // lowercase kind discriminator (UI shows the pretty 'EPG-PW' brand label)
-            location: href, // area href — reused nullable field, needed to re-sync
-            lineup_Type: 'Default',
-            postalCode: null,
-            aid: null,
-            headendId: null,
-            lineupId: `${region}-lineupId-DEFAULT`,
-            country: region,
-            device: null,
-            timezone: null,
-            languagecode: 'en',
+      // Fetch + write channels/programs first so a network failure leaves no broken source behind. runCreate
+      // streams per-channel % when the client asked for NDJSON, else returns the blocking JSON doc.
+      return await runCreate(req, res, next, { errorCode: 'epgpw_unreachable', offsetDefaulted }, async (progress) => {
+        const counts = await syncEpgpwSource(id, href, offset, progress);
+        return (await EpgSource.findOneAndUpdate(
+          { id },
+          {
+            $set: {
+              id,
+              name: `EPG-PW-${region}`,
+              url,
+              channels: counts.channels,
+              programs: counts.programs,
+              lastSync: new Date().toISOString(),
+              status: 'good',
+              auto: false,
+              interval: 'manual',
+              builtin: false,
+              source: 'epg-pw', // lowercase kind discriminator (UI shows the pretty 'EPG-PW' brand label)
+              location: href, // area href — reused nullable field, needed to re-sync
+              lineup_Type: 'Default',
+              postalCode: null,
+              aid: null,
+              headendId: null,
+              lineupId: `${region}-lineupId-DEFAULT`,
+              country: region,
+              device: null,
+              timezone: null,
+              languagecode: 'en',
+            },
+            // Seed the lifetime sync counters on first create (the inline sync above just succeeded);
+            // a later re-add preserves any accumulated counts rather than resetting them.
+            $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
           },
-          // Seed the lifetime sync counters on first create (the inline sync above just succeeded);
-          // a later re-add preserves any accumulated counts rather than resetting them.
-          $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
-        },
-        { upsert: true, new: true, projection: { _id: 0 } },
-      ).lean()) as EpgSourceDoc | null;
-      if (!doc) return next(new Error('epg source upsert returned no document'));
-      return res.json({ ...doc, offsetDefaulted });
+          { upsert: true, new: true, projection: { _id: 0 } },
+        ).lean()) as EpgSourceDoc | null;
+      });
     }
 
     // ── Custom: uploaded XMLTV file (source 'xml file') ────────────────
@@ -344,41 +535,44 @@ epgSourcesRouter.post('/', async (req, res, next) => {
         return res.status(400).json({ error: 'invalid_xmltv', issues: validation.errors });
       }
       const id = `xml-file:${slugify(name)}`;
-      const counts = await writeXmltvEpg(content, id, offset);
       const rawFilename = (isRaw ? qstr(q.filename) : typeof b.filename === 'string' ? b.filename : '').trim();
       const filename = rawFilename || `${name}.xml`;
-      const doc = (await EpgSource.findOneAndUpdate(
-        { id },
-        {
-          $set: {
-            id,
-            name,
-            url: filename, // the original filename (display only — there is no re-fetchable URL)
-            channels: counts.channels,
-            programs: counts.programs,
-            lastSync: new Date().toISOString(),
-            status: 'good',
-            auto: false,
-            interval: 'manual',
-            builtin: false,
-            source: 'xml file',
-            location: null,
-            lineup_Type: null,
-            postalCode: null,
-            aid: null,
-            headendId: null,
-            lineupId: null,
-            country: null,
-            device: null,
-            timezone: null,
-            languagecode: null,
+      // The body is already uploaded (no download phase) — emit `importing` immediately, then a programmes-
+      // inserted % as writeXmltvEpg batches the rows. errorCode null preserves this path's prior 500-on-write.
+      return await runCreate(req, res, next, { errorCode: null, offsetDefaulted }, async (progress) => {
+        progress({ phase: 'importing' });
+        const counts = await writeXmltvEpg(content, id, offset, (pct) => progress({ phase: 'importing', percent: pct }));
+        return (await EpgSource.findOneAndUpdate(
+          { id },
+          {
+            $set: {
+              id,
+              name,
+              url: filename, // the original filename (display only — there is no re-fetchable URL)
+              channels: counts.channels,
+              programs: counts.programs,
+              lastSync: new Date().toISOString(),
+              status: 'good',
+              auto: false,
+              interval: 'manual',
+              builtin: false,
+              source: 'xml file',
+              location: null,
+              lineup_Type: null,
+              postalCode: null,
+              aid: null,
+              headendId: null,
+              lineupId: null,
+              country: null,
+              device: null,
+              timezone: null,
+              languagecode: null,
+            },
+            $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
           },
-          $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
-        },
-        { upsert: true, new: true, projection: { _id: 0 } },
-      ).lean()) as EpgSourceDoc | null;
-      if (!doc) return next(new Error('epg source upsert returned no document'));
-      return res.json({ ...doc, offsetDefaulted });
+          { upsert: true, new: true, projection: { _id: 0 } },
+        ).lean()) as EpgSourceDoc | null;
+      });
     }
 
     // ── Custom: remote XMLTV URL (source 'remote url') OR Jesmann picker (source 'jesmann') ──────────────
@@ -394,46 +588,12 @@ epgSourcesRouter.post('/', async (req, res, next) => {
       }
       const idPrefix = source === 'jesmann' ? 'jesmann' : 'remote-url';
       const id = `${idPrefix}:${slugify(name)}`;
-      let counts: { channels: number; programs: number };
-      try {
-        counts = await syncXmltvUrl(id, url, offset);
-      } catch (err) {
-        logger.warn('epg', `xmltv url create sync failed: ${(err as Error).message}`);
-        return res.status(502).json({ error: 'xmltv_unreachable' });
-      }
       const interval = (typeof b.interval === 'string' && b.interval) || 'manual';
-      const doc = (await EpgSource.findOneAndUpdate(
-        { id },
-        {
-          $set: {
-            id,
-            name,
-            url,
-            channels: counts.channels,
-            programs: counts.programs,
-            lastSync: new Date().toISOString(),
-            status: 'good',
-            auto: false,
-            interval,
-            builtin: false,
-            source, // 'remote url' or 'jesmann' — kept distinct so the SOURCE chip / sync gate differentiate them
-            location: null,
-            lineup_Type: null,
-            postalCode: null,
-            aid: null,
-            headendId: null,
-            lineupId: null,
-            country: null,
-            device: null,
-            timezone: null,
-            languagecode: null,
-          },
-          $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
-        },
-        { upsert: true, new: true, projection: { _id: 0 } },
-      ).lean()) as EpgSourceDoc | null;
-      if (!doc) return next(new Error('epg source upsert returned no document'));
-      return res.json({ ...doc, offsetDefaulted });
+      // syncXmltvUrl streams a byte-based % through `progress` (importing on connect, then % per batch).
+      return await runCreate(req, res, next, { errorCode: 'xmltv_unreachable', offsetDefaulted }, async (progress) => {
+        const counts = await syncXmltvUrl(id, url, offset, progress);
+        return upsertXmltvUrlSource({ id, name, url, source, counts, interval, order });
+      });
     }
 
     // ── Gracenote branch (default) ─────────────────────────────────────
@@ -461,51 +621,45 @@ epgSourcesRouter.post('/', async (req, res, next) => {
     const id = `gracenote:${headendId}:${lineupId}`;
     const urlTemplate = buildGridUrl(provider, { aid, country, lang, timespan: GRID_TIMESPAN });
 
-    // Fetch + write programs first so a WAF/network failure leaves no broken source behind.
-    let counts: { channels: number; programs: number };
-    try {
-      counts = await syncPrograms(id, urlTemplate, offset);
-    } catch (err) {
-      logger.warn('epg', `gracenote create sync failed: ${(err as Error).message}`);
-      return res.status(502).json({ error: 'gracenote_unreachable' });
-    }
-
+    // Fetch + write programs first so a WAF/network failure leaves no broken source behind. runCreate streams
+    // a per-window % (windows fetched / total) when the client asked for NDJSON, else returns blocking JSON.
     const displayName = provider.name + (provider.location ? ` — ${provider.location}` : '');
-    const doc = (await EpgSource.findOneAndUpdate(
-      { id },
-      {
-        $set: {
-          id,
-          name: displayName || `Gracenote ${headendId}`,
-          url: urlTemplate,
-          channels: counts.channels,
-          programs: counts.programs,
-          lastSync: new Date().toISOString(),
-          status: 'good',
-          auto: false,
-          interval,
-          builtin: false,
-          source: 'gracenote', // lowercase kind discriminator (UI shows the pretty 'Gracenote' brand label)
-          location: provider.location || null,
-          lineup_Type: provider.type || null,
-          postalCode,
-          aid,
-          headendId,
-          lineupId,
-          country,
-          device: provider.device || null,
-          timezone: provider.timezone || null,
-          languagecode: lang,
+    await runCreate(req, res, next, { errorCode: 'gracenote_unreachable', offsetDefaulted }, async (progress) => {
+      const counts = await syncPrograms(id, urlTemplate, offset, progress);
+      return (await EpgSource.findOneAndUpdate(
+        { id },
+        {
+          $set: {
+            id,
+            name: displayName || `Gracenote ${headendId}`,
+            url: urlTemplate,
+            channels: counts.channels,
+            programs: counts.programs,
+            lastSync: new Date().toISOString(),
+            status: 'good',
+            auto: false,
+            interval,
+            builtin: false,
+            source: 'gracenote', // lowercase kind discriminator (UI shows the pretty 'Gracenote' brand label)
+            location: provider.location || null,
+            lineup_Type: provider.type || null,
+            postalCode,
+            aid,
+            headendId,
+            lineupId,
+            country,
+            device: provider.device || null,
+            timezone: provider.timezone || null,
+            languagecode: lang,
+          },
+          // Seed the lifetime sync counters on first create (the inline sync above just succeeded);
+          // a later re-add preserves any accumulated counts rather than resetting them. `order` lands the
+          // new source at the end of the drag-ordered list (kept on a re-add via $setOnInsert).
+          $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
         },
-        // Seed the lifetime sync counters on first create (the inline sync above just succeeded);
-        // a later re-add preserves any accumulated counts rather than resetting them. `order` lands the
-        // new source at the end of the drag-ordered list (kept on a re-add via $setOnInsert).
-        $setOnInsert: { syncSuccessCount: 1, syncFailCount: 0, order },
-      },
-      { upsert: true, new: true, projection: { _id: 0 } },
-    ).lean()) as EpgSourceDoc | null;
-    if (!doc) return next(new Error('epg source upsert returned no document'));
-    res.json({ ...doc, offsetDefaulted });
+        { upsert: true, new: true, projection: { _id: 0 } },
+      ).lean()) as EpgSourceDoc | null;
+    });
   } catch (err) {
     next(err);
   }

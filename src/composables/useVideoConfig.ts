@@ -1,4 +1,5 @@
 import { ref, watch, nextTick, type Ref } from 'vue';
+import { bus } from './bus';
 
 // externalPlayer engine config. A FACTORY: useVideoConfig(configId) binds one reactive config to
 // GET/PUT /api/video-config/<configId> — 'app' is the global Default (Settings → Video Configuration card),
@@ -112,7 +113,10 @@ export function useVideoConfig(configId: string = 'app'): VideoConfigInstance {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
-      }).catch(() => undefined);
+      })
+        // Signal a live config view (the Encoder Diagram) to re-read — naturally throttled by the debounce.
+        .then((r) => { if (r.ok) bus.emit('tvapp:videoconfig-saved', { configId }); })
+        .catch(() => undefined);
     }, 500);
   }
 

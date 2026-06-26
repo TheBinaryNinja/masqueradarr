@@ -57,7 +57,7 @@ export async function buildBackupEnvelope(opts: BackupOptions): Promise<BackupEn
   return {
     formatVersion: BACKUP_FORMAT_VERSION,
     createdAt: new Date().toISOString(),
-    app: { name: 'tvapp2', version: APP_VERSION },
+    app: { name: 'masqueradarr', version: APP_VERSION },
     options: opts,
     collections,
   };
@@ -69,8 +69,8 @@ export async function buildBackupGzip(opts: BackupOptions): Promise<Buffer> {
   return gzipAsync(Buffer.from(JSON.stringify(env)));
 }
 
-// Suggested filename for a backup: tvapp2-backup-<ISO>.json.gz, colon-free for filesystem safety.
+// Suggested filename for a backup: masqueradarr-backup-<ISO>.json.gz, colon-free for filesystem safety.
 export function backupFilename(d: Date = new Date()): string {
   const iso = d.toISOString().replace(/\.\d+Z$/, 'Z').replace(/:/g, '-');
-  return `tvapp2-backup-${iso}.json.gz`;
+  return `masqueradarr-backup-${iso}.json.gz`;
 }

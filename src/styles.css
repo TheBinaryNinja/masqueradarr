@@ -1295,55 +1295,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .summary-val.sm { font-size: var(--fs-base); font-weight: 500; }
 
-/* Two-up row reused by the schedule cards and the linked-playlists/linked-channels panels. */
+/* Two-up row reused by the linked-playlists/linked-channels panels. */
 .epg-schedules-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
   gap: var(--gap);
   align-items: start;
-}
-
-/* Standardized schedule card (Sync schedule + EPG-XML compose) — same size + layout. The two cards in
-   their row stretch to equal height; the Edit button is pinned to the bottom by the auto-margin footer. */
-.schedule-card {
-  display: flex;
-  flex-direction: column;
-  align-self: stretch;
-}
-.schedule-info {
-  display: grid;
-  gap: 8px;
-}
-.schedule-kv {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 8px 12px;
-  background: var(--bg-2);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-s);
-}
-.schedule-k {
-  font-size: var(--fs-xs);
-  font-weight: 600;
-  color: var(--text-2);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  width: 110px;
-  flex: none;
-}
-.schedule-v {
-  font-size: var(--fs-sm);
-  font-weight: 500;
-  color: var(--text-0);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  margin-left: auto;
-}
-.schedule-ft {
-  margin-top: auto;
-  padding-top: 14px;
-  align-items: center;
 }
 
 /* A single linked playlist / channel row (icon|logo + name + count/status pill). */
