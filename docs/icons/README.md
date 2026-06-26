@@ -4,7 +4,7 @@ List of swag icons you can use in your applications. Click on the [Icon Link](./
 
 | Icon | Icon Link | Size |
 | --- | --- | --- |
-| <img style='max-height: 70px;' src='app-icon-512.png'> | [app-icon-512.png](./app-icon-512.png) | `512x512` |
+| <img style='max-height: 70px;' src='app-icon-512.png'> | [app-icon-512.png](./app-icon-512.png?raw=true) | `512x512` |
 | <img style='max-height: 70px;' src='app-icon-1024.png'> | [app-icon-1024.png](./app-icon-1024.png) | `1024x1024` |
 | <img style='max-height: 70px;' src='app-icon-dark-512.png'> | [app-icon-dark-512.png](./app-icon-dark-512.png) | `512x512` |
 | <img style='max-height: 70px;' src='app-icon-dark-1024.png'> | [app-icon-dark-1024.png](./app-icon-dark-1024.png) | `1024x1024` |
