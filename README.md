@@ -23,7 +23,7 @@ idea, carrying the project into the `*arr` self-hosted media family (Sonarr, Rad
 | Swag Pack | Location to full swag pack |
 | --- | --- |
 | Icon Pack | [masqueradarr icon pack](/docs/icons/README.md) |
-| Font Pack | [masqueradarr font pack]() |
+| Font Pack | [masqueradarr font pack](/docs/font-packs/README.md) |
 | Emblem-Sets | [masqueradarr emblem-sets](/docs/emblem-sets/README.md) |
 | Label-Sets | [masqueradarr label-sets](/docs/label-sets/README.md) |
 
