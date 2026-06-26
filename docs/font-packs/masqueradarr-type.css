@@ -1,0 +1,55 @@
+/* ============================================================
+   Masqueradarr — Type Pack
+   Typefaces:  Space Grotesk (display / UI)  ·  JetBrains Mono (telemetry / code)
+   Weights:    400 · 500 · 600 · 700
+   License:    SIL Open Font License 1.1 (both families) — see README.md
+   ============================================================ */
+
+/* --- 1. Load the fonts -------------------------------------------------
+   Option A — Google CDN (quickest). Keep this @import, or move the
+   equivalent <link> tags into <head> (see embed.html) for faster loads.
+   Option B — Self-host: delete the @import, drop the woff2 files into
+   ./fonts/ and uncomment the @font-face block at the bottom of this file. */
+
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+
+/* --- 2. Tokens --------------------------------------------------------- */
+:root {
+  /* families */
+  --mq-font-sans: 'Space Grotesk', system-ui, sans-serif;
+  --mq-font-mono: 'JetBrains Mono', ui-monospace, monospace;
+
+  /* type roles  (shorthand: weight size/line family) */
+  --mq-display: 600 56px/1    var(--mq-font-sans);  /* letter-spacing: -0.035em */
+  --mq-h1:      600 38px/1.05 var(--mq-font-sans);  /* letter-spacing: -0.02em  */
+  --mq-h2:      600 26px/1.15 var(--mq-font-sans);  /* letter-spacing: -0.015em */
+  --mq-body:    400 17px/1.6  var(--mq-font-sans);
+  --mq-label:   500 12px/1    var(--mq-font-sans);  /* uppercase · +0.20em */
+  --mq-mono:    400 14px/1.5  var(--mq-font-mono);  /* +0.06em */
+
+  /* text colors (for reference) */
+  --mq-ink:     #E9EDEE;
+  --mq-muted:   #9AA5AA;
+  --mq-code:    #C7D0D4;
+  --mq-signal:  #48D7FE;
+}
+
+/* --- 3. Ready-to-use classes ------------------------------------------ */
+.mq-display { font: var(--mq-display); letter-spacing: -0.035em; }
+.mq-h1      { font: var(--mq-h1);      letter-spacing: -0.02em;  }
+.mq-h2      { font: var(--mq-h2);      letter-spacing: -0.015em; }
+.mq-body    { font: var(--mq-body); }
+.mq-label   { font: var(--mq-label);   letter-spacing: 0.20em; text-transform: uppercase; }
+.mq-mono    { font: var(--mq-mono);    letter-spacing: 0.06em; }
+
+/* wordmark — always lowercase */
+.mq-wordmark { font-family: var(--mq-font-sans); font-weight: 600; letter-spacing: -0.03em; text-transform: lowercase; }
+
+/* --- 4. Self-host @font-face (Option B) --------------------------------
+   Download the woff2 files (see README) into ./fonts/ then uncomment.
+
+@font-face { font-family:'Space Grotesk'; font-style:normal; font-weight:400 700;
+  font-display:swap; src:url('./fonts/SpaceGrotesk-Variable.woff2') format('woff2'); }
+@font-face { font-family:'JetBrains Mono'; font-style:normal; font-weight:400 700;
+  font-display:swap; src:url('./fonts/JetBrainsMono-Variable.woff2') format('woff2'); }
+--------------------------------------------------------------------- */

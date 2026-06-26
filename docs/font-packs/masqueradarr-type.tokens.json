@@ -1,0 +1,16 @@
+{
+  "family": {
+    "sans": "Space Grotesk, system-ui, sans-serif",
+    "mono": "JetBrains Mono, ui-monospace, monospace"
+  },
+  "weights": [400, 500, 600, 700],
+  "roles": {
+    "display":  { "weight": 600, "size": 56, "line": 1.0,  "tracking": "-0.035em", "family": "sans" },
+    "h1":       { "weight": 600, "size": 38, "line": 1.05, "tracking": "-0.02em",  "family": "sans" },
+    "h2":       { "weight": 600, "size": 26, "line": 1.15, "tracking": "-0.015em", "family": "sans" },
+    "body":     { "weight": 400, "size": 17, "line": 1.6,  "tracking": "0",        "family": "sans" },
+    "label":    { "weight": 500, "size": 12, "line": 1.0,  "tracking": "0.20em",   "family": "sans", "transform": "uppercase" },
+    "mono":     { "weight": 400, "size": 14, "line": 1.5,  "tracking": "0.06em",   "family": "mono" }
+  },
+  "wordmark": { "weight": 600, "tracking": "-0.03em", "transform": "lowercase", "family": "sans" }
+}
