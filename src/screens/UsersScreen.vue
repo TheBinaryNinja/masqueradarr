@@ -6,21 +6,16 @@ import Pill from '../components/Pill.vue';
 import PublishedUrlGroups from '../components/PublishedUrlGroups.vue';
 import { PLAYLISTS, reloadPlaylists } from '../data';
 import { currentUser } from '../composables/useAuth';
-import { usePublishedUrls, globalMemberIds, nonGlobalPlaylists, type PublishedUrlUser } from '../composables/usePublishedUrls';
+import { usePublishedUrls, type PublishedUrlUser } from '../composables/usePublishedUrls';
+import {
+    USERS,
+    ensureUsers,
+    saveUser as putUser,
+    createUser as postUser,
+    deleteUser as removeUser,
+    type User,
+} from '../composables/useUsers';
 
-interface User {
-    _id: string;
-    username: string;
-    role: 'admin' | 'user';
-    streamToken: string;
-    streamTokenEnabled: boolean;
-    slug: string;
-    allowedPlaylists: string[];
-    allowedCustomPlaylists: string[];
-    createdAt: string;
-}
-
-const users = ref<User[]>([]);
 const loading = ref(false);
 const error = ref('');
 const successMsg = ref('');
@@ -38,43 +33,22 @@ const formTokenEnabled = ref(true);
 const formPlaylists = ref<string[]>([]);
 const formCustomPlaylists = ref<string[]>([]);
 
-// "Global access" is not a single playlist row — the Global playlist is the UNION of every
-// endpoint:'Global' source playlist (dulo/dlhd/tubi/…). The access model keys on `allowedPlaylists`
-// holding those source ids (the read filter, the stream gate, and the per-user compose visibility all
-// check allowedPlaylists.includes(<sourceId>)), so granting Global = putting every Global-member id into
-// allowedPlaylists. `globalMemberIds` + `nonGlobalPlaylists` are shared (usePublishedUrls) so the access
-// checklists and the published-URL derivation key off the SAME computed sets.
+// Playlist assignment moved to the Playlists screen's "Assign access" modal — this screen no longer edits the
+// access arrays. `formPlaylists` / `formCustomPlaylists` are still carried (loaded in openEdit, re-sent on save
+// untouched) so editing identity/role/token PRESERVES the user's existing access, and the right-hand Published
+// URLs column derives its read-only cards from them.
 
-// The single Global toggle: ON when the user already has every Global member id in allowedPlaylists.
-const hasGlobalAccess = computed(() =>
-    globalMemberIds.value.length > 0 && globalMemberIds.value.every((id) => formPlaylists.value.includes(id)),
-);
-function toggleGlobalAccess() {
-    if (hasGlobalAccess.value) {
-        // Drop every Global member id, keeping any non-Global entries already in the list untouched.
-        const members = new Set(globalMemberIds.value);
-        formPlaylists.value = formPlaylists.value.filter((id) => !members.has(id));
-    } else {
-        // Add every Global member id (dedup against whatever is already there).
-        formPlaylists.value = Array.from(new Set([...formPlaylists.value, ...globalMemberIds.value]));
-    }
-}
-
-async function fetchUsers() {
+onMounted(async () => {
+    // Load the shared users singleton (memoized — a re-visit reuses the in-memory list and stays live via the
+    // store's tvapp:users-changed reconcile).
     loading.value = true;
     try {
-        const res = await fetch('/api/users');
-        if (!res.ok) throw new Error();
-        users.value = await res.json() as User[];
-    } catch (err) {
+        await ensureUsers();
+    } catch {
         error.value = 'Failed to load user list';
     } finally {
         loading.value = false;
     }
-}
-
-onMounted(() => {
-    fetchUsers();
     // Ensure playlists and custom playlists are loaded
     if (!PLAYLISTS.value.length) {
         reloadPlaylists().catch(() => {});
@@ -118,51 +92,39 @@ async function saveUser() {
         return;
     }
 
-    const payload: any = {
+    const isEdit = !!editUserId.value;
+    if (!isEdit && !formPassword.value) {
+        error.value = 'Password is required for new users';
+        return;
+    }
+    if (formPassword.value && formPassword.value.length < 6) {
+        error.value = 'Password must be at least 6 characters';
+        return;
+    }
+
+    // Complete, valid body. password is OMITTED when blank (PUT = no change); for create it's always present
+    // (guarded above). The shared store patches USERS in place + emits tvapp:users-changed on success.
+    const payload = {
         username: formUsername.value.trim(),
         role: formRole.value,
         allowedPlaylists: formPlaylists.value,
         allowedCustomPlaylists: formCustomPlaylists.value,
         streamTokenEnabled: formTokenEnabled.value,
+        ...(formPassword.value ? { password: formPassword.value } : {}),
     };
 
-    if (formPassword.value) {
-        if (formPassword.value.length < 6) {
-            error.value = 'Password must be at least 6 characters';
-            return;
-        }
-        payload.password = formPassword.value;
-    }
-
-    const isEdit = !!editUserId.value;
-    const url = isEdit ? `/api/users/${editUserId.value}` : '/api/users';
-    const method = isEdit ? 'PUT' : 'POST';
-
-    if (!isEdit && !formPassword.value) {
-        error.value = 'Password is required for new users';
-        return;
-    }
-
     try {
-        const res = await fetch(url, {
-            method,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload),
-        });
-
-        if (!res.ok) {
-            const data = await res.json() as { error?: string };
-            error.value = data.error || 'Failed to save user';
-            return;
+        if (isEdit) {
+            await putUser(editUserId.value!, payload);
+        } else {
+            await postUser({ ...payload, password: formPassword.value });
         }
-
         successMsg.value = isEdit ? 'User updated successfully' : 'User created successfully';
-        await fetchUsers();
         setTimeout(() => {
             drawerOpen.value = false;
         }, 800);
     } catch (err) {
-        error.value = 'Network error saving user';
+        error.value = (err as Error).message || 'Failed to save user';
     }
 }
 
@@ -176,12 +138,10 @@ async function deleteUser(user: User) {
     }
 
     try {
-        const res = await fetch(`/api/users/${user._id}`, { method: 'DELETE' });
-        if (!res.ok) throw new Error();
+        await removeUser(user._id);
         successMsg.value = 'User deleted successfully';
-        await fetchUsers();
     } catch (err) {
-        error.value = 'Failed to delete user';
+        error.value = (err as Error).message || 'Failed to delete user';
     }
 }
 
@@ -215,15 +175,6 @@ function formatTime(s: string) {
     const ms = Date.parse(s);
     if (Number.isNaN(ms)) return s;
     return new Date(ms).toLocaleDateString(undefined, { dateStyle: 'medium' });
-}
-
-function toggleCustomPlaylistSelection(id: string) {
-    const idx = formCustomPlaylists.value.indexOf(id);
-    if (idx === -1) {
-        formCustomPlaylists.value.push(id);
-    } else {
-        formCustomPlaylists.value.splice(idx, 1);
-    }
 }
 </script>
 
@@ -262,7 +213,7 @@ function toggleCustomPlaylistSelection(id: string) {
                     </tr>
                 </thead>
                 <tbody>
-                    <tr v-for="user in users" :key="user._id">
+                    <tr v-for="user in USERS" :key="user._id">
                         <td>
                             <div class="row align-center" style="gap: 8px;">
                                 <div class="avatar-sm">{{ user.username.slice(0,2).toUpperCase() }}</div>
@@ -290,7 +241,7 @@ function toggleCustomPlaylistSelection(id: string) {
                     </tr>
                 </tbody>
             </table>
-            <div v-if="users.length === 0 && !loading" class="empty" style="padding: 40px;">
+            <div v-if="USERS.length === 0 && !loading" class="empty" style="padding: 40px;">
                 <div class="muted">No users found.</div>
             </div>
         </div>
@@ -356,24 +307,17 @@ function toggleCustomPlaylistSelection(id: string) {
                                 <span class="muted font-xs">Masked for security — confirms the token exists without exposing it.</span>
                             </div>
 
-                            <div class="checklist-section">
-                                <label class="section-label">Allowed Global Playlist</label>
-                                <div class="checklist">
-                                    <div class="check-item" @click="toggleGlobalAccess">
-                                        <div :class="['cbx', { on: hasGlobalAccess }]" />
-                                        <span class="text-sm">Global <span class="muted font-xs">(union of all built-in sources)</span></span>
-                                    </div>
-                                    <div v-if="globalMemberIds.length === 0" class="muted text-xs">No built-in (Global) playlists available yet.</div>
-                                </div>
-
-                                <label class="section-label" style="margin-top: 14px;">Allowed Custom Playlists</label>
-                                <div class="checklist">
-                                    <div v-for="p in nonGlobalPlaylists" :key="p.id" class="check-item" @click="toggleCustomPlaylistSelection(p.id)">
-                                        <div :class="['cbx', { on: formCustomPlaylists.includes(p.id) }]" />
-                                        <span class="text-sm">{{ p.name }} <span class="muted font-xs">({{ p.id }})</span></span>
-                                    </div>
-                                    <div v-if="nonGlobalPlaylists.length === 0" class="muted text-xs">No custom playlists created yet.</div>
-                                </div>
+                            <!-- Playlist assignment lives on the Playlists screen ("Assign access" modal); this
+                                 drawer no longer edits allowedPlaylists / allowedCustomPlaylists. The user's
+                                 existing access is preserved on save (formPlaylists/formCustomPlaylists carry it
+                                 untouched) and surfaced read-only via the Published URLs column. -->
+                            <div class="form-group access-note">
+                                <label>Playlist Access</label>
+                                <span class="muted font-xs">
+                                    Assign which playlists this user can reach from the
+                                    <strong>Playlists</strong> screen → <strong>Assign access</strong>. Admins
+                                    automatically receive every playlist.
+                                </span>
                             </div>
                         </div>
 
@@ -562,13 +506,6 @@ function toggleCustomPlaylistSelection(id: string) {
     cursor: pointer;
     font-size: var(--fs-sm);
 }
-.checklist-section {
-    border-top: 1px solid var(--hairline);
-    padding-top: 14px;
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-}
 .section-label {
     font-size: var(--fs-xs);
     font-weight: 600;
@@ -576,28 +513,13 @@ function toggleCustomPlaylistSelection(id: string) {
     text-transform: uppercase;
     letter-spacing: 0.04em;
 }
-.checklist {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-    max-height: 200px;
-    overflow-y: auto;
-    background: var(--bg-2);
-    border: 1px solid var(--hairline);
-    border-radius: var(--radius-s);
-    padding: 10px;
+.access-note {
+    border-top: 1px solid var(--hairline);
+    padding-top: 14px;
 }
-.check-item {
-    display: flex;
-    align-items: center;
-    gap: 10px;
-    cursor: pointer;
-    padding: 4px;
-    border-radius: 4px;
-    transition: background .1s;
-}
-.check-item:hover {
-    background: var(--bg-3);
+.access-note strong {
+    color: var(--text-1);
+    font-weight: 600;
 }
 .drawer-ft {
     padding: 14px var(--pad-card);

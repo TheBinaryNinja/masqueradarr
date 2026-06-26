@@ -37,6 +37,19 @@ const appVersion = import.meta.env.VITE_APP_VERSION || 'dev';
 // Non-failed active streams — the population that drives the nav pulse dot + breadcrumb.
 const activeCount = computed(() => ACTIVE_STREAMS.value.filter((s) => s.status !== 'bad').length);
 
+// Scroll-engaged glass: the topbar is a transparent overlay over the .screen scroll container; once
+// the user scrolls past a small threshold it gains the frosted `.is-stuck` glass that backdrop-filters
+// the content scrolling under it. .screen persists across routes, so navigation resets both.
+const screenEl = ref<HTMLElement | null>(null);
+const stuck = ref(false);
+function onScreenScroll() {
+  stuck.value = (screenEl.value?.scrollTop ?? 0) > 4;
+}
+watch(() => route.fullPath, () => {
+  if (screenEl.value) screenEl.value.scrollTop = 0;
+  stuck.value = false;
+});
+
 // Cross-screen UI state
 const channel = ref<Channel | null>(null);
 const addOpen = ref<'playlist' | 'epg' | null>(null);
@@ -258,7 +271,7 @@ onBeforeUnmount(() => {
     </aside>
 
     <main class="main">
-      <header v-if="currentUser" class="topbar">
+      <header v-if="currentUser" class="topbar" :class="{ 'is-stuck': stuck }">
         <h1>{{ crumbs.title }}</h1>
         <template v-if="restoreJob">
           <div class="restore-strip" role="status" aria-live="polite">
@@ -298,7 +311,8 @@ onBeforeUnmount(() => {
         <Btn v-slot:default v-if="route.name === 'dashboard' && currentUser?.role === 'admin'" variant="primary" icon="plus" @click="addOpen = 'playlist'">Add playlist</Btn>
       </header>
 
-      <div class="screen" :class="{ 'mq-stage': stageRoute, 'mq-stage-screen': stageRoute }" :style="screenFlex || undefined">
+      <div class="screen" ref="screenEl" @scroll.passive="onScreenScroll"
+           :class="{ 'mq-stage': stageRoute, 'mq-stage-screen': stageRoute }" :style="screenFlex || undefined">
         <router-view v-slot="{ Component }">
           <div v-if="stageRoute" class="mq-stage-content"
                :class="{ 'mq-stage-content-fill': route.name === 'active' }">

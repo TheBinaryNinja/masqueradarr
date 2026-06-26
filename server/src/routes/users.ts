@@ -4,6 +4,7 @@ import { Session } from '../models/Session.js';
 import { hashPassword, generateToken, generateSlug } from '../security/crypto.js';
 import { requireAdmin, type AuthRequest } from '../middleware/auth.js';
 import { composeUserFiles, pruneUserFiles } from '../m3u/compose.js';
+import { listAllPlaylistAccess } from '../security/adminAccess.js';
 import { logger } from '../sources/core/logger.js';
 
 export const usersRouter = Router();
@@ -52,6 +53,17 @@ usersRouter.post('/', async (req, res, next) => {
         const passwordHash = await hashPassword(password);
         const streamToken = generateToken(16);
 
+        // Invariant: an admin holds EVERY playlist materialized into its arrays — so a brand-new admin is
+        // seeded with all current playlists (Global → allowedPlaylists, Custom → allowedCustomPlaylists),
+        // ignoring any body arrays. A 'user' keeps the body-supplied access lists.
+        const access =
+            role === 'admin'
+                ? await listAllPlaylistAccess()
+                : {
+                      allowedPlaylists: Array.isArray(allowedPlaylists) ? allowedPlaylists : [],
+                      allowedCustomPlaylists: Array.isArray(allowedCustomPlaylists) ? allowedCustomPlaylists : [],
+                  };
+
         const newUser = await User.create({
             username: normalizedUsername,
             passwordHash,
@@ -59,8 +71,8 @@ usersRouter.post('/', async (req, res, next) => {
             streamToken,
             streamTokenEnabled: true,
             slug: generateSlug(),
-            allowedPlaylists: Array.isArray(allowedPlaylists) ? allowedPlaylists : [],
-            allowedCustomPlaylists: Array.isArray(allowedCustomPlaylists) ? allowedCustomPlaylists : [],
+            allowedPlaylists: access.allowedPlaylists,
+            allowedCustomPlaylists: access.allowedCustomPlaylists,
         });
 
         // Compose this new user's per-user playlist files for every playlist they can see. Best-effort —
@@ -91,6 +103,8 @@ usersRouter.put('/:id', async (req, res, next) => {
         // Capture the pre-update identity so we can prune the old-named per-user files after a rename.
         const oldUsername = user.username;
         const oldSlug = user.slug;
+        // Capture the pre-update role so we can detect a role TRANSITION below (after the body is applied).
+        const wasAdmin = user.role === 'admin';
 
         if (typeof username === 'string' && username.trim()) {
             const normalizedUsername = username.trim().toLowerCase();
@@ -130,6 +144,22 @@ usersRouter.put('/:id', async (req, res, next) => {
 
         if (typeof streamTokenEnabled === 'boolean') {
             user.streamTokenEnabled = streamTokenEnabled;
+        }
+
+        // Role-transition materialization (the "admin ⇒ all playlists" invariant). Runs AFTER the body's
+        // array-apply above so the transition WINS over any arrays in the request body:
+        //   • upgrade  user→admin: materialize EVERY current playlist into the arrays.
+        //   • downgrade admin→user: CLEAR both arrays (the subsequent composeUserFiles then prunes the
+        //     now-accessless user's per-user files).
+        // An admin-stays-admin or user-stays-user edit takes no override — the body arrays apply as sent
+        // (the per-cell access modal only PUTs 'user' rows; the Users screen re-sends an admin's arrays).
+        if (user.role === 'admin' && !wasAdmin) {
+            const access = await listAllPlaylistAccess();
+            user.allowedPlaylists = access.allowedPlaylists;
+            user.allowedCustomPlaylists = access.allowedCustomPlaylists;
+        } else if (user.role === 'user' && wasAdmin) {
+            user.allowedPlaylists = [];
+            user.allowedCustomPlaylists = [];
         }
 
         await user.save();

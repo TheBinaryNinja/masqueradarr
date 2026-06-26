@@ -72,64 +72,69 @@ export const globalMemberIds = computed(() => PLAYLISTS.value.filter((p) => p.en
 // Everything NOT part of the Global union — the Custom/clone playlists (and any non-Global source playlist).
 export const nonGlobalPlaylists = computed(() => PLAYLISTS.value.filter((p) => p.endpoint !== 'global'));
 
-// Build the ordered, conditional PublishedGroup[] for a user-like object. `getUser` is a getter (so callers
-// can drive membership reactively — the admin modal passes live form state, the Dashboard passes currentUser).
-// Returns [] when there is no user (e.g. a brand-new, not-yet-saved row).
+// Pure builder for the ordered, conditional PublishedGroup[] of ONE user-like object. Extracted out of the
+// composable so callers can map it over MANY users at once (the Phase-2 "Get access" modal shows every user's
+// URLs simultaneously) without spinning up a composable per row. It reads the reactive PLAYLISTS-derived sets
+// (globalMemberIds / nonGlobalPlaylists) and the operator domain/epgEndpoint, so calling it inside a computed
+// / render still tracks reactivity. Returns [] when there is no user (e.g. a brand-new, not-yet-saved row).
 //   1. Global card (M3U + global EPG XML) — ONLY when the user has every Global member id in allowedPlaylists.
 //   2. then one card per allowedCustomPlaylists entry, in nonGlobalPlaylists order.
+export function buildPublishedGroups(user: PublishedUrlUser | null): PublishedGroup[] {
+    if (!user) return [];
+
+    const allowed = user.allowedPlaylists || [];
+    const hasGlobal =
+        globalMemberIds.value.length > 0 && globalMemberIds.value.every((id) => allowed.includes(id));
+    const allowedCustom = user.allowedCustomPlaylists || [];
+
+    const out: PublishedGroup[] = [];
+    // Global first — conditional on the user holding the full Global union.
+    if (hasGlobal) {
+        out.push({
+            key: 'global',
+            name: 'Global',
+            kind: 'Global',
+            m3u: {
+                url: userM3uUrl(user),
+                hint: "Token-free download URL; the user's stream token is baked into the channels inside.",
+                copyLabel: 'Global Playlist M3U',
+            },
+            epg: {
+                url: epgEndpoint.value,
+                hint: 'Global, token-free guide URL — one URL works for every player.',
+                copyLabel: 'Global EPG Guide',
+            },
+        });
+    }
+    // Then each allowed custom playlist, in the order it appears in the (non-Global) list.
+    for (const p of nonGlobalPlaylists.value) {
+        if (!allowedCustom.includes(p.id)) continue;
+        out.push({
+            key: `custom-${p.id}`,
+            name: p.name,
+            kind: 'Custom',
+            m3u: {
+                url: customM3uUrl(p, user),
+                hint: "Token-free download URL; the user's stream token is baked into the channels inside.",
+                copyLabel: `${p.name} Playlist M3U`,
+            },
+            epg: {
+                url: customGuideUrl(p),
+                hint: 'Token-free guide URL for this custom playlist.',
+                copyLabel: `${p.name} EPG Guide`,
+            },
+        });
+    }
+    return out;
+}
+
+// Reactive composable wrapper around buildPublishedGroups. `getUser` is a getter (so callers can drive
+// membership reactively — the admin drawer passes live form state, the Dashboard passes currentUser).
 export function usePublishedUrls(
     getUser: ComputedRef<PublishedUrlUser | null> | Ref<PublishedUrlUser | null> | (() => PublishedUrlUser | null),
 ): ComputedRef<PublishedGroup[]> {
     const read = (): PublishedUrlUser | null =>
         typeof getUser === 'function' ? getUser() : getUser.value;
 
-    return computed<PublishedGroup[]>(() => {
-        const u = read();
-        if (!u) return [];
-
-        const allowed = u.allowedPlaylists || [];
-        const hasGlobal =
-            globalMemberIds.value.length > 0 && globalMemberIds.value.every((id) => allowed.includes(id));
-        const allowedCustom = u.allowedCustomPlaylists || [];
-
-        const out: PublishedGroup[] = [];
-        // Global first — conditional on the user holding the full Global union.
-        if (hasGlobal) {
-            out.push({
-                key: 'global',
-                name: 'Global',
-                kind: 'Global',
-                m3u: {
-                    url: userM3uUrl(u),
-                    hint: "Token-free download URL; the user's stream token is baked into the channels inside.",
-                    copyLabel: 'Global Playlist M3U',
-                },
-                epg: {
-                    url: epgEndpoint.value,
-                    hint: 'Global, token-free guide URL — one URL works for every player.',
-                    copyLabel: 'Global EPG Guide',
-                },
-            });
-        }
-        // Then each allowed custom playlist, in the order it appears in the (non-Global) list.
-        for (const p of nonGlobalPlaylists.value) {
-            if (!allowedCustom.includes(p.id)) continue;
-            out.push({
-                key: `custom-${p.id}`,
-                name: p.name,
-                kind: 'Custom',
-                m3u: {
-                    url: customM3uUrl(p, u),
-                    hint: "Token-free download URL; the user's stream token is baked into the channels inside.",
-                    copyLabel: `${p.name} Playlist M3U`,
-                },
-                epg: {
-                    url: customGuideUrl(p),
-                    hint: 'Token-free guide URL for this custom playlist.',
-                    copyLabel: `${p.name} EPG Guide`,
-                },
-            });
-        }
-        return out;
-    });
+    return computed<PublishedGroup[]>(() => buildPublishedGroups(read()));
 }

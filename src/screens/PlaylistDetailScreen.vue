@@ -13,6 +13,7 @@ import ChannelBulkDrawer from '../components/ChannelBulkDrawer.vue';
 import PlaylistStatusDrawer from '../components/PlaylistStatusDrawer.vue';
 import Stat from '../components/Stat.vue';
 import ProgressBar from '../components/ProgressBar.vue';
+import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, type Playlist, type Channel, type CustomPlaylist } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
@@ -270,10 +271,14 @@ async function reload() {
   if (pRes.ok) playlistRef.value = await pRes.json();
   if (cRes.ok) channels.value = await cRes.json();
 }
-async function syncNow() {
+// Returns { failed } (the playlist name when the sync errored) so the sync-mode PlaylistOpModal can settle
+// the single row red. The direct callers ignore the return; only the modal reads it.
+async function syncNow(): Promise<OpRunResult> {
   const src = playlistSource.value;
-  if (!src || syncing.value) return;
+  if (!src || syncing.value) return { failed: [] };
   syncing.value = true;
+  const name = playlist.value.name;
+  let ok = true;
   try {
     // Custom-type playlists with a live upstream re-sync via the custom-playlists route: 'hdhomerun' re-fetches
     // the device lineup, 'url' re-fetches the stored remoteUrl m3u. A Default source playlist syncs via the
@@ -290,10 +295,12 @@ async function syncNow() {
     const n = result.count ?? result.channels ?? '';
     banner({ text: `Synced ${n} channels${result.live === false ? ' (snapshot)' : ''}`.trim(), tone: 'good', icon: 'sync' });
   } catch (err) {
+    ok = false;
     banner({ text: `Sync failed: ${(err as Error).message}`, tone: 'bad', icon: 'warn' });
   } finally {
     syncing.value = false;
   }
+  return { failed: ok ? [] : [name] };
 }
 
 // (Re)compose this playlist's stream-ready m3u export on demand — the manual twin of the `playlist-m3u`
@@ -330,12 +337,15 @@ const headerProgress = computed<number | null>(() => {
   return null;
 });
 
-async function onSyncGlobal(): Promise<void> {
-  if (syncingGlobal.value) return;
+// Returns { failed } (the names of global playlists whose sync errored) so the sync-mode PlaylistOpModal can
+// settle those rows red while marking the rest done.
+async function onSyncGlobal(): Promise<OpRunResult> {
+  if (syncingGlobal.value) return { failed: [] };
   const { total, failed } = await syncAllGlobal();
   await reload();
   if (failed.length) banner({ text: `Synced ${total - failed.length}/${total} global playlists · failed: ${failed.join(', ')}`, tone: 'warn', icon: 'warn' });
   else banner({ text: `Synced ${total} global playlist${total === 1 ? '' : 's'}`, tone: 'good', icon: 'sync' });
+  return { failed };
 }
 
 async function onComposeGlobal(): Promise<void> {
@@ -343,6 +353,22 @@ async function onComposeGlobal(): Promise<void> {
   const { total, failed } = await composeAllGlobal();
   if (failed.length) banner({ text: `Composed ${total - failed.length}/${total} global playlists · failed: ${failed.join(', ')}`, tone: 'warn', icon: 'warn' });
   else banner({ text: `Composed ${total} global playlist${total === 1 ? '' : 's'}`, tone: 'good', icon: 'file' });
+}
+
+// Op preview modal — the header Sync / Sync Global / Compose / Compose m3u / Compose Global buttons open the
+// shared PlaylistOpModal. In 'sync' mode it lists the scoped playlist(s) + each one's sync progress/status;
+// in 'compose' mode it lists the users (grouped by access) + per-user compose progress. The modal runs the
+// op itself via the `run` thunk (the existing syncNow / composeNow / onSyncGlobal / onComposeGlobal handlers),
+// so the toast + reload behavior is unchanged.
+const opOpen = ref(false);
+const opMode = ref<OpMode>('compose');
+const opScope = ref<OpScope | null>(null);
+const opRun = ref<(() => Promise<OpRunResult | void> | void) | null>(null);
+function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResult | void> | void): void {
+  opMode.value = mode;
+  opScope.value = scope;
+  opRun.value = run;
+  opOpen.value = true;
 }
 
 const filtered = computed(() => {
@@ -522,24 +548,24 @@ async function doAppend() {
       </div>
       <div class="row" style="gap: 10px;">
         <template v-if="playlistSource && !isCustom">
-          <Btn variant="ghost" icon="refresh" :disabled="syncingGlobal" @click="onSyncGlobal">
+          <Btn variant="ghost" icon="refresh" :disabled="syncingGlobal" @click="openOpModal('sync', { kind: 'global' }, () => onSyncGlobal())">
             {{ syncingGlobal ? 'Syncing…' : 'Sync Global' }}
           </Btn>
-          <Btn variant="ghost" icon="file" :disabled="composingGlobal" @click="onComposeGlobal">
+          <Btn variant="ghost" icon="file" :disabled="composingGlobal" @click="openOpModal('compose', { kind: 'global' }, () => onComposeGlobal())">
             {{ composingGlobal ? 'Composing…' : 'Compose Global' }}
           </Btn>
         </template>
         <template v-else-if="isClone">
           <!-- A clone has no source to sync; m3u compose is manual only (interval 'none'). -->
-          <Btn variant="ghost" icon="file" :disabled="composing" @click="composeNow">
+          <Btn variant="ghost" icon="file" :disabled="composing" @click="openOpModal('compose', { kind: 'custom', id: playlist.id, name: playlist.name }, () => composeNow())">
             {{ composing ? 'Composing…' : 'Compose m3u' }}
           </Btn>
         </template>
         <template v-else-if="playlistSource">
-          <Btn variant="ghost" icon="refresh" :disabled="syncing" @click="syncNow">
+          <Btn variant="ghost" icon="refresh" :disabled="syncing" @click="openOpModal('sync', { kind: 'custom', id: playlist.id, name: playlist.name }, () => syncNow())">
             {{ syncing ? 'Syncing…' : 'Sync' }}
           </Btn>
-          <Btn variant="ghost" icon="file" :disabled="composing" @click="composeNow">
+          <Btn variant="ghost" icon="file" :disabled="composing" @click="openOpModal('compose', { kind: 'custom', id: playlist.id, name: playlist.name }, () => composeNow())">
             {{ composing ? 'Composing…' : 'Compose' }}
           </Btn>
         </template>
@@ -841,6 +867,14 @@ async function doAppend() {
       :channels="channels"
       @updated="onPlaylistUpdated"
       @close="statusOpen = false"
+    />
+
+    <PlaylistOpModal
+      v-if="opOpen && opScope && opRun"
+      :mode="opMode"
+      :scope="opScope"
+      :run="opRun"
+      @close="opOpen = false"
     />
 
     <!-- Delete confirmation -->

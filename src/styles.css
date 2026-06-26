@@ -54,6 +54,10 @@
   --radius-m: 12px;
   --radius-l: 16px;
 
+  /* Global app-shell topbar height — the overlay bar that floats over .screen; the baseline
+     sticky-offset for every header that pins just under it. Fixed across densities. */
+  --topbar-h: 56px;
+
   /* Density (set per [data-density]) */
   --row-h: 44px;
   --pad-card: 18px;
@@ -294,18 +298,53 @@ button, input, textarea, select { outline: none; }
     radial-gradient(90% 60% at 100% 114%, var(--mq-teal-veil), transparent 60%),
     var(--bg-0);
   overflow: hidden;
-}
-.topbar {
-  height: 56px;
-  flex: none;
-  border-bottom: none;
-  background: transparent;
   position: relative;
-  z-index: 1;
+}
+/* The topbar is an OVERLAY: absolutely pinned over the top of .screen so content scrolls UNDER it,
+   which lets .topbar.is-stuck backdrop-filter the actual scrolled content (true content-frost), not
+   just the static aurora. .screen pads its top by --topbar-h to clear the bar at rest. */
+.topbar {
+  height: var(--topbar-h);
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;            /* above content stickies (<=5), below drawers/modals/toasts (80/90/130) */
+  border-bottom: 1px solid transparent;
+  background: transparent;
   display: flex;
   align-items: center;
   padding: 0 var(--pad-x);
   gap: 12px;
+  transition: background-color .2s ease, border-color .2s ease, box-shadow .2s ease;
+}
+/* Scroll-engaged glass — a frosted strip derived from .glass; on scroll (.is-stuck) the bar gains a
+   translucent tint, a content-sampling blur, a bottom hairline and a soft shadow. The blur radius is
+   not transitioned (only color/shadow) to avoid jank. */
+.topbar.is-stuck {
+  background:
+    linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0) 60%),
+    oklch(0.20 0.006 240 / 0.62);
+  backdrop-filter: blur(20px) saturate(140%);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  border-bottom: 1px solid var(--hairline);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.28);
+}
+[data-theme="light"] .topbar.is-stuck {
+  background:
+    linear-gradient(180deg, oklch(1 0 0 / 0.7), oklch(1 0 0 / 0.45) 60%),
+    oklch(0.97 0.004 240 / 0.62);
+  border-bottom-color: oklch(0 0 0 / 0.08);
+  box-shadow: 0 10px 30px oklch(0.25 0.05 240 / 0.12);
+}
+/* Accessibility: no animated/blurred glass for users who reduce transparency or motion. */
+@media (prefers-reduced-transparency: reduce), (prefers-reduced-motion: reduce) {
+  .topbar { transition: none; }
+  .topbar.is-stuck {
+    background: var(--bg-1);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
 }
 .topbar h1 {
   margin: 0;
@@ -488,6 +527,9 @@ button, input, textarea, select { outline: none; }
   flex: 1;
   overflow-y: auto;
   padding: var(--pad-x);
+  /* Clear the overlay topbar at rest — same inset below the bar as before the overlay change.
+     (Stage routes zero this via .mq-stage-screen and re-add it on .mq-stage-content.) */
+  padding-top: calc(var(--topbar-h) + var(--pad-x));
 }
 
 /* ── masqueradarr brand stage background ──────────────────────────
@@ -527,6 +569,8 @@ button, input, textarea, select { outline: none; }
   position: relative;
   z-index: 1;
   padding: var(--pad-x);
+  /* Stage routes zero .screen padding (.mq-stage-screen), so re-add the overlay-topbar clearance here. */
+  padding-top: calc(var(--topbar-h) + var(--pad-x));
 }
 /* The active route is a full-height flex screen (screenFlex makes .screen a flex column and the
    Active Streams root fills it via height:100%). Its stage-content wrapper must participate in that
@@ -854,12 +898,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .pl-detail-sticky { --pl-toolbar-h: 53px; }
 .pl-detail-sticky .toolbar {
   position: sticky;
-  top: 0;
+  top: var(--topbar-h);            /* pin just under the overlay topbar */
   z-index: 3;
   background: var(--bg-1);
 }
 .pl-detail-sticky .tbl thead th {
-  top: var(--pl-toolbar-h);
+  top: calc(var(--topbar-h) + var(--pl-toolbar-h));   /* stack below the sticky toolbar */
   z-index: 2;
 }
 
@@ -989,7 +1033,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   padding: 10px var(--pad-card);
   border-bottom: 1px solid var(--hairline);
   background: var(--bg-1);
-  position: sticky; top: 0;
+  position: sticky; top: var(--topbar-h);   /* pin under the overlay topbar (tables scrolling in .screen) */
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -1125,7 +1169,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
    Active / channels / groups / last-sync / action cells form clean vertical bands across all rows
    regardless of per-row content width (e.g. "Sync Global" vs "Sync"). */
 .src-row.pl-row {
-  grid-template-columns: 40px 1fr 84px 72px 72px 168px 408px;
+  grid-template-columns: 40px 1fr 84px 72px 72px 168px 56px;
 }
 /* Source-type group header in the Playlists list — a light divider label above each group of rows
    (built-in / clone / file / hdhomerun / url). Lighter than .section-title; uses only existing tokens. */
@@ -1146,28 +1190,17 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
    .src-name) shrink-wraps and centers in its fixed 84px column, and centers its own label, so it reads
    like the sibling chips rather than a left-aligned full-width band. */
 .src-row.pl-row > .pill { justify-self: center; justify-content: center; }
-/* Action group: a fixed 3-slot grid (Sync · Compose · Edit) so the buttons form vertical bands across
-   every row — the wide "Sync Global"/"Compose Global" pair and the narrow "Sync"/"Compose" pair share
-   the same two slots, and Edit shares the third. Each button stretches to fill (and left-aligns its
-   label within) its slot. */
+/* Action group: collapsed to a single right-aligned "waffle" trigger that opens the per-row actions popup
+   (Sync/Sync Global · Compose/Compose Global · Edit). position:relative anchors the absolutely-positioned
+   RowActionsMenu (it drops below the trigger, flipping up near the viewport bottom). */
 .src-row.pl-row .pl-row-actions {
-  display: grid;
-  grid-template-columns: 150px 164px 78px;
-  gap: 8px;
+  position: relative;
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
   width: 100%;
   justify-self: end;
 }
-.src-row.pl-row .pl-row-actions .btn { width: 100%; justify-content: flex-start; }
-/* Edit (primary) is always present and always owns the 3rd slot — so on rows without Sync/Compose
-   (source-unset) it still lands in the Edit band instead of sliding left into the Sync slot. */
-.src-row.pl-row .pl-row-actions .btn.primary { grid-column: 3; justify-content: center; }
-/* A clone has no Sync button. This invisible placeholder mirrors the real Sync button's footprint so it
-   holds the Sync slot (col 1) and Compose stays aligned with the other rows' Compose buttons — visibility
-   (not display) keeps the slot occupied; pointer-events off makes it inert (the markup is aria-hidden too). */
-.src-row.pl-row .pl-row-actions .btn.pl-row-spacer { visibility: hidden; pointer-events: none; }
-/* Busy-state progress bar: while a row is syncing/composing it replaces the 4 stat cells (cols 3–6),
-   centered between the name (left group) and the action group (col 7, untouched). */
-.src-row.pl-row .pl-row-progress { grid-column: 3 / 7; justify-self: center; width: 100%; min-width: 80px; max-width: 700px; }
 /* Two stacked rows inside the playlist name cell: row 1 is the status dot + display name, row 2 is the
    chip/pill cluster underneath. Scoped to .pl-row so the shared .src-name (EPG Sources / Dashboard rows,
    which stay a single inline row) is unaffected. The column overrides the base .src-name flex-row. */
@@ -1214,9 +1247,14 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
      Sync / Compose / Edit wrap instead of clipping. */
   .src-row.pl-row .pl-row-actions { display: flex; flex-wrap: wrap; width: auto; }
   .src-row.pl-row .pl-row-actions .btn { width: auto; }
-  /* Busy-state progress bar spans the wrapped row (its grid-column is inert under flex). */
-  .src-row.pl-row .pl-row-progress { flex: 1 1 100%; }
 }
+/* Always-on form of the wrap layout above — same declarations, applied unconditionally to a `compact`
+   playlist row (the Dashboard Playlists panel, which sits in a narrow column where the fixed 7-col grid
+   would cramp regardless of viewport width, so the viewport-based @media tier never kicks in for it). */
+.src-row.pl-row.pl-row-compact { display: flex; flex-wrap: wrap; align-items: center; }
+.src-row.pl-row.pl-row-compact .pl-row-head { flex: 1 1 0; min-width: 0; }
+.src-row.pl-row.pl-row-compact .pl-row-actions { display: flex; flex-wrap: wrap; width: auto; }
+.src-row.pl-row.pl-row-compact .pl-row-actions .btn { width: auto; }
 /* Detail-header twin: replaces the middle Stat group in the flex header while busy. */
 .pl-detail-progress { flex: 1; min-width: 80px; max-width: 700px; margin-inline: auto; }
 /* Icon tile base — applies to every .src-ico (list rows, detail headers, drawers) so the glyph is
@@ -1328,7 +1366,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 /* EPG source detail — sticky header + bounded timeline (page scrolls behind the header) */
 .epg-detail-header {
   position: sticky;
-  top: 0;
+  top: var(--topbar-h);       /* pin under the overlay topbar */
   z-index: 5;                 /* above .epg-head (4); overlays render at app root */
   background: var(--bg-1);    /* opaque card token — keeps cards from bleeding through */
 }
@@ -1776,11 +1814,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
    Active Sessions stacks above History; the card header stays pinned, the body owns the scrollbar. */
 .activity-card {
   position: sticky;
-  top: 0;
+  top: var(--topbar-h);       /* pin under the overlay topbar (pin position unchanged from before) */
   align-self: start;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - 56px - 2 * var(--pad-x)); /* topbar height + .screen vertical padding */
+  max-height: calc(100vh - var(--topbar-h) - 2 * var(--pad-x)); /* topbar height + .screen vertical padding */
 }
 .activity-body {
   flex: 1;
@@ -2778,7 +2816,7 @@ svg.ico.epg-glow { filter: drop-shadow(0 0 6px oklch(0.78 0.16 150 / 0.55)); }
 /* The diagram panel pins to the top of the scroll area; its canvas scrolls internally. */
 .enc-diagram {
   position: sticky;
-  top: 0;
+  top: var(--topbar-h);       /* pin under the overlay topbar (pin position unchanged from before) */
   display: flex;
   flex-direction: column;
   max-height: calc(100vh - 132px);

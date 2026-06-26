@@ -6,12 +6,31 @@ import Btn from '../components/Btn.vue';
 import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
 import SearchInput from '../components/SearchInput.vue';
+import EpgSyncModal from '../components/EpgSyncModal.vue';
 import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources } from '../data';
 import { useToast } from '../composables/useToast';
+import { useEpgActions } from '../composables/useEpgActions';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
 const toast = useToast();
+const { syncingAllEpg, syncAllEpg } = useEpgActions();
+
+// ── Sync all ───────────────────────────────────────────────────────────────
+// Open the progress modal, which kicks this thunk: a linear (one-at-a-time) sync of every non-playlist-bound
+// EPG source via useEpgActions. Returns the failed names so the modal can flag those rows red; a summary toast
+// reports the outcome (lowerRight — the EPG screen's toast convention).
+const opOpen = ref(false);
+async function onSyncAll(): Promise<{ failed: string[] }> {
+  if (syncingAllEpg.value) return { failed: [] };
+  const { total, failed } = await syncAllEpg();
+  if (failed.length) {
+    toast.lowerRight({ tone: 'warn', icon: 'warn', title: 'EPG sync', text: `Synced ${total - failed.length}/${total} · failed: ${failed.join(', ')}` });
+  } else {
+    toast.lowerRight({ tone: 'good', icon: 'sync', title: 'EPG sync', text: `Synced ${total} EPG source${total === 1 ? '' : 's'}` });
+  }
+  return { failed };
+}
 
 // Search filter — case-insensitive substring across name + kind (source) + lineupId. Debounced via the
 // shared SearchInput so a large source list doesn't re-filter on every keystroke.
@@ -89,7 +108,7 @@ function openSource(id: string) {
       <div class="toolbar">
         <SearchInput :value="search" @change="(v) => search = v" :debounce="200" placeholder="Search EPG sources" />
         <span class="spacer" />
-        <Btn variant="ghost" icon="refresh">Sync all</Btn>
+        <Btn variant="ghost" icon="refresh" :disabled="syncingAllEpg" @click="opOpen = true">{{ syncingAllEpg ? 'Syncing…' : 'Sync all' }}</Btn>
         <Btn variant="primary" icon="plus" @click="emit('add', 'epg')">Add EPG source</Btn>
       </div>
       <div
@@ -138,5 +157,6 @@ function openSource(id: string) {
         </div>
       </div>
     </div>
+    <EpgSyncModal v-if="opOpen" :run="() => onSyncAll()" @close="opOpen = false" />
   </div>
 </template>

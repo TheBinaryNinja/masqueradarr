@@ -1,9 +1,10 @@
 // Shared "Global" playlist fan-out — a module-level singleton (like useToast/useStreamStats) so the
 // Playlists list and detail screens read ONE source of truth. Clicking "Sync Global" / "Compose Global"
-// on any Global row (or the detail header) syncs/composes every Global playlist (endpoint !== 'custom')
-// in sequence, exposing a determinate 0..1 progress that all Global rows display in lockstep — and the
-// shared booleans disable every Global button at once. Custom single-playlist ops stay local to each
-// screen (per-id Sets on the list, per-row booleans on the detail) and render an indeterminate bar.
+// on any Global row (or the detail header) fans out over the Global cohort in sequence, exposing a
+// determinate 0..1 progress that all Global rows display in lockstep — and the shared booleans disable
+// every Global button at once. The SYNC cohort is the explicit endpoint === 'global' set (see
+// isGlobalSyncTarget below); compose keeps its own union filter. Custom single-playlist ops stay local to
+// each screen (per-id Sets on the list, per-row booleans on the detail) and render an indeterminate bar.
 //
 // Each per-playlist call reuses the existing endpoints — POST /api/sources/:source/sync and
 // POST /api/playlists/:id/compose — so there is no new backend surface. (A single Global compose already
@@ -23,13 +24,23 @@ const composingGlobal = ref(false);
 const globalSyncProgress = ref(0); // 0..1
 const globalComposeProgress = ref(0); // 0..1
 
-// The authoritative Global target set: source-backed playlists that are not Custom. Fetched live so the
-// detail screen (which holds only one playlist) drives the same complete cohort as the list.
-async function globalTargets(): Promise<Playlist[]> {
+// The single source of truth for the Global SYNC cohort: a playlist is a Global sync target iff it is hosted
+// on the Global endpoint (endpoint === 'global', the same canonical "Global" test usePublishedUrls' member
+// split uses). The sync run thunk (syncAllGlobal, below) and the sync modal's displayed list
+// (PlaylistOpModal → syncTargets) BOTH consume this exact predicate, so the operation and its preview can
+// never diverge. Deliberately endpoint-driven: a clone hosted as Global IS included; a source playlist
+// somehow not on the Global endpoint is NOT.
+export function isGlobalSyncTarget(p: Playlist): boolean {
+  return p.endpoint === 'global';
+}
+
+// Fetch the live playlist set and filter it with the given predicate. Fetched live (not the PLAYLISTS store)
+// so the detail screen — which holds only one playlist — drives the same complete cohort as the list.
+async function globalTargets(match: (p: Playlist) => boolean): Promise<Playlist[]> {
   const res = await fetch('/api/playlists');
   if (!res.ok) return [];
   const all: Playlist[] = await res.json();
-  return all.filter((p) => p.source && p.endpoint !== 'custom');
+  return all.filter(match);
 }
 
 async function syncAllGlobal(): Promise<GlobalActionResult> {
@@ -38,7 +49,7 @@ async function syncAllGlobal(): Promise<GlobalActionResult> {
   globalSyncProgress.value = 0;
   const failed: string[] = [];
   try {
-    const targets = await globalTargets();
+    const targets = await globalTargets(isGlobalSyncTarget);
     let done = 0;
     for (const p of targets) {
       try {
@@ -67,7 +78,9 @@ async function composeAllGlobal(): Promise<GlobalActionResult> {
   globalComposeProgress.value = 0;
   const failed: string[] = [];
   try {
-    const targets = await globalTargets();
+    // Compose keeps its established union filter (source-backed, not Custom) so this change does not regress
+    // Global compose; only the Sync cohort moves to the explicit endpoint === 'global' predicate.
+    const targets = await globalTargets((p) => Boolean(p.source) && p.endpoint !== 'custom');
     let done = 0;
     for (const p of targets) {
       try {
