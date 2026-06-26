@@ -3,18 +3,21 @@
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
     <a>
-      <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/TheBinaryNinja/masqueradarr/docker-publish.yml?style=for-the-badge&logo=github&label=Build%20%26%20Release&color=cyan&logoSize=auto">
+      <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/TheBinaryNinja/masqueradarr/build-test.yml?style=for-the-badge&logo=github&logoSize=auto&label=TEST&color=cyan">
+    </a>
+    <a>
+      <img alt="GitHub Actions Workflow Status" src="https://img.shields.io/github/actions/workflow/status/TheBinaryNinja/masqueradarr/docker-publish.yml?style=for-the-badge&logo=github&label=Release&color=cyan&logoSize=auto">
     </a>
     <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/dev?sort=date&style=for-the-badge&logo=Docker&color=salmon&logoSize=auto">
     <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/latest?sort=date&style=for-the-badge&logo=Docker&color=cyan&logoSize=auto">
   </div>
   <br />
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
-    <a href="https://hub.docker.com/r/iflip721/masqueradarr">
-      <img src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&logoSize=auto&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr" alt="Static Badge">
-    </a>
     <a href="https://github.com/TheBinaryNinja/masqueradarr/releases">
       <img src="https://img.shields.io/badge/GitHub_Releases-masqueradarr_repo-cyan?style=for-the-badge&logo=github&logoSize=auto&link=https%3A%2F%2Fgithub.com%2FTheBinaryNinja%2Fmasqueradarr%2Freleases" alt="Static Badge">
+    </a>
+    <a href="https://hub.docker.com/r/iflip721/masqueradarr">
+      <img src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&logoSize=auto&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr" alt="Static Badge">
     </a>
   </div>
   <br />
