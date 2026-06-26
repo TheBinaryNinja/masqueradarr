@@ -20,11 +20,17 @@ It is the direct successor to **[TVApp2](https://github.com/TheBinaryNinja/tvapp
 **deprecated**. masqueradarr is not a fork or a patch — it is a ground-up re-architecture of the same
 idea, carrying the project into the `*arr` self-hosted media family (Sonarr, Radarr, …) it's named for.
 
+| Swag Pack | Location to full swag pack |
+| --- | --- |
+| Icon Pack | [masqueradarr icon pack](/docs/icons/README.md) |
+| Font Pack | [masqueradarr font pack]() |
+| Emblem-Sets | [masqueradarr emblem-sets](/docs/emblem-sets/README.md) |
+| Label-Sets | [masqueradarr label-sets](/docs/label-sets/README.md) |
+
 <img src="docs/img/screenshots/v2-login.png">
 
 > [!NOTE] 
 > View more [screenshots](/docs/img/screenshots) of the current system including the updated branding and layout.
-
 
 # Evolution — **masqueradarr**
 
@@ -230,8 +236,7 @@ creating the **first admin account**. After that:
 > This sample enviornment variable is also included in the release notes and the `main` branch repository: `.env.example` \
 > Ensure you update `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` with the appropriate folders for your system. \
 > \
-> For the best experience, create each folder path assigned to `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` before \
-> composing the docker stack. 
+> For the best experience, create each folder path assigned to `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` before composing the docker stack. 
 > ```bash
 > mkdir compose && chown -R 1000:1000 ./compose && chmod -R 777 ./compose
 > mkdir backups && chown -R 1000:1000 ./backups && chmod -R 777 ./backups
