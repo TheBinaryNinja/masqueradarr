@@ -2,7 +2,8 @@
 <img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
-    <img alt="Static Badge" src="https://img.shields.io/badge/release-beta-blue?style=for-the-badge">
+    <img alt="Static Badge" src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr">
+    <img alt="Static Badge" src="https://img.shields.io/badge/GitHub_Releases-masqueradarr_repo-cyan?style=for-the-badge&logo=github&link=https%3A%2F%2Fgithub.com%2FTheBinaryNinja%2Fmasqueradarr%2Freleases">
     <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/dev?sort=date&style=for-the-badge&logo=Docker&color=salmon">
     <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/latest?sort=date&style=for-the-badge&logo=Docker&color=cyan">
   </div>
