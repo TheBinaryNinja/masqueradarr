@@ -18,8 +18,7 @@
 
 import { readFileSync } from 'node:fs';
 import { snapshotFile, DULO_EPG_ADDON_FILE } from '../paths.js';
-import { PlaylistChannel } from '../../models/PlaylistChannel.js';
-import { logger } from '../core/logger.js';
+import { applyEpgCrosswalk } from '../epgCrosswalk.js';
 import { duloAuth } from './dulo/auth.js';
 import type { SourceAdapter } from '../types.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
@@ -169,38 +168,13 @@ const duloAdapter: SourceAdapter = {
 
   // ── post-sync hook: apply the committed dulo→gracenote EPG-link crosswalk ─────────────────────────
   // After syncLive populates the channels, link each dulo channel to its gracenote guide from the offline
-  // crosswalk (seed-data/dulo-playlist-addon.json — see scripts/dulo-epg-crosswalk.ts). FILL-ONLY-IF-
-  // UNTOUCHED: the filter requires epg == null AND epgState == null, so a channel is linked exactly once
-  // (right after its first sync) and a later user edit is NEVER overwritten — a manual link/remap sets epg,
-  // and an unlink leaves epgState 'unmatched' (not null), so both are skipped. Only HIGH-confidence rows
-  // auto-apply; medium rows are left for manual review in the Channel Mapping screen. Non-fatal: a missing/
-  // unreadable crosswalk must not fail a sync that succeeded. Restore Defaults re-applies it (it drops the
-  // channels, so the re-synced rows are untouched again).
+  // crosswalk (seed-data/dulo-playlist-addon.json — see scripts/dulo-epg-crosswalk.ts). The apply is the
+  // shared, GUARDED helper (sources/epgCrosswalk.ts): a row is staged epgState:'matched' only when its
+  // (epg, tvg_id) pair resolves to a real epgchannels doc, so a target Gracenote source the user hasn't
+  // added yet is left unmatched (and auto-links on a later sync once present). FILL-ONLY-IF-UNTOUCHED and
+  // non-fatal — Restore Defaults drops the channels, so a re-sync re-applies onto untouched rows.
   async afterSync({ sourceId }) {
-    type AddonRow = { id: string; tvg_id: string; epg: string; confidence: 'high' | 'medium' };
-    let rows: AddonRow[];
-    try {
-      const parsed = JSON.parse(readFileSync(DULO_EPG_ADDON_FILE, 'utf8'));
-      rows = Array.isArray(parsed) ? parsed : [];
-    } catch (err) {
-      logger.warn('seed', `[${sourceId}] EPG crosswalk not applied (unreadable): ${(err as Error).message}`);
-      return;
-    }
-    const ops = rows
-      .filter((r) => r?.confidence === 'high' && r.id && r.tvg_id && r.epg)
-      .map((r) => ({
-        updateOne: {
-          // Untouched-only: skips user-linked (epg set) AND user-unlinked (epgState 'unmatched') channels.
-          filter: { _id: r.id, source: sourceId, epg: null, epgState: null },
-          update: { $set: { tvg_id: r.tvg_id, epg: r.epg, epgState: 'matched' as const } },
-        },
-      }));
-    if (!ops.length) return;
-    const res = await PlaylistChannel.bulkWrite(ops, { ordered: false });
-    logger.info(
-      'seed',
-      `[${sourceId}] EPG crosswalk: linked ${res.modifiedCount ?? 0} channel(s) from ${ops.length} high-confidence mapping(s)`,
-    );
+    await applyEpgCrosswalk(sourceId, DULO_EPG_ADDON_FILE);
   },
 };
 

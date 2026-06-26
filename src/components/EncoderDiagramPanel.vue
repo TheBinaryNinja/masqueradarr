@@ -4,10 +4,11 @@
 // playlists that use it. Linkage is derived client-side from each playlist's `videoconfig` field; config
 // detail is read with getJson (NOT useVideoConfig — that composable installs debounced PUT watchers meant
 // for editing a single config). Rendered as HTML node-cards over an SVG cubic-bezier connector layer.
-import { ref, computed, watch, onMounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import { PLAYLISTS, getJson, type Playlist } from '../data';
+import { bus } from '../composables/bus';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
@@ -67,6 +68,11 @@ async function gather(): Promise<void> {
 onMounted(gather);
 // Re-gather if a playlist is added/removed or re-pointed at a different config while the panel is open.
 watch(() => PLAYLISTS.value.map((p) => p.id + ':' + configIdFor(p)).join(','), gather);
+// Re-gather when a config is edited in the sibling VideoConfigPanel (split-pane) so the open diagram
+// reflects the change live — without a page refresh. (gather() re-reads every config; payload ignored.)
+const onConfigSaved = () => { gather(); };
+bus.on('tvapp:videoconfig-saved', onConfigSaved);
+onUnmounted(() => bus.off('tvapp:videoconfig-saved', onConfigSaved));
 
 // ── Layout (fixed node heights → deterministic coords shared by the cards and the SVG curves) ──
 const NODE_W_CONFIG = 300;

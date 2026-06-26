@@ -221,7 +221,7 @@ async function generateBackup() {
     const blob = await res.blob();
     const cd = res.headers.get('content-disposition') ?? '';
     const match = /filename="?([^"]+)"?/i.exec(cd);
-    const name = match?.[1] || 'tvapp2-backup.json.gz';
+    const name = match?.[1] || 'masqueradarr-backup.json.gz';
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -336,7 +336,7 @@ async function fireReset() {
           <div class="field-lbl">Domain</div>
           <div class="input mono" style="font-size: 12px;">
             <Icon name="globe" :size="14" />
-            <input v-model="domain" placeholder="https://tvapp2.example.com" />
+            <input v-model="domain" placeholder="https://masqueradarr.example.com" />
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             Base URL used by all hosted endpoints (M3U, EPG, per-playlist custom paths).
@@ -375,7 +375,7 @@ async function fireReset() {
 
       <div class="field-lbl" style="margin-bottom: 10px;">Hosting endpoints</div>
       <div class="muted" style="font-size: var(--fs-xs); margin-top: -4px; margin-bottom: 12px;">
-        The public origin TVApp2 serves from and the EPG guide URL. Read-only — set by the DOMAIN env on
+        The public origin masqueradarr serves from and the EPG guide URL. Read-only — set by the DOMAIN env on
         first provision. Per-account M3U links live on the Users screen.
       </div>
 
@@ -391,7 +391,7 @@ async function fireReset() {
 
       <div class="field-lbl" style="margin-bottom: 10px;">Nameserver (DNS)</div>
       <div class="muted" style="font-size: var(--fs-xs); margin-top: -4px; margin-bottom: 12px;">
-        Comma-separated resolver IP(s) for TVApp2's outbound fetches (playlist, EPG, mirror scrapes, the HLS
+        Comma-separated resolver IP(s) for masqueradarr's outbound fetches (playlist, EPG, mirror scrapes, the HLS
         proxy). Leave blank to use the system resolver. Applied live on save.
       </div>
 
@@ -479,7 +479,7 @@ async function fireReset() {
         Download a full backup of your configuration, mappings, and credentials — or restore from one.
       </div>
       <div class="row" style="gap: 8px;">
-        <Btn variant="primary" icon="import" :disabled="generating" @click="generateBackup">
+        <Btn variant="ghost" icon="import" :disabled="generating" @click="generateBackup">
           {{ generating ? 'Generating…' : 'Generate backup' }}
         </Btn>
         <Btn variant="ghost" icon="upload" @click="restoreModalOpen = true">Restore backup</Btn>

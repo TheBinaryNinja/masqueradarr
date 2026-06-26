@@ -1,0 +1,54 @@
+# Build / Test — fast CI gate that compiles BOTH npm packages on every commit.
+# The repo has no test runner or linter, so the build IS the test: the SPA's
+# `vue-tsc -b && vite build` and the server's `tsc -p .` both type-check while building.
+#
+# Triggers: every push to any branch except `main`, plus PRs targeting `main`
+# (so nothing reaches `main` without compiling). Direct pushes to `main` are not built.
+
+name: Build / Test
+
+on:
+  push:
+    branches-ignore:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# Newer commits on the same ref supersede in-flight runs.
+concurrency:
+  group: build-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build (${{ matrix.name }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: frontend (SPA)
+            dir: .
+          - name: backend (server)
+            dir: server
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24.16.0'
+          cache: npm
+          cache-dependency-path: ${{ matrix.dir }}/package-lock.json
+
+      - name: Install dependencies
+        working-directory: ${{ matrix.dir }}
+        run: npm ci
+
+      - name: Build (type-check + compile)
+        working-directory: ${{ matrix.dir }}
+        run: npm run build

@@ -5,6 +5,7 @@ import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import Segmented from './Segmented.vue';
+import ProgressBar from './ProgressBar.vue';
 import { reloadEpgSources } from '../data';
 import { fileToXmltvBody, type XmltvBody } from '../composables/xmltvUpload';
 import {
@@ -78,52 +79,219 @@ const selectedRegion = () => regions.value.find((r) => r.href === selectedHref.v
 const jesmannRegionId = ref('');
 const jesmannTypeId = ref('');
 
-// Limit the offered download types to the '3d*' variants only (ids '3d-std' / '3d-iptv' — the 3-day
-// Standard / IPTV guides). The catalog itself stays a verbatim mirror of the site; the restriction is
-// applied here at the picker so both the dropdown and the default-type selection honor it.
-const JESMANN_TYPE_PREFIX = '3d';
-const isJesmannAllowedType = (t: JesmannType) => t.id.startsWith(JESMANN_TYPE_PREFIX);
+// Live size-probe state. A region's variant URLs are HEAD-probed on the SERVER (the SPA can't reach
+// epg.jesmann.com directly — CORS + the outbound DNS override lives server-side) so the picker can list every
+// download with its real size and grey out ones that aren't available. Keyed by the absolute variant URL.
+const jesmannProbing = ref(false);
+const jesmannProbeError = ref('');
+const jesmannProbe = ref<Record<string, { available: boolean; size: number | null; gzip: boolean }>>({});
+const jesmannProbed = computed(() => Object.keys(jesmannProbe.value).length > 0);
+
+// Shared live execution feedback for EVERY Add tab, driven by the streaming NDJSON response. `importPhase`
+// advances idle → downloading → importing → error (a `done` line closes the modal); `importPercent` is the
+// 0..100 completion when the server can compute it, else null (indeterminate bar). `jesmannError` stays a
+// DEDICATED error ref — the Jesmann tab shows its failure in the footer; the other tabs use their body refs.
+const importPhase = ref<'idle' | 'downloading' | 'importing' | 'error'>('idle');
+const importPercent = ref<number | null>(null);
+const jesmannError = ref('');
+
+// Shared success tail: every tab does the same thing once a source is created — surface the UTC-offset
+// warning, refresh the (lazily-loaded) source list, close the modal, and open the EPG Sources screen.
+async function finishImport(source: unknown) {
+  warnIfOffsetDefaulted(source);
+  await reloadEpgSources();
+  emit('close');
+  router.push('/epg-sources');
+}
+
+// Shared streaming-import engine behind EVERY Add tab. POSTs with `Accept: application/x-ndjson` so the
+// server streams `{ phase, percent }` lines (one JSON object per line); updates the shared importPhase /
+// importPercent as they arrive. Returns the `done` payload's source on success, or throws a mapped message
+// on a pre-stream failure / an `{ phase:'error' }` line. (Generalized from the original Jesmann-only reader.)
+async function runNdjsonImport(
+  input: string,
+  init: RequestInit,
+  mapError: (code: unknown) => string,
+): Promise<unknown> {
+  importPhase.value = 'downloading';
+  importPercent.value = null;
+  const res = await fetch(input, {
+    ...init,
+    headers: { ...((init.headers as Record<string, string>) || {}), Accept: 'application/x-ndjson' },
+  });
+  // A pre-stream failure (e.g. a 400 validation / 502 before the NDJSON body opens) arrives as a JSON error.
+  if (!res.ok || !res.body) {
+    const code = (await res.json().catch(() => ({}))).error;
+    throw new Error(mapError(code));
+  }
+  // Read the NDJSON stream line by line: phase/percent drive the footer + bar; the done payload carries the
+  // created source; an error line yields a mapped failure message thrown after the stream ends.
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  let donePayload: { source?: unknown } | null = null;
+  let failMessage = '';
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let nl: number;
+    while ((nl = buf.indexOf('\n')) >= 0) {
+      const line = buf.slice(0, nl).trim();
+      buf = buf.slice(nl + 1);
+      if (!line) continue;
+      let msg: { phase?: string; source?: unknown; percent?: number; error?: unknown };
+      try {
+        msg = JSON.parse(line);
+      } catch {
+        continue;
+      }
+      if (msg.phase === 'downloading' || msg.phase === 'importing') {
+        importPhase.value = msg.phase;
+        if (typeof msg.percent === 'number') importPercent.value = msg.percent;
+      } else if (msg.phase === 'done') {
+        donePayload = { source: msg.source };
+      } else if (msg.phase === 'error') {
+        failMessage = mapError(msg.error);
+      }
+    }
+  }
+  if (failMessage) throw new Error(failMessage);
+  if (!donePayload) throw new Error('Could not add the source — please try again.');
+  return donePayload.source;
+}
+
+// Per-tab error-code → friendly message mappers (the precedent set by jesmannErrorMessage). An unmapped /
+// unknown code falls back to the generic add failure.
+function gracenoteErrorMessage(code: unknown): string {
+  if (code === 'gracenote_unreachable') return 'Could not reach Gracenote — please try again.';
+  return 'Could not add the source — please try again.';
+}
+function epgpwErrorMessage(code: unknown): string {
+  if (code === 'epgpw_unreachable') return 'Could not reach EPG-PW — please try again.';
+  return 'Could not add the source — please try again.';
+}
+function customErrorMessage(code: unknown): string {
+  if (code === 'xmltv_unreachable') return 'Could not fetch the XMLTV file from that URL.';
+  return 'Could not add the source — please try again.';
+}
 
 const jesmannSelectedRegion = computed<JesmannRegion | null>(() => jesmannRegion(jesmannRegionId.value));
-// Only the '3d*' download-type variants this region actually offers (regions that ship just 14d/image
-// variants — Individual Markets, Legacy Guides, Team Sports — yield an empty list and offer no type).
-const jesmannTypes = computed<JesmannType[]>(
-  () => (jesmannSelectedRegion.value?.types || []).filter(isJesmannAllowedType),
-);
+// EVERY download-type variant this region offers (14d / 7d / 3d × Standard / IPTV, plus the specials — Team
+// Sports image variants, Individual Markets 14d-only, Legacy). No client-side filtering: the picker lists all
+// available downloads and lets the user pick by size.
+const jesmannTypes = computed<JesmannType[]>(() => jesmannSelectedRegion.value?.types || []);
 const jesmannSelectedType = computed<JesmannType | null>(
   () => jesmannTypes.value.find((t) => t.id === jesmannTypeId.value) || null,
 );
 
-// When the region changes, default the download type to the first offered '3d*' variant (prefers '3d
-// Standard' since jesmannDefaultType orders it ahead of '3d IPTV'), else clear when none is offered.
-function onJesmannRegionChange() {
-  const allowed = jesmannTypes.value;
-  if (!allowed.length) { jesmannTypeId.value = ''; return; }
-  const def = jesmannDefaultType({ ...(jesmannSelectedRegion.value as JesmannRegion), types: allowed });
-  jesmannTypeId.value = def?.id || allowed[0].id;
+// The picker rows: each catalog variant joined with its probe result. Before/without a probe a variant is
+// assumed available with an unknown size, so the list renders immediately and degrades gracefully if the probe
+// fails.
+const jesmannOptions = computed(() => {
+  const region = jesmannSelectedRegion.value;
+  if (!region) return [];
+  return jesmannTypes.value.map((t) => {
+    const url = jesmannUrl(region, t);
+    const p = jesmannProbe.value[url];
+    return {
+      type: t,
+      url,
+      probed: !!p,
+      available: p ? p.available : true,
+      size: p?.size ?? null,
+      gzip: p?.gzip ?? false,
+    };
+  });
+});
+const jesmannHasAvailable = computed(() => jesmannOptions.value.some((o) => o.available));
+
+// Human-readable byte size (e.g. '412.3 MB'). Local copy — the repo keeps a small per-component formatter
+// (HistoryMetricsScreen / RestoreBackupModal / DashboardScreen) rather than a shared util.
+function formatBytes(n: number | null): string {
+  if (n == null || !Number.isFinite(n) || n <= 0) return 'unknown';
+  const k = 1024;
+  const units = ['B', 'KB', 'MB', 'GB'];
+  const i = Math.min(units.length - 1, Math.floor(Math.log(n) / Math.log(k)));
+  return `${parseFloat((n / k ** i).toFixed(1))} ${units[i]}`;
 }
 
+// On region change, probe all of that region's variant URLs for availability + size, then default-select the
+// first AVAILABLE variant. The probe is an ENHANCEMENT: if it fails, every variant stays selectable with an
+// unknown size so the user can still add a source.
+async function onJesmannRegionChange() {
+  jesmannTypeId.value = '';
+  jesmannProbe.value = {};
+  jesmannProbeError.value = '';
+  jesmannError.value = '';
+  importPhase.value = 'idle';
+  const region = jesmannSelectedRegion.value;
+  if (!region || !region.types.length) return;
+  const urls = region.types.map((t) => jesmannUrl(region, t));
+  jesmannProbing.value = true;
+  try {
+    const res = await fetch('/api/epg-sources/jesmann/probe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ urls }),
+    });
+    if (!res.ok) throw new Error('probe failed');
+    const data = (await res.json()) as {
+      results: Array<{ url: string; available: boolean; size: number | null; gzip: boolean }>;
+    };
+    const map: Record<string, { available: boolean; size: number | null; gzip: boolean }> = {};
+    for (const r of data.results) map[r.url] = { available: r.available, size: r.size, gzip: r.gzip };
+    jesmannProbe.value = map;
+  } catch {
+    jesmannProbeError.value = 'Could not check sizes — they will show as unknown.';
+  } finally {
+    jesmannProbing.value = false;
+  }
+  selectFirstAvailableJesmann();
+}
+
+// Default-select the first AVAILABLE variant, preferring the region's usual default type order.
+function selectFirstAvailableJesmann() {
+  const region = jesmannSelectedRegion.value;
+  if (!region) { jesmannTypeId.value = ''; return; }
+  const available = jesmannOptions.value.filter((o) => o.available);
+  if (!available.length) { jesmannTypeId.value = ''; return; }
+  const def = jesmannDefaultType({ ...region, types: available.map((o) => o.type) });
+  jesmannTypeId.value = def?.id || available[0].type.id;
+}
+
+// Map a tagged server error code to a friendly message (the precedent in runValidate). Jesmann's only
+// expected failure is an unreachable / temporarily-missing guide.
+function jesmannErrorMessage(code: unknown): string {
+  if (code === 'xmltv_unreachable') {
+    return 'Could not reach epg.jesmann.com — the guide may be temporarily unavailable.';
+  }
+  return 'Could not add the source — please try again.';
+}
+
+// Create a Jesmann source via the shared NDJSON reader so the footer shows the live status + percent
+// (Downloading… → Importing & parsing… N%). On {phase:'done'} we close the modal; on any failure the modal
+// stays open, the buttons re-enable, and the reason shows in the footer.
 async function addJesmann() {
   const r = jesmannSelectedRegion.value;
   const t = jesmannSelectedType.value;
   if (!r || !t || adding.value) return;
   adding.value = true;
-  error.value = '';
+  jesmannError.value = '';
   try {
-    const res = await fetch('/api/epg-sources', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'jesmann', name: jesmannSourceName(r, t), url: jesmannUrl(r, t) }),
-    });
-    if (!res.ok) throw new Error('add failed');
-    warnIfOffsetDefaulted(await res.json());
-    // Programs + epg-channels are loaded lazily now (the EPG Detail / Mapping screens fetch them on
-    // demand), so a new/synced source only needs the source list refreshed here.
-    await reloadEpgSources();
-    emit('close');
-    router.push('/epg-sources');
-  } catch {
-    error.value = 'Could not add the source — please try again.';
+    const source = await runNdjsonImport(
+      '/api/epg-sources/jesmann/create',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'jesmann', name: jesmannSourceName(r, t), url: jesmannUrl(r, t) }),
+      },
+      jesmannErrorMessage,
+    );
+    await finishImport(source);
+  } catch (e) {
+    jesmannError.value = (e as Error).message || 'Could not add the source — please try again.';
+    importPhase.value = 'error';
     adding.value = false;
   }
 }
@@ -217,7 +385,8 @@ async function addCustom() {
   adding.value = true;
   xmltvError.value = '';
   try {
-    let res: Response;
+    let input: string;
+    let init: RequestInit;
     if (customMode.value === 'file') {
       if (!customBody.value) throw new Error('no file');
       const q = new URLSearchParams({
@@ -225,27 +394,21 @@ async function addCustom() {
         name: customName.value.trim(),
         filename: customFileName.value,
       });
-      res = await fetch(`/api/epg-sources?${q.toString()}`, {
-        method: 'POST',
-        headers: { 'Content-Type': customBody.value.contentType },
-        body: customBody.value.body,
-      });
+      input = `/api/epg-sources?${q.toString()}`;
+      init = { method: 'POST', headers: { 'Content-Type': customBody.value.contentType }, body: customBody.value.body };
     } else {
-      res = await fetch('/api/epg-sources', {
+      input = '/api/epg-sources';
+      init = {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source: 'remote url', name: customName.value.trim(), url: customUrl.value.trim() }),
-      });
+      };
     }
-    if (!res.ok) throw new Error('add failed');
-    warnIfOffsetDefaulted(await res.json());
-    // Programs + epg-channels are loaded lazily now (the EPG Detail / Mapping screens fetch them on
-    // demand), so a new/synced source only needs the source list refreshed here.
-    await reloadEpgSources();
-    emit('close');
-    router.push('/epg-sources');
-  } catch {
-    xmltvError.value = 'Could not add the source — please try again.';
+    const source = await runNdjsonImport(input, init, customErrorMessage);
+    await finishImport(source);
+  } catch (e) {
+    xmltvError.value = (e as Error).message || 'Could not add the source — please try again.';
+    importPhase.value = 'error';
     adding.value = false;
   }
 }
@@ -269,7 +432,10 @@ async function loadRegions() {
 }
 
 function onTabChange(v: string) {
+  if (adding.value) return; // Segmented is :value-controlled, so a no-op keeps the current tab while busy.
   tab.value = v as 'gracenote' | 'jesmann' | 'epg-pw' | 'custom';
+  importPhase.value = 'idle'; // clear any stale status/percent from a prior tab's failed attempt
+  importPercent.value = null;
   if (tab.value === 'epg-pw') loadRegions();
 }
 
@@ -297,18 +463,19 @@ async function addEpgpw() {
   adding.value = true;
   pwError.value = '';
   try {
-    const res = await fetch('/api/epg-sources', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ source: 'epg-pw', region: r.label, href: r.href }),
-    });
-    if (!res.ok) throw new Error('add failed');
-    warnIfOffsetDefaulted(await res.json());
-    await reloadEpgSources();
-    emit('close');
-    router.push('/epg-sources');
-  } catch {
-    pwError.value = 'Could not add the source — please try again.';
+    const source = await runNdjsonImport(
+      '/api/epg-sources',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ source: 'epg-pw', region: r.label, href: r.href }),
+      },
+      epgpwErrorMessage,
+    );
+    await finishImport(source);
+  } catch (e) {
+    pwError.value = (e as Error).message || 'Could not add the source — please try again.';
+    importPhase.value = 'error';
     adding.value = false;
   }
 }
@@ -368,35 +535,36 @@ async function add() {
   adding.value = true;
   error.value = '';
   try {
-    const res = await fetch('/api/epg-sources', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        headendId: p.headendId, lineupId: p.lineupId, name: p.name, location: p.location,
-        type: p.type, device: p.device, timezone: p.timezone, postalCode: p.postalCode,
-        country: country.value,
-      }),
-    });
-    if (!res.ok) throw new Error('add failed');
-    warnIfOffsetDefaulted(await res.json());
-    await reloadEpgSources();
-    emit('close');
-    router.push('/epg-sources');
-  } catch {
-    error.value = 'Could not add the source — please try again.';
+    const source = await runNdjsonImport(
+      '/api/epg-sources',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          headendId: p.headendId, lineupId: p.lineupId, name: p.name, location: p.location,
+          type: p.type, device: p.device, timezone: p.timezone, postalCode: p.postalCode,
+          country: country.value,
+        }),
+      },
+      gracenoteErrorMessage,
+    );
+    await finishImport(source);
+  } catch (e) {
+    error.value = (e as Error).message || 'Could not add the source — please try again.';
+    importPhase.value = 'error';
     adding.value = false;
   }
 }
 </script>
 
 <template>
-  <div class="modal-bg" @click="emit('close')">
+  <div class="modal-bg" @click="adding || emit('close')">
     <div class="modal" @click.stop>
       <div class="modal-hd">
         <Icon name="epg" :size="18" />
         <h2>Add EPG Source</h2>
         <span class="spacer" />
-        <Btn variant="ghost" size="sm" icon="x" @click="emit('close')" />
+        <Btn variant="ghost" size="sm" icon="x" :disabled="adding" @click="emit('close')" />
       </div>
 
       <div class="modal-body" style="gap: 16px;">
@@ -486,27 +654,52 @@ async function add() {
 
         <!-- Jesmann (guided picker → a single 'jesmann' XMLTV source) -->
         <div v-else-if="tab === 'jesmann'" style="display: flex; flex-direction: column; gap: 14px; max-height: 58vh; overflow-y: auto;">
-          <div class="form-grid-2">
-            <div class="form-row">
-              <div class="field-lbl">Region</div>
-              <div class="select">
-                <select v-model="jesmannRegionId" @change="onJesmannRegionChange">
-                  <option value="" disabled>Choose a region</option>
-                  <optgroup v-for="g in JESMANN_CATALOG" :key="g.group" :label="g.group">
-                    <option v-for="r in g.regions" :key="r.id" :value="r.id">{{ r.name }}</option>
-                  </optgroup>
-                </select>
-              </div>
+          <div class="form-row">
+            <div class="field-lbl">Region</div>
+            <div class="select">
+              <select v-model="jesmannRegionId" :disabled="adding" @change="onJesmannRegionChange">
+                <option value="" disabled>Choose a region</option>
+                <optgroup v-for="g in JESMANN_CATALOG" :key="g.group" :label="g.group">
+                  <option v-for="r in g.regions" :key="r.id" :value="r.id">{{ r.name }}</option>
+                </optgroup>
+              </select>
             </div>
-            <div class="form-row">
-              <div class="field-lbl">Download type</div>
-              <div class="select">
-                <select v-model="jesmannTypeId" :disabled="!jesmannTypes.length">
-                  <option value="" disabled>{{ jesmannTypes.length ? 'Choose a type' : 'Pick a region first' }}</option>
-                  <option v-for="t in jesmannTypes" :key="t.id" :value="t.id">{{ t.label }}</option>
-                </select>
-              </div>
+          </div>
+
+          <!-- Available downloads for the region, each with its live-probed size — pick by size -->
+          <div v-if="jesmannSelectedRegion" style="display: flex; flex-direction: column; gap: 6px;">
+            <div class="field-lbl">
+              Available downloads
+              <span v-if="jesmannProbing" class="muted" style="font-size: var(--fs-xs);"> — checking sizes…</span>
             </div>
+            <button
+              v-for="o in jesmannOptions"
+              :key="o.type.id"
+              type="button"
+              :disabled="(o.probed && !o.available) || adding"
+              :style="{
+                display: 'flex', alignItems: 'center', gap: '10px', textAlign: 'left',
+                padding: '10px 12px', borderRadius: 'var(--radius-s)',
+                cursor: o.probed && !o.available ? 'not-allowed' : 'pointer',
+                opacity: o.probed && !o.available ? 0.45 : 1,
+                background: jesmannTypeId === o.type.id ? 'var(--accent-soft)' : 'var(--bg-1)',
+                border: '1px solid ' + (jesmannTypeId === o.type.id ? 'var(--accent)' : 'var(--hairline)'),
+              }"
+              @click="(o.available || !o.probed) && (jesmannTypeId = o.type.id)"
+            >
+              <div style="flex: 1; min-width: 0;">
+                <div style="font-weight: 500;">{{ o.type.label }}</div>
+                <div class="muted" style="font-size: var(--fs-xs);">
+                  {{ o.probed ? (o.available ? formatBytes(o.size) + (o.gzip ? ' · gzip' : '') : 'unavailable') : 'size unknown' }}
+                </div>
+              </div>
+              <Pill v-if="o.probed && o.available" tone="cyan">{{ formatBytes(o.size) }}</Pill>
+              <Icon v-if="jesmannTypeId === o.type.id" name="check" :size="14" style="color: var(--accent-hi);" />
+            </button>
+            <div v-if="!jesmannProbing && jesmannProbed && !jesmannHasAvailable" class="muted" style="color: var(--bad); font-size: var(--fs-sm);">
+              No downloads are available for this region right now.
+            </div>
+            <div v-if="jesmannProbeError" class="muted" style="font-size: var(--fs-xs);">{{ jesmannProbeError }}</div>
           </div>
 
           <div v-if="jesmannSelectedType" class="card" style="background: var(--bg-2); padding: 14px; display: flex; flex-direction: column; gap: 6px;">
@@ -659,7 +852,26 @@ async function add() {
       </div>
 
       <div class="modal-ft">
-        <Btn variant="ghost" @click="emit('close')">Cancel</Btn>
+        <!-- Live execution status (all tabs): phase text + % while importing, pushed to the LEFT of the
+             buttons. A Jesmann failure also surfaces here (its tab has no body error slot); the other tabs
+             show their failure in-body, so for them this only renders while `adding`. -->
+        <span
+          v-if="adding || (tab === 'jesmann' && importPhase === 'error' && jesmannError)"
+          class="muted"
+          :style="{
+            marginRight: 'auto', fontSize: 'var(--fs-sm)', display: 'flex', alignItems: 'center', gap: '6px',
+            color: importPhase === 'error' ? 'var(--bad)' : undefined,
+          }"
+        >
+          <template v-if="adding">
+            <template v-if="importPhase === 'importing'">
+              Importing &amp; parsing…<template v-if="importPercent != null"> {{ importPercent }}%</template>
+            </template>
+            <template v-else>Downloading…</template>
+          </template>
+          <template v-else><Icon name="warn" :size="12" />{{ jesmannError }}</template>
+        </span>
+        <Btn variant="ghost" :disabled="adding" @click="adding || emit('close')">Cancel</Btn>
         <Btn
           v-if="tab === 'gracenote'"
           variant="primary"
@@ -696,6 +908,12 @@ async function add() {
         >
           {{ adding ? (customMode === 'file' ? 'Importing…' : 'Syncing…') : (customMode === 'file' ? 'Add & import' : 'Add & sync') }}
         </Btn>
+      </div>
+
+      <!-- Thin import progress bar beneath the footer (the shared ProgressBar primitive): determinate when the
+           server reports a percent, otherwise indeterminate. Only present while a create/sync is running. -->
+      <div v-if="adding" style="padding: 2px 16px 14px;">
+        <ProgressBar :value="importPercent != null ? importPercent / 100 : null" />
       </div>
     </div>
   </div>

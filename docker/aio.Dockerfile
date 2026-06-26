@@ -8,6 +8,9 @@
 #
 #   docker run -d --name masqueradarr -p 3000:3000 -v masqueradarr-data:/data iflip721/masqueradarr:latest
 #
+# To publish on a different host port, change the LEFT side of -p, e.g. `-p 8080:3000` (the container
+# always serves on 3000 internally; the compose stack's MASQUERADARR_PORT env var does not apply here).
+#
 # Unlike a layered build, this needs NO prerequisite image — build it directly:
 #   docker build -f docker/aio.Dockerfile -t iflip721/masqueradarr:latest .
 #

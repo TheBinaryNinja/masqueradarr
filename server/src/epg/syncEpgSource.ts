@@ -18,7 +18,7 @@ import {
 import { fetchRegionChannels, fetchChannelXml, mapEventsToPrograms, todayYmd } from './epgpw.js';
 import { syncTubiEpg } from './tubi.js';
 import { syncDlhdEpg } from './dlhd.js';
-import { syncXmltvUrl } from './xmltvIngest.js';
+import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
 
@@ -33,17 +33,20 @@ export async function syncPrograms(
   sourceId: string,
   urlTemplate: string,
   offset: string,
+  onProgress?: ImportProgress,
 ): Promise<{ channels: number; programs: number }> {
   const times = gridWindowTimes(Date.now());
 
-  // Sequential, best-effort: fetch each 6-hour window in order; a failed window is logged + skipped.
+  // Sequential, best-effort: fetch each 6-hour window in order; a failed window is logged + skipped. A
+  // streaming caller gets a per-window % (windows attempted / total) as each round-trip completes.
   const grids: any[] = [];
-  for (const t of times) {
+  for (let i = 0; i < times.length; i++) {
     try {
-      grids.push(await fetchGrid(fillTime(urlTemplate, t)));
+      grids.push(await fetchGrid(fillTime(urlTemplate, times[i])));
     } catch (err) {
-      logger.warn('epg', `gracenote window time=${t} failed: ${(err as Error).message}`);
+      logger.warn('epg', `gracenote window time=${times[i]} failed: ${(err as Error).message}`);
     }
+    onProgress?.({ phase: 'importing', percent: Math.min(99, Math.floor(((i + 1) / times.length) * 100)) });
   }
   if (!grids.length) throw new Error(`gracenote grid: all ${times.length} windows failed`);
 
@@ -110,6 +113,7 @@ export async function syncEpgpwSource(
   sourceId: string,
   areaHref: string,
   offset: string,
+  onProgress?: ImportProgress,
 ): Promise<{ channels: number; programs: number }> {
   const channels = await fetchRegionChannels(areaHref);
 
@@ -122,9 +126,14 @@ export async function syncEpgpwSource(
     );
   }
 
-  // Fetch every channel's guide under bounded concurrency, accumulating program rows.
+  // Fetch every channel's guide under bounded concurrency, accumulating program rows. A streaming caller
+  // gets a per-channel % (guides fetched / total) — incremented in `finally` so a skipped channel still
+  // advances the bar. The lastPct guard collapses the concurrent emits to one line per whole percent.
   const date = todayYmd();
   const docs: ProgramDoc[] = [];
+  const total = channels.length;
+  let done = 0;
+  let lastPct = -1;
   await mapLimit(channels, EPGPW_CONCURRENCY, async (c) => {
     try {
       const events = await fetchChannelXml(c.channelId, date);
@@ -132,6 +141,15 @@ export async function syncEpgpwSource(
     } catch (err) {
       logger.warn('epg', `epgpw channel ${c.channelId} guide failed: ${(err as Error).message}`);
       throw err; // mapLimit swallows it → this channel is skipped
+    } finally {
+      done++;
+      if (onProgress && total) {
+        const pct = Math.min(99, Math.floor((done / total) * 100));
+        if (pct !== lastPct) {
+          lastPct = pct;
+          onProgress({ phase: 'importing', percent: pct });
+        }
+      }
     }
   });
 

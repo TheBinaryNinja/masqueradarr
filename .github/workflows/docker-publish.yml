@@ -172,10 +172,12 @@ jobs:
             echo "Multi-arch (linux/amd64, linux/arm64) images on Docker Hub."
             echo
             echo "### \`$ns/masqueradarr\` (app + external Mongo)"
+            echo "- DockerHub : [masqueradarr compose](https://hub.docker.com/r/$ns/masqueradarr)"
             echo "- tags: $tagline"
             echo "- digest: \`${{ needs.build.outputs.digest_app }}\`"
             echo
             echo "### \`$ns/masqueradarr-aio\` (all-in-one)"
+            echo "- DockerHub : [masqueradarr aio](https://hub.docker.com/r/$ns/masqueradarr-aio)"
             echo "- tags: $tagline"
             echo "- digest: \`${{ needs.build.outputs.digest_aio }}\`"
             echo

@@ -460,6 +460,12 @@ export interface StreamIngestCounts {
   programs: number;
 }
 
+// A progress sink for a streaming import. The route adapts it to NDJSON `{ phase, percent }` lines; the
+// non-streaming (blocking) caller passes a no-op. `percent` is a 0..99 integer while work is in flight
+// (100 is implied by the terminal `done`), and is OMITTED when the total isn't knowable (e.g. a remote
+// guide served with no Content-Length). Shared by every Add-EPG sync core (gracenote / epg-pw / xmltv).
+export type ImportProgress = (ev: { phase: 'downloading' | 'importing'; percent?: number }) => void;
+
 // Stream an XMLTV byte stream → REPLACE the owning source's epgchannels + programs, with BOUNDED memory.
 // Channels are accumulated WHOLE (they're tiny relative to programmes — a national guide has thousands of
 // channels but hundreds of thousands of programmes) and de-duped by composite _id; programmes are flushed to
@@ -471,6 +477,7 @@ export async function streamXmltvToEpg(
   stream: Readable,
   sourceId: string,
   offset: string,
+  onBatch?: () => void,
 ): Promise<StreamIngestCounts> {
   const startedAt = Date.now();
   const channelById = new Map<string, EpgChannelDoc>();
@@ -488,6 +495,7 @@ export async function streamXmltvToEpg(
     pending = [];
     await Program.insertMany(batch, { ordered: false });
     writtenPrograms += batch.length;
+    onBatch?.(); // progress hook — fired after each programme batch lands (the caller computes the %)
   };
 
   const reader = new XmltvSaxReader(
@@ -519,6 +527,7 @@ export async function streamXmltvToEpg(
       pending = pending.slice(PROGRAMME_BATCH);
       await Program.insertMany(batch, { ordered: false });
       writtenPrograms += batch.length;
+      onBatch?.(); // progress hook — % is read off the live byte counter by the caller
     }
   }
   reader.end();
@@ -605,6 +614,7 @@ export async function writeXmltvEpg(
   xml: string,
   sourceId: string,
   offset: string,
+  onPercent?: (percent: number) => void,
 ): Promise<{ channels: number; programs: number }> {
   const { channels, programmes } = parseXmltv(xml);
   const channelDocs = mapXmltvToEpgChannels(channels, sourceId);
@@ -613,10 +623,25 @@ export async function writeXmltvEpg(
   await EpgChannel.deleteMany({ source: sourceId });
   if (channelDocs.length) await EpgChannel.insertMany(channelDocs, { ordered: false });
 
+  // Replace the per-source programs in batches so the upload path can report a real % (rows inserted /
+  // total) — the buffered analogue of the streaming path's per-batch progress hook. A single big
+  // insertMany would otherwise jump 0 → 100 with no intermediate feedback.
   await Program.deleteMany({ source: sourceId });
-  if (programDocs.length) await Program.insertMany(programDocs, { ordered: false });
+  const total = programDocs.length;
+  let lastPct = -1;
+  for (let i = 0; i < total; i += PROGRAMME_BATCH) {
+    const batch = programDocs.slice(i, i + PROGRAMME_BATCH);
+    await Program.insertMany(batch, { ordered: false });
+    if (onPercent) {
+      const pct = Math.min(99, Math.floor(((i + batch.length) / total) * 100));
+      if (pct !== lastPct) {
+        lastPct = pct;
+        onPercent(pct);
+      }
+    }
+  }
 
-  return { channels: channelDocs.length, programs: programDocs.length };
+  return { channels: channelDocs.length, programs: total };
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -630,11 +655,28 @@ export async function writeXmltvEpg(
 // zlib.createGunzip(); otherwise the raw `.xml` is streamed. Honors the global undici DNS dispatcher. Throws
 // a tagged error on a non-OK status (→ the route maps it to 502 xmltv_unreachable). Returns a Node Readable of
 // DECODED gzip-or-raw bytes (NOT setEncoding'd yet — the caller sets utf-8).
-export async function fetchXmltvStream(url: string): Promise<Readable> {
+// The `.gz`-first transfer preference, shared by the streaming fetch and the size probe so both honor the same
+// candidate order (many Jesmann mirrors serve both <url> and <url>.gz; per-market/Team-Sports files have none).
+function xmltvGzCandidates(url: string): string[] {
   const isGzUrl = /\.gz(\?|#|$)/i.test(url);
+  return isGzUrl ? [url] : [`${url}.gz`, url];
+}
 
+// A decoded XMLTV byte stream plus the transfer's progress instrumentation: `totalBytes` is the chosen
+// response's Content-Length (the COMPRESSED transfer size when gzip — matches the picker's size and what a
+// sync actually downloads), or null when the server doesn't advertise one; `bytesRead()` returns the running
+// count of COMPRESSED bytes consumed so far (counted on the raw response BEFORE gunzip), so a caller can
+// report `bytesRead()/totalBytes` as a true download-progress %. In the streaming pipeline the SAX parse is
+// gated on the download (backpressure), so this byte % tracks parse progress closely.
+export interface XmltvStream {
+  stream: Readable;
+  totalBytes: number | null;
+  bytesRead: () => number;
+}
+
+export async function fetchXmltvStream(url: string): Promise<XmltvStream> {
   // Try the smaller `.gz` first for a non-`.gz` URL; fall back to the original on any non-OK / fetch error.
-  const candidates = isGzUrl ? [url] : [`${url}.gz`, url];
+  const candidates = xmltvGzCandidates(url);
   let res: Response | null = null;
   let lastErr: Error | null = null;
   for (let i = 0; i < candidates.length; i++) {
@@ -654,6 +696,10 @@ export async function fetchXmltvStream(url: string): Promise<Readable> {
   }
   if (!res || !res.body) throw lastErr ?? new Error('xmltv fetch failed: no response body');
 
+  // Content-Length of the chosen transfer (null when chunked / unset → progress degrades to phase-only).
+  const lenHeader = Number(res.headers.get('content-length'));
+  const totalBytes = Number.isFinite(lenHeader) && lenHeader > 0 ? lenHeader : null;
+
   const raw = Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]);
 
   // Decide gzip by SNIFFING the first 2 bytes (1f 8b) — the only reliable signal. Mirrors are inconsistent:
@@ -665,13 +711,23 @@ export async function fetchXmltvStream(url: string): Promise<Readable> {
   const looksGz = firstChunk.length > 1 && firstChunk[0] === 0x1f && firstChunk[1] === 0x8b;
 
   // Re-prepend the peeked chunk, then optionally gunzip. Build a fresh Readable that yields the head then the
-  // rest of the source so no bytes are lost.
+  // rest of the source so no bytes are lost. Count COMPRESSED bytes as the generator is PULLED (backpressure
+  // keeps it within one highWaterMark of actual consumption), so bytesRead() tracks download/parse progress.
+  let bytesRead = 0;
   const recombined = Readable.from((async function* () {
-    if (!head.done) yield firstChunk;
-    for await (const c of raw) yield c as Buffer;
+    if (!head.done) {
+      bytesRead += firstChunk.length;
+      yield firstChunk;
+    }
+    for await (const c of raw) {
+      const buf = c as Buffer;
+      bytesRead += buf.length;
+      yield buf;
+    }
   })());
 
-  return looksGz ? recombined.pipe(createGunzip()) : recombined;
+  const stream = looksGz ? recombined.pipe(createGunzip()) : recombined;
+  return { stream, totalBytes, bytesRead: () => bytesRead };
 }
 
 // Fetch a remote XMLTV URL + REPLACE the source's channels/programs by STREAMING — the 'remote url' re-sync
@@ -680,14 +736,133 @@ export async function syncXmltvUrl(
   sourceId: string,
   url: string,
   offset: string,
+  onProgress?: ImportProgress,
 ): Promise<{ channels: number; programs: number }> {
-  const stream = await fetchXmltvStream(url);
-  return streamXmltvToEpg(stream, sourceId, offset);
+  // fetchXmltvStream resolving = the download connected + first bytes are in hand; streamXmltvToEpg is the
+  // import/parse. onProgress (when given) reports a real two-phase progress to a streaming caller (the NDJSON
+  // routes): `importing` on connect, then `importing` + a byte-based % per batch. When Content-Length is
+  // unknown the % is omitted (phase-only). Existing callers (syncEpgSource, blocking route) pass nothing.
+  const { stream, totalBytes, bytesRead } = await fetchXmltvStream(url);
+  onProgress?.({ phase: 'importing' });
+  let lastPct = -1;
+  const onBatch =
+    onProgress && totalBytes
+      ? () => {
+          const pct = Math.min(99, Math.floor((bytesRead() / totalBytes) * 100));
+          if (pct !== lastPct) {
+            lastPct = pct;
+            onProgress({ phase: 'importing', percent: pct });
+          }
+        }
+      : undefined;
+  return streamXmltvToEpg(stream, sourceId, offset, onBatch);
 }
 
 // Stream-validate a remote XMLTV URL without persisting — the bounded-memory pre-flight for the Custom Add
 // modal's `{ url }` validate. Throws a tagged fetch error on a non-OK status (→ 502 xmltv_unreachable).
 export async function validateXmltvUrl(url: string): Promise<XmltvValidation> {
-  const stream = await fetchXmltvStream(url);
+  const { stream } = await fetchXmltvStream(url);
   return streamValidateXmltv(stream);
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Size probe (the Jesmann guided picker — "pick by size") — HEADERS ONLY
+// ──────────────────────────────────────────────────────────────────────
+
+// A live availability + download-SIZE check for a Jesmann catalog URL, so the Add-EPG picker can list every
+// variant with its real size and grey out missing ones. We only ever read response HEADERS — never the body —
+// so a probe of a 2–10 GB national guide costs one round-trip, not a download. `size` is the transfer
+// Content-Length: when `gzip` is true it's the COMPRESSED size (the actual download), which is the right metric
+// for "pick by size". `url` echoes the PLAIN catalog url the caller sent (what the picker keys on / stores).
+export interface XmltvProbeResult {
+  url: string;
+  available: boolean;
+  size: number | null;
+  gzip: boolean;
+}
+
+// SSRF gate: the probe fetches caller-supplied URLs server-side (through the global undici DNS dispatcher), so
+// restrict it to the one host the Jesmann picker targets. Off-host / non-https URLs report unavailable WITHOUT
+// any fetch.
+const JESMANN_HOST = 'epg.jesmann.com';
+const PROBE_TTL_MS = 10 * 60 * 1000; // Jesmann guides regenerate ~daily; 10 min keeps re-selecting a region snappy.
+const probeCache = new Map<string, { result: XmltvProbeResult; at: number }>();
+
+function isJesmannUrl(url: string): boolean {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && u.hostname.toLowerCase() === JESMANN_HOST;
+  } catch {
+    return false;
+  }
+}
+
+// Probe ONE candidate URL for its size. Returns a byte count, `null` (reachable but size unknown), or `false`
+// (not reachable). HEAD first; on a method-not-allowed / Content-Length-less 2xx, fall back to a 1-byte ranged
+// GET and read the total from Content-Range ("bytes 0-0/N") or Content-Length — cancelling the body so even a
+// server that ignores Range and returns 200 + full body is never downloaded.
+async function headOrRange(candidate: string, timeoutMs: number): Promise<number | null | false> {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    let r = await fetch(candidate, { method: 'HEAD', headers: XMLTV_HEADERS, redirect: 'follow', signal: ctrl.signal });
+    if (r.status === 405 || r.status === 501 || (r.ok && !r.headers.get('content-length'))) {
+      r = await fetch(candidate, {
+        method: 'GET',
+        headers: { ...XMLTV_HEADERS, Range: 'bytes=0-0' },
+        redirect: 'follow',
+        signal: ctrl.signal,
+      });
+      await r.body?.cancel().catch(() => {});
+      if (!(r.ok || r.status === 206)) return false;
+      const cr = r.headers.get('content-range'); // 'bytes 0-0/12345'
+      const total = cr ? Number(cr.split('/')[1]) : Number(r.headers.get('content-length'));
+      return Number.isFinite(total) && total > 0 ? total : null;
+    }
+    await r.body?.cancel().catch(() => {});
+    if (!r.ok) return false;
+    const len = Number(r.headers.get('content-length'));
+    return Number.isFinite(len) && len > 0 ? len : null;
+  } catch {
+    return false; // timeout / abort / network → treat as unavailable
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Probe a single Jesmann URL for availability + download size, honoring the same `.gz`-first preference as
+// fetchXmltvStream (so the reported size matches what a sync would actually download). Successful probes are
+// cached for PROBE_TTL_MS; failures are NOT cached so a transiently-down file retries on the next select.
+export async function probeXmltvUrl(url: string, timeoutMs = 8000): Promise<XmltvProbeResult> {
+  if (!isJesmannUrl(url)) return { url, available: false, size: null, gzip: false };
+  const cached = probeCache.get(url);
+  if (cached && Date.now() - cached.at < PROBE_TTL_MS) return cached.result;
+
+  let result: XmltvProbeResult = { url, available: false, size: null, gzip: false };
+  for (const candidate of xmltvGzCandidates(url)) {
+    const size = await headOrRange(candidate, timeoutMs);
+    if (size !== false) {
+      result = { url, available: true, size, gzip: /\.gz(\?|#|$)/i.test(candidate) };
+      break;
+    }
+  }
+  if (result.available) probeCache.set(url, { result, at: Date.now() });
+  return result;
+}
+
+// Probe a batch of Jesmann URLs with bounded concurrency. Results are returned 1:1 with the input order.
+export async function probeXmltvUrls(
+  urls: string[],
+  { concurrency = 6, timeoutMs = 8000 }: { concurrency?: number; timeoutMs?: number } = {},
+): Promise<XmltvProbeResult[]> {
+  const out: XmltvProbeResult[] = new Array(urls.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < urls.length) {
+      const i = next++;
+      out[i] = await probeXmltvUrl(urls[i], timeoutMs);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, urls.length || 1) }, worker));
+  return out;
 }
