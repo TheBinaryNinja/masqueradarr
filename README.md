@@ -2,8 +2,12 @@
 <img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
-    <img alt="Static Badge" src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr">
-    <img alt="Static Badge" src="https://img.shields.io/badge/GitHub_Releases-masqueradarr_repo-cyan?style=for-the-badge&logo=github&link=https%3A%2F%2Fgithub.com%2FTheBinaryNinja%2Fmasqueradarr%2Freleases">
+    <a href="https://hub.docker.com/r/iflip721/masqueradarr">
+      <img src="https://img.shields.io/badge/Docker_Hub_Releases-masqueradarr-cyan?style=for-the-badge&logo=docker&link=https%3A%2F%2Fhub.docker.com%2Fr%2Fiflip721%2Fmasqueradarr" alt="Static Badge">
+    </a>
+    <a href="https://github.com/TheBinaryNinja/masqueradarr/releases">
+      <img src="https://img.shields.io/badge/GitHub_Releases-masqueradarr_repo-cyan?style=for-the-badge&logo=github&link=https%3A%2F%2Fgithub.com%2FTheBinaryNinja%2Fmasqueradarr%2Freleases" alt="Static Badge">
+    </a>
   </div><br/>
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
     <img alt="Docker Image Version (tag)" src="https://img.shields.io/docker/v/iflip721/masqueradarr/dev?sort=date&style=for-the-badge&logo=Docker&color=salmon">
@@ -13,8 +17,9 @@
 
 # What is `masqueradarr`
 
-<img alt="Static Badge" src="https://img.shields.io/badge/masqueradarr-join_discord-5865F2?style=for-the-badge&logo=discord&link=https%3A%2F%2Fdiscord.gg%2FUEx4fEVwg4">
-
+<a href="https://discord.gg/baD3HGpkcD">
+  <img src="https://img.shields.io/badge/masqueradarr-join_discord-5865F2?style=for-the-badge&logo=discord&link=https%3A%2F%2Fdiscord.gg%2FUEx4fEVwg4" alt="Static Badge">
+</a>
 
 **masqueradarr** is a self-hosted IPTV aggregator. It pulls channel playlists (M3U) and guide
 data (EPG/XMLTV) from a range of online IPTV services, normalizes them into one catalog, and
