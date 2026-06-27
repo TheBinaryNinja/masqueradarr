@@ -24,7 +24,7 @@ export interface Playlist {
   // Lowercase canonical value (the repo-wide source-type normalization): 'global' | 'custom'.
   endpoint?: 'global' | 'custom';
   // Set for the established (Default) source playlists (dulo/common/dlhd); drives live sync. For a
-  // user-composed playlist this is a lowercase TYPE TAG: 'clone' | 'file' | 'url' | 'hdhomerun'
+  // user-composed playlist this is a lowercase TYPE TAG: 'clone' | 'file' | 'url' | 'hdhomerun' | 'local'
   // (legacy 'import' still appears on pre-split rows).
   source?: string | null;
   // Auth: `authentication` = this playlist requires sign-in to stream (stored, source-intrinsic);
@@ -652,15 +652,16 @@ const EPG_META_FIELDS: { key: keyof EpgSource; label: string }[] = [
   { key: 'postalCode', label: 'postalCode' },
 ];
 // Pretty display label for the lowercase EPG source-KIND discriminator. The stored/compared value is
-// lowercase ('gracenote'/'epg-pw'/'jesmann'/'tubi'/'dlhd'/'xml file'/'remote url') — this maps the proper-name
-// providers back to their brand casing for the UI (the SOURCE chip, etc.); unknown kinds pass through
-// verbatim. Case-insensitive so a legacy capitalized row still renders the brand label pre-migration.
+// lowercase ('gracenote'/'epg-pw'/'jesmann'/'tubi'/'dlhd'/'dami'/'xml file'/'remote url') — this maps the
+// proper-name providers back to their brand casing for the UI (the SOURCE chip, etc.); unknown kinds pass
+// through verbatim. Case-insensitive so a legacy capitalized row still renders the brand label pre-migration.
 const EPG_SOURCE_LABELS: Record<string, string> = {
   gracenote: 'Gracenote',
   'epg-pw': 'EPG-PW',
   jesmann: 'Jesmann',
   tubi: 'tubi',
   dlhd: 'dlhd',
+  dami: 'dami',
   'xml file': 'xml file',
   'remote url': 'remote url',
 };

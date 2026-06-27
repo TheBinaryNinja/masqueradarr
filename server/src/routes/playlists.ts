@@ -396,7 +396,7 @@ async function cascadeDeleteBuiltinPlaylist(p: {
     );
   }
 
-  // 2. The playlist-bound self-EPG source (tubi/dlhd self-EPG; id === src, playlistBinding:true), if any.
+  // 2. The playlist-bound self-EPG source (tubi/dlhd/dami self-EPG; id === src, playlistBinding:true), if any.
   //    cascadeDeleteEpgSource unlinks every playlistchannel linked to it — INCLUDING this built-in's own
   //    channels — and drops its programs/epgchannels/cronjob. dulo has none (crosswalk-only) → no-op.
   const bound = (await EpgSource.findOne(

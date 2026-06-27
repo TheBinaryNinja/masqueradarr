@@ -1363,13 +1363,10 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--accent);
 }
 
-/* EPG source detail — sticky header + bounded timeline (page scrolls behind the header) */
-.epg-detail-header {
-  position: sticky;
-  top: var(--topbar-h);       /* pin under the overlay topbar */
-  z-index: 5;                 /* above .epg-head (4); overlays render at app root */
-  background: var(--bg-1);    /* opaque card token — keeps cards from bleeding through */
-}
+/* EPG source detail — the header is a plain in-flow .card, positioned identically to the
+   Playlists detail header (PlaylistDetailScreen.vue): no sticky/fixed, scrolls with the page.
+   The only pinned element on these detail screens is the filter toolbar (.pl-detail-sticky on
+   Playlists), not the header. The bounded timeline below keeps its own internal scroll. */
 .epg-grid-card {
   /* bounded so the timeline keeps its own internal scroll while the page scrolls around it */
   height: clamp(420px, 65vh, 900px);

@@ -1,0 +1,3260 @@
+{
+  "channels": [
+    {
+      "region": "us_east",
+      "channelId": "673247127d5da5000817b4d6",
+      "name": "Pluto TV Trending Now",
+      "logo": "https://images.pluto.tv/channels/673247127d5da5000817b4d6/colorLogoPNG_1732662634386.png",
+      "category": "Movies",
+      "number": 5
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ba3fb9c4b078e0f37ad34e8",
+      "name": "Pluto TV Spotlight",
+      "logo": "https://images.pluto.tv/channels/5ba3fb9c4b078e0f37ad34e8/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 10
+    },
+    {
+      "region": "us_east",
+      "channelId": "68fbf8101d26140175db8b58",
+      "name": "Pluto TV Franchise Favorites",
+      "logo": "https://images.pluto.tv/channels/68fbf8101d26140175db8b58/colorLogoPNG_1762383685562.png",
+      "category": "Movies",
+      "number": 15
+    },
+    {
+      "region": "us_east",
+      "channelId": "64b585f84ea480000838e446",
+      "name": "Pluto TV Icons",
+      "logo": "https://images.pluto.tv/channels/64b585f84ea480000838e446/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 20
+    },
+    {
+      "region": "us_east",
+      "channelId": "561d7d484dc7c8770484914a",
+      "name": "Pluto TV Action",
+      "logo": "https://images.pluto.tv/channels/561d7d484dc7c8770484914a/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 30
+    },
+    {
+      "region": "us_east",
+      "channelId": "617b37b361e0fd0008cfd8c5",
+      "name": "Pluto TV Reaction",
+      "logo": "https://images.pluto.tv/channels/617b37b361e0fd0008cfd8c5/colorLogoPNG_1731837948814.png",
+      "category": "Movies",
+      "number": 40
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b64a245a202b3337f09e51d",
+      "name": "Pluto TV Fantastic",
+      "logo": "https://images.pluto.tv/channels/5b64a245a202b3337f09e51d/colorLogoPNG_1756834917957.png",
+      "category": "Movies",
+      "number": 45
+    },
+    {
+      "region": "us_east",
+      "channelId": "5a4d3a00ad95e4718ae8d8db",
+      "name": "Pluto TV Comedy",
+      "logo": "https://images.pluto.tv/channels/5a4d3a00ad95e4718ae8d8db/colorLogoPNG_1731836724642.png",
+      "category": "Movies",
+      "number": 50
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b4e92e4694c027be6ecece1",
+      "name": "Pluto TV Drama",
+      "logo": "https://images.pluto.tv/channels/5b4e92e4694c027be6ecece1/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 60
+    },
+    {
+      "region": "us_east",
+      "channelId": "5a66795ef91fef2c7031c599",
+      "name": "Pluto TV Romance",
+      "logo": "https://images.pluto.tv/channels/5a66795ef91fef2c7031c599/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 80
+    },
+    {
+      "region": "us_east",
+      "channelId": "58af4c093a41ca9d4ecabe96",
+      "name": "BET Cinema",
+      "logo": "https://images.pluto.tv/channels/58af4c093a41ca9d4ecabe96/colorLogoPNG_1759338280891.png",
+      "category": "Movies",
+      "number": 100
+    },
+    {
+      "region": "us_east",
+      "channelId": "68c32d88f56983aba40052bd",
+      "name": "BET Comedy Movies",
+      "logo": "https://images.pluto.tv/channels/68c32d88f56983aba40052bd/colorLogoPNG_1759246622596.png",
+      "category": "Movies",
+      "number": 105
+    },
+    {
+      "region": "us_east",
+      "channelId": "663946c1b18d700008d9c168",
+      "name": "BET Visionaries",
+      "logo": "https://images.pluto.tv/channels/663946c1b18d700008d9c168/colorLogoPNG_1759338795452.png",
+      "category": "Movies",
+      "number": 110
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4d8594eb979c0007706de7",
+      "name": "Pluto TV Crime Movies",
+      "logo": "https://images.pluto.tv/channels/5f4d8594eb979c0007706de7/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 120
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b4e69e08291147bd04a9fd7",
+      "name": "Pluto TV Thrillers",
+      "logo": "https://images.pluto.tv/channels/5b4e69e08291147bd04a9fd7/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 130
+    },
+    {
+      "region": "us_east",
+      "channelId": "569546031a619b8f07ce6e25",
+      "name": "Pluto TV Horror",
+      "logo": "https://images.pluto.tv/channels/569546031a619b8f07ce6e25/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 140
+    },
+    {
+      "region": "us_east",
+      "channelId": "5c6dc88fcd232425a6e0f06e",
+      "name": "Pluto TV Terror",
+      "logo": "https://images.pluto.tv/channels/5c6dc88fcd232425a6e0f06e/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 150
+    },
+    {
+      "region": "us_east",
+      "channelId": "62ba60f059624e000781c436",
+      "name": "00s Replay",
+      "logo": "https://images.pluto.tv/channels/62ba60f059624e000781c436/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 160
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4d86f519358a00072b978e",
+      "name": "90s Throwback",
+      "logo": "https://images.pluto.tv/channels/5f4d86f519358a00072b978e/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 170
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ca525b650be2571e3943c63",
+      "name": "80s Rewind",
+      "logo": "https://images.pluto.tv/channels/5ca525b650be2571e3943c63/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 180
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4d878d3d19b30007d2e782",
+      "name": "70s Cinema",
+      "logo": "https://images.pluto.tv/channels/5f4d878d3d19b30007d2e782/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 190
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cb0cae7a461406ffe3f5213",
+      "name": "Paramount Movie Channel",
+      "logo": "https://images.pluto.tv/channels/5cb0cae7a461406ffe3f5213/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 200
+    },
+    {
+      "region": "us_east",
+      "channelId": "645e7828e1979c00087b75b4",
+      "name": "MovieSphere by Lionsgate",
+      "logo": "https://images.pluto.tv/channels/645e7828e1979c00087b75b4/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 205
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b4e94282d4ec87bdcbb87cd",
+      "name": "Pluto TV Westerns",
+      "logo": "https://images.pluto.tv/channels/5b4e94282d4ec87bdcbb87cd/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 210
+    },
+    {
+      "region": "us_east",
+      "channelId": "561c5b0dada51f8004c4d855",
+      "name": "Classic Movies Channel",
+      "logo": "https://images.pluto.tv/channels/561c5b0dada51f8004c4d855/colorLogoPNG_1759790242932.png",
+      "category": "Movies",
+      "number": 220
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4d863b98b41000076cd061",
+      "name": "Pluto TV Staff Picks",
+      "logo": "https://images.pluto.tv/channels/5f4d863b98b41000076cd061/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 225
+    },
+    {
+      "region": "us_east",
+      "channelId": "58e55b14ad8e9c364d55f717",
+      "name": "Flicks of Fury",
+      "logo": "https://images.pluto.tv/channels/58e55b14ad8e9c364d55f717/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 240
+    },
+    {
+      "region": "us_east",
+      "channelId": "5c665db3e6c01b72c4977bc2",
+      "name": "Pluto TV Cult Films",
+      "logo": "https://images.pluto.tv/channels/5c665db3e6c01b72c4977bc2/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 250
+    },
+    {
+      "region": "us_east",
+      "channelId": "633354b63df9700007f6a1b7",
+      "name": "Sitcom Legends",
+      "logo": "https://images.pluto.tv/channels/633354b63df9700007f6a1b7/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 290
+    },
+    {
+      "region": "us_east",
+      "channelId": "6a28827ef4a627f3b07df1ea",
+      "name": "Cheers",
+      "logo": "https://images.pluto.tv/channels/6a28827ef4a627f3b07df1ea/colorLogoPNG_1781731467139.png",
+      "category": "Comedy",
+      "number": 293
+    },
+    {
+      "region": "us_east",
+      "channelId": "66ba495ffe11e5000881f049",
+      "name": "Frasier",
+      "logo": "https://images.pluto.tv/channels/66ba495ffe11e5000881f049/colorLogoPNG_1782142982491.png",
+      "category": "Comedy",
+      "number": 295
+    },
+    {
+      "region": "us_east",
+      "channelId": "5c2d64ffbdf11b71587184b8",
+      "name": "TV Land Sitcoms",
+      "logo": "https://images.pluto.tv/channels/5c2d64ffbdf11b71587184b8/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 300
+    },
+    {
+      "region": "us_east",
+      "channelId": "6132619f9ddaa50007e7dd86",
+      "name": "More TV Sitcoms",
+      "logo": "https://images.pluto.tv/channels/6132619f9ddaa50007e7dd86/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 310
+    },
+    {
+      "region": "us_east",
+      "channelId": "66e0b4a3f0f17500085cc268",
+      "name": "Hit Sitcoms",
+      "logo": "https://images.pluto.tv/channels/66e0b4a3f0f17500085cc268/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 311
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f77939a630f530007dde654",
+      "name": "Family Ties",
+      "logo": "https://images.pluto.tv/channels/5f77939a630f530007dde654/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 315
+    },
+    {
+      "region": "us_east",
+      "channelId": "61326275b3c86a00078e4833",
+      "name": "BET Throwbacks",
+      "logo": "https://images.pluto.tv/channels/61326275b3c86a00078e4833/colorLogoPNG_1759340015358.png",
+      "category": "The Black Collective",
+      "number": 320
+    },
+    {
+      "region": "us_east",
+      "channelId": "666b265722acab000885c6aa",
+      "name": "BET x Tyler Perry Comedy",
+      "logo": "https://images.pluto.tv/channels/666b265722acab000885c6aa/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 325
+    },
+    {
+      "region": "us_east",
+      "channelId": "686d61503484d6073283059d",
+      "name": "Black Family Sitcoms",
+      "logo": "https://images.pluto.tv/channels/686d61503484d6073283059d/colorLogoPNG_1752619670829.png",
+      "category": "Comedy",
+      "number": 327
+    },
+    {
+      "region": "us_east",
+      "channelId": "580e87ff497c73ba2f321dd3",
+      "name": "Funny AF",
+      "logo": "https://images.pluto.tv/channels/580e87ff497c73ba2f321dd3/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 330
+    },
+    {
+      "region": "us_east",
+      "channelId": "67882c1c7b11714b795c2008",
+      "name": "Sketchy AF",
+      "logo": "https://images.pluto.tv/channels/67882c1c7b11714b795c2008/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 335
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ca671f215a62078d2ec0abf",
+      "name": "Comedy Central Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5ca671f215a62078d2ec0abf/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 340
+    },
+    {
+      "region": "us_east",
+      "channelId": "6996296087742204bff43147",
+      "name": "Ridiculousness",
+      "logo": "https://images.pluto.tv/channels/6996296087742204bff43147/colorLogoPNG_1772645176417.png",
+      "category": "Comedy",
+      "number": 360
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dae084727c8af0009fe40a4",
+      "name": "Tosh.0",
+      "logo": "https://images.pluto.tv/channels/5dae084727c8af0009fe40a4/colorLogoPNG_1731837283801.png",
+      "category": "Comedy",
+      "number": 370
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d48678d34ceb37d3c458a55",
+      "name": "Wild 'N Out",
+      "logo": "https://images.pluto.tv/channels/5d48678d34ceb37d3c458a55/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 380
+    },
+    {
+      "region": "us_east",
+      "channelId": "691cf0410a78a9ce61ad2121",
+      "name": "America's Funniest Home Videos",
+      "logo": "https://images.pluto.tv/channels/691cf0410a78a9ce61ad2121/colorLogoPNG_1767642885256.png",
+      "category": "Comedy",
+      "number": 385
+    },
+    {
+      "region": "us_east",
+      "channelId": "545943f1c9f133a519bbac92",
+      "name": "MST3K",
+      "logo": "https://images.pluto.tv/channels/545943f1c9f133a519bbac92/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 430
+    },
+    {
+      "region": "us_east",
+      "channelId": "58d947b9e420d8656ee101ab",
+      "name": "RiffTrax",
+      "logo": "https://images.pluto.tv/channels/58d947b9e420d8656ee101ab/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 440
+    },
+    {
+      "region": "us_east",
+      "channelId": "69eaa34817801c84fca05d94",
+      "name": "Always Funny",
+      "logo": "https://images.pluto.tv/channels/69eaa34817801c84fca05d94/colorLogoPNG_1777656411046.png",
+      "category": "Comedy",
+      "number": 450
+    },
+    {
+      "region": "us_east",
+      "channelId": "554158e864526b29254ff105",
+      "name": "FailArmy",
+      "logo": "https://images.pluto.tv/channels/554158e864526b29254ff105/colorLogoPNG.png",
+      "category": "Comedy",
+      "number": 460
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f15e32b297f96000768f928",
+      "name": "Classic TV Comedy",
+      "logo": "https://images.pluto.tv/channels/5f15e32b297f96000768f928/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 510
+    },
+    {
+      "region": "us_east",
+      "channelId": "61325d18f5166c00081b84e0",
+      "name": "Classic TV: Families",
+      "logo": "https://images.pluto.tv/channels/61325d18f5166c00081b84e0/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 520
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f85644a9493e0007a1f035",
+      "name": "BET Classics",
+      "logo": "https://images.pluto.tv/channels/60f85644a9493e0007a1f035/colorLogoPNG_1759339662769.png",
+      "category": "Classic TV",
+      "number": 530
+    },
+    {
+      "region": "us_east",
+      "channelId": "68939e206727ec919bb39061",
+      "name": "Hogan's Heroes",
+      "logo": "https://images.pluto.tv/channels/68939e206727ec919bb39061/colorLogoPNG_1757523507747.png",
+      "category": "Classic TV",
+      "number": 535
+    },
+    {
+      "region": "us_east",
+      "channelId": "634f3011f4fff20007431641",
+      "name": "I Love Lucy",
+      "logo": "https://images.pluto.tv/channels/634f3011f4fff20007431641/colorLogoPNG_1731836749484.png",
+      "category": "Classic TV",
+      "number": 540
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f75178e7f8aa0007e9c259",
+      "name": "The Andy Griffith Show",
+      "logo": "https://images.pluto.tv/channels/60f75178e7f8aa0007e9c259/colorLogoPNG_1758310637593.png",
+      "category": "Classic TV",
+      "number": 550
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d81607ab737153ea3c1c80e",
+      "name": "The Addams Family",
+      "logo": "https://images.pluto.tv/channels/5d81607ab737153ea3c1c80e/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 560
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f7796e470510900070d4e3d",
+      "name": "Beverly Hillbillies",
+      "logo": "https://images.pluto.tv/channels/5f7796e470510900070d4e3d/colorLogoPNG_1731835751688.png",
+      "category": "Classic TV",
+      "number": 570
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f7794162a4559000781fc12",
+      "name": "Happy Days",
+      "logo": "https://images.pluto.tv/channels/5f7794162a4559000781fc12/colorLogoPNG_1731835352299.png",
+      "category": "Classic TV",
+      "number": 580
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ef3977e5d773400077de284",
+      "name": "Three's Company",
+      "logo": "https://images.pluto.tv/channels/5ef3977e5d773400077de284/colorLogoPNG_1731835807101.png",
+      "category": "Classic TV",
+      "number": 590
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f7794a788d29000079d2f07",
+      "name": "The Love Boat",
+      "logo": "https://images.pluto.tv/channels/5f7794a788d29000079d2f07/colorLogoPNG_1731835231895.png",
+      "category": "Classic TV",
+      "number": 620
+    },
+    {
+      "region": "us_east",
+      "channelId": "64d1606b4c5ed80008e3b8b9",
+      "name": "Dynasty",
+      "logo": "https://images.pluto.tv/channels/64d1606b4c5ed80008e3b8b9/colorLogoPNG_1731835571308.png",
+      "category": "Classic TV",
+      "number": 630
+    },
+    {
+      "region": "us_east",
+      "channelId": "654933ac986ad20008a1f406",
+      "name": "Little House on the Prairie",
+      "logo": "https://images.pluto.tv/channels/654933ac986ad20008a1f406/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 640
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f15e3cccf49290007053c67",
+      "name": "Classic TV Drama",
+      "logo": "https://images.pluto.tv/channels/5f15e3cccf49290007053c67/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 650
+    },
+    {
+      "region": "us_east",
+      "channelId": "61325c4f982acd000723287e",
+      "name": "Classic TV Crime Drama",
+      "logo": "https://images.pluto.tv/channels/61325c4f982acd000723287e/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 660
+    },
+    {
+      "region": "us_east",
+      "channelId": "6549341853fc9700083901ac",
+      "name": "Universal Crime",
+      "logo": "https://images.pluto.tv/channels/6549341853fc9700083901ac/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 670
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f754f98185580007eb0754",
+      "name": "Matlock",
+      "logo": "https://images.pluto.tv/channels/60f754f98185580007eb0754/colorLogoPNG_1731836706925.png",
+      "category": "Classic TV",
+      "number": 680
+    },
+    {
+      "region": "us_east",
+      "channelId": "6549337183595c000815ad05",
+      "name": "Murder, She Wrote",
+      "logo": "https://images.pluto.tv/channels/6549337183595c000815ad05/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 690
+    },
+    {
+      "region": "us_east",
+      "channelId": "6197086891ddd4000739941a",
+      "name": "Perry Mason",
+      "logo": "https://images.pluto.tv/channels/6197086891ddd4000739941a/colorLogoPNG_1731835750293.png",
+      "category": "Classic TV",
+      "number": 700
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f77977bd924d80007eee60c",
+      "name": "Mission Impossible",
+      "logo": "https://images.pluto.tv/channels/5f77977bd924d80007eee60c/colorLogoPNG_1731835516936.png",
+      "category": "Classic TV",
+      "number": 710
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f36d726234ce10007784f2a",
+      "name": "The Bob Ross Channel",
+      "logo": "https://images.pluto.tv/channels/5f36d726234ce10007784f2a/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 780
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e8df4bc16e34700077e77d3",
+      "name": "Western TV",
+      "logo": "https://images.pluto.tv/channels/5e8df4bc16e34700077e77d3/colorLogoPNG.png",
+      "category": "Westerns",
+      "number": 791
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f75771dfc72a00071fd0e0",
+      "name": "Gunsmoke",
+      "logo": "https://images.pluto.tv/channels/60f75771dfc72a00071fd0e0/colorLogoPNG.png",
+      "category": "Westerns",
+      "number": 795
+    },
+    {
+      "region": "us_east",
+      "channelId": "68e9913c4a666b9054849832",
+      "name": "Bonanza",
+      "logo": "https://images.pluto.tv/channels/68e9913c4a666b9054849832/colorLogoPNG_1762379692322.png",
+      "category": "Westerns",
+      "number": 797
+    },
+    {
+      "region": "us_east",
+      "channelId": "664e640a0120f40008be4582",
+      "name": "The Wild Wild West",
+      "logo": "https://images.pluto.tv/channels/664e640a0120f40008be4582/colorLogoPNG.png",
+      "category": "Westerns",
+      "number": 800
+    },
+    {
+      "region": "us_east",
+      "channelId": "634f307c7a068e00072c9982",
+      "name": "Rawhide",
+      "logo": "https://images.pluto.tv/channels/634f307c7a068e00072c9982/colorLogoPNG_1731835685335.png",
+      "category": "Westerns",
+      "number": 810
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e825550e758c700077b0aef",
+      "name": "The Rifleman",
+      "logo": "https://images.pluto.tv/channels/5e825550e758c700077b0aef/colorLogoPNG.png",
+      "category": "Westerns",
+      "number": 815
+    },
+    {
+      "region": "us_east",
+      "channelId": "65a6dafb7bdc8d0008473c85",
+      "name": "The Lone Ranger",
+      "logo": "https://images.pluto.tv/channels/65a6dafb7bdc8d0008473c85/colorLogoPNG.png",
+      "category": "Westerns",
+      "number": 825
+    },
+    {
+      "region": "us_east",
+      "channelId": "61f33318210549000806a530",
+      "name": "Classic Movie Westerns",
+      "logo": "https://images.pluto.tv/channels/61f33318210549000806a530/colorLogoPNG.png",
+      "category": "Westerns",
+      "number": 835
+    },
+    {
+      "region": "us_east",
+      "channelId": "5efbd39f8c4ce900075d7698",
+      "name": "Star Trek",
+      "logo": "https://images.pluto.tv/channels/5efbd39f8c4ce900075d7698/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 840
+    },
+    {
+      "region": "us_east",
+      "channelId": "695c32e61ca20bb8ca802eb9",
+      "name": "Star Trek: The Next Generation",
+      "logo": "https://images.pluto.tv/channels/695c32e61ca20bb8ca802eb9/colorLogoPNG_1768440087394.png",
+      "category": "Sci-Fi",
+      "number": 842
+    },
+    {
+      "region": "us_east",
+      "channelId": "65c69bbfd77d450008c7ffee",
+      "name": "Star Trek: Deep Space Nine",
+      "logo": "https://images.pluto.tv/channels/65c69bbfd77d450008c7ffee/colorLogoPNG_1758310416057.png",
+      "category": "Sci-Fi",
+      "number": 844
+    },
+    {
+      "region": "us_east",
+      "channelId": "634dacf51d90320007fcd5fa",
+      "name": "Star Trek: Voyager",
+      "logo": "https://images.pluto.tv/channels/634dacf51d90320007fcd5fa/colorLogoPNG_1758310287876.png",
+      "category": "Sci-Fi",
+      "number": 846
+    },
+    {
+      "region": "us_east",
+      "channelId": "6913e381b6bf26bb6e798c13",
+      "name": "The X-Files",
+      "logo": "https://images.pluto.tv/channels/6913e381b6bf26bb6e798c13/colorLogoPNG_1767310653556.png",
+      "category": "Sci-Fi",
+      "number": 856
+    },
+    {
+      "region": "us_east",
+      "channelId": "69d7ebb726eeec84158e28cb",
+      "name": "Pluto TV Adventure",
+      "logo": "https://images.pluto.tv/channels/69d7ebb726eeec84158e28cb/colorLogoPNG_1777587473079.png",
+      "category": "Sci-Fi",
+      "number": 857
+    },
+    {
+      "region": "us_east",
+      "channelId": "69d7ebff029c431826bd328e",
+      "name": "Battlestar Galactica",
+      "logo": "https://images.pluto.tv/channels/69d7ebff029c431826bd328e/colorLogoPNG_1776982986391.png",
+      "category": "Sci-Fi",
+      "number": 858
+    },
+    {
+      "region": "us_east",
+      "channelId": "67352ed93a61d4000881f9fa",
+      "name": "The Twilight Zone",
+      "logo": "https://images.pluto.tv/channels/67352ed93a61d4000881f9fa/colorLogoPNG_1732662672508.png",
+      "category": "Sci-Fi",
+      "number": 859
+    },
+    {
+      "region": "us_east",
+      "channelId": "620bfa7df72827000703ddb1",
+      "name": "Stargate",
+      "logo": "https://images.pluto.tv/channels/620bfa7df72827000703ddb1/colorLogoPNG.png",
+      "category": "Sci-Fi",
+      "number": 860
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ce4475cd43850831ca91ce7",
+      "name": "Doctor Who Classic",
+      "logo": "https://images.pluto.tv/channels/5ce4475cd43850831ca91ce7/colorLogoPNG.png",
+      "category": "Sci-Fi",
+      "number": 870
+    },
+    {
+      "region": "us_east",
+      "channelId": "66c638726838ee00085ac20d",
+      "name": "Andromeda",
+      "logo": "https://images.pluto.tv/channels/66c638726838ee00085ac20d/colorLogoPNG_1772843691075.png",
+      "category": "Sci-Fi",
+      "number": 875
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b4fc274694c027be6ed3eea",
+      "name": "Pluto TV Sci-Fi",
+      "logo": "https://images.pluto.tv/channels/5b4fc274694c027be6ed3eea/colorLogoPNG.png",
+      "category": "Sci-Fi",
+      "number": 880
+    },
+    {
+      "region": "us_east",
+      "channelId": "65a9b20f0c7ff50008d3a3b6",
+      "name": "Universal Monsters",
+      "logo": "https://images.pluto.tv/channels/65a9b20f0c7ff50008d3a3b6/colorLogoPNG.png",
+      "category": "Sci-Fi",
+      "number": 905
+    },
+    {
+      "region": "us_east",
+      "channelId": "5efbd29e4aa26700076c0d06",
+      "name": "CSI",
+      "logo": "https://images.pluto.tv/channels/5efbd29e4aa26700076c0d06/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 960
+    },
+    {
+      "region": "us_east",
+      "channelId": "62f54c11b3af68000702c304",
+      "name": "CSI: Miami",
+      "logo": "https://images.pluto.tv/channels/62f54c11b3af68000702c304/colorLogoPNG_1731837343443.png",
+      "category": "Drama",
+      "number": 970
+    },
+    {
+      "region": "us_east",
+      "channelId": "62f54c6439183b000769fb8f",
+      "name": "CSI: NY",
+      "logo": "https://images.pluto.tv/channels/62f54c6439183b000769fb8f/colorLogoPNG_1731837277521.png",
+      "category": "Drama",
+      "number": 980
+    },
+    {
+      "region": "us_east",
+      "channelId": "65653817c917a5000844bc30",
+      "name": "Criminal Minds",
+      "logo": "https://images.pluto.tv/channels/65653817c917a5000844bc30/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 990
+    },
+    {
+      "region": "us_east",
+      "channelId": "68758038552299d2b08162e3",
+      "name": "Law & Order",
+      "logo": "https://images.pluto.tv/channels/68758038552299d2b08162e3/colorLogoPNG_1754039420438.png",
+      "category": "Drama",
+      "number": 995
+    },
+    {
+      "region": "us_east",
+      "channelId": "61b3b8c645b45d0007a9bb8d",
+      "name": "Blue Bloods",
+      "logo": "https://images.pluto.tv/channels/61b3b8c645b45d0007a9bb8d/colorLogoPNG_1731834396573.png",
+      "category": "Drama",
+      "number": 1000
+    },
+    {
+      "region": "us_east",
+      "channelId": "65033c4b98020f0008547124",
+      "name": "S.W.A.T.",
+      "logo": "https://images.pluto.tv/channels/65033c4b98020f0008547124/colorLogoPNG_1746815929362.png",
+      "category": "Drama",
+      "number": 1004
+    },
+    {
+      "region": "us_east",
+      "channelId": "6675c742ca74680008566b88",
+      "name": "Nash Bridges",
+      "logo": "https://images.pluto.tv/channels/6675c742ca74680008566b88/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1005
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f31fd1b4c510e00071c3103",
+      "name": "Pluto TV Crime Drama",
+      "logo": "https://images.pluto.tv/channels/5f31fd1b4c510e00071c3103/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1010
+    },
+    {
+      "region": "us_east",
+      "channelId": "69d6c7befde57cd5ba0160c3",
+      "name": "Pluto TV Hometown Drama",
+      "logo": "https://images.pluto.tv/channels/69d6c7befde57cd5ba0160c3/colorLogoPNG_1777488284970.png",
+      "category": "Drama",
+      "number": 1012
+    },
+    {
+      "region": "us_east",
+      "channelId": "666b38a5efa2a10008b15b3a",
+      "name": "BET x Tyler Perry Drama",
+      "logo": "https://images.pluto.tv/channels/666b38a5efa2a10008b15b3a/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1015
+    },
+    {
+      "region": "us_east",
+      "channelId": "6675c713fc3a46000863dde7",
+      "name": "Ebony TV Drama",
+      "logo": "https://images.pluto.tv/channels/6675c713fc3a46000863dde7/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1016
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d40bebc5e3d2750a2239d7e",
+      "name": "TV Land Drama",
+      "logo": "https://images.pluto.tv/channels/5d40bebc5e3d2750a2239d7e/colorLogoPNG.png",
+      "category": "Classic TV",
+      "number": 1020
+    },
+    {
+      "region": "us_east",
+      "channelId": "613260e4bdb71c00070d63fa",
+      "name": "More TV Drama",
+      "logo": "https://images.pluto.tv/channels/613260e4bdb71c00070d63fa/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1030
+    },
+    {
+      "region": "us_east",
+      "channelId": "654933e253fc970008390114",
+      "name": "Universal Action",
+      "logo": "https://images.pluto.tv/channels/654933e253fc970008390114/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1050
+    },
+    {
+      "region": "us_east",
+      "channelId": "62fa8176b9884200074ef5ae",
+      "name": "The Walking Dead Universe",
+      "logo": "https://images.pluto.tv/channels/62fa8176b9884200074ef5ae/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1060
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cbf6a868a1bce4a3d52a5e9",
+      "name": "Midsomer Murders",
+      "logo": "https://images.pluto.tv/channels/5cbf6a868a1bce4a3d52a5e9/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1080
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f5d389985a0c0007357304",
+      "name": "BritBox Mysteries",
+      "logo": "https://images.pluto.tv/channels/60f5d389985a0c0007357304/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1090
+    },
+    {
+      "region": "us_east",
+      "channelId": "65775af3b3801200084a3aa4",
+      "name": "Feel Good Drama",
+      "logo": "https://images.pluto.tv/channels/65775af3b3801200084a3aa4/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1120
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f24662bebe0f0000767de32",
+      "name": "Supernatural Drama",
+      "logo": "https://images.pluto.tv/channels/5f24662bebe0f0000767de32/colorLogoPNG.png",
+      "category": "Sci-Fi",
+      "number": 1130
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4d83e0a382c00007bc02e7",
+      "name": "Beverly Hills 90210",
+      "logo": "https://images.pluto.tv/channels/5f4d83e0a382c00007bc02e7/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1150
+    },
+    {
+      "region": "us_east",
+      "channelId": "61f07513227feb00073ee6bc",
+      "name": "Heartland",
+      "logo": "https://images.pluto.tv/channels/61f07513227feb00073ee6bc/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 1160
+    },
+    {
+      "region": "us_east",
+      "channelId": "5c6eeb85c05dfc257e5a50c4",
+      "name": "Degrassi",
+      "logo": "https://images.pluto.tv/channels/5c6eeb85c05dfc257e5a50c4/colorLogoPNG_1777484317786.png",
+      "category": "Drama",
+      "number": 1170
+    },
+    {
+      "region": "us_east",
+      "channelId": "5812be1c249444e05d09cc50",
+      "name": "Pluto TV True Crime",
+      "logo": "https://images.pluto.tv/channels/5812be1c249444e05d09cc50/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1220
+    },
+    {
+      "region": "us_east",
+      "channelId": "6532e6a9bdf3cf000887ab29",
+      "name": "More True Crime",
+      "logo": "https://images.pluto.tv/channels/6532e6a9bdf3cf000887ab29/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1230
+    },
+    {
+      "region": "us_east",
+      "channelId": "6887aaade3703b7d42b64be8",
+      "name": "The First 48 by A&E",
+      "logo": "https://images.pluto.tv/channels/6887aaade3703b7d42b64be8/colorLogoPNG_1754999153420.png",
+      "category": "True Crime",
+      "number": 1235
+    },
+    {
+      "region": "us_east",
+      "channelId": "6887a4e01067b66fa16966ec",
+      "name": "Live PD Presents",
+      "logo": "https://images.pluto.tv/channels/6887a4e01067b66fa16966ec/colorLogoPNG_1757525803914.png",
+      "category": "True Crime",
+      "number": 1237
+    },
+    {
+      "region": "us_east",
+      "channelId": "65492fc7056b9700088560b5",
+      "name": "American Crimes",
+      "logo": "https://images.pluto.tv/channels/65492fc7056b9700088560b5/colorLogoPNG_1763432008789.png",
+      "category": "True Crime",
+      "number": 1240
+    },
+    {
+      "region": "us_east",
+      "channelId": "637413d8531e0c0007442d6d",
+      "name": "Dateline 24/7",
+      "logo": "https://images.pluto.tv/channels/637413d8531e0c0007442d6d/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1250
+    },
+    {
+      "region": "us_east",
+      "channelId": "6176f39e709f160007ec61c3",
+      "name": "48 Hours",
+      "logo": "https://images.pluto.tv/channels/6176f39e709f160007ec61c3/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1260
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb164fb3900870ec368759",
+      "name": "Living With Evil",
+      "logo": "https://images.pluto.tv/channels/68bb164fb3900870ec368759/colorLogoPNG_1757981472717.png",
+      "category": "True Crime",
+      "number": 1265
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b4e96a0423e067bd6df6901",
+      "name": "Unsolved Mysteries",
+      "logo": "https://images.pluto.tv/channels/5b4e96a0423e067bd6df6901/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1270
+    },
+    {
+      "region": "us_east",
+      "channelId": "5aea40b35126c2157123aa64",
+      "name": "The New Detectives",
+      "logo": "https://images.pluto.tv/channels/5aea40b35126c2157123aa64/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1280
+    },
+    {
+      "region": "us_east",
+      "channelId": "5c37d6712de254456f7ec340",
+      "name": "Cold Case Files by A&E",
+      "logo": "https://images.pluto.tv/channels/5c37d6712de254456f7ec340/colorLogoPNG_1767744689997.png",
+      "category": "True Crime",
+      "number": 1290
+    },
+    {
+      "region": "us_east",
+      "channelId": "5bb1af6a268cae539bcedb0a",
+      "name": "Forensic Files",
+      "logo": "https://images.pluto.tv/channels/5bb1af6a268cae539bcedb0a/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1300
+    },
+    {
+      "region": "us_east",
+      "channelId": "654930a8346f420008d3b0b8",
+      "name": "Oxygen True Crime Archives",
+      "logo": "https://images.pluto.tv/channels/654930a8346f420008d3b0b8/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1310
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dae0b4841a7d0000938ddbd",
+      "name": "Court TV",
+      "logo": "https://images.pluto.tv/channels/5dae0b4841a7d0000938ddbd/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1320
+    },
+    {
+      "region": "us_east",
+      "channelId": "6000a5a9e767980007b497ca",
+      "name": "A&E Crime 360",
+      "logo": "https://images.pluto.tv/channels/6000a5a9e767980007b497ca/colorLogoPNG_1767745470551.png",
+      "category": "True Crime",
+      "number": 1330
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e1f7e089f23700009d66303",
+      "name": "COPS",
+      "logo": "https://images.pluto.tv/channels/5e1f7e089f23700009d66303/colorLogoPNG.png",
+      "category": "True Crime",
+      "number": 1380
+    },
+    {
+      "region": "us_east",
+      "channelId": "65244c403fd33c0008ffff31",
+      "name": "Car Chase",
+      "logo": "https://images.pluto.tv/channels/65244c403fd33c0008ffff31/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1390
+    },
+    {
+      "region": "us_east",
+      "channelId": "5bee1a7359ee03633e780238",
+      "name": "Dog the Bounty Hunter",
+      "logo": "https://images.pluto.tv/channels/5bee1a7359ee03633e780238/colorLogoPNG_1767736765611.png",
+      "category": "Reality",
+      "number": 1400
+    },
+    {
+      "region": "us_east",
+      "channelId": "6887a8fd8e92b5e0a7244e88",
+      "name": "Ancient Aliens",
+      "logo": "https://images.pluto.tv/channels/6887a8fd8e92b5e0a7244e88/colorLogoPNG_1753992701393.png",
+      "category": "Reality",
+      "number": 1405
+    },
+    {
+      "region": "us_east",
+      "channelId": "5812bcc8237a6ff45d16c407",
+      "name": "Spike Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5812bcc8237a6ff45d16c407/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1420
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d8bf0b06d2d855ee15115e3",
+      "name": "Pluto TV Reality",
+      "logo": "https://images.pluto.tv/channels/5d8bf0b06d2d855ee15115e3/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1450
+    },
+    {
+      "region": "us_east",
+      "channelId": "60a3d889a5b3690008dc7fe8",
+      "name": "Bar Rescue",
+      "logo": "https://images.pluto.tv/channels/60a3d889a5b3690008dc7fe8/colorLogoPNG_1780596469446.png",
+      "category": "Reality",
+      "number": 1460
+    },
+    {
+      "region": "us_east",
+      "channelId": "6565413e4261ca0008215320",
+      "name": "Pickers & Pawn",
+      "logo": "https://images.pluto.tv/channels/6565413e4261ca0008215320/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1465
+    },
+    {
+      "region": "us_east",
+      "channelId": "6887aaf4e3703b7d42b71a1e",
+      "name": "Storage Wars by A&E",
+      "logo": "https://images.pluto.tv/channels/6887aaf4e3703b7d42b71a1e/colorLogoPNG_1755034317630.png",
+      "category": "Reality",
+      "number": 1467
+    },
+    {
+      "region": "us_east",
+      "channelId": "6000a6f4c3f8550008fc9b91",
+      "name": "Xtreme Outdoor by HISTORY",
+      "logo": "https://images.pluto.tv/channels/6000a6f4c3f8550008fc9b91/colorLogoPNG_1767745185882.png",
+      "category": "Reality",
+      "number": 1470
+    },
+    {
+      "region": "us_east",
+      "channelId": "5c393cad2de254456f7ef8c2",
+      "name": "Spike Outdoors",
+      "logo": "https://images.pluto.tv/channels/5c393cad2de254456f7ef8c2/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1480
+    },
+    {
+      "region": "us_east",
+      "channelId": "65c69bf23ef47d0008583967",
+      "name": "Tough Jobs",
+      "logo": "https://images.pluto.tv/channels/65c69bf23ef47d0008583967/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1485
+    },
+    {
+      "region": "us_east",
+      "channelId": "686c2677ed17cf4c900a496d",
+      "name": "Wicked Tuna",
+      "logo": "https://images.pluto.tv/channels/686c2677ed17cf4c900a496d/colorLogoPNG_1755124512679.png",
+      "category": "Reality",
+      "number": 1487
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cabdf1437b88b26947346b2",
+      "name": "Pluto TV Backcountry",
+      "logo": "https://images.pluto.tv/channels/5cabdf1437b88b26947346b2/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1490
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d8beeb39b5d5d5f8c672530",
+      "name": "Pluto TV Lives",
+      "logo": "https://images.pluto.tv/channels/5d8beeb39b5d5d5f8c672530/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1500
+    },
+    {
+      "region": "us_east",
+      "channelId": "656538f8954b020008d389db",
+      "name": "UnXplained Zone",
+      "logo": "https://images.pluto.tv/channels/656538f8954b020008d389db/colorLogoPNG_1767736227039.png",
+      "category": "Reality",
+      "number": 1530
+    },
+    {
+      "region": "us_east",
+      "channelId": "5adf96e3e738977e2c31cb04",
+      "name": "Pluto TV Paranormal",
+      "logo": "https://images.pluto.tv/channels/5adf96e3e738977e2c31cb04/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1540
+    },
+    {
+      "region": "us_east",
+      "channelId": "64e561a4354251000823a0e0",
+      "name": "Ghost Hunters",
+      "logo": "https://images.pluto.tv/channels/64e561a4354251000823a0e0/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1550
+    },
+    {
+      "region": "us_east",
+      "channelId": "5812b3a4249444e05d09cc46",
+      "name": "Pluto TV Cars",
+      "logo": "https://images.pluto.tv/channels/5812b3a4249444e05d09cc46/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1560
+    },
+    {
+      "region": "us_east",
+      "channelId": "636adc255bcf470007d6e0e2",
+      "name": "Top Gear",
+      "logo": "https://images.pluto.tv/channels/636adc255bcf470007d6e0e2/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1570
+    },
+    {
+      "region": "us_east",
+      "channelId": "627d355aa95efd00077afcc7",
+      "name": "Cheaters",
+      "logo": "https://images.pluto.tv/channels/627d355aa95efd00077afcc7/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1580
+    },
+    {
+      "region": "us_east",
+      "channelId": "651f239d9c7aeb0008286823",
+      "name": "Dating Disasters",
+      "logo": "https://images.pluto.tv/channels/651f239d9c7aeb0008286823/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1670
+    },
+    {
+      "region": "us_east",
+      "channelId": "69699b6d23ea437206f4a036",
+      "name": "World of Love Island",
+      "logo": "https://images.pluto.tv/channels/69699b6d23ea437206f4a036/colorLogoPNG_1770050839989.png",
+      "category": "Reality",
+      "number": 1672
+    },
+    {
+      "region": "us_east",
+      "channelId": "6887a86be3703b7d42b3eca3",
+      "name": "Matched Married Meet by Lifetime",
+      "logo": "https://images.pluto.tv/channels/6887a86be3703b7d42b3eca3/colorLogoPNG_1757524386570.png",
+      "category": "Reality",
+      "number": 1673
+    },
+    {
+      "region": "us_east",
+      "channelId": "66abefe5d2d50d00082c7d12",
+      "name": "VH1 Queens of Reality",
+      "logo": "https://images.pluto.tv/channels/66abefe5d2d50d00082c7d12/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1675
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d51e2bceca5b4b2c0e06c50",
+      "name": "Black Ink Crew",
+      "logo": "https://images.pluto.tv/channels/5d51e2bceca5b4b2c0e06c50/colorLogoPNG_1731835399139.png",
+      "category": "Reality",
+      "number": 1680
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d51ddf0369acdb278dfb05e",
+      "name": "Love & Hip Hop",
+      "logo": "https://images.pluto.tv/channels/5d51ddf0369acdb278dfb05e/colorLogoPNG.png",
+      "category": "The Black Collective",
+      "number": 1690
+    },
+    {
+      "region": "us_east",
+      "channelId": "609bfa51fbecc1000733152e",
+      "name": "Jersey Shore",
+      "logo": "https://images.pluto.tv/channels/609bfa51fbecc1000733152e/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1720
+    },
+    {
+      "region": "us_east",
+      "channelId": "6127e12ed140e900077e7b6f",
+      "name": "Teen Mom",
+      "logo": "https://images.pluto.tv/channels/6127e12ed140e900077e7b6f/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1740
+    },
+    {
+      "region": "us_east",
+      "channelId": "6549322e53fc97000838febc",
+      "name": "Million Dollar Listing Vault",
+      "logo": "https://images.pluto.tv/channels/6549322e53fc97000838febc/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1770
+    },
+    {
+      "region": "us_east",
+      "channelId": "6549310a53fc97000838fcc9",
+      "name": "Bravo Vault",
+      "logo": "https://images.pluto.tv/channels/6549310a53fc97000838fcc9/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1780
+    },
+    {
+      "region": "us_east",
+      "channelId": "6549316d2c1d330008631496",
+      "name": "Real Housewives Vault",
+      "logo": "https://images.pluto.tv/channels/6549316d2c1d330008631496/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1790
+    },
+    {
+      "region": "us_east",
+      "channelId": "654932fa4d6d8f00084c4723",
+      "name": "Bad Girls Club",
+      "logo": "https://images.pluto.tv/channels/654932fa4d6d8f00084c4723/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1800
+    },
+    {
+      "region": "us_east",
+      "channelId": "6532e8342cf13100083b404c",
+      "name": "Warner Bros. TV Say Yes to the Dress",
+      "logo": "https://images.pluto.tv/channels/6532e8342cf13100083b404c/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1805
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e82530945600e0007ca076c",
+      "name": "All Reality WE tv",
+      "logo": "https://images.pluto.tv/channels/5e82530945600e0007ca076c/colorLogoPNG.png",
+      "category": "Reality",
+      "number": 1810
+    },
+    {
+      "region": "us_east",
+      "channelId": "603fde9026ecbf0007752c2c",
+      "name": "Pluto TV Competition",
+      "logo": "https://images.pluto.tv/channels/603fde9026ecbf0007752c2c/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1870
+    },
+    {
+      "region": "us_east",
+      "channelId": "68757c45759366af05b3b199",
+      "name": "America's Next Top Model",
+      "logo": "https://images.pluto.tv/channels/68757c45759366af05b3b199/colorLogoPNG-1756852664017.png",
+      "category": "Competition Reality",
+      "number": 1873
+    },
+    {
+      "region": "us_east",
+      "channelId": "68757c60552299d2b080eab6",
+      "name": "Project Runway",
+      "logo": "https://images.pluto.tv/channels/68757c60552299d2b080eab6/colorLogoPNG_1753221108158.png",
+      "category": "Competition Reality",
+      "number": 1876
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d40855b3fb0855028c99b6f",
+      "name": "DCC: Making the Team",
+      "logo": "https://images.pluto.tv/channels/5d40855b3fb0855028c99b6f/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1880
+    },
+    {
+      "region": "us_east",
+      "channelId": "60807fd5db701400078219c2",
+      "name": "Ink Master",
+      "logo": "https://images.pluto.tv/channels/60807fd5db701400078219c2/colorLogoPNG_1731836032181.png",
+      "category": "Competition Reality",
+      "number": 1890
+    },
+    {
+      "region": "us_east",
+      "channelId": "5b4e99f4423e067bd6df6903",
+      "name": "Gordon Ramsay's Hell's Kitchen",
+      "logo": "https://images.pluto.tv/channels/5b4e99f4423e067bd6df6903/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1900
+    },
+    {
+      "region": "us_east",
+      "channelId": "6661f11a41af6400080e90d8",
+      "name": "Big Brother",
+      "logo": "https://images.pluto.tv/channels/6661f11a41af6400080e90d8/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1940
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f21e7b24744c60007c1f6fc",
+      "name": "Survivor",
+      "logo": "https://images.pluto.tv/channels/5f21e7b24744c60007c1f6fc/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1950
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f21e8a6e2f12b000755afdb",
+      "name": "The Amazing Race",
+      "logo": "https://images.pluto.tv/channels/5f21e8a6e2f12b000755afdb/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1960
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d48685da7e9f476aa8a1888",
+      "name": "The Challenge",
+      "logo": "https://images.pluto.tv/channels/5d48685da7e9f476aa8a1888/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 1970
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ff8c708653d080007361b14",
+      "name": "Paramount+ Picks",
+      "logo": "https://images.pluto.tv/channels/5ff8c708653d080007361b14/colorLogoPNG.png",
+      "category": "Entertainment",
+      "number": 2020
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ca670f6593a5d78f0e85aed",
+      "name": "BET Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5ca670f6593a5d78f0e85aed/colorLogoPNG.png",
+      "category": "Entertainment",
+      "number": 2040
+    },
+    {
+      "region": "us_east",
+      "channelId": "68487fb3f212bedacf5a53e3",
+      "name": "50 Cent Action",
+      "logo": "https://images.pluto.tv/channels/68487fb3f212bedacf5a53e3/colorLogoPNG_1749846553889.png",
+      "category": "Entertainment",
+      "number": 2050
+    },
+    {
+      "region": "us_east",
+      "channelId": "691d1200c2185a44642f5e7c",
+      "name": "El Rey Rebel",
+      "logo": "https://images.pluto.tv/channels/691d1200c2185a44642f5e7c/colorLogoPNG_1764783865457.png",
+      "category": "Entertainment",
+      "number": 2055
+    },
+    {
+      "region": "us_east",
+      "channelId": "65453f30085df200085883d8",
+      "name": "ION",
+      "logo": "https://images.pluto.tv/channels/65453f30085df200085883d8/colorLogoPNG.png",
+      "category": "Entertainment",
+      "number": 2060
+    },
+    {
+      "region": "us_east",
+      "channelId": "63335b193583440007c859fb",
+      "name": "Lifetime Movie Favorites",
+      "logo": "https://images.pluto.tv/channels/63335b193583440007c859fb/colorLogoPNG_1767722325837.png",
+      "category": "Entertainment",
+      "number": 2070
+    },
+    {
+      "region": "us_east",
+      "channelId": "628e685ba3811100070551a8",
+      "name": "Hallmark Movies & More",
+      "logo": "https://images.pluto.tv/channels/628e685ba3811100070551a8/colorLogoPNG_1767639054863.png",
+      "category": "Entertainment",
+      "number": 2080
+    },
+    {
+      "region": "us_east",
+      "channelId": "6176fd25e83a5f0007a464c9",
+      "name": "Bounce XL",
+      "logo": "https://images.pluto.tv/channels/6176fd25e83a5f0007a464c9/colorLogoPNG.png",
+      "category": "Entertainment",
+      "number": 2100
+    },
+    {
+      "region": "us_east",
+      "channelId": "6793ea255225b515b4ba91a7",
+      "name": "ALLBLK Gems",
+      "logo": "https://images.pluto.tv/channels/6793ea255225b515b4ba91a7/colorLogoPNG.png",
+      "category": "Drama",
+      "number": 2103
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ca672f515a62078d2ec0ad2",
+      "name": "MTV Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5ca672f515a62078d2ec0ad2/colorLogoPNG.png",
+      "category": "Entertainment",
+      "number": 2140
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ce5a8954311f992edbe1da2",
+      "name": "Logo Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5ce5a8954311f992edbe1da2/colorLogoPNG_1731836723261.png",
+      "category": "The Black Collective",
+      "number": 2160
+    },
+    {
+      "region": "us_east",
+      "channelId": "69fa3faab9c0f0d444e64de3",
+      "name": "Pluto TV Pride",
+      "logo": "https://images.pluto.tv/channels/69fa3faab9c0f0d444e64de3/colorLogoPNG_1779985115765.png",
+      "category": "Entertainment",
+      "number": 2161
+    },
+    {
+      "region": "us_east",
+      "channelId": "674f735a2fb8a100087bf253",
+      "name": "Revry",
+      "logo": "https://images.pluto.tv/channels/674f735a2fb8a100087bf253/colorLogoPNG_1748892659343.png",
+      "category": "Entertainment",
+      "number": 2163
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dc0c78281eddb0009a02d5e",
+      "name": "ET",
+      "logo": "https://images.pluto.tv/channels/5dc0c78281eddb0009a02d5e/colorLogoPNG.png",
+      "category": "Entertainment",
+      "number": 2185
+    },
+    {
+      "region": "us_east",
+      "channelId": "5873fc21cad696fb37aa9054",
+      "name": "Live Music",
+      "logo": "https://images.pluto.tv/channels/5873fc21cad696fb37aa9054/colorLogoPNG.png",
+      "category": "The Black Collective",
+      "number": 2190
+    },
+    {
+      "region": "us_east",
+      "channelId": "643f035d5a0cd50008361534",
+      "name": "The Price Is Right",
+      "logo": "https://images.pluto.tv/channels/643f035d5a0cd50008361534/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2250
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f7791b8372da90007fd45e6",
+      "name": "The Price Is Right: The Barker Era",
+      "logo": "https://images.pluto.tv/channels/5f7791b8372da90007fd45e6/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2260
+    },
+    {
+      "region": "us_east",
+      "channelId": "6267352efcf21c0007c76642",
+      "name": "Let's Make A Deal",
+      "logo": "https://images.pluto.tv/channels/6267352efcf21c0007c76642/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2270
+    },
+    {
+      "region": "us_east",
+      "channelId": "672e4d915534bb0008c50168",
+      "name": "Family Feud",
+      "logo": "https://images.pluto.tv/channels/672e4d915534bb0008c50168/colorLogoPNG_1732662454856.png",
+      "category": "Daytime + Game Shows",
+      "number": 2290
+    },
+    {
+      "region": "us_east",
+      "channelId": "643f03b9d8436e0008edf021",
+      "name": "Family Feud Classic",
+      "logo": "https://images.pluto.tv/channels/643f03b9d8436e0008edf021/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2300
+    },
+    {
+      "region": "us_east",
+      "channelId": "69699ae5d301d54fb3dc1499",
+      "name": "GrowthDay Network",
+      "logo": "https://images.pluto.tv/channels/69699ae5d301d54fb3dc1499/colorLogoPNG_1772167334184.png",
+      "category": "Daytime + Game Shows",
+      "number": 2307
+    },
+    {
+      "region": "us_east",
+      "channelId": "649ddbfb6f29ec000874ca9e",
+      "name": "Supermarket Sweep",
+      "logo": "https://images.pluto.tv/channels/649ddbfb6f29ec000874ca9e/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2320
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e9debf8c881310007d7bde1",
+      "name": "Deal or No Deal",
+      "logo": "https://images.pluto.tv/channels/5e9debf8c881310007d7bde1/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2330
+    },
+    {
+      "region": "us_east",
+      "channelId": "5812bfbe4ced4f7b601b12e6",
+      "name": "BUZZR",
+      "logo": "https://images.pluto.tv/channels/5812bfbe4ced4f7b601b12e6/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2340
+    },
+    {
+      "region": "us_east",
+      "channelId": "6036e7c385749f00075dbd3b",
+      "name": "Pluto TV Game Shows",
+      "logo": "https://images.pluto.tv/channels/6036e7c385749f00075dbd3b/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2350
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e54187aae660e00093561d6",
+      "name": "Game Show Central",
+      "logo": "https://images.pluto.tv/channels/5e54187aae660e00093561d6/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2370
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f760bbdf090700075d7bfe",
+      "name": "Best of Dr. Phil",
+      "logo": "https://images.pluto.tv/channels/60f760bbdf090700075d7bfe/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2430
+    },
+    {
+      "region": "us_east",
+      "channelId": "68757effdf333e336be1e49f",
+      "name": "Tony Robbins Network",
+      "logo": "https://images.pluto.tv/channels/68757effdf333e336be1e49f/colorLogoPNG_1754963877109.png",
+      "category": "Daytime + Game Shows",
+      "number": 2432
+    },
+    {
+      "region": "us_east",
+      "channelId": "687ff00ff6bc08130f16ab81",
+      "name": "Beyond the Gates",
+      "logo": "https://images.pluto.tv/channels/687ff00ff6bc08130f16ab81/colorLogoPNG_1755074273752.png",
+      "category": "Daytime + Game Shows",
+      "number": 2435
+    },
+    {
+      "region": "us_east",
+      "channelId": "5aec96ec5126c2157123c657",
+      "name": "Nosey",
+      "logo": "https://images.pluto.tv/channels/5aec96ec5126c2157123c657/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2440
+    },
+    {
+      "region": "us_east",
+      "channelId": "634ee8f95aa9870007248333",
+      "name": "Confess by Nosey",
+      "logo": "https://images.pluto.tv/channels/634ee8f95aa9870007248333/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2450
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e9decb953e157000752321c",
+      "name": "Judge Nosey",
+      "logo": "https://images.pluto.tv/channels/5e9decb953e157000752321c/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2460
+    },
+    {
+      "region": "us_east",
+      "channelId": "6283d51144ad8f0007fa382d",
+      "name": "The Judge Judy Channel",
+      "logo": "https://images.pluto.tv/channels/6283d51144ad8f0007fa382d/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2470
+    },
+    {
+      "region": "us_east",
+      "channelId": "6036e6e7ac69c400072afca2",
+      "name": "Hot Bench",
+      "logo": "https://images.pluto.tv/channels/6036e6e7ac69c400072afca2/colorLogoPNG_1731835667408.png",
+      "category": "Daytime + Game Shows",
+      "number": 2480
+    },
+    {
+      "region": "us_east",
+      "channelId": "5bdcdf1e851dd5632e2c11d1",
+      "name": "QVC",
+      "logo": "https://images.pluto.tv/channels/5bdcdf1e851dd5632e2c11d1/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2500
+    },
+    {
+      "region": "us_east",
+      "channelId": "67817323dd7846fe546940dd",
+      "name": "QVC2",
+      "logo": "https://images.pluto.tv/channels/67817323dd7846fe546940dd/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 2505
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f8a02476b72230007e62b7d",
+      "name": "HSN",
+      "logo": "https://images.pluto.tv/channels/5f8a02476b72230007e62b7d/colorLogoPNG_1779087603120.png",
+      "category": "Daytime + Game Shows",
+      "number": 2510
+    },
+    {
+      "region": "us_east",
+      "channelId": "68ee9a999938143525bfc385",
+      "name": "Shop LC",
+      "logo": "https://images.pluto.tv/channels/68ee9a999938143525bfc385/colorLogoPNG_1760999630595.png",
+      "category": "Daytime + Game Shows",
+      "number": 2512
+    },
+    {
+      "region": "us_east",
+      "channelId": "5a6b92f6e22a617379789618",
+      "name": "CBS News 24/7",
+      "logo": "https://images.pluto.tv/channels/5a6b92f6e22a617379789618/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2530
+    },
+    {
+      "region": "us_east",
+      "channelId": "5df97894467dfa00091c873c",
+      "name": "NBC News NOW",
+      "logo": "https://images.pluto.tv/channels/5df97894467dfa00091c873c/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2531
+    },
+    {
+      "region": "us_east",
+      "channelId": "6508be683a0d700008c534e4",
+      "name": "ABC News Live",
+      "logo": "https://images.pluto.tv/channels/6508be683a0d700008c534e4/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2532
+    },
+    {
+      "region": "us_east",
+      "channelId": "5421f71da6af422839419cb3",
+      "name": "CNN HEADLINES",
+      "logo": "https://images.pluto.tv/channels/5421f71da6af422839419cb3/colorLogoPNG_1755034025681.png",
+      "category": "News + Opinion",
+      "number": 2533
+    },
+    {
+      "region": "us_east",
+      "channelId": "63d025db4e83e700086eaa96",
+      "name": "LiveNOW from FOX",
+      "logo": "https://images.pluto.tv/channels/63d025db4e83e700086eaa96/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2534
+    },
+    {
+      "region": "us_east",
+      "channelId": "62cdca1cda044a00077b903d",
+      "name": "CBS News Philadelphia",
+      "logo": "https://images.pluto.tv/channels/62cdca1cda044a00077b903d/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2540
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dc9b8223687ff000936ed79",
+      "name": "CBS News New York",
+      "logo": "https://images.pluto.tv/channels/5dc9b8223687ff000936ed79/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2550
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dc9b875e280c80009a8a44a",
+      "name": "CBS News Los Angeles",
+      "logo": "https://images.pluto.tv/channels/5dc9b875e280c80009a8a44a/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2560
+    },
+    {
+      "region": "us_east",
+      "channelId": "62cdcac1be7a970008781a64",
+      "name": "CBS News Pittsburgh",
+      "logo": "https://images.pluto.tv/channels/62cdcac1be7a970008781a64/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2570
+    },
+    {
+      "region": "us_east",
+      "channelId": "55b179af994403942f3061d6",
+      "name": "Newsmax2",
+      "logo": "https://images.pluto.tv/channels/55b179af994403942f3061d6/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2578
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d695f7db53adf96b78e7ce3",
+      "name": "TODAY All Day",
+      "logo": "https://images.pluto.tv/channels/5d695f7db53adf96b78e7ce3/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2580
+    },
+    {
+      "region": "us_east",
+      "channelId": "5459795fc9f133a519bc0bef",
+      "name": "Scripps News",
+      "logo": "https://images.pluto.tv/channels/5459795fc9f133a519bc0bef/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2600
+    },
+    {
+      "region": "us_east",
+      "channelId": "640a68880e884c0009979cc2",
+      "name": "FOX Weather",
+      "logo": "https://images.pluto.tv/channels/640a68880e884c0009979cc2/colorLogoPNG_1779087602438.png",
+      "category": "News + Opinion",
+      "number": 2619
+    },
+    {
+      "region": "us_east",
+      "channelId": "628c20c0097ef20007607938",
+      "name": "WeatherNation Charlotte",
+      "logo": "https://images.pluto.tv/channels/628c20c0097ef20007607938/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2620
+    },
+    {
+      "region": "us_east",
+      "channelId": "65d92a8c8b24c80008e285c0",
+      "name": "BBC News",
+      "logo": "https://images.pluto.tv/channels/65d92a8c8b24c80008e285c0/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2629
+    },
+    {
+      "region": "us_east",
+      "channelId": "55b285cd2665de274553d66f",
+      "name": "Sky News",
+      "logo": "https://images.pluto.tv/channels/55b285cd2665de274553d66f/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2630
+    },
+    {
+      "region": "us_east",
+      "channelId": "54ff7ba69222cb1c2624c584",
+      "name": "Bloomberg TV+",
+      "logo": "https://images.pluto.tv/channels/54ff7ba69222cb1c2624c584/colorLogoPNG_1756948295813.png",
+      "category": "News + Opinion",
+      "number": 2640
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e46fba0c43b0d00096e5ac1",
+      "name": "Blaze Live",
+      "logo": "https://images.pluto.tv/channels/5e46fba0c43b0d00096e5ac1/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2680
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e1f7da4bc7d740009831259",
+      "name": "America's Voice News",
+      "logo": "https://images.pluto.tv/channels/5e1f7da4bc7d740009831259/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2690
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e7cf6c7b156d500078c5f44",
+      "name": "OAN Plus",
+      "logo": "https://images.pluto.tv/channels/5e7cf6c7b156d500078c5f44/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2700
+    },
+    {
+      "region": "us_east",
+      "channelId": "66a7f0a78561260008c177f2",
+      "name": "Salem News Channel",
+      "logo": "https://images.pluto.tv/channels/66a7f0a78561260008c177f2/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2702
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d486acc34ceb37d3c458a64",
+      "name": "The First",
+      "logo": "https://images.pluto.tv/channels/5d486acc34ceb37d3c458a64/colorLogoPNG.png",
+      "category": "News + Opinion",
+      "number": 2705
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e9f2c05172a0f0007db4786",
+      "name": "CBS Sports HQ",
+      "logo": "https://images.pluto.tv/channels/5e9f2c05172a0f0007db4786/colorLogoPNG_1731837352945.png",
+      "category": "Sports",
+      "number": 2780
+    },
+    {
+      "region": "us_east",
+      "channelId": "5a74b8e1e22a61737979c6bf",
+      "name": "FOX Sports",
+      "logo": "https://images.pluto.tv/channels/5a74b8e1e22a61737979c6bf/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2790
+    },
+    {
+      "region": "us_east",
+      "channelId": "6549306c83595c000815a696",
+      "name": "NBC Sports NOW",
+      "logo": "https://images.pluto.tv/channels/6549306c83595c000815a696/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2791
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ced7d5df64be98e07ed47b6",
+      "name": "NFL Channel",
+      "logo": "https://images.pluto.tv/channels/5ced7d5df64be98e07ed47b6/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2800
+    },
+    {
+      "region": "us_east",
+      "channelId": "6792c30abc03978b9b8bb832",
+      "name": "The NBA Channel",
+      "logo": "https://images.pluto.tv/channels/6792c30abc03978b9b8bb832/colorLogoPNG_1747950897785.png",
+      "category": "Sports",
+      "number": 2805
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e66968a70f34c0007d050be",
+      "name": "MLB",
+      "logo": "https://images.pluto.tv/channels/5e66968a70f34c0007d050be/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2810
+    },
+    {
+      "region": "us_east",
+      "channelId": "5de94dacb394a300099fa22a",
+      "name": "PGA TOUR",
+      "logo": "https://images.pluto.tv/channels/5de94dacb394a300099fa22a/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2820
+    },
+    {
+      "region": "us_east",
+      "channelId": "65493029ab052400089e9d2f",
+      "name": "GolfPass",
+      "logo": "https://images.pluto.tv/channels/65493029ab052400089e9d2f/colorLogoPNG_1766432879705.png",
+      "category": "Sports",
+      "number": 2823
+    },
+    {
+      "region": "us_east",
+      "channelId": "681109b688b9d85d0938c6ba",
+      "name": "TennisChannel 2",
+      "logo": "https://images.pluto.tv/channels/681109b688b9d85d0938c6ba/colorLogoPNG_1747434868944.png",
+      "category": "Sports",
+      "number": 2825
+    },
+    {
+      "region": "us_east",
+      "channelId": "63a0e33a45264d000850ed7e",
+      "name": "Golazo Network",
+      "logo": "https://images.pluto.tv/channels/63a0e33a45264d000850ed7e/colorLogoPNG_1731835813404.png",
+      "category": "Sports",
+      "number": 2830
+    },
+    {
+      "region": "us_east",
+      "channelId": "65ea8b928145cb0008509426",
+      "name": "UEFA Champions League",
+      "logo": "https://images.pluto.tv/channels/65ea8b928145cb0008509426/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2831
+    },
+    {
+      "region": "us_east",
+      "channelId": "60d39387706fe50007fda8e8",
+      "name": "PBR RidePass",
+      "logo": "https://images.pluto.tv/channels/60d39387706fe50007fda8e8/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2840
+    },
+    {
+      "region": "us_east",
+      "channelId": "677d9adfa9a51b0008497fa0",
+      "name": "UFC",
+      "logo": "https://images.pluto.tv/channels/677d9adfa9a51b0008497fa0/colorLogoPNG.png",
+      "category": "Competition Reality",
+      "number": 2850
+    },
+    {
+      "region": "us_east",
+      "channelId": "64d160f53c785e0008df525e",
+      "name": "Top Rank Classics",
+      "logo": "https://images.pluto.tv/channels/64d160f53c785e0008df525e/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2862
+    },
+    {
+      "region": "us_east",
+      "channelId": "649b6898f2ec0000081a9460",
+      "name": "DAZN Ringside",
+      "logo": "https://images.pluto.tv/channels/649b6898f2ec0000081a9460/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2864
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ebc8688f3697d00072f7cf8",
+      "name": "Bellator MMA",
+      "logo": "https://images.pluto.tv/channels/5ebc8688f3697d00072f7cf8/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2870
+    },
+    {
+      "region": "us_east",
+      "channelId": "6334a574605f140007e233c4",
+      "name": "PFL MMA",
+      "logo": "https://images.pluto.tv/channels/6334a574605f140007e233c4/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2880
+    },
+    {
+      "region": "us_east",
+      "channelId": "59b722526996084038c01e1b",
+      "name": "TNA Wrestling",
+      "logo": "https://images.pluto.tv/channels/59b722526996084038c01e1b/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2890
+    },
+    {
+      "region": "us_east",
+      "channelId": "682e43b21295f98347710917",
+      "name": "AWSN",
+      "logo": "https://images.pluto.tv/channels/682e43b21295f98347710917/colorLogoPNG_1748886692805.png",
+      "category": "Sports",
+      "number": 2900
+    },
+    {
+      "region": "us_east",
+      "channelId": "686d8dd294a028da3ac59566",
+      "name": "Women's Sports Network",
+      "logo": "https://images.pluto.tv/channels/686d8dd294a028da3ac59566/colorLogoPNG_1753992941899.png",
+      "category": "Sports",
+      "number": 2903
+    },
+    {
+      "region": "us_east",
+      "channelId": "683df56f5195c2a60a3f5559",
+      "name": "Swerve Women’s Sports",
+      "logo": "https://images.pluto.tv/channels/683df56f5195c2a60a3f5559/colorLogoPNG_1775667541424.png",
+      "category": "Sports",
+      "number": 2905
+    },
+    {
+      "region": "us_east",
+      "channelId": "5616f9c0ada51f8004c4b091",
+      "name": "World Poker Tour",
+      "logo": "https://images.pluto.tv/channels/5616f9c0ada51f8004c4b091/colorLogoPNG-1664295222280.png",
+      "category": "Sports",
+      "number": 2930
+    },
+    {
+      "region": "us_east",
+      "channelId": "5fc54366b04b2300072e31af",
+      "name": "PokerGO",
+      "logo": "https://images.pluto.tv/channels/5fc54366b04b2300072e31af/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2940
+    },
+    {
+      "region": "us_east",
+      "channelId": "65c69b683ba51e00084534a3",
+      "name": "Monster Jam",
+      "logo": "https://images.pluto.tv/channels/65c69b683ba51e00084534a3/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2970
+    },
+    {
+      "region": "us_east",
+      "channelId": "6400f731d200410008f9b339",
+      "name": "Discovery Turbo TV",
+      "logo": "https://images.pluto.tv/channels/6400f731d200410008f9b339/colorLogoPNG_1767979567752.png",
+      "category": "Sports",
+      "number": 2980
+    },
+    {
+      "region": "us_east",
+      "channelId": "63b48016d9dd51000828fa37",
+      "name": "POWERNATION",
+      "logo": "https://images.pluto.tv/channels/63b48016d9dd51000828fa37/colorLogoPNG.png",
+      "category": "Sports",
+      "number": 2990
+    },
+    {
+      "region": "us_east",
+      "channelId": "650b68bc2ce8e40008ac9c14",
+      "name": "FanDuel TV Extra",
+      "logo": "https://images.pluto.tv/channels/650b68bc2ce8e40008ac9c14/colorLogoPNG_1744930668027.png",
+      "category": "Sports",
+      "number": 3003
+    },
+    {
+      "region": "us_east",
+      "channelId": "5bb3fea0f711fd76340eebff",
+      "name": "Pluto TV Military",
+      "logo": "https://images.pluto.tv/channels/5bb3fea0f711fd76340eebff/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3080
+    },
+    {
+      "region": "us_east",
+      "channelId": "5a4d35dfa5c02e717a234f86",
+      "name": "Pluto TV History",
+      "logo": "https://images.pluto.tv/channels/5a4d35dfa5c02e717a234f86/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3090
+    },
+    {
+      "region": "us_east",
+      "channelId": "66b646f9cd0d3100086af83c",
+      "name": "60 Minutes",
+      "logo": "https://images.pluto.tv/channels/66b646f9cd0d3100086af83c/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3095
+    },
+    {
+      "region": "us_east",
+      "channelId": "66e0b4536ad04d0008fff4b2",
+      "name": "CNN Originals",
+      "logo": "https://images.pluto.tv/channels/66e0b4536ad04d0008fff4b2/colorLogoPNG_1755018282136.png",
+      "category": "History + Science",
+      "number": 3097
+    },
+    {
+      "region": "us_east",
+      "channelId": "65775d29dfed030008cb3db2",
+      "name": "Modern Marvels by HISTORY",
+      "logo": "https://images.pluto.tv/channels/65775d29dfed030008cb3db2/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3100
+    },
+    {
+      "region": "us_east",
+      "channelId": "64d2b6bf9b414d0008187d83",
+      "name": "Mayday: Air Disaster",
+      "logo": "https://images.pluto.tv/channels/64d2b6bf9b414d0008187d83/colorLogoPNG_1780955414910.png",
+      "category": "History + Science",
+      "number": 3105
+    },
+    {
+      "region": "us_east",
+      "channelId": "563a970aa1a1f7fe7c9daad7",
+      "name": "Pluto TV Science",
+      "logo": "https://images.pluto.tv/channels/563a970aa1a1f7fe7c9daad7/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3110
+    },
+    {
+      "region": "us_east",
+      "channelId": "66e0b4866ad04d0008fff4d8",
+      "name": "MythBusters",
+      "logo": "https://images.pluto.tv/channels/66e0b4866ad04d0008fff4d8/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3115
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f21ea08007a49000762d349",
+      "name": "Smithsonian Channel Selects",
+      "logo": "https://images.pluto.tv/channels/5f21ea08007a49000762d349/colorLogoPNG.png",
+      "category": "History + Science",
+      "number": 3130
+    },
+    {
+      "region": "us_east",
+      "channelId": "67c62ac2095aea2ec805eb34",
+      "name": "The Martha Stewart Channel",
+      "logo": "https://images.pluto.tv/channels/67c62ac2095aea2ec805eb34/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3300
+    },
+    {
+      "region": "us_east",
+      "channelId": "698384cb7230043f21f4a3f4",
+      "name": "Property Brothers",
+      "logo": "https://images.pluto.tv/channels/698384cb7230043f21f4a3f4/colorLogoPNG_1771374915234.png",
+      "category": "Home + Food",
+      "number": 3305
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb16e7f89c82a68bcc4397",
+      "name": "Chip & Jo: Feels Like Home by Magnolia Network",
+      "logo": "https://images.pluto.tv/channels/68bb16e7f89c82a68bcc4397/colorLogoPNG_1758697632132.png",
+      "category": "Home + Food",
+      "number": 3310
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d51e791b7dba3b2ae990ab2",
+      "name": "This Old House",
+      "logo": "https://images.pluto.tv/channels/5d51e791b7dba3b2ae990ab2/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3320
+    },
+    {
+      "region": "us_east",
+      "channelId": "66df8aa7abec540008ca8cb6",
+      "name": "Homeful",
+      "logo": "https://images.pluto.tv/channels/66df8aa7abec540008ca8cb6/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3330
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb162bb3900870ec364cbe",
+      "name": "Beach Day",
+      "logo": "https://images.pluto.tv/channels/68bb162bb3900870ec364cbe/colorLogoPNG_1757977922278.png",
+      "category": "Home + Food",
+      "number": 3340
+    },
+    {
+      "region": "us_east",
+      "channelId": "656542ae4261ca00082154a8",
+      "name": "Ultimate Builds",
+      "logo": "https://images.pluto.tv/channels/656542ae4261ca00082154a8/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3360
+    },
+    {
+      "region": "us_east",
+      "channelId": "6565430c9d5ac4000822f508",
+      "name": "Rustic Retreats",
+      "logo": "https://images.pluto.tv/channels/6565430c9d5ac4000822f508/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3370
+    },
+    {
+      "region": "us_east",
+      "channelId": "601a0342dcf4370007566891",
+      "name": "Tiny House Nation",
+      "logo": "https://images.pluto.tv/channels/601a0342dcf4370007566891/colorLogoPNG_1775171305009.png",
+      "category": "Home + Food",
+      "number": 3380
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dc1cb279c91420009db261d",
+      "name": "Home.Made.Nation",
+      "logo": "https://images.pluto.tv/channels/5dc1cb279c91420009db261d/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3390
+    },
+    {
+      "region": "us_east",
+      "channelId": "636c2b3c55d2e700074105c4",
+      "name": "PBS Antiques Roadshow",
+      "logo": "https://images.pluto.tv/channels/636c2b3c55d2e700074105c4/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3400
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ce44810b421747ae467b7cd",
+      "name": "Antiques Roadshow UK",
+      "logo": "https://images.pluto.tv/channels/5ce44810b421747ae467b7cd/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3410
+    },
+    {
+      "region": "us_east",
+      "channelId": "615b8ec39e878900073f419a",
+      "name": "Antiques Road Trip",
+      "logo": "https://images.pluto.tv/channels/615b8ec39e878900073f419a/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3420
+    },
+    {
+      "region": "us_east",
+      "channelId": "6532e7fa045c3d0008514ca7",
+      "name": "Warner Bros. TV Sweet Escapes",
+      "logo": "https://images.pluto.tv/channels/6532e7fa045c3d0008514ca7/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3430
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb16a500a2f063fdf89f8c",
+      "name": "Chef vs Chef by Food Network",
+      "logo": "https://images.pluto.tv/channels/68bb16a500a2f063fdf89f8c/colorLogoPNG_1757718859405.png",
+      "category": "Home + Food",
+      "number": 3440
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb167e00a2f063fdf7ee8f",
+      "name": "Best of Bobby Flay by Food Network",
+      "logo": "https://images.pluto.tv/channels/68bb167e00a2f063fdf7ee8f/colorLogoPNG_1757722144825.png",
+      "category": "Home + Food",
+      "number": 3450
+    },
+    {
+      "region": "us_east",
+      "channelId": "64dab9df3d48f40008868091",
+      "name": "The Jamie Oliver Channel",
+      "logo": "https://images.pluto.tv/channels/64dab9df3d48f40008868091/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3470
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb16916523408b14bac7f8",
+      "name": "Home Cooking by Food Network",
+      "logo": "https://images.pluto.tv/channels/68bb16916523408b14bac7f8/colorLogoPNG_1757969887631.png",
+      "category": "Home + Food",
+      "number": 3480
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e84f54a82f05300080e6746",
+      "name": "America's Test Kitchen",
+      "logo": "https://images.pluto.tv/channels/5e84f54a82f05300080e6746/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3490
+    },
+    {
+      "region": "us_east",
+      "channelId": "68509fe882d704acfc5bacd1",
+      "name": "Tastemade Smokehouse",
+      "logo": "https://images.pluto.tv/channels/68509fe882d704acfc5bacd1/colorLogoPNG_1750914005853.png",
+      "category": "Reality",
+      "number": 3500
+    },
+    {
+      "region": "us_east",
+      "channelId": "66ff0cf663292d0008320cf8",
+      "name": "No Reservations",
+      "logo": "https://images.pluto.tv/channels/66ff0cf663292d0008320cf8/colorLogoPNG.png",
+      "category": "Home + Food",
+      "number": 3510
+    },
+    {
+      "region": "us_east",
+      "channelId": "68bb16ba3efb41cd971f3ce6",
+      "name": "Delicious Eats by Food Network",
+      "logo": "https://images.pluto.tv/channels/68bb16ba3efb41cd971f3ce6/colorLogoPNG_1757719016994.png",
+      "category": "Home + Food",
+      "number": 3520
+    },
+    {
+      "region": "us_east",
+      "channelId": "656535fc2c46f30008870fae",
+      "name": "BBC Earth",
+      "logo": "https://images.pluto.tv/channels/656535fc2c46f30008870fae/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3560
+    },
+    {
+      "region": "us_east",
+      "channelId": "673bf05ddaad7f0008ac7a5c",
+      "name": "Dinos 24/7",
+      "logo": "https://images.pluto.tv/channels/673bf05ddaad7f0008ac7a5c/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3565
+    },
+    {
+      "region": "us_east",
+      "channelId": "640a64bd73e013000893d4e0",
+      "name": "PBS Nature",
+      "logo": "https://images.pluto.tv/channels/640a64bd73e013000893d4e0/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3580
+    },
+    {
+      "region": "us_east",
+      "channelId": "66df8a29b25d2b0008fc5fe0",
+      "name": "Love Nature",
+      "logo": "https://images.pluto.tv/channels/66df8a29b25d2b0008fc5fe0/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3585
+    },
+    {
+      "region": "us_east",
+      "channelId": "5812bd9f249444e05d09cc4e",
+      "name": "Naturescape",
+      "logo": "https://images.pluto.tv/channels/5812bd9f249444e05d09cc4e/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3590
+    },
+    {
+      "region": "us_east",
+      "channelId": "696998dfa2b623e8b20125a3",
+      "name": "ZenLIFE by Stingray",
+      "logo": "https://images.pluto.tv/channels/696998dfa2b623e8b20125a3/colorLogoPNG_1770231337178.png",
+      "category": "Animals + Nature",
+      "number": 3592
+    },
+    {
+      "region": "us_east",
+      "channelId": "5bb1ad55268cae539bcedb08",
+      "name": "The Pet Collective",
+      "logo": "https://images.pluto.tv/channels/5bb1ad55268cae539bcedb08/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3620
+    },
+    {
+      "region": "us_east",
+      "channelId": "664fd48894d5580008e45e7c",
+      "name": "Dog Whisperer with Cesar Millan",
+      "logo": "https://images.pluto.tv/channels/664fd48894d5580008e45e7c/colorLogoPNG.png",
+      "category": "Animals + Nature",
+      "number": 3625
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ca6748a37b88b269472dad9",
+      "name": "Nick Jr. Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5ca6748a37b88b269472dad9/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3700
+    },
+    {
+      "region": "us_east",
+      "channelId": "65e23f340d4561000821540d",
+      "name": "Mister Rogers' Neighborhood",
+      "logo": "https://images.pluto.tv/channels/65e23f340d4561000821540d/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3705
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d14fb6c84dd37df3b4290c5",
+      "name": "Peppa Pig",
+      "logo": "https://images.pluto.tv/channels/5d14fb6c84dd37df3b4290c5/colorLogoPNG_1730733871298.png",
+      "category": "Kids",
+      "number": 3720
+    },
+    {
+      "region": "us_east",
+      "channelId": "51c75f7bb6f26ba1cd00002f",
+      "name": "Little Stars Universe",
+      "logo": "https://images.pluto.tv/channels/51c75f7bb6f26ba1cd00002f/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3730
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb301b7395671000780d100",
+      "name": "Little Angel's Playroom",
+      "logo": "https://images.pluto.tv/channels/5eb301b7395671000780d100/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3740
+    },
+    {
+      "region": "us_east",
+      "channelId": "60493283ffc52f000710edae",
+      "name": "Little Angel's Playroom en Español",
+      "logo": "https://images.pluto.tv/channels/60493283ffc52f000710edae/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3750
+    },
+    {
+      "region": "us_east",
+      "channelId": "66fedd65d7de140008dccd66",
+      "name": "El Reino Infantil",
+      "logo": "https://images.pluto.tv/channels/66fedd65d7de140008dccd66/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3755
+    },
+    {
+      "region": "us_east",
+      "channelId": "60faffc3fbbc120007fc4376",
+      "name": "Baby Shark TV",
+      "logo": "https://images.pluto.tv/channels/60faffc3fbbc120007fc4376/colorLogoPNG_1754073070812.png",
+      "category": "Kids",
+      "number": 3760
+    },
+    {
+      "region": "us_east",
+      "channelId": "5ca673e0d0bd6c2689c94ce3",
+      "name": "Nickelodeon Pluto TV",
+      "logo": "https://images.pluto.tv/channels/5ca673e0d0bd6c2689c94ce3/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3770
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d8d08395f39465da6fb3ec4",
+      "name": "Nickelodeon en español",
+      "logo": "https://images.pluto.tv/channels/5d8d08395f39465da6fb3ec4/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3780
+    },
+    {
+      "region": "us_east",
+      "channelId": "6452c814939a590008567a3b",
+      "name": "90's Kids",
+      "logo": "https://images.pluto.tv/channels/6452c814939a590008567a3b/colorLogoPNG_1731836283044.png",
+      "category": "Kids",
+      "number": 3785
+    },
+    {
+      "region": "us_east",
+      "channelId": "6452c77ed3fdde00080eb3a8",
+      "name": "90s Kids TV 2",
+      "logo": "https://images.pluto.tv/channels/6452c77ed3fdde00080eb3a8/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3787
+    },
+    {
+      "region": "us_east",
+      "channelId": "6450209d939a5900084dba1d",
+      "name": "iCarly TV",
+      "logo": "https://images.pluto.tv/channels/6450209d939a5900084dba1d/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3790
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d0c16d686454ead733d08f8",
+      "name": "TOTALLY TURTLES",
+      "logo": "https://images.pluto.tv/channels/5d0c16d686454ead733d08f8/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3800
+    },
+    {
+      "region": "us_east",
+      "channelId": "6675c7868768aa0008d7f1c7",
+      "name": "Pokémon",
+      "logo": "https://images.pluto.tv/channels/6675c7868768aa0008d7f1c7/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3805
+    },
+    {
+      "region": "us_east",
+      "channelId": "69e6be40fde57cd5ba562b29",
+      "name": "Pokémon en español",
+      "logo": "https://images.pluto.tv/channels/69e6be40fde57cd5ba562b29/colorLogoPNG_1777592109830.png",
+      "category": "Kids",
+      "number": 3806
+    },
+    {
+      "region": "us_east",
+      "channelId": "60fb053712f22a0007ff14d2",
+      "name": "Transformers TV",
+      "logo": "https://images.pluto.tv/channels/60fb053712f22a0007ff14d2/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3810
+    },
+    {
+      "region": "us_east",
+      "channelId": "667f3852efa2a10008e1e514",
+      "name": "Go Go Gadget!",
+      "logo": "https://images.pluto.tv/channels/667f3852efa2a10008e1e514/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3815
+    },
+    {
+      "region": "us_east",
+      "channelId": "60fb01a24795a6000762fe83",
+      "name": "LEGO Kids TV",
+      "logo": "https://images.pluto.tv/channels/60fb01a24795a6000762fe83/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3830
+    },
+    {
+      "region": "us_east",
+      "channelId": "5db0ad56edc89300090d2ebb",
+      "name": "Kids Movie Club",
+      "logo": "https://images.pluto.tv/channels/5db0ad56edc89300090d2ebb/colorLogoPNG.png",
+      "category": "Movies",
+      "number": 3840
+    },
+    {
+      "region": "us_east",
+      "channelId": "667f393836a2f90008fd17c0",
+      "name": "Strawberry Shortcake and Friends",
+      "logo": "https://images.pluto.tv/channels/667f393836a2f90008fd17c0/colorLogoPNG_1753982261322.png",
+      "category": "Kids",
+      "number": 3855
+    },
+    {
+      "region": "us_east",
+      "channelId": "60fb040d4795a6000762fe8f",
+      "name": "Kartoon Channel!",
+      "logo": "https://images.pluto.tv/channels/60fb040d4795a6000762fe8f/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3860
+    },
+    {
+      "region": "us_east",
+      "channelId": "5fb584b7613a31000789de5a",
+      "name": "Ryan and Friends",
+      "logo": "https://images.pluto.tv/channels/5fb584b7613a31000789de5a/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3880
+    },
+    {
+      "region": "us_east",
+      "channelId": "56171fafada51f8004c4b40f",
+      "name": "Forever Kids",
+      "logo": "https://images.pluto.tv/channels/56171fafada51f8004c4b40f/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3900
+    },
+    {
+      "region": "us_east",
+      "channelId": "60faf9ddfcc1f200070a5932",
+      "name": "Garfield and Friends",
+      "logo": "https://images.pluto.tv/channels/60faf9ddfcc1f200070a5932/colorLogoPNG.png",
+      "category": "Kids",
+      "number": 3910
+    },
+    {
+      "region": "us_east",
+      "channelId": "5812b7d3249444e05d09cc49",
+      "name": "Pluto TV Anime",
+      "logo": "https://images.pluto.tv/channels/5812b7d3249444e05d09cc49/colorLogoPNG_1748797351518.png",
+      "category": "Anime",
+      "number": 3980
+    },
+    {
+      "region": "us_east",
+      "channelId": "67ed8f7e443f0671bc2b2368",
+      "name": "Pluto TV Anime Movies",
+      "logo": "https://images.pluto.tv/channels/67ed8f7e443f0671bc2b2368/colorLogoPNG_1747069531459.png",
+      "category": "Anime",
+      "number": 3988
+    },
+    {
+      "region": "us_east",
+      "channelId": "65652f7fc0fc88000883537a",
+      "name": "Crunchyroll",
+      "logo": "https://images.pluto.tv/channels/65652f7fc0fc88000883537a/colorLogoPNG.png",
+      "category": "Anime",
+      "number": 3990
+    },
+    {
+      "region": "us_east",
+      "channelId": "6793eaa4bc03978b9bc63db1",
+      "name": "ANIME x HIDIVE",
+      "logo": "https://images.pluto.tv/channels/6793eaa4bc03978b9bc63db1/colorLogoPNG_1746815871603.png",
+      "category": "Anime",
+      "number": 3992
+    },
+    {
+      "region": "us_east",
+      "channelId": "637e55347427a40007fac703",
+      "name": "Sailor Moon",
+      "logo": "https://images.pluto.tv/channels/637e55347427a40007fac703/colorLogoPNG.png",
+      "category": "Anime",
+      "number": 4000
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f7790b3ed0c88000720b241",
+      "name": "One Piece",
+      "logo": "https://images.pluto.tv/channels/5f7790b3ed0c88000720b241/colorLogoPNG_1731837233662.png",
+      "category": "Anime",
+      "number": 4010
+    },
+    {
+      "region": "us_east",
+      "channelId": "5da0c85bd2c9c10009370984",
+      "name": "Naruto",
+      "logo": "https://images.pluto.tv/channels/5da0c85bd2c9c10009370984/colorLogoPNG.png",
+      "category": "Anime",
+      "number": 4020
+    },
+    {
+      "region": "us_east",
+      "channelId": "696997049889f8db34c936c2",
+      "name": "Boruto: Naruto Next Generations",
+      "logo": "https://images.pluto.tv/channels/696997049889f8db34c936c2/colorLogoPNG_1771029425876.png",
+      "category": "Anime",
+      "number": 4022
+    },
+    {
+      "region": "us_east",
+      "channelId": "67c63b90a20c0399a381b816",
+      "name": "Inuyasha",
+      "logo": "https://images.pluto.tv/channels/67c63b90a20c0399a381b816/colorLogoPNG_1745441127472.png",
+      "category": "Anime",
+      "number": 4025
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4ec10ed9636f00089b8c89",
+      "name": "Yu-Gi-Oh!",
+      "logo": "https://images.pluto.tv/channels/5f4ec10ed9636f00089b8c89/colorLogoPNG.png",
+      "category": "Anime",
+      "number": 4030
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf968040ab7d8f181e6a68b",
+      "name": "Cine Premiere",
+      "logo": "https://images.pluto.tv/channels/5cf968040ab7d8f181e6a68b/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4090
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf96b1c4f1ca3f0629f4bf0",
+      "name": "Cine en español",
+      "logo": "https://images.pluto.tv/channels/5cf96b1c4f1ca3f0629f4bf0/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4100
+    },
+    {
+      "region": "us_east",
+      "channelId": "60fb2f47c133270007327375",
+      "name": "Cine aventura",
+      "logo": "https://images.pluto.tv/channels/60fb2f47c133270007327375/colorLogoPNG_1757954279063.png",
+      "category": "En Español",
+      "number": 4120
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d8d164d92e97a5e107638d2",
+      "name": "Cine adrenalina",
+      "logo": "https://images.pluto.tv/channels/5d8d164d92e97a5e107638d2/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4130
+    },
+    {
+      "region": "us_east",
+      "channelId": "687fea9a4fa995eff284a1c8",
+      "name": "Más adrenalina",
+      "logo": "https://images.pluto.tv/channels/687fea9a4fa995eff284a1c8/colorLogoPNG_1755151031497.png",
+      "category": "En Español",
+      "number": 4132
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d8d180092e97a5e107638d3",
+      "name": "Cine terror",
+      "logo": "https://images.pluto.tv/channels/5d8d180092e97a5e107638d3/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4140
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f513564e4622a0007c578c0",
+      "name": "Cine comedia",
+      "logo": "https://images.pluto.tv/channels/5f513564e4622a0007c578c0/colorLogoPNG_1757954361053.png",
+      "category": "En Español",
+      "number": 4150
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f5136317aedfb0007016f93",
+      "name": "Cine Amor",
+      "logo": "https://images.pluto.tv/channels/5f5136317aedfb0007016f93/colorLogoPNG_1757957531383.png",
+      "category": "En Español",
+      "number": 4160
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf96cc422df39f1a338d165",
+      "name": "Telemundo telenovelas clásicas",
+      "logo": "https://images.pluto.tv/channels/5cf96cc422df39f1a338d165/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 4180
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf96c0222df39f1a338d163",
+      "name": "Pluto TV Novelas",
+      "logo": "https://images.pluto.tv/channels/5cf96c0222df39f1a338d163/colorLogoPNG.png",
+      "category": "Daytime + Game Shows",
+      "number": 4185
+    },
+    {
+      "region": "us_east",
+      "channelId": "668c5cb4f01dbe0008dd4082",
+      "name": "CBS en español",
+      "logo": "https://images.pluto.tv/channels/668c5cb4f01dbe0008dd4082/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4245
+    },
+    {
+      "region": "us_east",
+      "channelId": "604928d54a4f730007ff76bc",
+      "name": "CSI en Español",
+      "logo": "https://images.pluto.tv/channels/604928d54a4f730007ff76bc/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4250
+    },
+    {
+      "region": "us_east",
+      "channelId": "632b5950b515b000079e6b81",
+      "name": "CSI: Miami en español",
+      "logo": "https://images.pluto.tv/channels/632b5950b515b000079e6b81/colorLogoPNG_1731837336190.png",
+      "category": "En Español",
+      "number": 4260
+    },
+    {
+      "region": "us_east",
+      "channelId": "632b606e12a67b0007c9e371",
+      "name": "CSI: NY en español",
+      "logo": "https://images.pluto.tv/channels/632b606e12a67b0007c9e371/colorLogoPNG_1731837281479.png",
+      "category": "En Español",
+      "number": 4270
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e82bb378601b80007b4bd78",
+      "name": "The Walking Dead en español",
+      "logo": "https://images.pluto.tv/channels/5e82bb378601b80007b4bd78/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4280
+    },
+    {
+      "region": "us_east",
+      "channelId": "668c566d08d5490008075948",
+      "name": "La Familia del Barrio",
+      "logo": "https://images.pluto.tv/channels/668c566d08d5490008075948/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4335
+    },
+    {
+      "region": "us_east",
+      "channelId": "64dab1f835425100080e1e7b",
+      "name": "Acapulco Shore",
+      "logo": "https://images.pluto.tv/channels/64dab1f835425100080e1e7b/colorLogoPNG_1751300628513.png",
+      "category": "En Español",
+      "number": 4340
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf96d351652631e36d4331f",
+      "name": "MTV en español",
+      "logo": "https://images.pluto.tv/channels/5cf96d351652631e36d4331f/colorLogoPNG-1641928405432.png",
+      "category": "En Español",
+      "number": 4350
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf96dad1652631e36d43320",
+      "name": "Comedy Central en español",
+      "logo": "https://images.pluto.tv/channels/5cf96dad1652631e36d43320/colorLogoPNG_1731837238379.png",
+      "category": "En Español",
+      "number": 4360
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf0622da00ca1e2f6fac712",
+      "name": "EstrellaTV",
+      "logo": "https://images.pluto.tv/channels/5cf0622da00ca1e2f6fac712/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4370
+    },
+    {
+      "region": "us_east",
+      "channelId": "60d393e5579a420007ee553c",
+      "name": "Casos de la Dra. Polo",
+      "logo": "https://images.pluto.tv/channels/60d393e5579a420007ee553c/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4390
+    },
+    {
+      "region": "us_east",
+      "channelId": "673249afc7626f0008c7205d",
+      "name": "Vidas Extremas",
+      "logo": "https://images.pluto.tv/channels/673249afc7626f0008c7205d/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4443
+    },
+    {
+      "region": "us_east",
+      "channelId": "673249433a61d400087a51ed",
+      "name": "Construcciones Asombrosas",
+      "logo": "https://images.pluto.tv/channels/673249433a61d400087a51ed/colorLogoPNG_1732662528285.png",
+      "category": "En Español",
+      "number": 4445
+    },
+    {
+      "region": "us_east",
+      "channelId": "66ba53cda4ee2700083fac09",
+      "name": "Sala de Emergencias: Historias Inéditas",
+      "logo": "https://images.pluto.tv/channels/66ba53cda4ee2700083fac09/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4455
+    },
+    {
+      "region": "us_east",
+      "channelId": "6732499ce40c4a0008bb9894",
+      "name": "Crimen",
+      "logo": "https://images.pluto.tv/channels/6732499ce40c4a0008bb9894/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4459
+    },
+    {
+      "region": "us_east",
+      "channelId": "5e94cd036cc69d0007e8a1ba",
+      "name": "Crímenes imperfectos",
+      "logo": "https://images.pluto.tv/channels/5e94cd036cc69d0007e8a1ba/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4460
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f4d882d5233170007ee880e",
+      "name": "Misterios sin resolver",
+      "logo": "https://images.pluto.tv/channels/5f4d882d5233170007ee880e/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4470
+    },
+    {
+      "region": "us_east",
+      "channelId": "5cf96b8f4f1ca3f0629f4bf1",
+      "name": "Investiga",
+      "logo": "https://images.pluto.tv/channels/5cf96b8f4f1ca3f0629f4bf1/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4480
+    },
+    {
+      "region": "us_east",
+      "channelId": "6579113f14fbe40008701fc0",
+      "name": "Telemundo Noticias Florida",
+      "logo": "https://images.pluto.tv/channels/6579113f14fbe40008701fc0/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4500
+    },
+    {
+      "region": "us_east",
+      "channelId": "673248f9030a2c0008033af8",
+      "name": "CNN Noticias",
+      "logo": "https://images.pluto.tv/channels/673248f9030a2c0008033af8/colorLogoPNG_1777908720377.png",
+      "category": "En Español",
+      "number": 4525
+    },
+    {
+      "region": "us_east",
+      "channelId": "60492e6d7f3f560007ab0f62",
+      "name": "Estrella News",
+      "logo": "https://images.pluto.tv/channels/60492e6d7f3f560007ab0f62/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4530
+    },
+    {
+      "region": "us_east",
+      "channelId": "64dab5fe35425100080e2991",
+      "name": "Vevo Regional Mexicano",
+      "logo": "https://images.pluto.tv/channels/64dab5fe35425100080e2991/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4580
+    },
+    {
+      "region": "us_east",
+      "channelId": "64d161c93c785e0008df575e",
+      "name": "Vevo Íconos Latinos",
+      "logo": "https://images.pluto.tv/channels/64d161c93c785e0008df575e/colorLogoPNG.png",
+      "category": "En Español",
+      "number": 4590
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f32f26bcd8aea00071240e5",
+      "name": "Vevo '70s",
+      "logo": "https://images.pluto.tv/channels/5f32f26bcd8aea00071240e5/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4640
+    },
+    {
+      "region": "us_east",
+      "channelId": "5fd7b8bf927e090007685853",
+      "name": "Vevo '80s",
+      "logo": "https://images.pluto.tv/channels/5fd7b8bf927e090007685853/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4650
+    },
+    {
+      "region": "us_east",
+      "channelId": "5fd7bb1f86d94a000796e2c2",
+      "name": "Vevo '90s",
+      "logo": "https://images.pluto.tv/channels/5fd7bb1f86d94a000796e2c2/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4660
+    },
+    {
+      "region": "us_east",
+      "channelId": "5fd7bca3e0a4ee0007a38e8c",
+      "name": "Vevo 2K",
+      "logo": "https://images.pluto.tv/channels/5fd7bca3e0a4ee0007a38e8c/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4670
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f68f53eb1e5800007390bf8",
+      "name": "CMT Equal Play",
+      "logo": "https://images.pluto.tv/channels/5f68f53eb1e5800007390bf8/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4680
+    },
+    {
+      "region": "us_east",
+      "channelId": "623b92a2ccefed0007b1db48",
+      "name": "XITE Classic Country",
+      "logo": "https://images.pluto.tv/channels/623b92a2ccefed0007b1db48/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4690
+    },
+    {
+      "region": "us_east",
+      "channelId": "5da0d75e84830900098a1ea0",
+      "name": "Vevo Country",
+      "logo": "https://images.pluto.tv/channels/5da0d75e84830900098a1ea0/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4700
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d14fc31252d35decbc4080b",
+      "name": "Yo! MTV",
+      "logo": "https://images.pluto.tv/channels/5d14fc31252d35decbc4080b/colorLogoPNG.png",
+      "category": "The Black Collective",
+      "number": 4710
+    },
+    {
+      "region": "us_east",
+      "channelId": "61d4c2817a823d00070ba53e",
+      "name": "Vevo True School Hip-Hop",
+      "logo": "https://images.pluto.tv/channels/61d4c2817a823d00070ba53e/colorLogoPNG.png",
+      "category": "The Black Collective",
+      "number": 4720
+    },
+    {
+      "region": "us_east",
+      "channelId": "5da0d83f66c9700009b96d0e",
+      "name": "Vevo R&B",
+      "logo": "https://images.pluto.tv/channels/5da0d83f66c9700009b96d0e/colorLogoPNG.png",
+      "category": "The Black Collective",
+      "number": 4730
+    },
+    {
+      "region": "us_east",
+      "channelId": "61d4b38226b8a50007fe03a6",
+      "name": "Vevo Rock",
+      "logo": "https://images.pluto.tv/channels/61d4b38226b8a50007fe03a6/colorLogoPNG_1748797615724.png",
+      "category": "Music Videos",
+      "number": 4740
+    },
+    {
+      "region": "us_east",
+      "channelId": "623a1b5188ecdc0007c9ef5a",
+      "name": "XITE Rock x Metal",
+      "logo": "https://images.pluto.tv/channels/623a1b5188ecdc0007c9ef5a/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4750
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d93b635b43dd1a399b39eee",
+      "name": "Vevo Pop",
+      "logo": "https://images.pluto.tv/channels/5d93b635b43dd1a399b39eee/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4760
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d14fdb8ca91eedee1633117",
+      "name": "MTV Spankin' New",
+      "logo": "https://images.pluto.tv/channels/5d14fdb8ca91eedee1633117/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4770
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d14fd1a252d35decbc4080c",
+      "name": "MTV Biggest Pop",
+      "logo": "https://images.pluto.tv/channels/5d14fd1a252d35decbc4080c/colorLogoPNG_1758324914960.png",
+      "category": "Music Videos",
+      "number": 4780
+    },
+    {
+      "region": "us_east",
+      "channelId": "5d3609cd6a6c78d7672f2a81",
+      "name": "MTV Flow Latino",
+      "logo": "https://images.pluto.tv/channels/5d3609cd6a6c78d7672f2a81/colorLogoPNG_1731834717093.png",
+      "category": "En Español",
+      "number": 4790
+    },
+    {
+      "region": "us_east",
+      "channelId": "69445a9a78c0c45b6c9aa8b9",
+      "name": "TikTok Radio",
+      "logo": "https://images.pluto.tv/channels/69445a9a78c0c45b6c9aa8b9/colorLogoPNG_1771261855448.png",
+      "category": "Music Videos",
+      "number": 4795
+    },
+    {
+      "region": "us_east",
+      "channelId": "623b93628e6ded0007337d4d",
+      "name": "XITE Gospel",
+      "logo": "https://images.pluto.tv/channels/623b93628e6ded0007337d4d/colorLogoPNG.png",
+      "category": "The Black Collective",
+      "number": 4800
+    },
+    {
+      "region": "us_east",
+      "channelId": "5f779951372da90007fd45e8",
+      "name": "Classica",
+      "logo": "https://images.pluto.tv/channels/5f779951372da90007fd45e8/colorLogoPNG.png",
+      "category": "Music Videos",
+      "number": 4810
+    },
+    {
+      "region": "us_east",
+      "channelId": "696689d13b9ce349c9be3a18",
+      "name": "Stingray DJAZZ",
+      "logo": "https://images.pluto.tv/channels/696689d13b9ce349c9be3a18/colorLogoPNG_1771027556714.png",
+      "category": "The Black Collective",
+      "number": 4815
+    },
+    {
+      "region": "us_east",
+      "channelId": "696998915a0ae9e1b563f0c6",
+      "name": "Qello Concerts",
+      "logo": "https://images.pluto.tv/channels/696998915a0ae9e1b563f0c6/colorLogoPNG_1770231500279.png",
+      "category": "Music Videos",
+      "number": 4900
+    },
+    {
+      "region": "us_east",
+      "channelId": "632b642933a6280007aaf265",
+      "name": "WSB Atlanta",
+      "logo": "https://images.pluto.tv/channels/632b642933a6280007aaf265/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5060
+    },
+    {
+      "region": "us_east",
+      "channelId": "60f75919718aed0007250d7a",
+      "name": "CBS News Baltimore",
+      "logo": "https://images.pluto.tv/channels/60f75919718aed0007250d7a/colorLogoPNG-1643042747442.png",
+      "category": "Local News",
+      "number": 5070
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1afb21486df0007abc57c",
+      "name": "CBS News Bay Area",
+      "logo": "https://images.pluto.tv/channels/5eb1afb21486df0007abc57c/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5080
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1af2ad345340008fccd1e",
+      "name": "CBS News Boston",
+      "logo": "https://images.pluto.tv/channels/5eb1af2ad345340008fccd1e/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5090
+    },
+    {
+      "region": "us_east",
+      "channelId": "632b648c08cd050007d94114",
+      "name": "WSOC Charlotte",
+      "logo": "https://images.pluto.tv/channels/632b648c08cd050007d94114/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5110
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1aeb2fd4b8a00076c2047",
+      "name": "CBS News Chicago",
+      "logo": "https://images.pluto.tv/channels/5eb1aeb2fd4b8a00076c2047/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5120
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1b12146cba40007aa7e5d",
+      "name": "CBS News Colorado",
+      "logo": "https://images.pluto.tv/channels/5eb1b12146cba40007aa7e5d/colorLogoPNG-1643041708234.png",
+      "category": "Local News",
+      "number": 5130
+    },
+    {
+      "region": "us_east",
+      "channelId": "634f2610d5023700078f7dee",
+      "name": "CBS News Detroit",
+      "logo": "https://images.pluto.tv/channels/634f2610d5023700078f7dee/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5140
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dc481cda1d430000948a1b4",
+      "name": "CBS News Los Angeles",
+      "logo": "https://images.pluto.tv/channels/5dc481cda1d430000948a1b4/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5150
+    },
+    {
+      "region": "us_east",
+      "channelId": "60fb299b79498900070b29e0",
+      "name": "CBS News Miami",
+      "logo": "https://images.pluto.tv/channels/60fb299b79498900070b29e0/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5160
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1b0bf2240d8000732a09c",
+      "name": "CBS News Minnesota",
+      "logo": "https://images.pluto.tv/channels/5eb1b0bf2240d8000732a09c/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5170
+    },
+    {
+      "region": "us_east",
+      "channelId": "5dc48170e280c80009a861ab",
+      "name": "CBS News New York",
+      "logo": "https://images.pluto.tv/channels/5dc48170e280c80009a861ab/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5180
+    },
+    {
+      "region": "us_east",
+      "channelId": "5fff49cfb5cd4f0007c2b0dc",
+      "name": "News 12 New York",
+      "logo": "https://images.pluto.tv/channels/5fff49cfb5cd4f0007c2b0dc/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5190
+    },
+    {
+      "region": "us_east",
+      "channelId": "632b6233822bbc000748fd81",
+      "name": "WFTV Orlando",
+      "logo": "https://images.pluto.tv/channels/632b6233822bbc000748fd81/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5200
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1b05ea168cc000767ba67",
+      "name": "CBS News Philadelphia",
+      "logo": "https://images.pluto.tv/channels/5eb1b05ea168cc000767ba67/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5210
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eb1b17aa5277e00083f6521",
+      "name": "CBS News Pittsburgh",
+      "logo": "https://images.pluto.tv/channels/5eb1b17aa5277e00083f6521/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5220
+    },
+    {
+      "region": "us_east",
+      "channelId": "60cb6df2b2ad610008cd5bea",
+      "name": "CBS News Sacramento",
+      "logo": "https://images.pluto.tv/channels/60cb6df2b2ad610008cd5bea/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5230
+    },
+    {
+      "region": "us_east",
+      "channelId": "5eceb0d4065c240007688ec6",
+      "name": "CBS News Texas",
+      "logo": "https://images.pluto.tv/channels/5eceb0d4065c240007688ec6/colorLogoPNG.png",
+      "category": "Local News",
+      "number": 5250
+    }
+  ]
+}

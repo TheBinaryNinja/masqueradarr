@@ -74,15 +74,10 @@ export async function fetchApiCatalog(): Promise<RawListing> {
   }
   if (!rows.length) throw new Error('uapi programming returned no rows');
 
-  // Tag each row with its primary group, and drop per-program artwork (programs[].images): writeTubiEpg never
-  // reads it and it's ~half the offline snapshot's bytes. All guide-consumed program fields are preserved.
-  const raw = rows.map((r) => ({
-    ...r,
-    group: groupById[String(r.content_id)] || 'Other',
-    programs: Array.isArray(r.programs)
-      ? r.programs.map(({ images, ...rest }: Record<string, unknown>) => rest)
-      : r.programs,
-  }));
+  // Tag each row with its primary group. Per-program artwork (programs[].images) is KEPT here so writeTubiEpg
+  // can map it to Program.icon (a richer XMLTV guide, U2); the committed snapshot strips it back out via the
+  // adapter's snapshotTransform (it would ~double the offline file), so only the LIVE guide carries artwork.
+  const raw = rows.map((r) => ({ ...r, group: groupById[String(r.content_id)] || 'Other' }));
   logger.info('seed', `[tubi] uapi catalog: ${raw.length} channels, ${new Set(Object.values(groupById)).size} groups`);
   return {
     raw,

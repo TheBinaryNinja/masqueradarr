@@ -73,6 +73,8 @@ export function channelEl(epg: EpgChannelDoc, bareId: string, logoUrl: string | 
 // §4 — one Program → its <programme> block, re-tagged to the BARE channel id (so it matches its <channel id>).
 // Returns null to DROP an unbuildable airing (NaN/non-finite start or stop — §5). Optional elements are
 // omitted (never fabricated) when their source field is null; seriesId/callSign/channelNo/source are NOT emitted.
+// Element order follows the XMLTV DTD content model: title, sub-title, desc, date, category, icon, episode-num,
+// rating (a validator rejects out-of-order children).
 export function programmeEl(p: ProgramDoc, bareId: string): string | null {
   if (!Number.isFinite(p.start) || !Number.isFinite(p.end)) return null;
   const lines = [
@@ -81,7 +83,9 @@ export function programmeEl(p: ProgramDoc, bareId: string): string | null {
   ];
   if (p.episodeTitle != null) lines.push(`    <sub-title lang="en">${xmlText(p.episodeTitle)}</sub-title>`);
   if (p.shortDesc != null) lines.push(`    <desc lang="en">${xmlText(p.shortDesc)}</desc>`);
+  if (p.originalAirDate != null) lines.push(`    <date>${xmlText(p.originalAirDate)}</date>`);
   lines.push(`    <category lang="en">${xmlText(p.cat)}</category>`);
+  if (p.icon != null) lines.push(`    <icon src="${xmlAttr(p.icon)}" />`);
   for (const el of episodeNumEls(p.season, p.episode)) lines.push(`    ${el}`);
   if (p.rating != null) lines.push(`    <rating><value>${xmlText(p.rating)}</value></rating>`);
   lines.push('  </programme>');

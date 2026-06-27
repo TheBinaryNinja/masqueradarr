@@ -39,9 +39,12 @@ async function main(): Promise<void> {
         process.exit(1);
     }
 
-    // Snapshot: the raw upstream payload verbatim, in the { channels } shape listChannels() reads back.
-    writeFileSync(snapshotFile(id), `${JSON.stringify({ channels: raw }, null, 2)}\n`);
-    console.log(`[${id}] wrote snapshot: ${raw.length} raw channels (live=${meta?.live !== false})`);
+    // Snapshot: the raw upstream payload (in the { channels } shape listChannels() reads back), after the
+    // adapter's optional snapshot-only transform — lets a source strip heavy fields it keeps live but not
+    // offline (tubi drops per-program artwork, which would ~double the file). Absent → verbatim.
+    const channels = adapter.snapshotTransform ? adapter.snapshotTransform(raw) : raw;
+    writeFileSync(snapshotFile(id), `${JSON.stringify({ channels }, null, 2)}\n`);
+    console.log(`[${id}] wrote snapshot: ${channels.length} raw channels (live=${meta?.live !== false})`);
 }
 
 main().catch((err) => {

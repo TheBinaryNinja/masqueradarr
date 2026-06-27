@@ -45,6 +45,13 @@ const isClone = computed(() => playlist.value.source === 'clone');
 // Clones carry interval 'none' → no Sync/Compose schedule chips, Custom endpoint only (see PlaylistStatusDrawer).
 // Case-insensitive so a pre-normalization 'None' row still hides the chips before the boot migration runs.
 const noSchedule = computed(() => (playlist.value.interval ?? '').toLowerCase() === 'none');
+// Custom-type playlists with a LIVE upstream "Sync" can re-fetch: 'url' (the stored remoteUrl m3u),
+// 'hdhomerun' (the device lineup), and 'local' (a Local Now market re-fetch). 'file'/legacy 'import' have no
+// upstream, so the header Sync button is suppressed for them (it would only ever 500) — they keep Compose only.
+const isSyncableCustom = computed(() => {
+  const s = playlist.value.source;
+  return s === 'url' || s === 'hdhomerun' || s === 'local';
+});
 
 // Delete a playlist — BOTH user-composed (clone/import) AND built-in (Default) source playlists are now
 // deletable. The backend cascades: a clone drops its channels + per-user m3u files + access-list refs; a
@@ -284,7 +291,7 @@ async function syncNow(): Promise<OpRunResult> {
     // the device lineup, 'url' re-fetches the stored remoteUrl m3u. A Default source playlist syncs via the
     // registry source route.
     const res =
-      src === 'hdhomerun' || src === 'url'
+      src === 'hdhomerun' || src === 'url' || src === 'local'
         ? await fetch(`/api/custom-playlists/${encodeURIComponent(props.id)}/sync`, { method: 'POST' })
         : await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -562,7 +569,8 @@ async function doAppend() {
           </Btn>
         </template>
         <template v-else-if="playlistSource">
-          <Btn variant="ghost" icon="refresh" :disabled="syncing" @click="openOpModal('sync', { kind: 'custom', id: playlist.id, name: playlist.name }, () => syncNow())">
+          <!-- Sync only for custom types with a live upstream ('url'/'hdhomerun'); 'file'/'import' have none. -->
+          <Btn v-if="isSyncableCustom" variant="ghost" icon="refresh" :disabled="syncing" @click="openOpModal('sync', { kind: 'custom', id: playlist.id, name: playlist.name }, () => syncNow())">
             {{ syncing ? 'Syncing…' : 'Sync' }}
           </Btn>
           <Btn variant="ghost" icon="file" :disabled="composing" @click="openOpModal('compose', { kind: 'custom', id: playlist.id, name: playlist.name }, () => composeNow())">

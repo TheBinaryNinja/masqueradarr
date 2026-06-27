@@ -19,9 +19,9 @@ export interface EpgSourceDoc {
   auto: boolean;
   interval: string;
   builtin?: boolean;
-  // true ⇒ this EPG source was created by a playlist's afterSync automation (the tubi/dlhd self-EPG rows),
+  // true ⇒ this EPG source was created by a playlist's afterSync automation (the tubi/dlhd/dami self-EPG rows),
   // not added by a user. Bound rows hide manual sync + schedule controls in the UI (the playlist owns the
-  // refresh cadence). Set in the $set block of upsert{Tubi,Dlhd}EpgSource so it is re-asserted on every sync.
+  // refresh cadence). Set in the $set block of upsert{Tubi,Dlhd,Dami}EpgSource so it is re-asserted on every sync.
   playlistBinding: boolean;
   // User-defined list position (the EPG Sources screen's drag-to-reorder ordinal). Persisted so the order
   // survives reloads; GET /api/epg-sources sorts by it (ascending) with `name` as the stable tiebreaker.
@@ -37,7 +37,7 @@ export interface EpgSourceDoc {
   xmlGeneratedCount: number;
   xmlFailCount: number;
   // Gracenote provenance (null for non-Gracenote / legacy rows).
-  source: string | null;        // lowercase kind discriminator: 'gracenote' | 'epg-pw' | 'jesmann' | 'tubi' | 'dlhd' | 'xml file' | 'remote url'
+  source: string | null;        // lowercase kind discriminator: 'gracenote' | 'epg-pw' | 'jesmann' | 'tubi' | 'dlhd' | 'dami' | 'local' | 'xml file' | 'remote url'
   location: string | null;
   lineup_Type: string | null;   // provider.type: 'OTA' | 'CABLE' | 'SATELLITE'
   postalCode: string | null;
@@ -62,7 +62,7 @@ const EpgSourceSchema = new Schema<EpgSourceDoc>(
     auto: { type: Boolean, required: true },
     interval: { type: String, required: true },
     builtin: { type: Boolean },
-    // Set true by the tubi/dlhd self-EPG upserts (playlist afterSync); gates the UI's sync/schedule controls.
+    // Set true by the tubi/dlhd/dami self-EPG upserts (playlist afterSync); gates the UI's sync/schedule controls.
     playlistBinding: { type: Boolean, required: true, default: false },
     // List position for the drag-to-reorder UI; GET sorts by { order: 1, name: 1 }.
     order: { type: Number, required: true, default: 0 },

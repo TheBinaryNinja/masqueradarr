@@ -15,6 +15,10 @@ import {
   fetchLineupM3uText,
 } from '../sources/adapters/hdhomerun/lineup.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
+import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
+import { searchCities, detectMarket, LocalNowError } from '../sources/adapters/local/api.js';
+import { Cronjob, cronjobId, type CronFrequency, type CronjobDoc } from '../models/Cronjob.js';
+import { applyCronjob } from '../scheduler/index.js';
 
 // M3U IMPORT — turn an uploaded (or remotely-fetched) `.m3u`/`.m3u8` into a real, playable playlist. An
 // imported playlist is a user-composed playlist tagged by its ORIGIN (a sibling of a 'clone'): a Playlist row
@@ -382,6 +386,126 @@ importRouter.post('/hdhomerun', async (req, res, next) => {
     );
 
     logger.info('import', `imported HDHomeRun "${name}" (${id}) · ${result.channels} channel(s)`);
+    res.status(201).json({ id, name, slug: id, channels: result.channels, groups: result.groups, updated: now });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── Local Now import ─────────────────────────────────────────────────────────
+// A Local Now market is imported as a custom playlist of TYPE 'local' (a sibling of 'hdhomerun'): a Playlist
+// row (`source:'local'`, `endpoint:'custom'`, `interval:'none'`, plus the market fields) whose channels are
+// PlaylistChannel docs keyed by the playlist id, each origin:'local' so its `localnow://` sentinel resolves
+// per play through the synthetic local adapter (/api/v1/local/…). The catalog + inline guide arrive in ONE
+// market fetch, so a sync refreshes the channels AND the playlist-bound EPG. The guide window is tiny (~5
+// programs/channel), so create ALSO auto-provisions an hourly refresh schedule (a 'playlist' cronjob) → the
+// playlist self-maintains. Market lookup uses Local Now's City/Search API. Admin-only (this router is mounted
+// under adminOnlyRoutes). See .claude/docs/localnow-datasource.md.
+
+// Map a Local Now upstream failure to a clean 4xx (geo-block / bad config) vs 502 (transient) — never a 500.
+function localNowStatus(err: unknown): number {
+  return err instanceof LocalNowError ? 400 : 502;
+}
+
+// Best-effort: auto-provision an hourly playlist-sync schedule so a Local Now playlist's lineup + tiny guide
+// window self-maintain. Non-fatal — a scheduling hiccup must not fail the create. Mirrors the cronjobs route
+// (the user can edit/disable it on the playlist's schedule UI afterward).
+async function provisionLocalSchedule(id: string): Promise<void> {
+  const jobId = cronjobId('playlist', id);
+  const now = new Date().toISOString();
+  const frequency: CronFrequency = { mode: 'hourly', every: 1, atHour: null, atMinute: null, daysOfWeek: null };
+  const doc = (await Cronjob.findOneAndUpdate(
+    { _id: jobId },
+    {
+      $set: { targetType: 'playlist', targetId: id, cron: '0 * * * *', frequency, timezone: null, enabled: true, updatedAt: now },
+      $setOnInsert: { createdAt: now },
+    },
+    { upsert: true, new: true },
+  ).lean()) as CronjobDoc;
+  await applyCronjob(doc);
+}
+
+// GET /api/import/local/cities?q= — City/Market typeahead for the Add Playlist "Local" mode.
+importRouter.get('/local/cities', async (req, res) => {
+  try {
+    const q = typeof req.query.q === 'string' ? req.query.q : '';
+    res.json(await searchCities(q));
+  } catch (err) {
+    res.status(localNowStatus(err)).json({ error: `city_search_failed: ${(err as Error).message}` });
+  }
+});
+
+// GET /api/import/local/detect — the geo-detected default market ("Use my detected market").
+importRouter.get('/local/detect', async (_req, res) => {
+  try {
+    res.json(await detectMarket());
+  } catch (err) {
+    res.status(localNowStatus(err)).json({ error: `detect_failed: ${(err as Error).message}` });
+  }
+});
+
+// POST /api/import/local — create a Local Now playlist (Playlist row + market fields), sync its channels +
+// playlist-bound guide, and auto-provision the hourly refresh schedule. Body: { name, dma, market, label }.
+importRouter.post('/local', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const name = typeof body.name === 'string' ? body.name.trim() : '';
+    const dma = typeof body.dma === 'string' ? body.dma.trim() : '';
+    const market = typeof body.market === 'string' ? body.market.trim() : '';
+    const label = typeof body.label === 'string' && body.label.trim() ? body.label.trim() : name;
+    if (!name) return res.status(400).json({ error: 'name (non-empty string) required' });
+    if (!dma || !market) return res.status(400).json({ error: 'dma + market required' });
+
+    // Derive a filesystem/url-safe id from the name; reject reserved prefixes; disambiguate (mirrors m3u import).
+    const slug = sanitizeName(name);
+    if (isReservedEndpointPath(slug)) return res.status(400).json({ error: 'reserved_path' });
+    let id = slug;
+    for (let n = 2; await Playlist.exists({ id }); n++) id = `${slug}${n}`;
+
+    const domain = await resolveDomain();
+    const path = normalizeEndpointPath(id);
+    const url = path ? `${domain}/${path}` : domain;
+    const now = new Date().toISOString();
+
+    await Playlist.create({
+      id,
+      name,
+      source: LOCAL_SOURCE,
+      endpoint: 'custom',
+      interval: 'none',
+      url,
+      groups: 0,
+      state: true,
+      status: 'good',
+      auto: false,
+      builtin: false,
+      authentication: false,
+      isAuthenticated: false,
+      lastSync: now,
+      marketDma: dma,
+      marketSlug: market,
+      marketLabel: label,
+    });
+
+    // Pull the market into channels + the playlist-bound guide. On failure roll back the just-created row so an
+    // empty ghost playlist (and its EPG/schedule) is never left behind (mirrors the HDHomeRun create).
+    let result: { channels: number; groups: number };
+    try {
+      result = await syncLocalPlaylist(id);
+    } catch (err) {
+      await cascadeDeleteCustomPlaylist(id, url).catch(() => {});
+      return res.status(localNowStatus(err)).json({ error: `market_failed: ${(err as Error).message}` });
+    }
+
+    // Auto-grant + auto-schedule AFTER the sync succeeds (a rolled-back ghost is never granted/scheduled). Both best-effort.
+    await grantPlaylistToAdmins(id, 'custom').catch((err) =>
+      logger.warn('users', `grantPlaylistToAdmins after local create (${id}) failed: ${(err as Error).message}`),
+    );
+    await provisionLocalSchedule(id).catch((err) =>
+      logger.warn('local', `auto-schedule after local create (${id}) failed: ${(err as Error).message}`),
+    );
+
+    logger.info('import', `imported Local Now "${name}" (${id}) · ${result.channels} channel(s)`);
     res.status(201).json({ id, name, slug: id, channels: result.channels, groups: result.groups, updated: now });
   } catch (err) {
     next(err);

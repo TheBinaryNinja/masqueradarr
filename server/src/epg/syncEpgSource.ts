@@ -18,6 +18,21 @@ import {
 import { fetchRegionChannels, fetchChannelXml, mapEventsToPrograms, todayYmd } from './epgpw.js';
 import { syncTubiEpg } from './tubi.js';
 import { syncDlhdEpg } from './dlhd.js';
+import { syncDamiEpg } from './dami.js';
+import { syncSamsungEpg } from './samsung.js';
+import { syncVizioEpg } from './vizio.js';
+import { syncLgEpg } from './lg.js';
+import { syncVidaaEpg } from './vidaa.js';
+import { syncWhaleEpg } from './whale.js';
+import { syncXumoEpg } from './xumo.js';
+import { syncFreeLiveSportsEpg } from './freelivesports.js';
+import { syncDistroEpg } from './distro.js';
+import { syncStirrEpg } from './stirr.js';
+import { syncTclEpg } from './tcl.js';
+import { syncPlutoEpg } from './pluto.js';
+import { syncRokuEpg } from './roku.js';
+import { syncPlexEpg } from './plex.js';
+import { syncLocalEpg } from './local.js';
 import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
@@ -192,13 +207,76 @@ export async function syncEpgSource(
       // per-source replace. EPG-ONLY: channel self-links are owned by the dlhd playlist afterSync hook (the
       // extra channelIds field is ignored here). See epg/dlhd.ts.
       counts = await syncDlhdEpg(src.id, offset);
+    } else if (kind === 'dami') {
+      // dami builds its guide from dami-tv.pro's documented live-events API (/papi/api/streams) — live-only,
+      // per-source replace. EPG-ONLY: channel self-links are owned by the dami playlist afterSync hook. See epg/dami.ts.
+      counts = await syncDamiEpg(src.id, offset);
+    } else if (kind === 'samsung') {
+      // samsung builds its guide from Matt Huisman's per-region XMLTV mirror — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the samsung playlist afterSync hook. See epg/samsung.ts.
+      counts = await syncSamsungEpg(src.id, offset);
+    } else if (kind === 'vizio') {
+      // vizio builds its guide from the WatchFree+ /api/airings schedule grid — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the vizio playlist afterSync hook. See epg/vizio.ts.
+      counts = await syncVizioEpg(src.id, offset);
+    } else if (kind === 'lg') {
+      // lg builds its guide from the schedulelist payload's inline programs[] — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the lg playlist afterSync hook. See epg/lg.ts.
+      counts = await syncLgEpg(src.id, offset);
+    } else if (kind === 'vidaa') {
+      // vidaa builds its guide from the OVP's separate /epg/grid schedule — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the vidaa playlist afterSync hook. See epg/vidaa.ts.
+      counts = await syncVidaaEpg(src.id, offset);
+    } else if (kind === 'whale') {
+      // whale builds its guide from the rlaxx platform's separate /epg schedule — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the whale playlist afterSync hook. See epg/whale.ts.
+      counts = await syncWhaleEpg(src.id, offset);
+    } else if (kind === 'xumo') {
+      // xumo builds its guide from the Valencia backend's paginated MARKET EPG — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the xumo playlist afterSync hook. See epg/xumo.ts.
+      counts = await syncXumoEpg(src.id, offset);
+    } else if (kind === 'freelivesports') {
+      // freelivesports builds its guide from the catalog payload's inline epg.entries — live-only, per-source
+      // replace. EPG-ONLY: channel self-links are owned by the freelivesports playlist afterSync hook. See
+      // epg/freelivesports.ts.
+      counts = await syncFreeLiveSportsEpg(src.id, offset);
+    } else if (kind === 'distro') {
+      // distro builds its guide from the jsrdn SEPARATE epg/query.php schedule — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the distro playlist afterSync hook. See epg/distro.ts.
+      counts = await syncDistroEpg(src.id, offset);
+    } else if (kind === 'stirr') {
+      // stirr builds its guide from a per-channel TWO-TIER fetch (provider epg_url → STIRR /api/epg) — live-only,
+      // per-source replace. EPG-ONLY: channel self-links are owned by the stirr playlist afterSync hook. See epg/stirr.ts.
+      counts = await syncStirrEpg(src.id, offset);
+    } else if (kind === 'tcl') {
+      // tcl builds its guide from the gateway's re-walked per-category schedule + a batched program-detail lookup
+      // — live-only, per-source replace. EPG-ONLY: channel self-links are owned by the tcl playlist afterSync hook.
+      // See epg/tcl.ts.
+      counts = await syncTclEpg(src.id, offset);
+    } else if (kind === 'pluto') {
+      // pluto builds its guide from the Paramount backend's per-region /v2/guide/timelines fetch — live-only,
+      // per-source replace. EPG-ONLY: channel self-links are owned by the pluto playlist afterSync hook. See epg/pluto.ts.
+      counts = await syncPlutoEpg(src.id, offset);
+    } else if (kind === 'roku') {
+      // roku builds its guide from a per-channel content-proxy linearSchedule fanout — live-only, per-source
+      // replace. EPG-ONLY: channel self-links are owned by the roku playlist afterSync hook. See epg/roku.ts.
+      counts = await syncRokuEpg(src.id, offset);
+    } else if (kind === 'plex') {
+      // plex builds its guide from a per-channel per-day grid fanout (epg.provider.plex.tv/grid) — live-only,
+      // per-source replace. EPG-ONLY: channel self-links are owned by the plex playlist afterSync hook. See epg/plex.ts.
+      counts = await syncPlexEpg(src.id, offset);
+    } else if (kind === 'local') {
+      // local (Local Now) builds its guide INLINE with each market's catalog — a live-only refetch + per-
+      // playlist replace, keyed off the OWNING Local playlist's stored market. EPG-ONLY: channel self-links
+      // are owned by the playlist sync (adapters/local/import.ts). See epg/local.ts.
+      counts = await syncLocalEpg(src.id, offset);
     } else if ((kind === 'remote url' || kind === 'jesmann') && src.url) {
       // A re-fetchable XMLTV URL — re-download it and per-source replace. 'remote url' = the Custom tab's
       // Remote URL feature; 'jesmann' = the Jesmann guided picker (same machinery, distinct kind). ('xml file'
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / tcl / pluto / roku / plex / local / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });

@@ -359,7 +359,7 @@ function livePr(c: Channel) {
 
 <template>
   <div v-if="epg" class="col">
-    <div class="card epg-detail-header" style="display: flex; align-items: center; gap: 16px;">
+    <div class="card" style="display: flex; align-items: center; gap: 16px;">
       <div :class="['src-ico', 'epg-glow', { builtin: epg.builtin, 'epg-builtin': epg.builtin }]"
            style="width: 52px; height: 52px; border-radius: 12px; color: var(--good);">
         <Icon :name="epg.builtin ? 'tv' : 'epg'" :size="22" />

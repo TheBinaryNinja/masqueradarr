@@ -10,8 +10,10 @@
 // ── Custom (user-composed) playlist type tags ───────────────────────────────
 // A user-composed playlist carries a literal `source` TYPE TAG (not a real adapter id): 'clone' (channels
 // COPIED from existing source channels), 'file' (channels PARSED from an UPLOADED .m3u), 'url' (channels
-// PARSED from a REMOTE-URL .m3u fetch), or 'hdhomerun' (channels SYNCED from a local HDHomeRun tuner's
-// lineup; each carries origin:'hdhomerun' so its stream routes through the hdhomerun remux adapter). The
+// PARSED from a REMOTE-URL .m3u fetch), 'hdhomerun' (channels SYNCED from a local HDHomeRun tuner's
+// lineup; each carries origin:'hdhomerun' so its stream routes through the hdhomerun remux adapter), or 'local'
+// (channels SYNCED from a Local Now market; each carries origin:'local' so its `localnow://` sentinel resolves
+// through the synthetic local adapter). The
 // legacy tag 'import' (pre-file/url split) is still RECOGNIZED for existing rows but is no longer assigned to
 // new playlists. All TYPE TAGS are stored LOWERCASE (the repo-wide source-type normalization). For all, the
 // channels live under the playlist's OWN id (source === <playlistId>), so the channel-store key is the
@@ -19,7 +21,7 @@
 // so its channels are keyed by `source` directly. This helper centralizes that distinction — used by the
 // channels read (routes/playlists.ts), the compose key (m3u/compose.ts), and the custom-playlist management
 // routes (routes/customPlaylists.ts). See .claude/skills/{schemas,m3u}/SKILL.md.
-export const CUSTOM_PLAYLIST_TYPES = ['clone', 'file', 'url', 'hdhomerun', 'import'] as const;
+export const CUSTOM_PLAYLIST_TYPES = ['clone', 'file', 'url', 'hdhomerun', 'local', 'import'] as const;
 
 /**
  * True when `source` is a custom-playlist TYPE TAG ('clone' | 'file' | 'url' | 'hdhomerun', or legacy

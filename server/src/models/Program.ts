@@ -22,6 +22,10 @@ export interface ProgramDoc {
   season: string | null;
   episode: string | null;
   episodeTitle: string | null;
+  // Added later (U2) — OPTIONAL so the ~22 existing providers need no change; the schema `default: null`
+  // backfills them on insert, and the XMLTV serializer's `!= null` guards skip both null and undefined.
+  icon?: string | null;            // program artwork/poster URL → XMLTV <icon>; null when the source has none
+  originalAirDate?: string | null; // release/air year (or date) → XMLTV <date>; null when unknown
 }
 
 const ProgramSchema = new Schema<ProgramDoc>(
@@ -41,6 +45,8 @@ const ProgramSchema = new Schema<ProgramDoc>(
     season: { type: String, default: null },
     episode: { type: String, default: null },
     episodeTitle: { type: String, default: null },
+    icon: { type: String, default: null },
+    originalAirDate: { type: String, default: null },
   },
   { versionKey: false },
 );
