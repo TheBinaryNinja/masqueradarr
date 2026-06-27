@@ -1,0 +1,632 @@
+[
+  {
+    "source": "tubi",
+    "id": "tubi:400000096",
+    "tvg_id": "113780",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "A&E Crime 360",
+    "tmsid": "113780",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:618762",
+    "tvg_id": "113380",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "ABC News Live",
+    "tmsid": "113380",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000012",
+    "tvg_id": "124806",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "ACCDN",
+    "tmsid": "124806",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:692057",
+    "tvg_id": "112881",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Alien Nation by DUST",
+    "tmsid": "112881",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:653208",
+    "tvg_id": "205028",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Always Funny",
+    "tmsid": "205028",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715950",
+    "tvg_id": "170368",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "At the Movies",
+    "tmsid": "170368",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:571664",
+    "tvg_id": "123870",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Bloomberg Originals",
+    "tmsid": "123870",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:555130",
+    "tvg_id": "124721",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "CBC News",
+    "tmsid": "124721",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:555126",
+    "tvg_id": "107241",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Cheddar",
+    "tmsid": "107241",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000069",
+    "tvg_id": "180081",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Classic Cinema",
+    "tmsid": "180081",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715949",
+    "tvg_id": "169318",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Crime Scenes",
+    "tmsid": "169318",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000090",
+    "tvg_id": "123427",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Crime ThrillHer",
+    "tmsid": "123427",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000086",
+    "tvg_id": "126369",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Dance Moms",
+    "tmsid": "126369",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:711410",
+    "tvg_id": "113957",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Dateline 24/7",
+    "tmsid": "113957",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000024",
+    "tvg_id": "144738",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "DAZN Ringside",
+    "tmsid": "144738",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000088",
+    "tvg_id": "150981",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Dog the Bounty Hunter",
+    "tmsid": "150981",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000056",
+    "tvg_id": "146144",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Ebony TV by Lionsgate",
+    "tmsid": "146144",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715948",
+    "tvg_id": "169317",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Family Unscripted",
+    "tmsid": "169317",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:555382",
+    "tvg_id": "119212",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "FOX SOUL",
+    "tmsid": "119212",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:628893",
+    "tvg_id": "121307",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "FOX Weather",
+    "tmsid": "121307",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:557344",
+    "tvg_id": "106100",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Fubo Sports Network",
+    "tmsid": "106100",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:673411",
+    "tvg_id": "116474",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Game Show Central",
+    "tmsid": "116474",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000070",
+    "tvg_id": "169320",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Generation Drama",
+    "tmsid": "169320",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715951",
+    "tvg_id": "169310",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Ghosts are Real",
+    "tmsid": "169310",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:684170",
+    "tvg_id": "124040",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Grit Xtra",
+    "tmsid": "124040",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:700406",
+    "tvg_id": "127985",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "HauntTV",
+    "tmsid": "127985",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715952",
+    "tvg_id": "169315",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "How To",
+    "tmsid": "169315",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000073",
+    "tvg_id": "169605",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "In the Garage",
+    "tmsid": "169605",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:682634",
+    "tvg_id": "122912",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "ION",
+    "tmsid": "122912",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:684167",
+    "tvg_id": "123651",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "ION Mystery",
+    "tmsid": "123651",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:684165",
+    "tvg_id": "117518",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "ION Plus",
+    "tmsid": "117518",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000033",
+    "tvg_id": "169820",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Kartoon Channel!",
+    "tmsid": "169820",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000251",
+    "tvg_id": "119388",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Law&Crime",
+    "tmsid": "119388",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:555127",
+    "tvg_id": "119219",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "LiveNOW from FOX",
+    "tmsid": "119219",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000067",
+    "tvg_id": "170382",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Living with Evil",
+    "tmsid": "170382",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:618763",
+    "tvg_id": "118952",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Localish",
+    "tmsid": "118952",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715947",
+    "tvg_id": "169311",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Love & Marriage",
+    "tmsid": "169311",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:692262",
+    "tvg_id": "121534",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Maverick Black Cinema",
+    "tmsid": "121534",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:700415",
+    "tvg_id": "122437",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Midsomer Murders",
+    "tmsid": "122437",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:613765",
+    "tvg_id": "206416",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "MLB",
+    "tmsid": "206416",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000048",
+    "tvg_id": "146284",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "MrBeast",
+    "tmsid": "146284",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715946",
+    "tvg_id": "169313",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Mysterious Worlds",
+    "tmsid": "169313",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000105",
+    "tvg_id": "158128",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Nash Bridges",
+    "tmsid": "158128",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:613761",
+    "tvg_id": "121705",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "NFL Channel",
+    "tmsid": "121705",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000008",
+    "tvg_id": "133288",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "NHL",
+    "tmsid": "133288",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:629323",
+    "tvg_id": "129130",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "NHRA TV",
+    "tmsid": "129130",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000006",
+    "tvg_id": "135167",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "OuterSphere",
+    "tmsid": "135167",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000046",
+    "tvg_id": "176119",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "PGA TOUR",
+    "tmsid": "176119",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:613762",
+    "tvg_id": "121197",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Real Madrid",
+    "tmsid": "121197",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:641290",
+    "tvg_id": "121781",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "REELZ Famous & Infamous",
+    "tmsid": "121781",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:578086",
+    "tvg_id": "120010",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Scripps News",
+    "tmsid": "120010",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000064",
+    "tvg_id": "141825",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Silent Witness and New Tricks",
+    "tmsid": "141825",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:613763",
+    "tvg_id": "113991",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Stadium",
+    "tmsid": "113991",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715938",
+    "tvg_id": "169611",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Sweet Escapes",
+    "tmsid": "169611",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:702891",
+    "tvg_id": "132922",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "The Jack Hanna Channel",
+    "tmsid": "132922",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000116",
+    "tvg_id": "171941",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "The NBA Channel",
+    "tmsid": "171941",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:724210",
+    "tvg_id": "134959",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "The Rifleman",
+    "tmsid": "134959",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:700412",
+    "tvg_id": "131220",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Total Crime",
+    "tmsid": "131220",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715942",
+    "tvg_id": "169646",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Unique Lives",
+    "tmsid": "169646",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000094",
+    "tvg_id": "123431",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "UnXplained Zone",
+    "tmsid": "123431",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:400000000",
+    "tvg_id": "121424",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Waypoint TV",
+    "tmsid": "121424",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:715945",
+    "tvg_id": "169645",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Welcome Home",
+    "tmsid": "169645",
+    "score": 100,
+    "confidence": "high"
+  },
+  {
+    "source": "tubi",
+    "id": "tubi:692073",
+    "tvg_id": "124636",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "tubi_name": "Women's Sports Network",
+    "tmsid": "124636",
+    "score": 100,
+    "confidence": "high"
+  }
+]

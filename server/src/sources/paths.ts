@@ -41,6 +41,19 @@ export const DLHD_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dlhd-playlist-addon.j
 export const DAMI_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dami-playlist-addon.json');
 
 /**
+ * The tubi→gracenote EPG-link crosswalk (committed seed data). tubi's afterSync applies its HIGH-tier rows to
+ * never-touched tubi PlaylistChannels once per channel after a sync, BEFORE its own inline-program self-EPG fills
+ * the rest (the dlhd two-tier pattern). Unlike the name-matched crosswalks, tubi's rows are DETERMINISTIC: ported
+ * from FastChannels' gracenote_map.csv (the `tubi` rows carry an EXACT Gracenote station id per content_id), so the
+ * committed file maps `id=tubi:<content_id>` → `tvg_id=<tmsid>` at high confidence. The committed file targets the
+ * primary US lineup (`gracenote:DITV:USA-DITV-DEFAULT`); the guarded applier (epgCrosswalk.ts) skips any row whose
+ * `(epg, tvg_id)` pair isn't a real epgchannels doc, so a station that actually lives under a different lineup is
+ * never falsely linked — it just re-links on a later sync once present. Refined per-row against live Mongo by
+ * scripts/tubi-epg-crosswalk.ts (npm run crosswalk:tubi-epg). Same shape + apply sequence as dlhd's.
+ */
+export const TUBI_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'tubi-playlist-addon.json');
+
+/**
  * The samsung→gracenote EPG-link crosswalk (committed seed data). samsung's afterSync applies its HIGH-tier
  * rows to never-touched samsung PlaylistChannels once per channel after a sync, BEFORE its own XMLTV self-EPG
  * fills the rest. Generated offline from FastChannels' gracenote_map.csv (samsung rows). NOT committed yet — the

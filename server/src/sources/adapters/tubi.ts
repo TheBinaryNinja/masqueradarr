@@ -9,8 +9,11 @@
 // shared rewriter (core/playlist.ts) routes the #EXT-X-KEY URI back through the proxy so the key decrypts.
 //
 // tubi is UNIQUE in that it carries its OWN EPG inline: afterSync (the source-agnostic post-sync hook)
-// writes the guide (epgchannels/programs), upserts the 'tubi' EpgSource, and self-links its playlistchannels
-// to that guide — all off the listing this sync already fetched. SSRF is a clean STATIC suffix allowlist of
+// attaches EPG the dlhd/dami TWO-TIER way — (1) a committed gracenote crosswalk (TUBI_EPG_ADDON_FILE, ported
+// from FastChannels' exact per-content_id tmsid map) links the curated US linear channels to a real Gracenote
+// guide so they share a standard grid + cross-source-dedupe, then (2) tubi's own inline guide
+// (epgchannels/programs from this same listing) is written, the 'tubi' EpgSource upserted, and the REMAINING
+// untouched playlistchannels self-linked to it. SSRF is a clean STATIC suffix allowlist of
 // Tubi's corporate domains (no runtime growth); that strict match inherently excludes private/loopback hosts.
 // tubi is ANONYMOUS — no auth (requiresAuth unset → its (Default) playlist seeds authentication:false).
 
@@ -18,6 +21,8 @@ import { fetchTubiCatalog, UA } from './tubi/catalog.js';
 import { resolveTubiStream } from './tubi/resolveStream.js';
 import { writeTubiEpg, upsertTubiEpgSource } from '../../epg/tubi.js';
 import { PlaylistChannel } from '../../models/PlaylistChannel.js';
+import { applyEpgCrosswalk } from '../epgCrosswalk.js';
+import { TUBI_EPG_ADDON_FILE } from '../paths.js';
 import { resolveProgramOffset } from '../../settings/programOffset.js';
 import { logger } from '../core/logger.js';
 import type { SourceAdapter, ArtifactType } from '../types.js';
@@ -153,27 +158,40 @@ const tubiAdapter: SourceAdapter = {
     },
   },
 
-  // ── post-sync hook: tubi carries its own EPG ────────────────────────────────────────
+  // ── post-sync hook: tubi carries its own EPG (gracenote crosswalk THEN self-EPG) ─────────────────────
   // Runs after syncLive upserts/prunes the channel stores, off the SAME listing (`raw`) this sync fetched.
+  // The dlhd/dami TWO-TIER pattern: a committed gracenote crosswalk claims the curated US linear channels
+  // first (so a Tubi "CBS News" shares a STANDARD guide + cross-source-dedupes with the same channel from
+  // other sources), then tubi's own inline-program self-EPG fills the remainder. Both are
+  // FILL-ONLY-IF-UNTOUCHED (epg == null AND epgState == null), so a user link/unlink/remap always survives.
   async afterSync({ raw, live, sourceId }) {
-    // (1) Self-link, FILL-ONLY-IF-UNMAPPED. Every tubi channel's guide is its own content_id, so the
-    //     2-factor EPG link is exact: tvg_id = bare content_id, epg = the EPG source id ('tubi'). Set it only
-    //     where unlinked (epg == null) so a user's deliberate remap is preserved. content_id comes straight
-    //     off the raw row (no _id parsing). Runs live or offline (cheap, idempotent).
+    // (1) Gracenote crosswalk FIRST. Ported from FastChannels' exact tubi tmsid map (deterministic, not
+    //     name-matched). Guarded (epgCrosswalk.ts skips rows whose (epg, tvg_id) isn't a real epgchannels
+    //     doc — e.g. the user hasn't added the Gracenote source — and re-links them on a later sync). Runs
+    //     live or offline (cheap, idempotent, file-driven); non-fatal so a guide failure never fails the sync.
+    await applyEpgCrosswalk(sourceId, TUBI_EPG_ADDON_FILE).catch((err) =>
+      logger.warn('seed', `[${sourceId}] EPG crosswalk failed (continuing): ${(err as Error).message}`),
+    );
+
+    // (2) Self-link the REMAINING untouched channels, FILL-ONLY-IF-UNTOUCHED. Every tubi channel's own guide
+    //     is its content_id, so the 2-factor EPG link is exact: tvg_id = bare content_id, epg = the EPG source
+    //     id ('tubi'). The filter requires epg == null AND epgState == null, so a crosswalked channel (step 1
+    //     set epg/epgState) is skipped, and a user's deliberate remap (epg set) or unlink (epgState
+    //     'unmatched') is preserved. content_id comes straight off the raw row. Runs live or offline.
     const ops = raw
       .filter((r) => r?.content_id != null)
       .map((r) => {
         const cid = String(r.content_id);
         return {
           updateOne: {
-            filter: { _id: `${sourceId}:${cid}`, epg: null },
+            filter: { _id: `${sourceId}:${cid}`, source: sourceId, epg: null, epgState: null },
             update: { $set: { tvg_id: cid, epg: sourceId, epgState: 'matched' as const } },
           },
         };
       });
     if (ops.length) await PlaylistChannel.bulkWrite(ops, { ordered: false });
 
-    // (2) EPG write — only on a LIVE sync. An offline snapshot must not replace a good guide with stale
+    // (3) EPG write — only on a LIVE sync. An offline snapshot must not replace a good guide with stale
     //     programs; the standalone EPG "Sync" (syncEpgSource → syncTubiEpg) refreshes it live instead.
     if (!live) return;
     // Stamp the operator's UTC offset onto the guide programs (settings.offset; '+0000' when unset). No UI on
