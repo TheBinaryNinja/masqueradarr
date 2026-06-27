@@ -153,14 +153,14 @@ async function seedEpgSourceOrder(): Promise<void> {
   logger.info('seed', `seeded list order on ${rows.length} epg sources (name order)`);
 }
 
-// One-time, idempotent backfill of the playlistBinding flag onto the self-EPG rows (tubi/dlhd) created by a
-// playlist's afterSync BEFORE the field existed. The upsert{Tubi,Dlhd}EpgSource hooks now $set
+// One-time, idempotent backfill of the playlistBinding flag onto the self-EPG rows (tubi/dlhd/dami) created by
+// a playlist's afterSync BEFORE the field existed. The upsert{Tubi,Dlhd,Dami}EpgSource hooks now $set
 // playlistBinding:true on every sync — so a fresh row already carries it and a playlist re-sync corrects an
 // old one; this brings EXISTING rows current WITHOUT waiting for that next sync. Matched by the stable
 // `source` kind discriminator; the `$ne: true` guard makes it a no-op once set / on a fresh DB. Non-fatal.
 async function backfillPlaylistBinding(): Promise<void> {
   const r = await EpgSource.updateMany(
-    { source: { $in: ['tubi', 'dlhd'] }, playlistBinding: { $ne: true } },
+    { source: { $in: ['tubi', 'dlhd', 'dami'] }, playlistBinding: { $ne: true } },
     { $set: { playlistBinding: true } },
   );
   if (r.modifiedCount) logger.info('seed', `backfilled playlistBinding on ${r.modifiedCount} self-epg source(s)`);

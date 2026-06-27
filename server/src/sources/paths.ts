@@ -31,3 +31,11 @@ export const DULO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dulo-playlist-addon.j
  * dlhd is anonymous and has no native guide, so its channels link to the existing US Gracenote sources.
  */
 export const DLHD_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dlhd-playlist-addon.json');
+
+/**
+ * The dami→gracenote EPG-link crosswalk (committed seed data). dami's afterSync applies its HIGH-tier rows to
+ * never-touched dami PlaylistChannels once per channel after a sync. dami channel ids ARE DaddyLive ids, so
+ * this is derived from dlhd-playlist-addon.json (rows re-id'd dlhd:→dami:); its linear channels link to the
+ * existing US Gracenote sources, same shape + apply sequence as dlhd's.
+ */
+export const DAMI_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dami-playlist-addon.json');

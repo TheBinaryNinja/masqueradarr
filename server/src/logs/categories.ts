@@ -18,6 +18,7 @@ export const TAG_CATEGORY: Record<string, LogCategory> = {
   seed: 'playlists', sources: 'playlists', sync: 'playlists', m3u: 'playlists', compose: 'playlists',
   playlists: 'playlists',
   dulo: 'playlists', 'dulo:stream': 'playlists', dlhd: 'playlists', 'dlhd:stream': 'playlists', tubi: 'playlists',
+  dami: 'playlists', 'dami:stream': 'playlists',
   build: 'playlists',
   stats: 'active', telemetry: 'active', proxy: 'active', broll: 'active', ffprobe: 'active',
   stream: 'active', 'stream:probe': 'active', geoip: 'active',

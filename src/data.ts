@@ -652,15 +652,16 @@ const EPG_META_FIELDS: { key: keyof EpgSource; label: string }[] = [
   { key: 'postalCode', label: 'postalCode' },
 ];
 // Pretty display label for the lowercase EPG source-KIND discriminator. The stored/compared value is
-// lowercase ('gracenote'/'epg-pw'/'jesmann'/'tubi'/'dlhd'/'xml file'/'remote url') — this maps the proper-name
-// providers back to their brand casing for the UI (the SOURCE chip, etc.); unknown kinds pass through
-// verbatim. Case-insensitive so a legacy capitalized row still renders the brand label pre-migration.
+// lowercase ('gracenote'/'epg-pw'/'jesmann'/'tubi'/'dlhd'/'dami'/'xml file'/'remote url') — this maps the
+// proper-name providers back to their brand casing for the UI (the SOURCE chip, etc.); unknown kinds pass
+// through verbatim. Case-insensitive so a legacy capitalized row still renders the brand label pre-migration.
 const EPG_SOURCE_LABELS: Record<string, string> = {
   gracenote: 'Gracenote',
   'epg-pw': 'EPG-PW',
   jesmann: 'Jesmann',
   tubi: 'tubi',
   dlhd: 'dlhd',
+  dami: 'dami',
   'xml file': 'xml file',
   'remote url': 'remote url',
 };
