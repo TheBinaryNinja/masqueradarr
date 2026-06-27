@@ -16,16 +16,19 @@ import xumoAdapter from './adapters/xumo.js';
 import freeLiveSportsAdapter from './adapters/freelivesports.js';
 import distroAdapter from './adapters/distro.js';
 import stirrAdapter from './adapters/stirr.js';
+import tclAdapter from './adapters/tcl.js';
 import directAdapter from './adapters/direct.js';
 import hdhomerunAdapter from './adapters/hdhomerun/index.js';
+import localAdapter from './adapters/local/index.js';
 import type { SourceAdapter } from './types.js';
 
-// `direct` and `hdhomerun` are synthetic (proxy-only) sources — they provide a /api/v1/<id>/… stream route
-// for user-imported playlists but have no catalog, so boot init + the manifest skip them (they are not
-// syncable source playlists). `direct` passes imported URLs straight through; `hdhomerun` remuxes a local
-// tuner's raw MPEG-TS to HLS (adapters/hdhomerun/). Both back custom-type playlists whose channels carry
-// origin:'<id>' for routing.
-export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, vidaaAdapter, whaleAdapter, xumoAdapter, freeLiveSportsAdapter, distroAdapter, stirrAdapter, directAdapter, hdhomerunAdapter];
+// `direct`, `hdhomerun`, and `local` are synthetic (proxy-only) sources — they provide a /api/v1/<id>/…
+// stream route for user-created playlists but have no catalog, so boot init + the manifest skip them (they
+// are not syncable source playlists, and `local` never appears in the Add Playlist Built-In list). `direct`
+// passes imported URLs straight through; `hdhomerun` remuxes a local tuner's raw MPEG-TS to HLS
+// (adapters/hdhomerun/); `local` resolves a Local Now `localnow://` sentinel to a fresh signed CDN master per
+// play (adapters/local/). All three back custom-type playlists whose channels carry origin:'<id>' for routing.
+export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, vidaaAdapter, whaleAdapter, xumoAdapter, freeLiveSportsAdapter, distroAdapter, stirrAdapter, tclAdapter, directAdapter, hdhomerunAdapter, localAdapter];
 
 export function getSource(id: string): SourceAdapter | undefined {
   return SOURCES.find((s) => s.id === id);

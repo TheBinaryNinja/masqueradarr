@@ -23,6 +23,7 @@ import { probeAllChannels } from '../sources/probeAll.js';
 import { getSource } from '../sources/registry.js';
 import { Playlist } from '../models/Playlist.js';
 import { syncHdhrPlaylist } from '../sources/adapters/hdhomerun/import.js';
+import { syncLocalPlaylist } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from '../routes/import.js';
 import { buildBackupGzip, backupFilename } from '../backup/buildBackup.js';
 import { writeBackupFile } from '../backup/paths.js';
@@ -42,6 +43,7 @@ async function runPlaylistSync(targetId: string): Promise<void> {
   const src = (pl?.source ?? '').toLowerCase();
   if (src === 'hdhomerun') await syncHdhrPlaylist(targetId);
   else if (src === 'url') await syncUrlPlaylist(targetId);
+  else if (src === 'local') await syncLocalPlaylist(targetId);
   else throw new Error(`playlist ${targetId} is not live-syncable (source: ${pl?.source ?? 'unknown'})`);
 }
 

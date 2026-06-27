@@ -27,6 +27,7 @@ const SOURCE_CHIP_ICON: Record<string, string> = {
   file: 'file',
   url: 'link',
   hdhomerun: 'tv',
+  local: 'map', // Local Now (per-market) playlist
   import: 'import', // legacy pre-file/url-split rows
 };
 

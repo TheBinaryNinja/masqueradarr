@@ -28,6 +28,8 @@ import { syncXumoEpg } from './xumo.js';
 import { syncFreeLiveSportsEpg } from './freelivesports.js';
 import { syncDistroEpg } from './distro.js';
 import { syncStirrEpg } from './stirr.js';
+import { syncTclEpg } from './tcl.js';
+import { syncLocalEpg } from './local.js';
 import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
@@ -243,13 +245,23 @@ export async function syncEpgSource(
       // stirr builds its guide from a per-channel TWO-TIER fetch (provider epg_url → STIRR /api/epg) — live-only,
       // per-source replace. EPG-ONLY: channel self-links are owned by the stirr playlist afterSync hook. See epg/stirr.ts.
       counts = await syncStirrEpg(src.id, offset);
+    } else if (kind === 'tcl') {
+      // tcl builds its guide from the gateway's re-walked per-category schedule + a batched program-detail lookup
+      // — live-only, per-source replace. EPG-ONLY: channel self-links are owned by the tcl playlist afterSync hook.
+      // See epg/tcl.ts.
+      counts = await syncTclEpg(src.id, offset);
+    } else if (kind === 'local') {
+      // local (Local Now) builds its guide INLINE with each market's catalog — a live-only refetch + per-
+      // playlist replace, keyed off the OWNING Local playlist's stored market. EPG-ONLY: channel self-links
+      // are owned by the playlist sync (adapters/local/import.ts). See epg/local.ts.
+      counts = await syncLocalEpg(src.id, offset);
     } else if ((kind === 'remote url' || kind === 'jesmann') && src.url) {
       // A re-fetchable XMLTV URL — re-download it and per-source replace. 'remote url' = the Custom tab's
       // Remote URL feature; 'jesmann' = the Jesmann guided picker (same machinery, distinct kind). ('xml file'
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / tcl / local / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });

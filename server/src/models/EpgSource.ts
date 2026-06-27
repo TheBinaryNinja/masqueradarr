@@ -37,7 +37,7 @@ export interface EpgSourceDoc {
   xmlGeneratedCount: number;
   xmlFailCount: number;
   // Gracenote provenance (null for non-Gracenote / legacy rows).
-  source: string | null;        // lowercase kind discriminator: 'gracenote' | 'epg-pw' | 'jesmann' | 'tubi' | 'dlhd' | 'dami' | 'xml file' | 'remote url'
+  source: string | null;        // lowercase kind discriminator: 'gracenote' | 'epg-pw' | 'jesmann' | 'tubi' | 'dlhd' | 'dami' | 'local' | 'xml file' | 'remote url'
   location: string | null;
   lineup_Type: string | null;   // provider.type: 'OTA' | 'CABLE' | 'SATELLITE'
   postalCode: string | null;

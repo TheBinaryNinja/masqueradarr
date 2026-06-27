@@ -49,7 +49,7 @@ async function syncRow(p: Playlist): Promise<OpRunResult> {
     // the device lineup, 'url' re-fetches the stored remoteUrl m3u. A Default source playlist syncs via the
     // registry source route. (Mirrors PlaylistDetailScreen.syncNow so both entry points converge on one path.)
     const res =
-      src === 'hdhomerun' || src === 'url'
+      src === 'hdhomerun' || src === 'url' || src === 'local'
         ? await fetch(`/api/custom-playlists/${encodeURIComponent(p.id)}/sync`, { method: 'POST' })
         : await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -90,9 +90,9 @@ async function composeRow(p: Playlist): Promise<void> {
 // Custom rows keep the per-id behavior above. `isCustom` selects which busy source a row reads.
 const isCustom = (p: Playlist): boolean => p.endpoint === 'custom';
 // Only custom types with a LIVE upstream that "Sync" can re-fetch surface a Sync action: 'url' (the stored
-// remoteUrl m3u) and 'hdhomerun' (the device lineup). 'file'/legacy 'import'/'clone' have no upstream, so a
-// Sync there would only ever 500 — they show Compose only.
-const SYNCABLE_CUSTOM = new Set(['url', 'hdhomerun']);
+// remoteUrl m3u), 'hdhomerun' (the device lineup), and 'local' (a Local Now market re-fetch). 'file'/legacy
+// 'import'/'clone' have no upstream, so a Sync there would only ever 500 — they show Compose only.
+const SYNCABLE_CUSTOM = new Set(['url', 'hdhomerun', 'local']);
 const isSyncableCustom = (p: Playlist): boolean => !!p.source && SYNCABLE_CUSTOM.has(p.source);
 
 // Op preview modal — clicking "Sync" / "Sync Global" / "Compose" / "Compose Global" no longer fires the op

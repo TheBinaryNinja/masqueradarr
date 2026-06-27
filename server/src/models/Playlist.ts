@@ -39,6 +39,15 @@ const PlaylistSchema = new Schema(
     // import SOURCE URL, not the hosted url — so the settings domain→url cascade (cascadePlaylistUrls)
     // leaves it untouched. Explicit null for every non-'url' playlist (never fabricated).
     remoteUrl: { type: String, default: null },
+    // Local Now market fields — set ONLY for a Local Now playlist (source:'local'); null for every other
+    // playlist. `marketDma` (numeric DMA id) + `marketSlug` (comma-joined market/PBS slugs) parameterize the
+    // catalog + inline-guide fetch (sources/adapters/local/); `marketLabel` is the City/Market display name
+    // (used to name the playlist + its playlist-bound EpgSource). Like `deviceUrl`/`remoteUrl` these are a
+    // SOURCE descriptor, not the hosted url, so the settings domain→url cascade (cascadePlaylistUrls) leaves
+    // them untouched. Explicit null for every non-'local' playlist (never fabricated).
+    marketDma: { type: String, default: null },
+    marketSlug: { type: String, default: null },
+    marketLabel: { type: String, default: null },
     // Does this playlist require authentication to stream? Source-intrinsic — set from
     // adapter.requiresAuth by upsertPlaylistRow ($set, refreshed every sync). false for non-auth playlists.
     authentication: { type: Boolean, required: true, default: false },

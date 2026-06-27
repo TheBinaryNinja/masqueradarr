@@ -31,13 +31,26 @@ const availableBuiltins = computed(() => {
 
 const name = ref('');
 // Default to the Built-In option when there are built-ins left to add; otherwise fall back to file upload.
-const mode = ref<'builtin' | 'file' | 'url' | 'hdhr'>(availableBuiltins.value.length ? 'builtin' : 'file');
+const mode = ref<'builtin' | 'file' | 'url' | 'hdhr' | 'local'>(availableBuiltins.value.length ? 'builtin' : 'file');
 const selectedBuiltin = ref<string>(availableBuiltins.value[0]?.id ?? ''); // chosen source id (builtin mode)
 const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref('');
 const content = ref(''); // raw m3u text (file mode)
 const url = ref(''); // remote URL (url mode)
 const hdhrAddress = ref(''); // HDHomeRun device address (hdhr mode)
+
+// Local Now (local mode): a city/market typeahead against the City/Search proxy + the chosen market that
+// gates the Add button. A Local playlist is created per market (POST /api/import/local).
+interface LocalMarket {
+  label: string;
+  dma: string;
+  market: string;
+}
+const cityQuery = ref(''); // the typeahead text
+const cityResults = ref<LocalMarket[]>([]); // City/Search matches
+const selectedMarket = ref<LocalMarket | null>(null); // the picked market (un-gates Add)
+const searchingCities = ref(false);
+let cityTimer: ReturnType<typeof setTimeout> | null = null;
 
 // The manifest entry for the currently-picked built-in (drives the summary block below).
 const builtinEntry = computed(() => SOURCES.value.find((s) => s.id === selectedBuiltin.value) ?? null);
@@ -69,6 +82,8 @@ const ready = computed(() => {
   if (name.value.trim().length === 0) return false;
   // HDHomeRun: keep the Add button disabled until a successful Test returns a non-empty lineup.
   if (mode.value === 'hdhr') return hdhrInfo.value != null && hdhrInfo.value.channelCount > 0;
+  // Local Now: a market must be picked (typeahead or auto-detect) before Add is allowed.
+  if (mode.value === 'local') return selectedMarket.value != null;
   return preview.value != null && preview.value.channels > 0;
 });
 
@@ -77,12 +92,15 @@ function resetSource() {
   content.value = '';
   url.value = '';
   hdhrAddress.value = '';
+  cityQuery.value = '';
+  cityResults.value = [];
+  selectedMarket.value = null;
   preview.value = null;
   hdhrInfo.value = null;
   error.value = '';
   if (fileInput.value) fileInput.value.value = '';
 }
-function switchMode(m: 'builtin' | 'file' | 'url' | 'hdhr') {
+function switchMode(m: 'builtin' | 'file' | 'url' | 'hdhr' | 'local') {
   if (mode.value === m) return;
   mode.value = m;
   resetSource();
@@ -152,6 +170,54 @@ async function testHdhr() {
   }
 }
 
+// Local Now city/market typeahead (debounced) → the City/Search proxy. Typing clears any prior pick so the
+// Add button only arms once the user re-selects a concrete market.
+function onCityInput() {
+  selectedMarket.value = null;
+  if (cityTimer) clearTimeout(cityTimer);
+  const q = cityQuery.value.trim();
+  if (q.length < 2) {
+    cityResults.value = [];
+    return;
+  }
+  cityTimer = setTimeout(() => void searchCities(q), 300);
+}
+async function searchCities(q: string) {
+  searchingCities.value = true;
+  error.value = '';
+  try {
+    const res = await fetch(`/api/import/local/cities?q=${encodeURIComponent(q)}`);
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+    cityResults.value = (await res.json()) as LocalMarket[];
+    if (!cityResults.value.length) error.value = 'No markets found for that search.';
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    searchingCities.value = false;
+  }
+}
+function pickMarket(m: LocalMarket) {
+  selectedMarket.value = m;
+  cityResults.value = [];
+  cityQuery.value = m.label;
+  defaultName(m.label);
+}
+// "Use my detected market" — Local Now's geo-detected default DMA/market (US-located servers only).
+async function detectLocalMarket() {
+  if (busy.value) return;
+  busy.value = true;
+  error.value = '';
+  try {
+    const res = await fetch('/api/import/local/detect');
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
+    pickMarket((await res.json()) as LocalMarket);
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
+}
+
 // Add a built-in source: provision its (Default) playlist shell row (no sync — channels populate on the first
 // "Sync now"), refresh stores, then open it. The name derives server-side from the source's adapter label.
 async function provisionBuiltin() {
@@ -176,10 +242,19 @@ async function create() {
       await provisionBuiltin();
       return;
     }
-    const endpoint = mode.value === 'hdhr' ? '/api/import/hdhomerun' : '/api/import/m3u';
+    const endpoint =
+      mode.value === 'hdhr'
+        ? '/api/import/hdhomerun'
+        : mode.value === 'local'
+          ? '/api/import/local'
+          : '/api/import/m3u';
     const payload: Record<string, string> = { name: name.value.trim() };
     if (mode.value === 'hdhr') payload.address = hdhrAddress.value.trim();
-    else if (mode.value === 'file') payload.content = content.value;
+    else if (mode.value === 'local') {
+      payload.dma = selectedMarket.value!.dma;
+      payload.market = selectedMarket.value!.market;
+      payload.label = selectedMarket.value!.label;
+    } else if (mode.value === 'file') payload.content = content.value;
     else payload.url = url.value.trim();
     const res = await fetch(endpoint, {
       method: 'POST',
@@ -233,6 +308,9 @@ async function create() {
           </button>
           <button :class="mode === 'hdhr' ? 'active' : ''" @click="switchMode('hdhr')">
             <Icon name="tv" :size="13" />HDHomeRun
+          </button>
+          <button :class="mode === 'local' ? 'active' : ''" @click="switchMode('local')">
+            <Icon name="map" :size="13" />Local Now
           </button>
         </div>
 
@@ -344,6 +422,34 @@ async function create() {
           </div>
         </template>
 
+        <!-- LOCAL NOW MODE -->
+        <template v-else-if="mode === 'local'">
+          <div class="field-lbl">City / Market</div>
+          <div class="row">
+            <div class="input" style="flex: 1;">
+              <Icon name="map" :size="14" />
+              <input v-model="cityQuery" placeholder="Search a city — e.g. New York, NY" @input="onCityInput" />
+            </div>
+            <Btn variant="ghost" icon="globe" :disabled="busy" @click="detectLocalMarket">
+              {{ busy ? 'Detecting…' : 'Detect' }}
+            </Btn>
+          </div>
+          <div v-if="searchingCities" class="muted" style="margin-top: 8px; font-size: var(--fs-xs);">
+            <Icon name="refresh" :size="11" /> Searching…
+          </div>
+          <div v-if="cityResults.length" class="city-results">
+            <button v-for="m in cityResults" :key="m.dma + m.market" type="button" class="city-opt" @click="pickMarket(m)">
+              <Icon name="map" :size="13" />
+              <span class="city-lbl">{{ m.label }}</span>
+              <span class="city-dma">DMA {{ m.dma }}</span>
+            </button>
+          </div>
+          <div v-if="selectedMarket" class="row" style="margin-top: 12px; flex-wrap: wrap; gap: 6px;">
+            <Pill tone="good"><Icon name="check" :size="11" />{{ selectedMarket.label }}</Pill>
+            <Pill tone="cyan">DMA {{ selectedMarket.dma }}</Pill>
+          </div>
+        </template>
+
         <div v-if="error" class="muted" style="margin-top: 10px; color: var(--bad);">
           <Icon name="warn" :size="12" /> {{ error }}
         </div>
@@ -366,3 +472,44 @@ async function create() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Local Now City/Market typeahead results — a scrollable, hoverable pick list under the search box. */
+.city-results {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--hairline);
+  border-radius: var(--radius-m);
+  padding: 4px;
+  background: var(--bg-2);
+}
+.city-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  background: transparent;
+  border: 0;
+  border-radius: var(--radius-s);
+  cursor: pointer;
+  text-align: left;
+  color: var(--text-1);
+  font: inherit;
+}
+.city-opt:hover {
+  background: var(--bg-3);
+}
+.city-lbl {
+  flex: 1;
+  font-weight: 600;
+}
+.city-dma {
+  font-size: var(--fs-xs);
+  color: var(--text-3);
+}
+</style>

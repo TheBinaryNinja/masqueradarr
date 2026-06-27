@@ -8,9 +8,15 @@ import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath, CUSTOM_PLAYLIST_TYPES } from '../m3u/paths.js';
 import { logger } from '../sources/core/logger.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
+import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from './import.js';
 import { VideoConfig } from '../models/VideoConfig.js';
 import { invalidateVideoConfig, invalidatePlaylistConfig } from '../videoconfig/runtime.js';
+import { EpgSource } from '../models/EpgSource.js';
+import { EpgChannel } from '../models/EpgChannel.js';
+import { Program } from '../models/Program.js';
+import { Cronjob, cronjobId } from '../models/Cronjob.js';
+import { removeCronjob } from '../scheduler/index.js';
 
 // "Clone" playlists — the user-composed custom playlists. A clone is a Playlist row with the literal
 // sentinel `source: 'clone'` (the discriminator), `endpoint: 'custom'`, `interval: 'none'` (scheduling
@@ -240,7 +246,9 @@ customPlaylistsRouter.post('/:id/sync', async (req, res) => {
         ? await syncHdhrPlaylist(req.params.id as string)
         : src === URL_SOURCE
           ? await syncUrlPlaylist(req.params.id as string)
-          : null;
+          : src === LOCAL_SOURCE
+            ? await syncLocalPlaylist(req.params.id as string)
+            : null;
     if (!result) return res.status(400).json({ error: 'not_syncable' });
     res.json({ ok: true, channels: result.channels, groups: result.groups });
   } catch (err) {
@@ -259,6 +267,15 @@ customPlaylistsRouter.post('/:id/sync', async (req, res) => {
 export async function cascadeDeleteCustomPlaylist(id: string, url: string): Promise<void> {
   await Playlist.deleteOne({ id });
   await PlaylistChannel.deleteMany({ source: id });
+  // A Local Now playlist owns a playlist-bound EPG (EpgSource id === playlist id, epgchannels/programs scoped
+  // by source === id) + an auto-provisioned hourly refresh cronjob — drop both. No-ops for every other custom
+  // type (clone/file/url/hdhomerun have neither), so this stays the single delete path.
+  await EpgSource.deleteOne({ id });
+  await EpgChannel.deleteMany({ source: id });
+  await Program.deleteMany({ source: id });
+  const jobId = cronjobId('playlist', id);
+  removeCronjob(jobId);
+  await Cronjob.deleteOne({ _id: jobId });
   await pruneCustomFile(url).catch((err) =>
     logger.warn('m3u', `prune after playlist delete failed: ${(err as Error).message}`),
   );

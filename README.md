@@ -103,7 +103,7 @@ and rebuilds everything underneath it to lift those ceilings:
 | **State** | Flat files, no DB | MongoDB (Mongoose 8) |
 | **Frontend** | Links to generated files | Vue 3 + Vite management SPA |
 | **Backend** | Node.js scripts | Express 4 API (ESM, TypeScript) |
-| **Sources** | Hard-coded scrapers (TheTvApp, TVPass, MoveOnJoy) | Pluggable adapters (dulo, dlhd, tubi) + URL / HDHomeRun / file imports |
+| **Sources** | Hard-coded scrapers (TheTvApp, TVPass, MoveOnJoy) | Pluggable adapters + URL / HDHomeRun / file imports |
 | **Guide data** | One bundled XMLTV grabber | Gracenote, EPG-PW, Jesmann, Custom XMLTV + self-EPG |
 | **Auth** | None | scrypt users, roles, per-user access lists |
 | **Auth'd sources** | Not possible | Supported (streamed-login session capture) |
@@ -126,9 +126,7 @@ image stitches together — *not* a workspace, and they never import across the 
 Key subsystems:
 
 - **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → proxy) with
-  per-provider adapters. Current sources: **dulo** (authenticated, resolve-on-demand), **dlhd**
-  (anonymous, scraped from a rotating mirror), and **tubi** (anonymous FAST channels that carry their
-  own inline EPG); plus two synthetic, proxy-only sources — **direct** (passes user-imported stream
+  per-provider adapters. Current sources: Pluggable adapters `<dynamix>`, proxy-only sources — **direct** (passes user-imported stream
   URLs straight through) and **hdhomerun** (remuxes a local tuner's MPEG-TS to HLS) — that back
   bring-your-own playlists.
 - **Channel model** — a pristine synced reference (`sourcechannels`) projected into an editable,
@@ -179,12 +177,25 @@ all new development happens here.
 
 - A **source-agnostic adapter framework**: adding a provider is one adapter file plus one registry line;
   the generic core (sync → normalize → dedupe → proxy) never branches per source.
-- **dulo** — authenticated, resolve-on-demand; the login session is captured in-app via a server-streamed
-  real Chromium (the password goes straight to the provider, only tokens are persisted).
-- **dlhd** — anonymous, scraped from a rotating mirror with a Referer-gated multi-hop resolve and a
-  self-built EPG.
-- **tubi** — anonymous FAST channels scraped live, carrying their own inline EPG (guide + per-play
-  signed, AES-128 manifests re-resolved on demand).
+
+| Source | Pluggable Adapter Chain |
+| --- | --- |
+| Distro TV | <adapter chain description> |
+| FreeLiveSports | <adapter chain description> |
+| LG Channels | <adapter chain description> |
+| Local (Local Now) | <adapter chain description> |
+| Plex | <adapter chain description> |
+| DaddyLive | <adapter chain description> |
+| Pluto TV | <adapter chain description> |
+| STIRR | <adapter chain description> |
+| Samsung TV+ | <adapter chain description> |
+| TCL TV+ | <adapter chain description> |
+| Roku Channel | <adapter chain description> |
+| Tubi TV | <adapter chain description> |
+| Vidaa Free TV | <adapter chain description> |
+| Vizio WatchFree+ | <adapter chain description> |
+| Whale TV+ | <adapter chain description> |
+| Xumo Play | <adapter chain description> |
 
 **Custom playlists** (bring your own)
 
@@ -379,7 +390,7 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
 
 | Kind | `source` tag | Created via | Channels |
 |---|---|---|---|
-| **(Default) source playlist** | `dulo` / `dlhd` / `tubi` | Add Playlist → **Built-In** (provisions a zero-channel shell; populates on first **Sync now**) | Synced from the adapter; `id === source` |
+| **(Default) source playlist** | `<dynamic>` | Add Playlist → **Built-In** (provisions a zero-channel shell; populates on first **Sync now**) | Synced from the adapter; `id === source` |
 | **Clone** | `clone` | Add Playlist → **Clone** — hand-pick channels from any synced source | Independent COPIES in `playlistchannels`; `origin` = the provider source for routing |
 | **URL import** | `url` | Add Playlist → **URL** — fetch a remote `.m3u` / `.m3u8` | Parsed from the upstream; re-syncable via the stored `remoteUrl` |
 | **File upload** | `file` | Add Playlist → **File** — upload a static `.m3u` | Parsed once from the uploaded file |

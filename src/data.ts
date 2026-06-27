@@ -24,7 +24,7 @@ export interface Playlist {
   // Lowercase canonical value (the repo-wide source-type normalization): 'global' | 'custom'.
   endpoint?: 'global' | 'custom';
   // Set for the established (Default) source playlists (dulo/common/dlhd); drives live sync. For a
-  // user-composed playlist this is a lowercase TYPE TAG: 'clone' | 'file' | 'url' | 'hdhomerun'
+  // user-composed playlist this is a lowercase TYPE TAG: 'clone' | 'file' | 'url' | 'hdhomerun' | 'local'
   // (legacy 'import' still appears on pre-split rows).
   source?: string | null;
   // Auth: `authentication` = this playlist requires sign-in to stream (stored, source-intrinsic);

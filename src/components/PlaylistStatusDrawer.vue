@@ -35,10 +35,11 @@ const isClone = computed(() => props.playlist.source === 'clone');
 //     saveSchedule() early-return without writing cron jobs.
 // The cron targetId is the playlist ID for every schedulable playlist (for a source playlist id === source,
 // so syncLive/composeM3u still receive the source id; for a custom playlist the scheduler resolves its type).
-// The custom-playlist source TYPE TAGs ('clone'/'file'/'url'/'hdhomerun'/legacy 'import') discriminate an
-// import from a registry-backed (Default) source playlist; only 'url'/'hdhomerun' have a re-syncable upstream.
-const CUSTOM_TYPE_TAGS = new Set(['clone', 'file', 'url', 'hdhomerun', 'import']);
-const SCHEDULABLE_CUSTOM = new Set(['url', 'hdhomerun']);
+// The custom-playlist source TYPE TAGs ('clone'/'file'/'url'/'hdhomerun'/'local'/legacy 'import') discriminate
+// an import from a registry-backed (Default) source playlist; only 'url'/'hdhomerun'/'local' have a re-syncable
+// upstream ('local' = a Local Now market re-fetch, which also has an auto-provisioned hourly schedule).
+const CUSTOM_TYPE_TAGS = new Set(['clone', 'file', 'url', 'hdhomerun', 'local', 'import']);
+const SCHEDULABLE_CUSTOM = new Set(['url', 'hdhomerun', 'local']);
 const cronTarget = computed<string | null>(() => {
   const src = props.playlist.source;
   if (!src) return null;
