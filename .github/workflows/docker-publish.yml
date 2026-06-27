@@ -36,6 +36,7 @@ jobs:
       version: ${{ steps.derive.outputs.version }}
       rolling: ${{ steps.derive.outputs.rolling }}
       is_release: ${{ steps.derive.outputs.is_release }}
+      release_title: ${{ steps.derive.outputs.release_title }}
     steps:
       - name: Validate input & derive tags
         id: derive
@@ -65,12 +66,17 @@ jobs:
             *)         is_release=false ;;
           esac
 
+          # human-facing release title: strip -latest/-dev suffix, prepend v
+          clean="$(printf '%s' "$version" | sed -E 's/-(latest|dev)$//I')"
+          release_title="v$clean"
+
           {
             echo "version=$version"
             echo "rolling=$rolling"
             echo "is_release=$is_release"
+            echo "release_title=$release_title"
           } >> "$GITHUB_OUTPUT"
-          echo "Resolved: version='$version' rolling='${rolling:-<none>}' is_release=$is_release"
+          echo "Resolved: version='$version' rolling='${rolling:-<none>}' is_release=$is_release release_title='$release_title'"
 
   build:
     needs: prepare
@@ -165,9 +171,10 @@ jobs:
           ns="${{ secrets.DOCKERHUB_USERNAME }}"
           version="${{ needs.prepare.outputs.version }}"
           rolling="${{ needs.prepare.outputs.rolling }}"
+          release_title="${{ needs.prepare.outputs.release_title }}"
           tagline="\`$version\`"; [ -n "$rolling" ] && tagline="$tagline, \`$rolling\`"
           {
-            echo "## masqueradarr $version"
+            echo "## masqueradarr $release_title"
             echo
             echo "Multi-arch (linux/amd64, linux/arm64) images on Docker Hub."
             echo
@@ -192,11 +199,12 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           version="${{ needs.prepare.outputs.version }}"
+          release_title="${{ needs.prepare.outputs.release_title }}"
           if gh release view "$version" >/dev/null 2>&1; then
-            gh release edit "$version" --notes-file release-notes.md
+            gh release edit "$version" --title "$release_title" --notes-file release-notes.md
             gh release upload "$version" bundle/docker-compose.yml bundle/.env.example --clobber
           else
-            gh release create "$version" --target "$GITHUB_SHA" --title "$version" \
+            gh release create "$version" --target "$GITHUB_SHA" --title "$release_title" \
               --notes-file release-notes.md \
               bundle/docker-compose.yml bundle/.env.example
           fi
