@@ -1,0 +1,1399 @@
+{
+  "channels": [
+    {
+      "channelId": "5407",
+      "name": "Drone TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/23/170871539370SyzUanQG-original-Cklwrb0M.jpeg",
+      "category": "Sports",
+      "number": 88,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_airvuz_dronetv_1_us_cf.json",
+      "epgChannelId": "ohlscdn_airvuz_dronetv_1_us_cf"
+    },
+    {
+      "channelId": "5735",
+      "name": "Gags - Just for Laughs",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712612750Npdv5y4sxH.png",
+      "category": "Comedy",
+      "number": 90,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=JUST-FOR-LAUGHS-ENG&amp;DurationHours=168",
+      "epgChannelId": "JUST-FOR-LAUGHS-ENG"
+    },
+    {
+      "channelId": "6439",
+      "name": "Wild TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/11/12/1731450734sR0YMSWnS6-original-8NHdzJSa.png",
+      "category": "Entertainment",
+      "number": 103,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647941?scheduleId=405&amp;daysInPast=2&amp;daysInFuture=11",
+      "epgChannelId": "405"
+    },
+    {
+      "channelId": "6435",
+      "name": "PursuitUP",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/09/24/1727159567f9WVAzmXSn.png",
+      "category": "Entertainment",
+      "number": 104,
+      "epgUrl": "https://epg.frequency.com/output?format=xmltv&amp;id=205",
+      "epgChannelId": "205"
+    },
+    {
+      "channelId": "5430",
+      "name": "RightNow TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/03/07/1709832676KjRR7jMuCJ.png",
+      "category": "Entertainment",
+      "number": 110,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "5746",
+      "name": "ENCORE+",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/04/08/1712614773d0hO0AsmYW-original-60QerY1j.jpeg",
+      "category": "Entertainment",
+      "number": 120,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=ENCORE-ENG&amp;DurationHours=168",
+      "epgChannelId": "ENCORE-ENG"
+    },
+    {
+      "channelId": "6208",
+      "name": "Law & Crime",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/05/10/1715322161KLh9b4MrYo.png",
+      "category": "News",
+      "number": 125,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "7531",
+      "name": "Real Crime Uncovered",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/03/1764789007pwsk21GTYS.png",
+      "category": "Crime",
+      "number": 126,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_videoelephant_limited_crimefiles_1_us_cf.json",
+      "epgChannelId": "Wurl20-videoelephant_limited_crimefiles_1"
+    },
+    {
+      "channelId": "8339",
+      "name": "Dark Screen",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/01/06/1767735541LDEvxBVh0G.png",
+      "category": "General",
+      "number": 127,
+      "epgUrl": "https://api.ctvcraft.com/public/v1/stream/program/export?ids=019aa1fa-220d-7086-94cf-a71f9257f07e&amp;format=xml",
+      "epgChannelId": "019aa1fa-220d-7086-94cf-a71f9257f07e"
+    },
+    {
+      "channelId": "8345",
+      "name": "WonderViz",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/01/06/1767743175ULKvXHEIIO.png",
+      "category": "General",
+      "number": 149,
+      "epgUrl": "https://api.ctvcraft.com/public/v1/stream/program/export?ids=019a29d3-89f0-74db-8857-12b5e4768bd3&amp;format=xml",
+      "epgChannelId": "019a29d3-89f0-74db-8857-12b5e4768bd3"
+    },
+    {
+      "channelId": "6595",
+      "name": "Western Bound",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/01/31/1738363007dPIHvjze44.png",
+      "category": "Entertainment",
+      "number": 151,
+      "epgUrl": "https://api-ott-imagicomm-ime.ottera.tv/getrawvideosegments?version=12.5&amp;rss_format=xmltv&amp;linear_channel_id=9&amp;partner=stirr&amp;days=10",
+      "epgChannelId": "ime_cw_9"
+    },
+    {
+      "channelId": "6637",
+      "name": "Sooner: Coming of Age",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/03/26/1743027247SdJS4BDKZR.png",
+      "category": "General",
+      "number": 153,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=SOONER-COMING-OF-AGE&amp;DurationHours=168",
+      "epgChannelId": "SOONER-COMING-OF-AGE"
+    },
+    {
+      "channelId": "6639",
+      "name": "Sooner: Next Gen",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/03/26/1743027644FKMTmvF1Qg.png",
+      "category": "General",
+      "number": 154,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=SOONER-NEXT-GEN&amp;DurationHours=168",
+      "epgChannelId": "SOONER-NEXT-GEN"
+    },
+    {
+      "channelId": "8343",
+      "name": "FilmNight",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/01/06/1767742170Z0f27PcqvY.png",
+      "category": "General",
+      "number": 155,
+      "epgUrl": "https://api.ctvcraft.com/public/v1/stream/program/export?ids=019aa1fd-abd0-7911-b0ab-e707fc28e5c9&amp;format=xml",
+      "epgChannelId": "019aa1fd-abd0-7911-b0ab-e707fc28e5c9"
+    },
+    {
+      "channelId": "7529",
+      "name": "Beyond Paranormal",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/03/1764786735elYBuzdHAg.png",
+      "category": "Crime",
+      "number": 156,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_videoelephantlimited_beyondparanormal_1_us_cf.json",
+      "epgChannelId": "Wurl20-videoelephantlimited_beyondparanormal_1"
+    },
+    {
+      "channelId": "6408",
+      "name": "Dark Matters TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/06/04/1717533002w8nxppqXt4.png",
+      "category": "Entertainment",
+      "number": 157,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_tricoast_tv_dark_matter_01_us_cf.json",
+      "epgChannelId": null
+    },
+    {
+      "channelId": "7017",
+      "name": "Unleashed by DOGTV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/05/09/1746751234uEBPtBEMaA.png",
+      "category": "Entertainment",
+      "number": 158,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/dogtvu_stirrus/AMG26269C2Today.xml",
+      "epgChannelId": "5880"
+    },
+    {
+      "channelId": "9391",
+      "name": "Fearstream",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/04/27/1777308385bOQYZfa4fu.png",
+      "category": "General",
+      "number": 158,
+      "epgUrl": "https://api.ctvcraft.com/public/v1/stream/019dcf26-f67d-7c5b-ad2c-91d96c951860/master.m3u8",
+      "epgChannelId": null
+    },
+    {
+      "channelId": "7061",
+      "name": "Wild Nature",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/06/05/1749167295EbIcuYKFtn.png?du=1749168332",
+      "category": "General",
+      "number": 159,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647941?scheduleId=419&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "419"
+    },
+    {
+      "channelId": "7043",
+      "name": "INWILD",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/05/20/17477067793caRN2oATO.png",
+      "category": "Documentary",
+      "number": 160,
+      "epgUrl": "https://d31l2nn7dlh4li.cloudfront.net/amg00861/epg_deliveries/amgplt0095/amg00861c22/amg00861c22Today.xml",
+      "epgChannelId": "amg00861c22"
+    },
+    {
+      "channelId": "7041",
+      "name": "INTROUBLE",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/05/20/1747705458IXtqjENYGU.png",
+      "category": "Entertainment",
+      "number": 161,
+      "epgUrl": "https://d31l2nn7dlh4li.cloudfront.net/amg00861/epg_deliveries/amgplt0095/amg00861c29/amg00861c29Today.xml",
+      "epgChannelId": "amg00861c29"
+    },
+    {
+      "channelId": "7045",
+      "name": "INWONDER",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/05/20/1747707146vA1Bdh6xxa.png",
+      "category": "Entertainment",
+      "number": 162,
+      "epgUrl": "https://d31l2nn7dlh4li.cloudfront.net/amg00861/epg_deliveries/amgplt0095/amg00861c27/amg00861c27Today.xml",
+      "epgChannelId": "amg00861c27"
+    },
+    {
+      "channelId": "6589",
+      "name": "Teenvee",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/01/24/1737757811Dd1ftCznvR.png",
+      "category": "Entertainment",
+      "number": 164,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/amg02051c5eng_stirrus/AMG02051C5.xml",
+      "epgChannelId": "1963"
+    },
+    {
+      "channelId": "5748",
+      "name": "KIDDO+ KIDDO",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712615596PiXd3KGBGy.png",
+      "category": "Entertainment",
+      "number": 165,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=KIDDO-ENG&amp;DurationHours=168",
+      "epgChannelId": "KIDDO-ENG"
+    },
+    {
+      "channelId": "6585",
+      "name": "Imagine PlayWorld",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/01/24/1737757569jCf6Kb1V2s.png",
+      "category": "Entertainment",
+      "number": 166,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/amg02051c20eng_stirrus/AMG02051C20.xml",
+      "epgChannelId": "5101"
+    },
+    {
+      "channelId": "8341",
+      "name": "Bommi & Friends",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/01/06/17677416995CAbV5k9LW.png",
+      "category": "Kids",
+      "number": 168,
+      "epgUrl": "https://api.ctvcraft.com/public/v1/stream/program/export?ids=0199ced0-42ff-7b43-a72f-2a1fafb54eea&amp;format=xml",
+      "epgChannelId": "0199ced0-42ff-7b43-a72f-2a1fafb54eea"
+    },
+    {
+      "channelId": "7269",
+      "name": "Wine, Watches & Whiskey",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/06/25/1750885233DF8Mu6diDN.png?du=1752280003",
+      "category": "Lifestyle",
+      "number": 170,
+      "epgUrl": "https://cannellamedia-epg2.azurewebsites.net/api/epg/stirr/w3",
+      "epgChannelId": "w3"
+    },
+    {
+      "channelId": "7275",
+      "name": "Cuisine and Culture",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/06/30/1751327815D0AqxeHnHQ.png",
+      "category": "Lifestyle",
+      "number": 171,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=CUISINE-CULTURE&amp;DurationHours=168",
+      "epgChannelId": "CUISINE-CULTURE"
+    },
+    {
+      "channelId": "7323",
+      "name": "Unchained TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/09/18/1758218677PhBCj6xdwX.png",
+      "category": "Lifestyle",
+      "number": 172,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=UNCHAINED-TV-ENG&amp;DurationHours=168",
+      "epgChannelId": "UNCHAINED-TV-ENG"
+    },
+    {
+      "channelId": "7305",
+      "name": "Yachting tv",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751336099mWZp1KWVT7.png",
+      "category": "Sports",
+      "number": 199,
+      "epgUrl": "https://yachtingtv.tv/epg.xml",
+      "epgChannelId": "Yachting_TV"
+    },
+    {
+      "channelId": "5288",
+      "name": "OAN plus",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/02/08/1707417941sC3CsSFe4t.png",
+      "category": "News",
+      "number": 200,
+      "epgUrl": "https://cdn.take2.hbonlinehome.net/action/api/Epg/xmltv/oan%2B",
+      "epgChannelId": "OAN+"
+    },
+    {
+      "channelId": "6921",
+      "name": "USA Today",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/05/07/1746577448QWkEIwQinU.png",
+      "category": "News",
+      "number": 201,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/usatn_stirrus/AMG00457C1Today.xml",
+      "epgChannelId": "546"
+    },
+    {
+      "channelId": "7325",
+      "name": "Real America’s Voice",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/10/03/1759524468BaayAcSDGG.png",
+      "category": "General",
+      "number": 202,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "7327",
+      "name": "Weather Nation",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/10/03/1759524727xhRYTHIkrs.png",
+      "category": "News",
+      "number": 203,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "7271",
+      "name": "Salem News Channel",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/06/30/17513045433QRNuo2M3W.png",
+      "category": "News",
+      "number": 204,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/slmnch_stirrus/SLMNCH2025-07-09.xml",
+      "epgChannelId": "360"
+    },
+    {
+      "channelId": "9393",
+      "name": "CGTN Global Biz",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/05/03/1777837474PxNgxAFCwu.png",
+      "category": "News",
+      "number": 207,
+      "epgUrl": "http://49.233.55.102/xml?platform=PLATFORM_0&amp;channel=191&amp;timezone=-8&amp;start=2026-5-7&amp;days=7&amp;format=download",
+      "epgChannelId": "191"
+    },
+    {
+      "channelId": "6759",
+      "name": "DeFiance Media",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/04/14/1744668853BzyLhlhJ8v.png",
+      "category": "News",
+      "number": 208,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/defiancemedia_stirr/DEFITVToday.xml",
+      "epgChannelId": "1617"
+    },
+    {
+      "channelId": "6441",
+      "name": "My Money",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/11/12/173145112098GcT6p6jd-original-YxSXqXwK.png",
+      "category": "News",
+      "number": 209,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647958?scheduleId=400&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "400"
+    },
+    {
+      "channelId": "6414",
+      "name": "NTD",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/07/12/17208180961n32NRsxVG.png",
+      "category": "News",
+      "number": 214,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/ntdtv_stirrus/AMG17596C1.xml",
+      "epgChannelId": "4784"
+    },
+    {
+      "channelId": "7535",
+      "name": "Valuetainment",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/03/1764789552W0JVI6E0uI.png",
+      "category": "News",
+      "number": 215,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_videoelephant_limited_valuetainment_1_us_cf.json",
+      "epgChannelId": "Wurl20-videoelephant_limited_valuetainment_1"
+    },
+    {
+      "channelId": "7537",
+      "name": "EntrepreneurTV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/03/1764790044vOw038SRbF.png",
+      "category": "Business",
+      "number": 216,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_cineverse_entrepreneurtv_entrepreneurtv_1_us_cf.json",
+      "epgChannelId": "Wurl20-cineverse_entrepreneurtv_entrepreneurtv_1"
+    },
+    {
+      "channelId": "7539",
+      "name": "Black Enterprise Streaming Network",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/03/1764790200FM7VViGtn4.png",
+      "category": "Business",
+      "number": 217,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_videoelephant_limited_blackenterprisestreamingnetwork_1_us_cf.json",
+      "epgChannelId": "Wurl20-videoelephant_limited_blackenterprisestreamingnetwork_1"
+    },
+    {
+      "channelId": "7293",
+      "name": "Screams TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751332692b40VdW0H1c.png",
+      "category": "Documentary",
+      "number": 220,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=TRINIAN-SCREAMS-TV-ENG&amp;DurationHours=72",
+      "epgChannelId": "TRINIAN-SCREAMS-TV-ENG"
+    },
+    {
+      "channelId": "7295",
+      "name": "Gritos TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/175133329604Wbbc77Ol.png",
+      "category": "Entertainment",
+      "number": 221,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=TRINIAN-GRITOS-TV-SPA&amp;DurationHours=72",
+      "epgChannelId": "TRINIAN-GRITOS-TV-SPA"
+    },
+    {
+      "channelId": "7297",
+      "name": "Mi Miedo Canal",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751333788lNZ0MTgbtO.png",
+      "category": "Entertainment",
+      "number": 222,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=MI-MIEDO-CANAL-SPA&amp;DurationHours=72",
+      "epgChannelId": "MI-MIEDO-CANAL-SPA"
+    },
+    {
+      "channelId": "6593",
+      "name": "123 GO!",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/01/24/1737758246VwehlduQvI.png",
+      "category": "Entertainment",
+      "number": 225,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/amg02051c17eng_stirrus/AMG02051C17.xml",
+      "epgChannelId": "2299"
+    },
+    {
+      "channelId": "7063",
+      "name": "MVMT of Culture",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/06/06/1749168432etnDgHtMlC.png",
+      "category": "General",
+      "number": 226,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647870?scheduleId=418&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "418"
+    },
+    {
+      "channelId": "771",
+      "name": "FITE 24 7",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2022/08/25/1661452611f3ZQYyky7j.png",
+      "category": "Sports",
+      "number": 300,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "6425",
+      "name": "TRACE Sportstar",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/08/06/1722921577SuDgpp1pUP.png",
+      "category": "Sports",
+      "number": 301,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/tssch_stirrus/AMG01131C2.xml",
+      "epgChannelId": "1223"
+    },
+    {
+      "channelId": "8971",
+      "name": "FTF Sports (For the Fan)",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/01/29/1769729256ssLNBuDJxA.png",
+      "category": "Sports",
+      "number": 303,
+      "epgUrl": "https://1593604785.rsc.cdn77.org/FTF/ftf_schedule.xml",
+      "epgChannelId": "FTFLive.com"
+    },
+    {
+      "channelId": "6411",
+      "name": "Fuel TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/07/03/172002506794upvjlKT5.png",
+      "category": "Sports",
+      "number": 304,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/fueluseng_stirr/FUELTV.xml",
+      "epgChannelId": "2993"
+    },
+    {
+      "channelId": "5721",
+      "name": "Automotions",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712609473hjETuhYlFl.png",
+      "category": "Sports",
+      "number": 305,
+      "epgUrl": "https://epg1.sofast.tv:9000/EPG/getxmltvEPG/14",
+      "epgChannelId": "14"
+    },
+    {
+      "channelId": "6424",
+      "name": "SPEED SPORT 1",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/07/31/1722458403rVipSpep8n.png",
+      "category": "General",
+      "number": 306,
+      "epgUrl": "https://epg.frequency.com/output?format=xmltv&amp;id=599",
+      "epgChannelId": "599"
+    },
+    {
+      "channelId": "7277",
+      "name": "DRIVE+SPEED",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751328558AyhaPQ1LiV.png",
+      "category": "Sports",
+      "number": 307,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=DRIVE-SPEED&amp;DurationHours=168",
+      "epgChannelId": "DRIVE-SPEED"
+    },
+    {
+      "channelId": "8925",
+      "name": "Lacrosse TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/01/23/1769209916W6OMp0tjAg.png",
+      "category": "General",
+      "number": 308,
+      "epgUrl": null,
+      "epgChannelId": "LSN"
+    },
+    {
+      "channelId": "7307",
+      "name": "Powertube TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751336626fE5Jzb97HN.png",
+      "category": "Sports",
+      "number": 309,
+      "epgUrl": "https://vod-lb-cdn.tvstartupengine.com/tvs-vod/prod/media/af4303c3-3b68-482a-bbc6-7aa87f2e99f4/default/playlist/bea30e71-dd33-4c58-afbd-6b42a1806c55/bea30e71-dd33-4c58-afbd-6b42a1806c55.xml",
+      "epgChannelId": "bea30e71-dd33-4c58-afbd-6b42a1806c55"
+    },
+    {
+      "channelId": "5730",
+      "name": "Nitro TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712611356BpC0G7E9wA.png",
+      "category": "Sports",
+      "number": 310,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=NITRO%20TV&amp;DurationHours=168",
+      "epgChannelId": "NITRO TV"
+    },
+    {
+      "channelId": "7301",
+      "name": "Motor Racing",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751335161N0GAOYQhXb.png",
+      "category": "Sports",
+      "number": 311,
+      "epgUrl": "https://distroscale-content.s3.amazonaws.com/22705/distrotv_epg/54754/54754.xml",
+      "epgChannelId": "54754"
+    },
+    {
+      "channelId": "9101",
+      "name": "Shooting Sports Life",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/02/12/1770926243pAmnqfeRaR.png",
+      "category": "Sports",
+      "number": 312,
+      "epgUrl": "https://epg.frequency.com/output?id=1312&amp;format=xmltv",
+      "epgChannelId": "1312"
+    },
+    {
+      "channelId": "1072",
+      "name": "Channel Fight",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2022/09/05/1662383251k3xfq6RI1U-original-QdPPBYUX.jpeg",
+      "category": "Sports",
+      "number": 320,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647889?scheduleId=216&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "19647889"
+    },
+    {
+      "channelId": "7279",
+      "name": "Fight TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751329122xyk8AVge6b.png",
+      "category": "Sports",
+      "number": 321,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=FIGHT-TV-ENG&amp;DurationHours=168",
+      "epgChannelId": "FIGHT-TV-ENG"
+    },
+    {
+      "channelId": "5300",
+      "name": "The Grappling Network",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707442456xf6tRG4fFT-original-NHj3thH0.png",
+      "category": "Sports",
+      "number": 330,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647870?scheduleId=198&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "198"
+    },
+    {
+      "channelId": "7273",
+      "name": "MMA TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/06/30/1751326202WBJHDDSd4D.png",
+      "category": "Sports",
+      "number": 331,
+      "epgUrl": "https://www.mma-series.com/en/xmltv",
+      "epgChannelId": "mma-serie"
+    },
+    {
+      "channelId": "5887",
+      "name": "Surfing Plus",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/05/02/17146738219e46A2lfds-original-QsFhxKLr.png",
+      "category": "Sports",
+      "number": 405,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647946?scheduleId=380&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "380"
+    },
+    {
+      "channelId": "7283",
+      "name": "Goal TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751330357iXZkoSrM4n.png",
+      "category": "Sports",
+      "number": 406,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=GOAL-TV&amp;DurationHours=168",
+      "epgChannelId": "GOAL-TV"
+    },
+    {
+      "channelId": "1549",
+      "name": "Extreme+",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2022/10/10/1665417153z12fFv2AJQ.png",
+      "category": "Sports",
+      "number": 410,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "7281",
+      "name": "Foosball TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751329613MhmhWLFwR6.png",
+      "category": "Sports",
+      "number": 419,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=ITSF-ENG&amp;DurationHours=168",
+      "epgChannelId": "ITSF-ENG"
+    },
+    {
+      "channelId": "5306",
+      "name": "World Poker Tour",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707447076xqJOPBocEx-original-QE0tbHvL.png",
+      "category": "Sports",
+      "number": 420,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647834?scheduleId=350&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "350"
+    },
+    {
+      "channelId": "5305",
+      "name": "Sports First - Stream Free Now",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707446902rOUCzuiQg4-original-hsFUoITA.png",
+      "category": "News",
+      "number": 421,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647931?scheduleId=352&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "352"
+    },
+    {
+      "channelId": "7285",
+      "name": "Homerun TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751330819RCU5vxqXYC.png",
+      "category": "Sports",
+      "number": 422,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=homerun-mrss&amp;DurationHours=168",
+      "epgChannelId": "homerun-mrss"
+    },
+    {
+      "channelId": "5726",
+      "name": "Nautical Channel",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/17126107611l3ZAg8tJ1.png",
+      "category": "Sports",
+      "number": 425,
+      "epgUrl": "https://nauticalchannel.com/sofast-url",
+      "epgChannelId": "nautical"
+    },
+    {
+      "channelId": "7287",
+      "name": "Hoop TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751331303opJn647Bhy.png",
+      "category": "Sports",
+      "number": 434,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=hoop-mrss&amp;DurationHours=168",
+      "epgChannelId": "hoop-mrss"
+    },
+    {
+      "channelId": "5740",
+      "name": "Ace TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/04/08/1712613664IxmNkW3C0m-original-nPMge4FS.jpeg",
+      "category": "Sports",
+      "number": 435,
+      "epgUrl": "https://epg1.sofast.tv:9000/EPG/getXmlTvEPG/40",
+      "epgChannelId": "40"
+    },
+    {
+      "channelId": "5294",
+      "name": "Cricket Gold",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/17074404126L5Wr4c9E7-original-1murb9UO.jpeg",
+      "category": "Sports",
+      "number": 440,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647935?scheduleId=360&amp;daysInPast=2&amp;daysInFuture=14",
+      "epgChannelId": "360"
+    },
+    {
+      "channelId": "5725",
+      "name": "KOZOOM - The Billiard Channel",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712610075Y5aoKAqmbn.png",
+      "category": "Sports",
+      "number": 445,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=KOZOOM-ENG&amp;DurationHours=168",
+      "epgChannelId": "KOZOOM-ENG"
+    },
+    {
+      "channelId": "5295",
+      "name": "Equus TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707440878KxBQASrLNy-original-UZubIuj9.jpeg",
+      "category": "Sports",
+      "number": 450,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647938?scheduleId=368&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "368"
+    },
+    {
+      "channelId": "7289",
+      "name": "Horse TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/1751331729ulHpeRczFM.png",
+      "category": "Sports",
+      "number": 451,
+      "epgUrl": "https://www.horsetv.es/sofast-url",
+      "epgChannelId": "horsetv"
+    },
+    {
+      "channelId": "5747",
+      "name": "Hunt Fish TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712615307rd7sNLdHNe.png",
+      "category": "Entertainment",
+      "number": 465,
+      "epgUrl": "https://epg1.sofast.tv:9000/EPG/getxmltvEPG/12",
+      "epgChannelId": "12"
+    },
+    {
+      "channelId": "6633",
+      "name": "Cigar TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/03/26/1743025853olSvQn6rQh.png",
+      "category": "Lifestyle",
+      "number": 481,
+      "epgUrl": "https://freecast08a.ltnschedule.com/epg.xml",
+      "epgChannelId": "amg30862c1"
+    },
+    {
+      "channelId": "5421",
+      "name": "QVC",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/29/1709169525FMZObgSW84-original-lDy0lN0u.jpeg",
+      "category": "Shopping",
+      "number": 500,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "6413",
+      "name": "CraftsyTV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/07/10/1720630616hOs8DCitjP.png",
+      "category": "General",
+      "number": 502,
+      "epgUrl": "https://epg.frequency.com/output?id=492&amp;format=xmltv",
+      "epgChannelId": "492"
+    },
+    {
+      "channelId": "6581",
+      "name": "5-Minute Crafts",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/01/24/1737755649zG7KSo4xYG.png",
+      "category": "General",
+      "number": 503,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/amg02051c7eng_stirrus/AMG02051C7.xml",
+      "epgChannelId": "1961"
+    },
+    {
+      "channelId": "5291",
+      "name": "Home Shopping Network",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/08/170743599023pPRmXtWB-original-pfsSQfRk.png",
+      "category": "Shopping",
+      "number": 510,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "5395",
+      "name": "ONTV4U - Free Live Shopping & Lifestyle TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/02/21/1708553769ZlJlqhzPpo.png",
+      "category": "Shopping",
+      "number": 520,
+      "epgUrl": "https://cannellamedia-epg2.azurewebsites.net/api/epg/stirr/ontv4u",
+      "epgChannelId": "ontv4u"
+    },
+    {
+      "channelId": "5417",
+      "name": "Shop LC",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/28/17091442539RbHfoa9hA-original-rpNigyAp.jpeg",
+      "category": "Shopping",
+      "number": 550,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "5289",
+      "name": "AWE plus",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/02/08/1707418171gi9D5gADWQ.png",
+      "category": "Entertainment",
+      "number": 600,
+      "epgUrl": "https://cdn.take2.hbonlinehome.net/action/api/Epg/xmltv/awe%2B",
+      "epgChannelId": "341153"
+    },
+    {
+      "channelId": "5299",
+      "name": "Freebie TV - Watch Live Instantly",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707442253rVkI5jmfsL-original-sJSOSCWM.png",
+      "category": "Entertainment",
+      "number": 610,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647858?scheduleId=164&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "164"
+    },
+    {
+      "channelId": "8227",
+      "name": "Daystar TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/30/1767056145s6hSJB5Ybm.png",
+      "category": "General",
+      "number": 612,
+      "epgUrl": "https://data.titantvguide.com/api/schedule/e72cc2373f1d4639b93ae3c3c7d2540a",
+      "epgChannelId": "2037322.titantv.com"
+    },
+    {
+      "channelId": "8229",
+      "name": "Daystar TV - Espanol",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/30/17670577238koMWpXWIb.png",
+      "category": "General",
+      "number": 613,
+      "epgUrl": "https://data.titantvguide.com/api/schedule/e72cc2373f1d4639b93ae3c3c7d2540a",
+      "epgChannelId": "2037322.titantv.com"
+    },
+    {
+      "channelId": "5428",
+      "name": "JLTV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/03/01/1709331714ve9YfyJg23.png",
+      "category": "Entertainment",
+      "number": 615,
+      "epgUrl": "https://api-ott.jltv.tv/getrawvideosegments?version=12.5&amp;rss_format=xmltv&amp;linear_channel_id=9&amp;partner=stirr",
+      "epgChannelId": "jlt_jv_9"
+    },
+    {
+      "channelId": "7321",
+      "name": "American Stories Network",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/09/12/17577201680v89tI1D3C.png?du=1758652880",
+      "category": "General",
+      "number": 623,
+      "epgUrl": "https://epg.frequency.com/output?id=1016&amp;format=xmltv",
+      "epgChannelId": "1016"
+    },
+    {
+      "channelId": "7291",
+      "name": "Space Series",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/17513321722Mytcp0Foz.png",
+      "category": "Science",
+      "number": 624,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=SPACE-SERIES&amp;DurationHours=168",
+      "epgChannelId": "SPACE-SERIES"
+    },
+    {
+      "channelId": "5739",
+      "name": "Docu Vision",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712613230W2oYDwibh5.png",
+      "category": "Entertainment",
+      "number": 625,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=DOCUVISION-ENG&amp;DurationHours=168",
+      "epgChannelId": "DOCUVISION-ENG"
+    },
+    {
+      "channelId": "5302",
+      "name": "Humor Mill TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/02/09/1707445067DapGBq9zX8.png",
+      "category": "Comedy",
+      "number": 630,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647840?scheduleId=115&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "115"
+    },
+    {
+      "channelId": "5436",
+      "name": "Popstar! TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/03/19/1710878507YBl20Hfw1j-original-nYcv7lAo.jpeg",
+      "category": "Music",
+      "number": 635,
+      "epgUrl": "https://sotalcloud.blob.core.windows.net/publicstorage/xmltv/popstar%21_428.xml",
+      "epgChannelId": "POPSTAR!"
+    },
+    {
+      "channelId": "5745",
+      "name": "Cowboy Movie Channel",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712614492V41m7Es0qF.png",
+      "category": "Entertainment",
+      "number": 645,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=COWBOY-MOVIE-CHANNEL-ENG&amp;DurationHours=168",
+      "epgChannelId": "COWBOY-MOVIE-CHANNEL-ENG"
+    },
+    {
+      "channelId": "7299",
+      "name": "Absinthe TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/01/17513347374BoKLSMGOD.png",
+      "category": "Kids",
+      "number": 649,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=absinthe-tv&amp;DurationHours=72",
+      "epgChannelId": "absinthe-tv"
+    },
+    {
+      "channelId": "5308",
+      "name": "Zoomer TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707447606lfFjnn5nEx-original-8PyL28NK.jpeg",
+      "category": "Entertainment",
+      "number": 650,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647902?scheduleId=275&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "275"
+    },
+    {
+      "channelId": "5298",
+      "name": "Feva TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707442110xv8oh5GFbt-original-4lXXfLjD.png",
+      "category": "Entertainment",
+      "number": 660,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647932?scheduleId=358&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "358"
+    },
+    {
+      "channelId": "7309",
+      "name": "Elevation Church",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/07/07/1751907048d9noF7Ikgk.png?du=1752004238",
+      "category": "General",
+      "number": 667,
+      "epgUrl": "https://epg.frequency.com/output?id=1066&amp;format=xmltv",
+      "epgChannelId": "1066"
+    },
+    {
+      "channelId": "9113",
+      "name": "In Touch +",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/02/16/1771261020jn7dhb3tFI.png",
+      "category": "General",
+      "number": 668,
+      "epgUrl": "https://d31l2nn7dlh4li.cloudfront.net/amg01540/epg_deliveries/amgplt0095/amg01540c1/amg01540c1Today.xml",
+      "epgChannelId": "amg01540c1"
+    },
+    {
+      "channelId": "5752",
+      "name": "MERCURY+",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712615887YxCSHkZjQv.png",
+      "category": "Music",
+      "number": 675,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=MERCURY-ENG&amp;DurationHours=168",
+      "epgChannelId": "MERCURY-ENG"
+    },
+    {
+      "channelId": "5273",
+      "name": "CrimeFlix - Free Crime TV That’ll Keep You Hooked",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/01/31/1706733107gC1NOuIrru-original-jOa89KLb.jpeg",
+      "category": "Entertainment",
+      "number": 690,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647928?scheduleId=342&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "342"
+    },
+    {
+      "channelId": "6641",
+      "name": "Mi Raza Canal",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/03/26/1743028190AhN4NcSu8L.png",
+      "category": "Entertainment",
+      "number": 691,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=MI-RAZA-CANAL&amp;DurationHours=168",
+      "epgChannelId": "MI-RAZA-CANAL"
+    },
+    {
+      "channelId": "6643",
+      "name": "Mi Raza Canal Plus",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/03/26/1743028543DGdNGBXCOU.png",
+      "category": "Music",
+      "number": 692,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=MI-RAZA-CANAL-PLUS&amp;DurationHours=168",
+      "epgChannelId": "MI-RAZA-CANAL-PLUS"
+    },
+    {
+      "channelId": "3353",
+      "name": "Omstars",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2023/02/28/1677525969XOownbFiza-original-ky67vZ9g.jpg",
+      "category": "Lifestyle",
+      "number": 700,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647893?ScheduleId=234&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "234"
+    },
+    {
+      "channelId": "7047",
+      "name": "INTRAVEL",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/05/20/17477078184RXzq0eKZD.png",
+      "category": "Entertainment",
+      "number": 701,
+      "epgUrl": "https://d31l2nn7dlh4li.cloudfront.net/amg00861/epg_deliveries/amgplt0095/amg00861c36/EPG_INTRAVELToday.xml",
+      "epgChannelId": "amg00861c36"
+    },
+    {
+      "channelId": "5408",
+      "name": "RVTV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/23/1708719883hRITv8N8eW-original-atbpfmDX.png",
+      "category": "Entertainment",
+      "number": 702,
+      "epgUrl": "https://cannellamedia-epg2.azurewebsites.net/api/epg/stirr/rvtv",
+      "epgChannelId": "rvtv"
+    },
+    {
+      "channelId": "7319",
+      "name": "H20 TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/09/12/1757717025Y40fNuhsRW.png?du=1758829318",
+      "category": "General",
+      "number": 703,
+      "epgUrl": "https://epg.frequency.com/output?id=738&amp;format=xmltv",
+      "epgChannelId": "738"
+    },
+    {
+      "channelId": "5734",
+      "name": "4K Travel TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/04/08/1712612339bhKq2lZNGi.png",
+      "category": "Travel",
+      "number": 704,
+      "epgUrl": "https://epg.sofast.tv/api/ChannelXML/GetEpgXml?ChannelId=4KTRAVEL&amp;DurationHours=168",
+      "epgChannelId": "4K-TRAVEL-TV-ENG"
+    },
+    {
+      "channelId": "7533",
+      "name": "Travel Escapes",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/12/03/1764789328DaIfQnuyPK.png",
+      "category": "Travel",
+      "number": 706,
+      "epgUrl": "https://epg-prod.ohlscdn.wurl.com/ohlscdn_videoelephantlimited_travelescapes_1_us_cf.json",
+      "epgChannelId": "Wurl20-videoelephantlimited_travelescapes_1"
+    },
+    {
+      "channelId": "9395",
+      "name": "Discovering China",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/05/03/1777837898w950EQsFDE.png",
+      "category": "General",
+      "number": 707,
+      "epgUrl": "http://49.233.55.102/xml?platform=PLATFORM_0&amp;channel=201&amp;timezone=-8&amp;start=2026-5-7&amp;days=7&amp;format=download",
+      "epgChannelId": "201"
+    },
+    {
+      "channelId": "6426",
+      "name": "TRACE Urban",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/08/06/1722922378ywfWVlIzIn.png",
+      "category": "Music",
+      "number": 800,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/traceurban_stirrus/AMG01131C1.xml",
+      "epgChannelId": "325"
+    },
+    {
+      "channelId": "6427",
+      "name": "TRACE UK",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/08/06/1722922951PXrjljQmJ0.png",
+      "category": "Music",
+      "number": 801,
+      "epgUrl": null,
+      "epgChannelId": null
+    },
+    {
+      "channelId": "6428",
+      "name": "TRACE Latina",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/08/06/1722923469cnrsK9Xfs6.png",
+      "category": "Music",
+      "number": 802,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/tracelatinait_stirrus/AMG01131C3.xml",
+      "epgChannelId": "722"
+    },
+    {
+      "channelId": "6429",
+      "name": "TRACE Brazuca",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/08/06/1722924089sUe49s1xXB.png",
+      "category": "Music",
+      "number": 803,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/tracebrazucabr_stirrus/AMG01131C4.xml",
+      "epgChannelId": "1215"
+    },
+    {
+      "channelId": "6635",
+      "name": "Playing for Change",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2025/03/26/1743026747YVQREBXDZN.png",
+      "category": "Music",
+      "number": 804,
+      "epgUrl": "https://freecast11a.ltnschedule.com/epg.xml",
+      "epgChannelId": "playing for change"
+    },
+    {
+      "channelId": "6443",
+      "name": "Our Vinyl",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/11/12/1731451322HlMZsF2k8u-original-9vaNb1kn.png",
+      "category": "Music",
+      "number": 805,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647957?scheduleId=395&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "395"
+    },
+    {
+      "channelId": "5297",
+      "name": "Feva Music",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/02/09/1707441388y5JAA4UyzK-original-XmxiWRiq.png",
+      "category": "Music",
+      "number": 819,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647920?scheduleId=359&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "359"
+    },
+    {
+      "channelId": "5303",
+      "name": "Plymouth Rock TV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/02/09/1707446072tnQEMOWsB1.png",
+      "category": "Music",
+      "number": 820,
+      "epgUrl": "https://streaming002.muxip.com/xmltv/19647936?scheduleId=361&amp;daysInPast=2&amp;daysInFuture=7",
+      "epgChannelId": "361"
+    },
+    {
+      "channelId": "5290",
+      "name": "QVC 365",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/02/08/1707435560ZF3REwypLC.png?du=1781550765",
+      "category": "Lifestyle",
+      "number": 900,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/qvc02_stirrus/AMG01717C1.xml",
+      "epgChannelId": "qvc.us"
+    },
+    {
+      "channelId": "6465",
+      "name": "CBS KOTV Tulsa, OK",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/12/28/1735346053aXseJNRkyO.png",
+      "category": "News",
+      "number": 901,
+      "epgUrl": "https://fueltools-prod01-v1-fast.fuelmedia.io/mrss?ChId=67a4b0f7-6a87-47f6-90e1-4111e2ff69c3&amp;maxItems=50&amp;ContentType=epg",
+      "epgChannelId": "67a4b0f7-6a87-47f6-90e1-4111e2ff69c3"
+    },
+    {
+      "channelId": "6467",
+      "name": "CBS 9 KWTV Oklahoma City, OK",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/12/28/1735347204uXyZ7OilgD.png",
+      "category": "News",
+      "number": 902,
+      "epgUrl": "https://fueltools-prod01-v1-fast.fuelmedia.io/mrss?ChId=e48409e7-672d-42f2-b5e0-ebb6744b0425&amp;maxItems=50&amp;ContentType=epg",
+      "epgChannelId": "e48409e7-672d-42f2-b5e0-ebb6744b0425"
+    },
+    {
+      "channelId": "9033",
+      "name": "ABC 5 KSTP Minneapolis-St. Paul, MN",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2026/02/08/1770585397pYxpGzwf1a.png",
+      "category": "News",
+      "number": 903,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/hbkstp_stirrus/AMG01942C2Today.xml",
+      "epgChannelId": "AMG01942C2"
+    },
+    {
+      "channelId": "6473",
+      "name": "NBC 4 KOB Albuquerque, NM",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735349363r8unYYbNxG-original-Q6O7ckfn.png",
+      "category": "News",
+      "number": 904,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/hbkob_stirrus/AMG01942C1Today.xml",
+      "epgChannelId": "AMG01942C1"
+    },
+    {
+      "channelId": "6475",
+      "name": "NBC 13 WNYT Albany, NY",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735349451LT3DUQWt2O-original-N9qTfUk7.png",
+      "category": "News",
+      "number": 905,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/hbwnyt_stirrus/AMG01942C5Today.xml",
+      "epgChannelId": "AMG01942C5"
+    },
+    {
+      "channelId": "9015",
+      "name": "NBC 10 WHEC Rochester, NY",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2026/02/06/1770345088KCwm1Z0tLk-original-2odNlBwg.png",
+      "category": "News",
+      "number": 906,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/hbwhec_stirrus/AMG01942C4Today.xml",
+      "epgChannelId": "AMG01942C4"
+    },
+    {
+      "channelId": "6479",
+      "name": "ABC WDIO Duluth, MN",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/video_logos/2024/12/28/17353496094emCwd2CUc.png",
+      "category": "News",
+      "number": 907,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/wdiotf_stirrus/AMG01942C3Today.xml",
+      "epgChannelId": "AMG01942C3"
+    },
+    {
+      "channelId": "6481",
+      "name": "ABC 6 KAAL Minnesota & Iowa",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735349686mzRKh5jhGh-original-Z6JUaePt.png",
+      "category": "News",
+      "number": 908,
+      "epgUrl": "https://d3bd0tgyk368z1.cloudfront.net/feeds/epg/kaaltf_stirrus/AMG01942C6Today.xml",
+      "epgChannelId": "AMG01942C6"
+    },
+    {
+      "channelId": "6483",
+      "name": "ABC 7 WJLA Washington DC",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350774yvKG0g537K-original-WCw8dn3c.png",
+      "category": "News",
+      "number": 909,
+      "epgUrl": "https://epg.frequency.com/output?id=681&amp;format=xmltv",
+      "epgChannelId": "681"
+    },
+    {
+      "channelId": "6485",
+      "name": "ABC KOMO Seattle, WA",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350820yrQl8X23NW-original-jlXuiVPu.png",
+      "category": "News",
+      "number": 910,
+      "epgUrl": "https://epg.frequency.com/output?id=709&amp;format=xmltv",
+      "epgChannelId": "709"
+    },
+    {
+      "channelId": "6487",
+      "name": "ABC KATU Portland, OR",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/17353508483Q3vtxvGct-original-A2NatXu7.png",
+      "category": "News",
+      "number": 911,
+      "epgUrl": "https://epg.frequency.com/output?id=710&amp;format=xmltv",
+      "epgChannelId": "710"
+    },
+    {
+      "channelId": "6489",
+      "name": "FOX45 WBFF Baltimore",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350870gmiUn4zU2k-original-DPxYBp1Y.png",
+      "category": "News",
+      "number": 912,
+      "epgUrl": "https://epg.frequency.com/output?id=688&amp;format=xmltv",
+      "epgChannelId": "688"
+    },
+    {
+      "channelId": "6491",
+      "name": "CBS 2 KUTV Salt Lake City, UT",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350887ZkFUYGUdXa-original-oKZTGdpH.png",
+      "category": "News",
+      "number": 913,
+      "epgUrl": "https://epg.frequency.com/output?id=707&amp;format=xmltv",
+      "epgChannelId": "707"
+    },
+    {
+      "channelId": "6493",
+      "name": "NBC WOAI San Antonio, TX",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350901v6qBQHDl08-original-wB3DpRv6.png",
+      "category": "News",
+      "number": 914,
+      "epgUrl": "https://epg.frequency.com/output?id=703&amp;format=xmltv",
+      "epgChannelId": "703"
+    },
+    {
+      "channelId": "6495",
+      "name": "ABC 6 WSYX Columbus, OH",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/173535093138B9YWdEbG-original-vIlpEfsn.png",
+      "category": "News",
+      "number": 915,
+      "epgUrl": "https://epg.frequency.com/output?id=689&amp;format=xmltv",
+      "epgChannelId": "689"
+    },
+    {
+      "channelId": "6497",
+      "name": "CBS KEYE Austin, TX",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350953FSs2yv1VEZ-original-SHHVMC7p.png",
+      "category": "News",
+      "number": 916,
+      "epgUrl": "https://epg.frequency.com/output?id=704&amp;format=xmltv",
+      "epgChannelId": "704"
+    },
+    {
+      "channelId": "6499",
+      "name": "CBS WKRC Cincinnati, OH",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/17353509686f9b3XxPgv-original-eLIHzHxU.png",
+      "category": "News",
+      "number": 917,
+      "epgUrl": "https://epg.frequency.com/output?id=691&amp;format=xmltv",
+      "epgChannelId": "691"
+    },
+    {
+      "channelId": "6501",
+      "name": "ABC 13 WLOS Asheville, NC",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735350984qlX44LKnxi-original-qmhzA2nE.png",
+      "category": "News",
+      "number": 918,
+      "epgUrl": "https://epg.frequency.com/output?id=695&amp;format=xmltv",
+      "epgChannelId": "695"
+    },
+    {
+      "channelId": "6503",
+      "name": "CBS 12 WPEC West Palm Beach, FL",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351000z16Rpq428D-original-ao3xUbKv.png",
+      "category": "News",
+      "number": 919,
+      "epgUrl": "https://epg.frequency.com/output?id=692&amp;format=xmltv",
+      "epgChannelId": "692"
+    },
+    {
+      "channelId": "6505",
+      "name": "NBC KSNV Las Vegas, NV",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351018t8c6TQTbHA-original-Oc3UDqoZ.png",
+      "category": "News",
+      "number": 920,
+      "epgUrl": "https://epg.frequency.com/output?id=708&amp;format=xmltv",
+      "epgChannelId": "708"
+    },
+    {
+      "channelId": "6507",
+      "name": "CBS WWMT Grand Rapids, MI",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351035XxyfEGyxdF-original-66SP2xGb.png",
+      "category": "News",
+      "number": 921,
+      "epgUrl": "https://epg.frequency.com/output?id=701&amp;format=xmltv",
+      "epgChannelId": "701"
+    },
+    {
+      "channelId": "6509",
+      "name": "CBS 21 WHP Harrisburg, PA",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351050FE41PBgcvY-original-yJQ2QNSQ.png",
+      "category": "News",
+      "number": 922,
+      "epgUrl": "https://epg.frequency.com/output?id=697&amp;format=xmltv",
+      "epgChannelId": "697"
+    },
+    {
+      "channelId": "6511",
+      "name": "Fox 25 KOKH Oklahoma City, OK",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/17353510655ywbSea9hO-original-T3tmNo1K.png",
+      "category": "News",
+      "number": 923,
+      "epgUrl": "https://epg.frequency.com/output?id=705&amp;format=xmltv",
+      "epgChannelId": "705"
+    },
+    {
+      "channelId": "6513",
+      "name": "NBC 10 WJAR Providence, RI",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351091BkRmYuNTOi-original-Xc06SyPK.png",
+      "category": "News",
+      "number": 924,
+      "epgUrl": "https://epg.frequency.com/output?id=694&amp;format=xmltv",
+      "epgChannelId": "694"
+    },
+    {
+      "channelId": "6515",
+      "name": "Fox 26 KMPH Fresno, CA",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351112xiLYWSNX3B-original-pgnvHWLn.png",
+      "category": "News",
+      "number": 925,
+      "epgUrl": "https://epg.frequency.com/output?id=711&amp;format=xmltv",
+      "epgChannelId": "711"
+    },
+    {
+      "channelId": "6517",
+      "name": "ABC 22 WKEF Dayton, OH",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351129IkejXN948m-original-BMF7kOyU.png",
+      "category": "News",
+      "number": 926,
+      "epgUrl": "https://epg.frequency.com/output?id=690&amp;format=xmltv",
+      "epgChannelId": "690"
+    },
+    {
+      "channelId": "6519",
+      "name": "Fox 11 WLUK Green Bay, WI",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351145DklcPHt7Wf-original-xCEmkPLl.png",
+      "category": "News",
+      "number": 927,
+      "epgUrl": "https://epg.frequency.com/output?id=702&amp;format=xmltv",
+      "epgChannelId": "702"
+    },
+    {
+      "channelId": "6521",
+      "name": "ABC WCIV Charleston, SC",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351161CnNQEpdAHI-original-vMvnEZDx.png",
+      "category": "News",
+      "number": 928,
+      "epgUrl": "https://epg.frequency.com/output?id=700&amp;format=xmltv",
+      "epgChannelId": "700"
+    },
+    {
+      "channelId": "6523",
+      "name": "CBS 4 KDBC El Paso, TX",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351176pv0jJkHwNT-original-6aFUJ4Fz.png",
+      "category": "News",
+      "number": 929,
+      "epgUrl": "https://epg.frequency.com/output?id=706&amp;format=xmltv",
+      "epgChannelId": "706"
+    },
+    {
+      "channelId": "6525",
+      "name": "CBS 22 WSBT South Bend, IN",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351199gE7WSNvw7G-original-MUsuZaLE.png",
+      "category": "News",
+      "number": 930,
+      "epgUrl": "https://epg.frequency.com/output?id=693&amp;format=xmltv",
+      "epgChannelId": "693"
+    },
+    {
+      "channelId": "6527",
+      "name": "ABC 15 WPDE Myrtle Beach, FL",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351215Lc5V1zk4sG-original-SfXNbAcY.png",
+      "category": "News",
+      "number": 931,
+      "epgUrl": "https://epg.frequency.com/output?id=696&amp;format=xmltv",
+      "epgChannelId": "696"
+    },
+    {
+      "channelId": "6529",
+      "name": "NBC WJAC Johnstown, PA",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351230vuknqvMLXw-original-YHHIlhQk.png",
+      "category": "News",
+      "number": 932,
+      "epgUrl": "https://epg.frequency.com/output?id=698&amp;format=xmltv",
+      "epgChannelId": "698"
+    },
+    {
+      "channelId": "6531",
+      "name": "FOX 9 WTOV Steubenville, OH",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2024/12/28/1735351253ntM1zUqR3r-original-j1dMNj5H.png",
+      "category": "News",
+      "number": 933,
+      "epgUrl": "https://epg.frequency.com/output?id=699&amp;format=xmltv",
+      "epgChannelId": "699"
+    },
+    {
+      "channelId": "6535",
+      "name": "NBC 5 KSL Salt Lake City, UT",
+      "logo": "https://vcz-ktest2-cloud-vodlix-com.b-cdn.net/u/ktest2/files/thumbs/2025/01/04/1735953238nK14oLpbaK-original-hPAmddYL.png",
+      "category": "News",
+      "number": 934,
+      "epgUrl": "https://cdn.bonneville.cloud/r/KSL-TV/fast/epg/stirr.xml",
+      "epgChannelId": "758c7434-5ab2-411c-a7db-422a9f32acaf"
+    }
+  ]
+}

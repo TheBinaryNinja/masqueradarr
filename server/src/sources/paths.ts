@@ -109,3 +109,11 @@ export const FREELIVESPORTS_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'freelivespo
  * until it lands, so distro's schedule self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const DISTRO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'distro-playlist-addon.json');
+
+/**
+ * The stirr→gracenote EPG-link crosswalk (committed seed data). stirr's afterSync applies its HIGH-tier rows to
+ * never-touched stirr PlaylistChannels once per channel after a sync, BEFORE its own per-channel two-tier self-EPG
+ * fills the rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing
+ * file) until it lands, so stirr's two-tier self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const STIRR_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'stirr-playlist-addon.json');
