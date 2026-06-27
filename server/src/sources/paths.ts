@@ -125,3 +125,11 @@ export const STIRR_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'stirr-playlist-addon
  * file) until it lands, so tcl's schedule self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const TCL_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'tcl-playlist-addon.json');
+
+/**
+ * The pluto→gracenote EPG-link crosswalk (committed seed data). pluto's afterSync applies its HIGH-tier rows to
+ * never-touched pluto PlaylistChannels once per channel after a sync, BEFORE its own per-region timelines self-EPG
+ * fills the rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing
+ * file) until it lands, so pluto's timelines self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const PLUTO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'pluto-playlist-addon.json');

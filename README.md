@@ -173,7 +173,7 @@ all new development happens here.
 - **Composition + export** — builds Global, per-user, and custom `.m3u` playlists, each with a matching
   XMLTV guide sibling advertised via `x-tvg-url`.
 
-**Pluggable sources**
+## Pluggable sources
 
 - A **source-agnostic adapter framework**: adding a provider is one adapter file plus one registry line;
   the generic core (sync → normalize → dedupe → proxy) never branches per source.
@@ -197,7 +197,7 @@ all new development happens here.
 | Whale TV+ | <adapter chain description> |
 | Xumo Play | <adapter chain description> |
 
-**Custom playlists** (bring your own)
+ ## Custom playlists (bring your own)
 
 - **Clone** — hand-pick channels from any synced source into a curated playlist; the channels are
   independent copies (so edits don't disturb the originals) but streams still route through the real adapter.
@@ -206,7 +206,85 @@ all new development happens here.
 - Every custom playlist rides the same per-user, token-gated **`.m3u` + XMLTV** export machinery as the
   built-in sources.
 
-**Guide data (EPG)**
+## Local Now playlist
+
+- Local Now ([localnow.com](https://localnow.com)) is a US-based FAST (Free Ad-Supported Streaming TV) service that delivers a **market-specific** lineup of live channels — local broadcast stations, regional news, and national FAST networks — curated by geographic television market. Masqueradarr integrates it as a fully managed, re-syncable custom playlist type with a bundled EPG guide.
+
+> [!NOTE] 
+> **US-only.** Local Now is geo-gated to US IP addresses. Attempting to add a Local Now playlist from a non-US IP will return a clear error. No VPN workaround is built in; route the server through a US network to use this feature.
+
+#### _Local Now_ : City / Market Lookup
+
+When adding a Local Now playlist you choose a **city/market** — the geographic unit Local Now uses to select a channel lineup. Masqueradarr exposes two ways to pick one:
+
+| Method | How it works |
+|--------|-------------|
+| **City search** | Type at least 2 characters in the city field. A typeahead calls `GET /api/import/local/cities?q=` which queries Local Now's `City/Search` API and returns matching cities with their market identity. |
+| **Auto-detect** | Click "Use my detected market." The server reads the geo-detected market from Local Now's own homepage response and pre-fills the closest market to the server's public IP. Falls back to New York City if the homepage carries no geo signal. |
+
+### _Local Now_ : DMA and Market — what they are
+
+Every choice resolves to two stored identifiers:
+
+| Field | What it is | Example |
+|-------|-----------|---------|
+| **DMA** (`marketDma`) | A numeric [Designated Market Area](https://en.wikipedia.org/wiki/Media_market) code — the Nielsen/TV-industry identifier for a regional television market. | `501` (New York) |
+| **Market** (`marketSlug`) | A comma-joined list of Local Now market slugs — a primary city slug plus any associated PBS station slugs for that market. | `nyNewYorkCity,pbs-wnet,pbs-wedh,pbs-wliw,pbs-wnjt` |
+
+Both are stored on the playlist row and are used together as the query parameters for every upstream catalog/guide fetch. They are set once at creation and never modified afterward (to change market, delete the playlist and create a new one).
+
+### _Local Now_ : What the Playlist Provides
+
+When you add a Local Now playlist, Masqueradarr:
+
+1. **Creates a custom playlist row** (`source: 'local'`, `endpoint: 'custom'`) with the market's DMA and slug stored directly on the playlist.
+2. **Immediately syncs the market's channel lineup** from Local Now's combined catalog + guide endpoint. Channels appear in the playlist the moment creation completes.
+3. **Prunes subscription-locked channels** — any channel with `subscription_access.unlocked === false` is excluded; only freely available content is imported.
+4. **Deduplicates** the raw channel list by channel ID before writing.
+
+### _Local Now_ : Channel fields
+
+Each imported channel carries:
+
+| Field | Value |
+|-------|-------|
+| Name | The channel's display name from Local Now |
+| Group | `Local News` for local broadcast stations (identified by W/K call signs, `My City` genre, `hyperlocal`/`epg-local-now` slugs), otherwise the first IAB genre tag, otherwise `Local` |
+| Channel number | The broadcast channel number when provided by Local Now |
+| Logo | The channel's logo URL from Local Now |
+| Stream entry | An opaque `localnow://<id>?slug=<slug>` sentinel — streams are **resolved on demand** per play via Local Now's DSP backend, not stored as static URLs |
+
+### _Local Now_ : What the EPG Source Provides
+
+Each Local Now playlist automatically creates and owns a **playlist-bound EPG source** (visible in the EPG Sources screen, labeled `<Market> — Local Now`). Key properties:
+
+| Property | Value |
+|----------|-------|
+| Source | `local` |
+| Binding | Playlist-bound (`playlistBinding: true`) — manual sync and schedule controls are hidden in the EPG Sources UI; the **playlist's hourly cronjob** drives all refreshes |
+| Guide data | Inline `program[]` from the market's catalog fetch — no separate EPG call needed |
+| Guide window | ~5 programs per channel per sync (continuous coverage maintained by the hourly schedule) |
+| Program fields | Title, start/end times, description, content rating, season/episode numbers (parsed from Local Now's composite title format), IAB category |
+| Channel linking | Channels are **self-linked** automatically at sync time — no manual Channel Mapping required. Each channel's `tvg_id` and `epg` fields are set to point at this EPG source on first sync, so the guide renders immediately |
+
+The EPG source ID matches the playlist ID — they are a matched pair scoped to the same market. Deleting the playlist cascade-deletes the EPG source, all guide channels, all programs, and the hourly cronjob together.
+
+### _Local Now_ : Adding Multiple Local Now Playlists (Different Markets)
+
+You can add as many Local Now playlists as you want, **one per city/market**. Each is fully independent:
+
+| Aspect | Behavior |
+|--------|----------|
+| **Playlist row** | A separate `playlists` document per market, with its own `id`, `marketDma`, `marketSlug`, and `marketLabel` |
+| **Channel storage** | Each market's channels are stored under their own playlist ID — there is no sharing or collision between markets |
+| **EPG source** | Each market gets its own `EpgSource` (id = playlist id), its own `epgchannels`, and its own `programs` collection scope |
+| **Schedule** | Each market gets its own independent hourly `Cronjob` |
+| **Naming** | Masqueradarr disambiguates playlist IDs automatically — if you add "New York" twice the second gets a numeric suffix (`newYork2`) |
+| **Deletion** | Deleting one market's playlist removes only that market's channels, EPG, and schedule — the others are unaffected |
+
+**Example:** adding New York (DMA 501) and Los Angeles (DMA 803) gives you two separate playlists (`newYork` and `losAngeles`), two separate EPG sources, and two independent hourly schedules. Each can be assigned to different users via the standard playlist access controls.
+
+## Guide data (EPG)
 
 - Ingests guide data from **Gracenote**, **EPG-PW**, **Jesmann** (guided picker), and any **Custom XMLTV**
   source — an uploaded file or a re-fetchable remote URL, streamed so multi-GB national guides parse with
