@@ -133,3 +133,12 @@ export const TCL_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'tcl-playlist-addon.jso
  * file) until it lands, so pluto's timelines self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const PLUTO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'pluto-playlist-addon.json');
+
+/**
+ * The roku→gracenote EPG-link crosswalk (committed seed data). roku's afterSync applies its HIGH-tier rows to
+ * never-touched roku PlaylistChannels once per channel after a sync, BEFORE its own per-channel linearSchedule
+ * self-EPG fills the rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the
+ * missing file) until it lands, so roku's linearSchedule self-EPG is the guide in the meantime. Same shape + apply
+ * sequence as dlhd's.
+ */
+export const ROKU_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'roku-playlist-addon.json');

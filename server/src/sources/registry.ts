@@ -18,6 +18,7 @@ import distroAdapter from './adapters/distro.js';
 import stirrAdapter from './adapters/stirr.js';
 import tclAdapter from './adapters/tcl.js';
 import plutoAdapter from './adapters/pluto.js';
+import rokuAdapter from './adapters/roku.js';
 import directAdapter from './adapters/direct.js';
 import hdhomerunAdapter from './adapters/hdhomerun/index.js';
 import localAdapter from './adapters/local/index.js';
@@ -29,7 +30,7 @@ import type { SourceAdapter } from './types.js';
 // passes imported URLs straight through; `hdhomerun` remuxes a local tuner's raw MPEG-TS to HLS
 // (adapters/hdhomerun/); `local` resolves a Local Now `localnow://` sentinel to a fresh signed CDN master per
 // play (adapters/local/). All three back custom-type playlists whose channels carry origin:'<id>' for routing.
-export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, vidaaAdapter, whaleAdapter, xumoAdapter, freeLiveSportsAdapter, distroAdapter, stirrAdapter, tclAdapter, plutoAdapter, directAdapter, hdhomerunAdapter, localAdapter];
+export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, vidaaAdapter, whaleAdapter, xumoAdapter, freeLiveSportsAdapter, distroAdapter, stirrAdapter, tclAdapter, plutoAdapter, rokuAdapter, directAdapter, hdhomerunAdapter, localAdapter];
 
 export function getSource(id: string): SourceAdapter | undefined {
   return SOURCES.find((s) => s.id === id);

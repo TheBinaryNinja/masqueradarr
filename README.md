@@ -1,5 +1,5 @@
 <div align="center">
-<img src="docs/img/masqueradarr.png">
+  <img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
   <div style="display:flex; justify-content:center; align-items:center; gap:15px;">
     <a>
@@ -87,7 +87,7 @@ and rebuilds everything underneath it to lift those ceilings:
 - **Bespoke scrapers → a source-agnostic adapter framework.** Adding a provider is one adapter file
   plus one registry line; the generic core (sync, proxy, B-Roll, telemetry) never branches per source.
 - **File server → an API + two delivery surfaces.** An in-app player **and** an external-client
-  engine that transcodes for TiviMate / Kodi / VLC, with **GPU hardware acceleration** (NVENC / VAAPI / QSV).
+  engine that transcodes for TiviMate / VLC, with **GPU hardware acceleration** (NVENC / VAAPI / QSV).
 - **Env-var toggles → users, roles & per-user access.** Real authentication (scrypt), session vs.
   stream tokens, and per-user tokenized playlist access.
 - **Blind scheduling → live observability.** WebSocket-pushed viewer/bandwidth/buffering telemetry,
@@ -134,7 +134,7 @@ Key subsystems:
 - **EPG + scheduler** — multiple guide ingesters behind one shared sync path — **Gracenote**,
   **EPG-PW**, **Jesmann**, and user-supplied **Custom XMLTV** (file upload or re-fetchable remote URL,
   streamed so multi-GB national guides parse with bounded memory) — plus the self-built guides that
-  **tubi** and **dlhd** carry. All driven by a `croner`-backed runtime scheduler over a persisted
+  **built-in** carry. All driven by a `croner`-backed runtime scheduler over a persisted
   `cronjobs` collection.
 - **Composition + export** — composes Global, per-user, and custom `.m3u` playlists with matching
   XMLTV guide siblings for downstream clients.
@@ -168,8 +168,7 @@ all new development happens here.
 - **Resolve-on-demand streaming** — each stream is resolved at play time through an HLS proxy (no dead
   URLs on disk), which is what makes **authenticated**, **token-gated**, and **rotating-mirror** sources
   possible.
-- **Two delivery surfaces** — an in-app slide-out player and an external-client engine for TiviMate /
-  Kodi / VLC / Emby / Jellyfin / Plex.
+- **Two delivery surfaces** — an in-app slide-out player and an external-client engine for TiviMate / VLC / Emby / Jellyfin / Plex.
 - **Composition + export** — builds Global, per-user, and custom `.m3u` playlists, each with a matching
   XMLTV guide sibling advertised via `x-tvg-url`.
 
@@ -178,24 +177,24 @@ all new development happens here.
 - A **source-agnostic adapter framework**: adding a provider is one adapter file plus one registry line;
   the generic core (sync → normalize → dedupe → proxy) never branches per source.
 
-| Source | Pluggable Adapter Chain |
+| Source | Mechanism |
 | --- | --- |
-| Distro TV | <adapter chain description> |
-| FreeLiveSports | <adapter chain description> |
-| LG Channels | <adapter chain description> |
-| Local (Local Now) | <adapter chain description> |
-| Plex | <adapter chain description> |
-| DaddyLive | <adapter chain description> |
-| Pluto TV | <adapter chain description> |
-| STIRR | <adapter chain description> |
-| Samsung TV+ | <adapter chain description> |
-| TCL TV+ | <adapter chain description> |
-| Roku Channel | <adapter chain description> |
-| Tubi TV | <adapter chain description> |
-| Vidaa Free TV | <adapter chain description> |
-| Vizio WatchFree+ | <adapter chain description> |
-| Whale TV+ | <adapter chain description> |
-| Xumo Play | <adapter chain description> |
+| Distro TV | `makeFastSource` · jsrdn `tv_v5` catalog (Android-TV UA) · geo-qualified channel IDs · per-play double-underscore VAST macro expansion via `resolveStream` · distro.tv Origin/Referer-gated CDN · separate guide from `epg/query.php` |
+| FreeLiveSports | `makeFastSource` · Unreel/PowR sports catalog · direct-HLS masters bearing Unreel VAST macros (`[DEVICE_ID]/[CB]/[REF]/[UA]/…`) · per-play macro expansion via `resolveStream` |
+| LG Channels | `makeFastSource` · Public mirror via `schedulelist` (catalog + XMLTV guide in one call) · direct-HLS masters bearing `[DEVICE_ID]/[UA]/[NONCE]/…` VAST macros · per-play macro expansion via `resolveStream` |
+| (**Local Now**) | Sentinel-resolve adapter · `localnow://<id>?slug=<slug>` stored at sync · resolves to a fresh signed CDN master per play · market-scoped channel set imported via `local/import.ts` · US-only (geo-gated) |
+| Plex | _(planned)_ |
+| DaddyLive | HTML catalog scraped from a runtime-selected rotating mirror (`mirrorDirectory.ts`) · `watch.php?id=<N>` entry sentinel · 3-hop, Referer-gated scrape per play to a fresh signed master · dynamic SSRF allow-set · self-EPG via schedule scrape + Gracenote crosswalk |
+| Pluto TV | `makeFastSource` · sentinel+resolve · `/v2/guide/channels` catalog yields channel IDs only · stateful per-region boot session (`boot.pluto.tv`) · per-play JWT-stitched HLS master from the stitcher CDN |
+| STIRR | `makeFastSource` · sentinel+resolve · `videos/list` catalog yields video IDs + provider-EPG pointers · per-play resolve via `POST /playable` · bundled provider guide |
+| Samsung TV+ | `makeFastSource` · Public mirror (`i.mjh.nz`) · no auth · jmp2.uk short-link redirect followed per play to a rotating CDN master · dynamic SSRF allow-set learned at play time |
+| TCL TV+ | `makeFastSource` · sentinel+resolve · `livetab → programlist` catalog via the ideonow.com gateway · per-play HLS master minted by a `format-stream-url` POST |
+| Roku Channel | `makeFastSource` · sentinel+resolve · `/api/v2/epg` catalog yields channel IDs and metadata only · stateful Cloudflare-sensitive anonymous session · per-play JWT-signed HLS master from Roku's OSM CDN |
+| Tubi TV | `window.__data` scrape of `/live` for channel catalog · per-channel EPG + short-lived JWT-signed HLS manifest from `/oz/epg/programming` · manifest minted per request (sentinel+resolve) · self-EPG written via `afterSync` |
+| Vidaa Free TV | `makeFastSource` · direct-HLS (identity `resolveStream`) · client-config bootstrap (BOURL + tenant) · geo-qualified channel IDs · ad-DI macros stripped at catalog time |
+| Vizio WatchFree+ | `makeFastSource` · direct-HLS (identity `resolveStream`) · public anonymous catalog from `watchfreeplus-epg-prod.smartcasttv.com` · ad-DI macro placeholders substituted with privacy-neutral values at normalize time |
+| Whale TV+ | `makeFastSource` · macro-expansion · keyless auth bootstrap (apiToken → short-lived bearer) · Ottera/SSAI ad macros (`[did]/[session_id]/[cachebuster]/…`) expanded per play via `resolveStream` |
+| Xumo Play | `makeFastSource` · sentinel+resolve · Valencia catalog yields channel IDs only · 3-hop per-play resolve (broadcast → asset → HLS source → macro-fill) |
 
  ## Custom playlists (bring your own)
 
@@ -288,7 +287,7 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 - Ingests guide data from **Gracenote**, **EPG-PW**, **Jesmann** (guided picker), and any **Custom XMLTV**
   source — an uploaded file or a re-fetchable remote URL, streamed so multi-GB national guides parse with
-  bounded memory — plus the self-built guides that **tubi** and **dlhd** carry.
+  bounded memory — plus the self-built guides that **playlist-bound** carry.
 - **Channel Mapping** links channels to guide data with composite match-scoring and many-to-one EPG
   linking; the link survives re-syncs.
 
@@ -487,7 +486,7 @@ Guide data reaches a playlist through **two distinct mechanisms** — keep them 
    Mapping** screen (or self-linked by sources that ship their own EPG). At compose time the guide is built
    from exactly the channels that carry a link, so "which EPG sources feed this playlist" is simply
    *whichever sources its channels are mapped to* — many sources can contribute to one playlist's guide.
-2. **Playlist-bound EPG sources (`playlistBinding`).** **tubi** and **dlhd** carry their *own* inline guide.
+2. **Playlist-bound EPG sources (`playlistBinding`). **Built-in** carry their *own* inline guide.
    When you sync such a playlist, its `afterSync` hook writes the guide **and** upserts a matching EPG source
    row flagged **`playlistBinding: true`**, then self-links the playlist's channels to it. These rows are
    *owned by the playlist's sync* — the playlist drives their refresh cadence, so the EPG Sources screen
@@ -539,19 +538,19 @@ The `source` discriminator (stored lowercase):
 | **jesmann** | Add EPG Source → **Jesmann** (guided picker) | Large national XMLTV guides, **streamed** so multi-GB files parse with bounded memory |
 | **xml file** | Add EPG Source → **Custom** (upload) | One-shot uploaded XMLTV document |
 | **remote url** | Add EPG Source → **Custom** (URL) | Re-fetchable remote XMLTV URL (streamed, gzip-aware) |
-| **tubi** / **dlhd** | *(automatic)* — the playlist's `afterSync` | **Playlist-bound** self-EPG (`playlistBinding:true`); not user-added |
+| **playlist-bound** | *(automatic)* — the playlist's `afterSync` binding | **Playlist-bound** self-EPG (`playlistBinding:true`); not user-added |
 
 ### EPG Sources with a Playlist Binding + the syncing process
 
 - **Standalone sources** (gracenote / epg-pw / jesmann / custom XMLTV) sync on demand or on a `cronjobs`
   schedule, independent of any playlist.
-- **Playlist-bound sources** (tubi / dlhd) have **no manual sync of their own.** They are written by the
+- **Playlist-bound sources** (built-in) have **no manual sync of their own.** They are written by the
   *playlist's* `afterSync` hook off the same listing that playlist sync already fetched, and the bound source
   row is re-asserted (`playlistBinding:true`) on every playlist sync. To refresh a bound guide you **sync its
   playlist** — the EPG Sources screen deliberately hides their sync/schedule controls because the playlist
   owns the cadence.
 - Either way, the *binding between guide data and a playlist's channels* is the channel-level
-  **`(tvg_id, epg)`** link — Channel Mapping for user-added sources, self-linked for tubi/dlhd.
+  **`(tvg_id, epg)`** link — Channel Mapping for user-added sources, self-linked for channel-adapter built-in sources.
 
 ### How EPG Sources are ingested into playlists during a compose
 

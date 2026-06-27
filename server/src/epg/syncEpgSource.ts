@@ -30,6 +30,7 @@ import { syncDistroEpg } from './distro.js';
 import { syncStirrEpg } from './stirr.js';
 import { syncTclEpg } from './tcl.js';
 import { syncPlutoEpg } from './pluto.js';
+import { syncRokuEpg } from './roku.js';
 import { syncLocalEpg } from './local.js';
 import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
@@ -255,6 +256,10 @@ export async function syncEpgSource(
       // pluto builds its guide from the Paramount backend's per-region /v2/guide/timelines fetch — live-only,
       // per-source replace. EPG-ONLY: channel self-links are owned by the pluto playlist afterSync hook. See epg/pluto.ts.
       counts = await syncPlutoEpg(src.id, offset);
+    } else if (kind === 'roku') {
+      // roku builds its guide from a per-channel content-proxy linearSchedule fanout — live-only, per-source
+      // replace. EPG-ONLY: channel self-links are owned by the roku playlist afterSync hook. See epg/roku.ts.
+      counts = await syncRokuEpg(src.id, offset);
     } else if (kind === 'local') {
       // local (Local Now) builds its guide INLINE with each market's catalog — a live-only refetch + per-
       // playlist replace, keyed off the OWNING Local playlist's stored market. EPG-ONLY: channel self-links
@@ -266,7 +271,7 @@ export async function syncEpgSource(
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / tcl / pluto / local / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / tcl / pluto / roku / local / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });
