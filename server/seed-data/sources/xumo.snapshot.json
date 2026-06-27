@@ -1,0 +1,2853 @@
+{
+  "channels": [
+    {
+      "channelId": "99951323",
+      "name": "Cook's Country",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951323/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1416
+    },
+    {
+      "channelId": "9999613",
+      "name": "Bounce XL",
+      "logo": "https://image.xumo.com/v1/channels/channel/9999613/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 920
+    },
+    {
+      "channelId": "99951450",
+      "name": "The Graham Norton Show",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951450/600x336.jpg?type=channelTile",
+      "category": "Pop Culture",
+      "number": 2213
+    },
+    {
+      "channelId": "99951553",
+      "name": "Deal Zone by History",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951553/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1740
+    },
+    {
+      "channelId": "99951518",
+      "name": "20/20",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951518/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 726
+    },
+    {
+      "channelId": "99951397",
+      "name": "Hit Sitcoms",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951397/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 925
+    },
+    {
+      "channelId": "99951301",
+      "name": "Portlandia",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951301/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 919
+    },
+    {
+      "channelId": "99951444",
+      "name": "Lucky Dog",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951444/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1017
+    },
+    {
+      "channelId": "99951213",
+      "name": "BritBox Mysteries",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951213/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 715
+    },
+    {
+      "channelId": "99951478",
+      "name": "Acorn TV Mysteries",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951478/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 819
+    },
+    {
+      "channelId": "99951462",
+      "name": "GOLFPASS",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951462/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 422
+    },
+    {
+      "channelId": "99951514",
+      "name": "The Emeril Lagasse Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951514/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1422
+    },
+    {
+      "channelId": "99951468",
+      "name": "Law & Order",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951468/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 708
+    },
+    {
+      "channelId": "99951412",
+      "name": "Xena Warrior Princess",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951412/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 811
+    },
+    {
+      "channelId": "99951126",
+      "name": "Supermarket Sweep",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951126/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1303
+    },
+    {
+      "channelId": "99951497",
+      "name": "BBC Drama",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951497/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 822
+    },
+    {
+      "channelId": "99951124",
+      "name": "BUZZR",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951124/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1309
+    },
+    {
+      "channelId": "99951256",
+      "name": "Alfred Hitchcock Presents",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951256/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 305
+    },
+    {
+      "channelId": "99991106",
+      "name": "RiffTrax",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991106/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 1809
+    },
+    {
+      "channelId": "99991761",
+      "name": "Teletubbies",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991761/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2112
+    },
+    {
+      "channelId": "99951533",
+      "name": "Bloomberg TV+",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951533/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 6
+    },
+    {
+      "channelId": "99951250",
+      "name": "OuterSphere by Lionsgate",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951250/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 304
+    },
+    {
+      "channelId": "99951264",
+      "name": "Universal Monsters",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951264/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 313
+    },
+    {
+      "channelId": "99991158",
+      "name": "CBS News 24/7",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991158/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 3
+    },
+    {
+      "channelId": "99951178",
+      "name": "BBC Home & Garden",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951178/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1202
+    },
+    {
+      "channelId": "99951210",
+      "name": "CraftsyTV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951210/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1203
+    },
+    {
+      "channelId": "99951257",
+      "name": "Leave It to Beaver",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951257/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 1811
+    },
+    {
+      "channelId": "99991627",
+      "name": "Billiard TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991627/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 418
+    },
+    {
+      "channelId": "99991693",
+      "name": "Homeful",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991693/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1211
+    },
+    {
+      "channelId": "99991113",
+      "name": "Deal Or No Deal",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991113/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 278
+    },
+    {
+      "channelId": "99951394",
+      "name": "Say Yes to the Dress",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951394/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1731
+    },
+    {
+      "channelId": "99951386",
+      "name": "CNN Headlines",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951386/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 23
+    },
+    {
+      "channelId": "99991626",
+      "name": "Dateline 24/7",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991626/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 702
+    },
+    {
+      "channelId": "99951247",
+      "name": "Saved by the Bell",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951247/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 906
+    },
+    {
+      "channelId": "99951245",
+      "name": "Universal Crime",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951245/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 705
+    },
+    {
+      "channelId": "99951466",
+      "name": "Oxygen True Crime Archives",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951466/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 704
+    },
+    {
+      "channelId": "99991680",
+      "name": "Unsolved Mysteries",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991680/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 703
+    },
+    {
+      "channelId": "99951559",
+      "name": "Court TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951559/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 712
+    },
+    {
+      "channelId": "99951244",
+      "name": "NBC Comedy Vault",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951244/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 905
+    },
+    {
+      "channelId": "99991320",
+      "name": "Law&Crime",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991320/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 707
+    },
+    {
+      "channelId": "99991698",
+      "name": "Midsomer Murders",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991698/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 713
+    },
+    {
+      "channelId": "99951544",
+      "name": "World's Wildest Police Videos",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951544/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 718
+    },
+    {
+      "channelId": "99951440",
+      "name": "Dungeons & Dragons Adventures",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951440/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 319
+    },
+    {
+      "channelId": "99991378",
+      "name": "ElectricNOW",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991378/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 806
+    },
+    {
+      "channelId": "99951254",
+      "name": "Universal Action",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951254/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 805
+    },
+    {
+      "channelId": "99951158",
+      "name": "ION",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951158/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 283
+    },
+    {
+      "channelId": "99991667",
+      "name": "Are We There Yet?",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991667/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 907
+    },
+    {
+      "channelId": "99951377",
+      "name": "AMC Thrillers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951377/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 316
+    },
+    {
+      "channelId": "99951339",
+      "name": "Family Feud Classic",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951339/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1314
+    },
+    {
+      "channelId": "99951452",
+      "name": "Murdoch Mysteries",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951452/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 820
+    },
+    {
+      "channelId": "99951221",
+      "name": "Property & Reno",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951221/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1205
+    },
+    {
+      "channelId": "99951349",
+      "name": "Scares by Shudder",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951349/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 314
+    },
+    {
+      "channelId": "99951391",
+      "name": "Ghosts Are Real",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951391/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 317
+    },
+    {
+      "channelId": "9995106",
+      "name": "Shades of Black",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995106/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 214
+    },
+    {
+      "channelId": "99951489",
+      "name": "Live PD Presents",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951489/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 724
+    },
+    {
+      "channelId": "99991681",
+      "name": "Hell's Kitchen",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991681/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1720
+    },
+    {
+      "channelId": "99951375",
+      "name": "Haunt TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951375/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 315
+    },
+    {
+      "channelId": "99951329",
+      "name": "The Conners",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951329/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 923
+    },
+    {
+      "channelId": "99951442",
+      "name": "My Little Pony",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951442/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2118
+    },
+    {
+      "channelId": "99951294",
+      "name": "Dog Whisperer",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951294/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1010
+    },
+    {
+      "channelId": "99991147",
+      "name": "TYT",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991147/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 13
+    },
+    {
+      "channelId": "99991616",
+      "name": "Mystery Science Theater 3000 (MST3K)",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991616/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 912
+    },
+    {
+      "channelId": "99951224",
+      "name": "The Celebrity Name Game Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951224/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1306
+    },
+    {
+      "channelId": "99951153",
+      "name": "The Jamie Oliver Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951153/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1403
+    },
+    {
+      "channelId": "99951481",
+      "name": "In Touch + Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951481/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2013
+    },
+    {
+      "channelId": "99951490",
+      "name": "The First 48 by A&E",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951490/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 725
+    },
+    {
+      "channelId": "99951232",
+      "name": "Laff More",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951232/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 903
+    },
+    {
+      "channelId": "99951408",
+      "name": "The Osbournes",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951408/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1727
+    },
+    {
+      "channelId": "99951395",
+      "name": "The FBI",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951395/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 721
+    },
+    {
+      "channelId": "99951192",
+      "name": "Anger Management",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951192/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 279
+    },
+    {
+      "channelId": "99991232",
+      "name": "Family Feud",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991232/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1308
+    },
+    {
+      "channelId": "99951535",
+      "name": "Weeds & Nurse Jackie",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951535/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 823
+    },
+    {
+      "channelId": "99951441",
+      "name": "Power Rangers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951441/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2117
+    },
+    {
+      "channelId": "9999614",
+      "name": "ION Plus",
+      "logo": "https://image.xumo.com/v1/channels/channel/9999614/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 803
+    },
+    {
+      "channelId": "99951299",
+      "name": "TV One CRIME & JUSTICE FAST CHANNEL",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951299/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 717
+    },
+    {
+      "channelId": "99951435",
+      "name": "Bizaar",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951435/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 815
+    },
+    {
+      "channelId": "99951259",
+      "name": "Lassie",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951259/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 1803
+    },
+    {
+      "channelId": "99951152",
+      "name": "Grit Xtra",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951152/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1105
+    },
+    {
+      "channelId": "99951330",
+      "name": "Nash Bridges",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951330/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 809
+    },
+    {
+      "channelId": "99991622",
+      "name": "Stories by AMC",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991622/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 807
+    },
+    {
+      "channelId": "9999615",
+      "name": "Dark Matter TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/9999615/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 308
+    },
+    {
+      "channelId": "99991367",
+      "name": "Forensic Files",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991367/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 709
+    },
+    {
+      "channelId": "99991784",
+      "name": "Xumo Free Action & Drama TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991784/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 801
+    },
+    {
+      "channelId": "99951283",
+      "name": "Salem News Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951283/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 17
+    },
+    {
+      "channelId": "99951471",
+      "name": "A&E Crime 360",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951471/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 723
+    },
+    {
+      "channelId": "99951248",
+      "name": "Classic Doctor Who",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951248/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 303
+    },
+    {
+      "channelId": "99951157",
+      "name": "ION Mystery",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951157/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 711
+    },
+    {
+      "channelId": "99951492",
+      "name": "LOL Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951492/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 909
+    },
+    {
+      "channelId": "99991638",
+      "name": "DOCUMENTARY+",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991638/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 216
+    },
+    {
+      "channelId": "99951383",
+      "name": "The NBA Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951383/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 439
+    },
+    {
+      "channelId": "99991105",
+      "name": "Xumo Free Comedy TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991105/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 901
+    },
+    {
+      "channelId": "99951277",
+      "name": "Ghost Hunters",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951277/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 276
+    },
+    {
+      "channelId": "99951341",
+      "name": "Untold Stories of the ER",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951341/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1723
+    },
+    {
+      "channelId": "99991745",
+      "name": "The Wu Tang Collection TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991745/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 220
+    },
+    {
+      "channelId": "99991176",
+      "name": "Just for Laughs Comedy",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991176/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 914
+    },
+    {
+      "channelId": "99991650",
+      "name": "True History Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991650/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1906
+    },
+    {
+      "channelId": "99951189",
+      "name": "FAITHOPE",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951189/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2003
+    },
+    {
+      "channelId": "99991157",
+      "name": "Johnny Carson TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991157/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 1808
+    },
+    {
+      "channelId": "99991349",
+      "name": "It's Showtime at the Apollo",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991349/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 918
+    },
+    {
+      "channelId": "99991709",
+      "name": "Hallmark Movies & More",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991709/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 210
+    },
+    {
+      "channelId": "99951156",
+      "name": "At Home with Family Handyman",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951156/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1201
+    },
+    {
+      "channelId": "99991368",
+      "name": "REELZ Famous & Infamous",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991368/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 710
+    },
+    {
+      "channelId": "99951451",
+      "name": "Come Dine With Me",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951451/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1419
+    },
+    {
+      "channelId": "99951255",
+      "name": "Universal Westerns",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951255/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1109
+    },
+    {
+      "channelId": "99951251",
+      "name": "MovieSphere by Lionsgate",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951251/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 211
+    },
+    {
+      "channelId": "99951555",
+      "name": "A&E Alaska State Troopers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951555/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 731
+    },
+    {
+      "channelId": "99951369",
+      "name": "Unbeaten Sports Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951369/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 434
+    },
+    {
+      "channelId": "99951403",
+      "name": "WITZ Comedy",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951403/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 924
+    },
+    {
+      "channelId": "99951393",
+      "name": "Bizarre Foods with Andrew Zimmern",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951393/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1418
+    },
+    {
+      "channelId": "99951461",
+      "name": "American Crimes",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951461/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 706
+    },
+    {
+      "channelId": "99951439",
+      "name": "50 Cent Action",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951439/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 813
+    },
+    {
+      "channelId": "99991131",
+      "name": "Circle Country",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991131/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1111
+    },
+    {
+      "channelId": "99951517",
+      "name": "ABC News Live",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951517/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 2
+    },
+    {
+      "channelId": "99951209",
+      "name": "Baby Shark TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951209/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2102
+    },
+    {
+      "channelId": "99951236",
+      "name": "SNL Vault",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951236/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 904
+    },
+    {
+      "channelId": "99991197",
+      "name": "NatureVision",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991197/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1004
+    },
+    {
+      "channelId": "99951438",
+      "name": "Discovery Turbo TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951438/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 601
+    },
+    {
+      "channelId": "99951252",
+      "name": "Cheaters",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951252/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1707
+    },
+    {
+      "channelId": "99951491",
+      "name": "The Jack Hanna Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951491/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1019
+    },
+    {
+      "channelId": "99951133",
+      "name": "Baywatch",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951133/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 804
+    },
+    {
+      "channelId": "99951151",
+      "name": "Lidia's Kitchen",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951151/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1402
+    },
+    {
+      "channelId": "99951525",
+      "name": "The Virginian",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951525/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1101
+    },
+    {
+      "channelId": "99951474",
+      "name": "Ancient Aliens",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951474/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 320
+    },
+    {
+      "channelId": "99951243",
+      "name": "Real Housewives Vault",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951243/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1706
+    },
+    {
+      "channelId": "99991328",
+      "name": "GustoTV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991328/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1409
+    },
+    {
+      "channelId": "99991331",
+      "name": "The Asylum",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991331/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 307
+    },
+    {
+      "channelId": "99951229",
+      "name": "Ninja Kidz TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951229/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2103
+    },
+    {
+      "channelId": "99951384",
+      "name": "Bachelor Nation",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951384/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1732
+    },
+    {
+      "channelId": "99951288",
+      "name": "OUTflix Movies",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951288/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 225
+    },
+    {
+      "channelId": "99951443",
+      "name": "Transformers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951443/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2119
+    },
+    {
+      "channelId": "99991635",
+      "name": "LiveNOW from FOX",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991635/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 4
+    },
+    {
+      "channelId": "99991379",
+      "name": "Combat War Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991379/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1904
+    },
+    {
+      "channelId": "99951488",
+      "name": "Dance Moms by Lifetime",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951488/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1715
+    },
+    {
+      "channelId": "99951494",
+      "name": "Heartland",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951494/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 821
+    },
+    {
+      "channelId": "99951552",
+      "name": "UnXplained Zone",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951552/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 321
+    },
+    {
+      "channelId": "99951130",
+      "name": "Fear Factor",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951130/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1305
+    },
+    {
+      "channelId": "99951482",
+      "name": "@Home DIY",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951482/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1219
+    },
+    {
+      "channelId": "99951346",
+      "name": "Designated Survivor",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951346/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 810
+    },
+    {
+      "channelId": "99991204",
+      "name": "Just for Laughs Gags",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991204/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 917
+    },
+    {
+      "channelId": "99991341",
+      "name": "TNA Wrestling Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991341/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 506
+    },
+    {
+      "channelId": "99991292",
+      "name": "Alien Nation by DUST",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991292/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 306
+    },
+    {
+      "channelId": "99951493",
+      "name": "GoldenTV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951493/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 816
+    },
+    {
+      "channelId": "99951463",
+      "name": "Comedy Dynamics",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951463/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 916
+    },
+    {
+      "channelId": "99951293",
+      "name": "Ebony TV by Lionsgate",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951293/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 221
+    },
+    {
+      "channelId": "99951385",
+      "name": "Sweet Escapes",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951385/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1417
+    },
+    {
+      "channelId": "99991194",
+      "name": "Newsmax2",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991194/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 11
+    },
+    {
+      "channelId": "99991769",
+      "name": "Paranormal Files",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991769/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 311
+    },
+    {
+      "channelId": "99991649",
+      "name": "AccuWeather NOW",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991649/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 21
+    },
+    {
+      "channelId": "99951417",
+      "name": "FOX LOCAL Seattle",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951417/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2540
+    },
+    {
+      "channelId": "99991283",
+      "name": "Rainbow Rangers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991283/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2108
+    },
+    {
+      "channelId": "99951146",
+      "name": "Family Affair Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951146/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 1801
+    },
+    {
+      "channelId": "99951262",
+      "name": "Mayday: Air Disaster",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951262/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1711
+    },
+    {
+      "channelId": "99951513",
+      "name": "The Martha Stewart Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951513/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1517
+    },
+    {
+      "channelId": "99951458",
+      "name": "Declassified",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951458/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1910
+    },
+    {
+      "channelId": "99991174",
+      "name": "The Pet Collective",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991174/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1011
+    },
+    {
+      "channelId": "99991384",
+      "name": "Xumo Free Crime TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991384/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 701
+    },
+    {
+      "channelId": "99951548",
+      "name": "Fubo Sports Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951548/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 406
+    },
+    {
+      "channelId": "99951238",
+      "name": "Las Vegas",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951238/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 1406
+    },
+    {
+      "channelId": "99991694",
+      "name": "Fox Weather",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991694/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 20
+    },
+    {
+      "channelId": "99991759",
+      "name": "Today's Homeowner",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991759/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1212
+    },
+    {
+      "channelId": "99951212",
+      "name": "Garden with Monty Don",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951212/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1204
+    },
+    {
+      "channelId": "99991390",
+      "name": "The Design Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991390/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1209
+    },
+    {
+      "channelId": "99951356",
+      "name": "Wild West TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951356/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1112
+    },
+    {
+      "channelId": "99951370",
+      "name": "Dr. Phil",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951370/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2303
+    },
+    {
+      "channelId": "99951242",
+      "name": "Bravo Vault",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951242/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1705
+    },
+    {
+      "channelId": "99951406",
+      "name": "Willow Sports",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951406/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 440
+    },
+    {
+      "channelId": "99991247",
+      "name": "NBC News NOW",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991247/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 1
+    },
+    {
+      "channelId": "99991111",
+      "name": "Xumo Free Travel & Lifestyle TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991111/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1501
+    },
+    {
+      "channelId": "99951467",
+      "name": "Bad Girls Club",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951467/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1704
+    },
+    {
+      "channelId": "99991153",
+      "name": "FailArmy",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991153/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 911
+    },
+    {
+      "channelId": "99991148",
+      "name": "Scripps News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991148/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 10
+    },
+    {
+      "channelId": "99991302",
+      "name": "Hi-Yah!",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991302/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 213
+    },
+    {
+      "channelId": "99951392",
+      "name": "How-To",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951392/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1909
+    },
+    {
+      "channelId": "99951536",
+      "name": "El Rey Rebel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951536/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 824
+    },
+    {
+      "channelId": "99951400",
+      "name": "The Ellen Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951400/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2302
+    },
+    {
+      "channelId": "99991659",
+      "name": "25 Words or Less",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991659/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1310
+    },
+    {
+      "channelId": "99991315",
+      "name": "ACC Digital Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991315/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 411
+    },
+    {
+      "channelId": "99991380",
+      "name": "Hungry",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991380/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1412
+    },
+    {
+      "channelId": "99951240",
+      "name": "Little House on the Prairie",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951240/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1108
+    },
+    {
+      "channelId": "99951401",
+      "name": "Highway to Heaven",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951401/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2010
+    },
+    {
+      "channelId": "99951337",
+      "name": "Spectrum News+",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951337/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 19
+    },
+    {
+      "channelId": "99951239",
+      "name": "Murder, She Wrote",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951239/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 275
+    },
+    {
+      "channelId": "99951177",
+      "name": "BBC Food",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951177/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1404
+    },
+    {
+      "channelId": "99951216",
+      "name": "The Rifleman",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951216/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1107
+    },
+    {
+      "channelId": "99991369",
+      "name": "America's Test Kitchen",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991369/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1411
+    },
+    {
+      "channelId": "99951515",
+      "name": "Great British Menu",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951515/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1421
+    },
+    {
+      "channelId": "99951388",
+      "name": "PBR RidePass",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951388/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 414
+    },
+    {
+      "channelId": "99951437",
+      "name": "Creator TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951437/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 926
+    },
+    {
+      "channelId": "99991303",
+      "name": "Complex TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991303/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1713
+    },
+    {
+      "channelId": "99951398",
+      "name": "Mysterious Worlds",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951398/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 318
+    },
+    {
+      "channelId": "99951358",
+      "name": "Curiosity Now",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951358/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1907
+    },
+    {
+      "channelId": "99951413",
+      "name": "NASCAR Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951413/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 608
+    },
+    {
+      "channelId": "99951223",
+      "name": "Sky News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951223/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 9
+    },
+    {
+      "channelId": "99951457",
+      "name": "America's Got Talent",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951457/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1316
+    },
+    {
+      "channelId": "99951530",
+      "name": "ONE Championship",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951530/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 501
+    },
+    {
+      "channelId": "99951509",
+      "name": "Highway Thru Hell",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951509/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1738
+    },
+    {
+      "channelId": "99951347",
+      "name": "The Yorkshire Vet & Friends",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951347/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1012
+    },
+    {
+      "channelId": "99991312",
+      "name": "Gravitas Movies",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991312/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 215
+    },
+    {
+      "channelId": "99951550",
+      "name": "A&E Live PD: Greatest Shifts",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951550/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 730
+    },
+    {
+      "channelId": "99951125",
+      "name": "The Price is Right: The Barker Era",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951125/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1302
+    },
+    {
+      "channelId": "99951485",
+      "name": "Dog the Bounty Hunter",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951485/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1712
+    },
+    {
+      "channelId": "99951345",
+      "name": "Cosmic Frontiers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951345/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1905
+    },
+    {
+      "channelId": "99951472",
+      "name": "Tiny House Nation",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951472/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1217
+    },
+    {
+      "channelId": "99991645",
+      "name": "CBS Sports HQ",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991645/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 403
+    },
+    {
+      "channelId": "99991107",
+      "name": "Xumo Free Kids TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991107/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2101
+    },
+    {
+      "channelId": "99951376",
+      "name": "All Reality We TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951376/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1726
+    },
+    {
+      "channelId": "99991639",
+      "name": "Xumo Free Game Show TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991639/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1301
+    },
+    {
+      "channelId": "99951160",
+      "name": "Western Bound Wrangled by INSP",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951160/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1106
+    },
+    {
+      "channelId": "99951508",
+      "name": "World of Love Island",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951508/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1730
+    },
+    {
+      "channelId": "99951409",
+      "name": "Bark TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951409/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1015
+    },
+    {
+      "channelId": "99951380",
+      "name": "The Carol Burnett Show",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951380/600x336.jpg?type=channelTile",
+      "category": "Classic TV",
+      "number": 1812
+    },
+    {
+      "channelId": "99951207",
+      "name": "Fifth Gear",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951207/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 604
+    },
+    {
+      "channelId": "99951218",
+      "name": "Xumo Free Nature & Wildlife TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951218/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 277
+    },
+    {
+      "channelId": "99951387",
+      "name": "CNN Originals",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951387/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1908
+    },
+    {
+      "channelId": "99951379",
+      "name": "TV One Stars & Stories",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951379/600x336.jpg?type=channelTile",
+      "category": "Pop Culture",
+      "number": 2211
+    },
+    {
+      "channelId": "99951563",
+      "name": "Zona TUDN",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951563/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1626
+    },
+    {
+      "channelId": "99951280",
+      "name": "Sensical Jr.",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951280/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2113
+    },
+    {
+      "channelId": "99951479",
+      "name": "Love After Lockup We TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951479/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1737
+    },
+    {
+      "channelId": "99951405",
+      "name": "QVC2",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951405/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1516
+    },
+    {
+      "channelId": "99951258",
+      "name": "The Lone Ranger",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951258/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 280
+    },
+    {
+      "channelId": "99991282",
+      "name": "Local Now",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991282/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 5
+    },
+    {
+      "channelId": "99991336",
+      "name": "Maverick Black Cinema",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991336/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 224
+    },
+    {
+      "channelId": "99951328",
+      "name": "Love The Planet",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951328/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1009
+    },
+    {
+      "channelId": "99951432",
+      "name": "Extreme Jobs",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951432/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1728
+    },
+    {
+      "channelId": "99991651",
+      "name": "NBC LX Home",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991651/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1210
+    },
+    {
+      "channelId": "99991245",
+      "name": "TODAY All Day",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991245/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 7
+    },
+    {
+      "channelId": "99991374",
+      "name": "Field & Stream TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991374/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 415
+    },
+    {
+      "channelId": "9995117",
+      "name": "Xumo Free Food TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995117/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1401
+    },
+    {
+      "channelId": "99951134",
+      "name": "UFC",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951134/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 502
+    },
+    {
+      "channelId": "99951378",
+      "name": "EarthXtra",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951378/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1014
+    },
+    {
+      "channelId": "99951197",
+      "name": "Reuters 60",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951197/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 8
+    },
+    {
+      "channelId": "99951298",
+      "name": "BBC News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951298/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 18
+    },
+    {
+      "channelId": "99951473",
+      "name": "Modern Marvels by History",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951473/600x336.jpg?type=channelTile",
+      "category": "History & Learning",
+      "number": 1911
+    },
+    {
+      "channelId": "99951389",
+      "name": "TennisChannel 2",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951389/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 437
+    },
+    {
+      "channelId": "99991366",
+      "name": "Nosey",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991366/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2305
+    },
+    {
+      "channelId": "99991738",
+      "name": "NFL Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991738/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 404
+    },
+    {
+      "channelId": "99951545",
+      "name": "Space Live Powered by Sen",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951545/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1901
+    },
+    {
+      "channelId": "99951465",
+      "name": "E! Keeping Up",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951465/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1703
+    },
+    {
+      "channelId": "99951404",
+      "name": "OAN Plus",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951404/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 22
+    },
+    {
+      "channelId": "99951470",
+      "name": "Home. Made. Nation",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951470/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1216
+    },
+    {
+      "channelId": "99951477",
+      "name": "ALLBLK Gems",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951477/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1735
+    },
+    {
+      "channelId": "99991291",
+      "name": "PowerNation",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991291/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 602
+    },
+    {
+      "channelId": "99991623",
+      "name": "The Walking Dead Universe",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991623/600x336.jpg?type=channelTile",
+      "category": "Horror & Sci-Fi",
+      "number": 284
+    },
+    {
+      "channelId": "99991293",
+      "name": "This Old House",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991293/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1208
+    },
+    {
+      "channelId": "99991621",
+      "name": "Universal Movies",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991621/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 227
+    },
+    {
+      "channelId": "99951411",
+      "name": "Shout! Movies",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951411/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 229
+    },
+    {
+      "channelId": "99991399",
+      "name": "Magnolia Selects",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991399/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 218
+    },
+    {
+      "channelId": "99951237",
+      "name": "Million Dollar Listing Vault",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951237/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1206
+    },
+    {
+      "channelId": "99951318",
+      "name": "American Ninja Warrior",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951318/600x336.jpg?type=channelTile",
+      "category": "Heating up the Competition",
+      "number": 1313
+    },
+    {
+      "channelId": "99951538",
+      "name": "Scripps Sports Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951538/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 410
+    },
+    {
+      "channelId": "99951475",
+      "name": "Storage Wars by A&E",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951475/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1709
+    },
+    {
+      "channelId": "99951231",
+      "name": "BBC Earth",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951231/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1003
+    },
+    {
+      "channelId": "99951396",
+      "name": "MythBusters",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951396/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1733
+    },
+    {
+      "channelId": "99951211",
+      "name": "STELLAR",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951211/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2004
+    },
+    {
+      "channelId": "99991252",
+      "name": "Stingray Naturescape",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991252/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1005
+    },
+    {
+      "channelId": "99991398",
+      "name": "Love Nature",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991398/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1006
+    },
+    {
+      "channelId": "99951476",
+      "name": "The Bold and the Beautiful",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951476/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2308
+    },
+    {
+      "channelId": "99991748",
+      "name": "Telemundo Acción",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991748/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1603
+    },
+    {
+      "channelId": "99951253",
+      "name": "NBC Sports NOW",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951253/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 401
+    },
+    {
+      "channelId": "99951486",
+      "name": "Classic Car Auctions by History",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951486/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 609
+    },
+    {
+      "channelId": "99991747",
+      "name": "Telemundo Al Día",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991747/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1601
+    },
+    {
+      "channelId": "99951510",
+      "name": "Bowling TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951510/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 409
+    },
+    {
+      "channelId": "99951410",
+      "name": "Lawless by Lionsgate",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951410/600x336.jpg?type=channelTile",
+      "category": "Crime TV",
+      "number": 720
+    },
+    {
+      "channelId": "99951222",
+      "name": "News 12 New York",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951222/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2529
+    },
+    {
+      "channelId": "99951138",
+      "name": "McLeod's Daughters",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951138/600x336.jpg?type=channelTile",
+      "category": "Westerns & Country",
+      "number": 1104
+    },
+    {
+      "channelId": "99951381",
+      "name": "Real Madrid TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951381/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 436
+    },
+    {
+      "channelId": "99991655",
+      "name": "CBS News Bay Area",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991655/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2512
+    },
+    {
+      "channelId": "99991202",
+      "name": "Tastemade",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991202/600x336.jpg?type=channelTile",
+      "category": "Food Favorites Presented by Boar's Head",
+      "number": 1408
+    },
+    {
+      "channelId": "99951434",
+      "name": "Impact Gospel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951434/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2012
+    },
+    {
+      "channelId": "99951181",
+      "name": "NBC 4 Washington News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951181/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2521
+    },
+    {
+      "channelId": "99951180",
+      "name": "Strongman Champions League",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951180/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 428
+    },
+    {
+      "channelId": "99951353",
+      "name": "Antiques Road Trip",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951353/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1515
+    },
+    {
+      "channelId": "99991648",
+      "name": "PursuitUp",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991648/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 421
+    },
+    {
+      "channelId": "99991196",
+      "name": "FOX Sports",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991196/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 402
+    },
+    {
+      "channelId": "99951268",
+      "name": "SPEEDVISION",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951268/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 606
+    },
+    {
+      "channelId": "99951480",
+      "name": "Growing Up Hip-Hop",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951480/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1736
+    },
+    {
+      "channelId": "99991633",
+      "name": "PokerGO",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991633/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 417
+    },
+    {
+      "channelId": "99991317",
+      "name": "World Poker Tour",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991317/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 412
+    },
+    {
+      "channelId": "99951414",
+      "name": "Spectrum Noticias",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951414/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1623
+    },
+    {
+      "channelId": "9995103",
+      "name": "iHeart Hip Hop Beats",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995103/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2404
+    },
+    {
+      "channelId": "99951551",
+      "name": "Torque by History",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951551/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 610
+    },
+    {
+      "channelId": "99951266",
+      "name": "FanDuel TV Extra",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951266/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 420
+    },
+    {
+      "channelId": "99991346",
+      "name": "Divorce Court",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991346/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2304
+    },
+    {
+      "channelId": "99991387",
+      "name": "beIN SPORTS XTRA",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991387/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 416
+    },
+    {
+      "channelId": "99991388",
+      "name": "Confess by Nosey",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991388/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2306
+    },
+    {
+      "channelId": "99951554",
+      "name": "Xtreme Outdoor by History",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951554/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1739
+    },
+    {
+      "channelId": "99951390",
+      "name": "PickleballTV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951390/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 438
+    },
+    {
+      "channelId": "99991271",
+      "name": "HSN",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991271/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1508
+    },
+    {
+      "channelId": "99951433",
+      "name": "Wendy Williams",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951433/600x336.jpg?type=channelTile",
+      "category": "Daytime TV",
+      "number": 2301
+    },
+    {
+      "channelId": "99991625",
+      "name": "All Weddings We TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991625/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1719
+    },
+    {
+      "channelId": "99951453",
+      "name": "Vice Entertainment",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951453/600x336.jpg?type=channelTile",
+      "category": "Pop Culture",
+      "number": 2203
+    },
+    {
+      "channelId": "99951423",
+      "name": "FOX LOCAL Houston",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951423/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2543
+    },
+    {
+      "channelId": "99951543",
+      "name": "Elevation Church Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951543/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2015
+    },
+    {
+      "channelId": "99991276",
+      "name": "CBC News Explore",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991276/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 12
+    },
+    {
+      "channelId": "99951564",
+      "name": "Como Dice El Dicho",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951564/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1628
+    },
+    {
+      "channelId": "99951367",
+      "name": "Canela.TV Clasicos",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951367/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1607
+    },
+    {
+      "channelId": "99991333",
+      "name": "Dove Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991333/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2002
+    },
+    {
+      "channelId": "99951338",
+      "name": "Rig TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951338/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1724
+    },
+    {
+      "channelId": "99951459",
+      "name": "Telemundo Deportes Ahora",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951459/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1625
+    },
+    {
+      "channelId": "99951469",
+      "name": "HBO Boxing",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951469/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 508
+    },
+    {
+      "channelId": "99991776",
+      "name": "Estrella News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991776/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1622
+    },
+    {
+      "channelId": "99951565",
+      "name": "Jajaja",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951565/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1629
+    },
+    {
+      "channelId": "99951203",
+      "name": "PFL MMA",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951203/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 504
+    },
+    {
+      "channelId": "99991386",
+      "name": "NEW Korean MOVIES & SERIES",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991386/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 818
+    },
+    {
+      "channelId": "99951484",
+      "name": "Ice Road Truckers by History",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951484/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1710
+    },
+    {
+      "channelId": "99991749",
+      "name": "Caso Cerrado",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991749/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1604
+    },
+    {
+      "channelId": "99951528",
+      "name": "SparkTV: Light & Love",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951528/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 230
+    },
+    {
+      "channelId": "99991325",
+      "name": "Motorvision",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991325/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 603
+    },
+    {
+      "channelId": "99951350",
+      "name": "Places & Spaces",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951350/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1214
+    },
+    {
+      "channelId": "99991358",
+      "name": "Waypoint TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991358/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 408
+    },
+    {
+      "channelId": "99991689",
+      "name": "WPXI Pittsburgh",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991689/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2511
+    },
+    {
+      "channelId": "99951195",
+      "name": "PBS Nature",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951195/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1002
+    },
+    {
+      "channelId": "99951321",
+      "name": "Noticias Telemundo Ahora",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951321/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1620
+    },
+    {
+      "channelId": "99951436",
+      "name": "Tastemade Home",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951436/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1215
+    },
+    {
+      "channelId": "99981121",
+      "name": "FILMEX CLASICO",
+      "logo": "https://image.xumo.com/v1/channels/channel/99981121/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1613
+    },
+    {
+      "channelId": "99991268",
+      "name": "Toon Goggles",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991268/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2106
+    },
+    {
+      "channelId": "99951359",
+      "name": "Big 12 Studios",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951359/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 433
+    },
+    {
+      "channelId": "99951373",
+      "name": "Ryz Sports Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951373/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 435
+    },
+    {
+      "channelId": "99951407",
+      "name": "Pure Flix TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951407/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2011
+    },
+    {
+      "channelId": "99951425",
+      "name": "FOX LOCAL Orlando",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951425/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2553
+    },
+    {
+      "channelId": "99951537",
+      "name": "Property Brothers",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951537/600x336.jpg?type=channelTile",
+      "category": "Home & Design",
+      "number": 1207
+    },
+    {
+      "channelId": "99991300",
+      "name": "Stash TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991300/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 219
+    },
+    {
+      "channelId": "9995118",
+      "name": "Tastemade Travel Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995118/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1506
+    },
+    {
+      "channelId": "99991337",
+      "name": "FilmRise",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991337/600x336.jpg?type=channelTile",
+      "category": "Movies",
+      "number": 223
+    },
+    {
+      "channelId": "99951206",
+      "name": "PBS Antiques Roadshow",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951206/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1504
+    },
+    {
+      "channelId": "99951487",
+      "name": "Matched Married Meet by Lifetime",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951487/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1708
+    },
+    {
+      "channelId": "99991281",
+      "name": "PGA TOUR",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991281/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 408
+    },
+    {
+      "channelId": "99991696",
+      "name": "Swerve Combat",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991696/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 507
+    },
+    {
+      "channelId": "99991670",
+      "name": "ET",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991670/600x336.jpg?type=channelTile",
+      "category": "Pop Culture",
+      "number": 2209
+    },
+    {
+      "channelId": "99991370",
+      "name": "ShopLC",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991370/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1512
+    },
+    {
+      "channelId": "99951225",
+      "name": "Telemundo Noticias California",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951225/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2532
+    },
+    {
+      "channelId": "99991296",
+      "name": "Revry",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991296/600x336.jpg?type=channelTile",
+      "category": "Pop Culture",
+      "number": 2207
+    },
+    {
+      "channelId": "99951557",
+      "name": "Cowboy+ Sports",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951557/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 413
+    },
+    {
+      "channelId": "99951422",
+      "name": "FOX LOCAL San Francisco",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951422/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2547
+    },
+    {
+      "channelId": "99951249",
+      "name": "Top Gear",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951249/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 605
+    },
+    {
+      "channelId": "99951562",
+      "name": "Noticias Univision 24/7",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951562/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1621
+    },
+    {
+      "channelId": "99951141",
+      "name": "Jewish Life TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951141/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2007
+    },
+    {
+      "channelId": "99991643",
+      "name": "CBS News Chicago",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991643/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2508
+    },
+    {
+      "channelId": "99991364",
+      "name": "Xumo Free Reality TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991364/600x336.jpg?type=channelTile",
+      "category": "Reality TV",
+      "number": 1701
+    },
+    {
+      "channelId": "99951287",
+      "name": "Fluffy TV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951287/600x336.jpg?type=channelTile",
+      "category": "Comedy",
+      "number": 910
+    },
+    {
+      "channelId": "99991742",
+      "name": "Stingray Remember the 80s",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991742/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2414
+    },
+    {
+      "channelId": "99951269",
+      "name": "RACER Select",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951269/600x336.jpg?type=channelTile",
+      "category": "Automotive",
+      "number": 607
+    },
+    {
+      "channelId": "99991253",
+      "name": "All Babies Channel",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991253/600x336.jpg?type=channelTile",
+      "category": "Kids",
+      "number": 2105
+    },
+    {
+      "channelId": "9995100",
+      "name": "iHeart90s",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995100/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2401
+    },
+    {
+      "channelId": "99991641",
+      "name": "CBS News New York",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991641/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2515
+    },
+    {
+      "channelId": "99991628",
+      "name": "WildEarth",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991628/600x336.jpg?type=channelTile",
+      "category": "Animals & Nature",
+      "number": 1007
+    },
+    {
+      "channelId": "99951120",
+      "name": "FILMEX",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951120/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1616
+    },
+    {
+      "channelId": "99991344",
+      "name": "QVC",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991344/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1510
+    },
+    {
+      "channelId": "99951416",
+      "name": "FOX LOCAL Tampa Bay",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951416/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2555
+    },
+    {
+      "channelId": "99991381",
+      "name": "Demand Africa",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991381/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 812
+    },
+    {
+      "channelId": "9995108",
+      "name": "Boston 25",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995108/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2506
+    },
+    {
+      "channelId": "99951226",
+      "name": "Telemundo Noticias Texas",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951226/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2533
+    },
+    {
+      "channelId": "99991348",
+      "name": "KOCOWA K-Drama",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991348/600x336.jpg?type=channelTile",
+      "category": "Action & Drama",
+      "number": 817
+    },
+    {
+      "channelId": "99951524",
+      "name": "GaitherTV FAST",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951524/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2014
+    },
+    {
+      "channelId": "99991691",
+      "name": "WSOC Charlotte",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991691/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2527
+    },
+    {
+      "channelId": "99951162",
+      "name": "NBC Bay Area News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951162/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2528
+    },
+    {
+      "channelId": "99951429",
+      "name": "FOX LOCAL Milwaukee",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951429/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2550
+    },
+    {
+      "channelId": "9995110",
+      "name": "Action News Jax",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995110/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2507
+    },
+    {
+      "channelId": "99991785",
+      "name": "beIN SPORTS XTRA en Español",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991785/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1627
+    },
+    {
+      "channelId": "99951449",
+      "name": "LUCHA PLUS",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951449/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1624
+    },
+    {
+      "channelId": "9995102",
+      "name": "iHeartCountry",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995102/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2403
+    },
+    {
+      "channelId": "99951531",
+      "name": "Triton Poker",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951531/600x336.jpg?type=channelTile",
+      "category": "Sports",
+      "number": 407
+    },
+    {
+      "channelId": "99951567",
+      "name": "Rebelde",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951567/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1631
+    },
+    {
+      "channelId": "99951344",
+      "name": "Joel Osteen Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951344/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2009
+    },
+    {
+      "channelId": "99951419",
+      "name": "FOX LOCAL Phoenix",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951419/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2544
+    },
+    {
+      "channelId": "9995107",
+      "name": "WFTV Orlando",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995107/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2518
+    },
+    {
+      "channelId": "99991642",
+      "name": "CBS News Los Angeles",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991642/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2519
+    },
+    {
+      "channelId": "99951168",
+      "name": "NBC 10 Boston News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951168/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2516
+    },
+    {
+      "channelId": "99951164",
+      "name": "NBC 4 Los Angeles News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951164/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2534
+    },
+    {
+      "channelId": "99991746",
+      "name": "EstrellaTV",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991746/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1611
+    },
+    {
+      "channelId": "99991708",
+      "name": "Trinity Broadcast Network",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991708/600x336.jpg?type=channelTile",
+      "category": "Faith & Family",
+      "number": 2005
+    },
+    {
+      "channelId": "99991119",
+      "name": "Stingray Classic Rock",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991119/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2409
+    },
+    {
+      "channelId": "99951415",
+      "name": "FOX LOCAL Chicago",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951415/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2549
+    },
+    {
+      "channelId": "99951140",
+      "name": "AMERICATEVÉ",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951140/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1612
+    },
+    {
+      "channelId": "99951228",
+      "name": "Telemundo Noticias Noreste",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951228/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2526
+    },
+    {
+      "channelId": "99991278",
+      "name": "GLORY Kickboxing",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991278/600x336.jpg?type=channelTile",
+      "category": "Combat Sports",
+      "number": 505
+    },
+    {
+      "channelId": "99951185",
+      "name": "NBC 7 San Diego News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951185/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2535
+    },
+    {
+      "channelId": "99951566",
+      "name": "Una Familia de Diez",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951566/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1630
+    },
+    {
+      "channelId": "99991117",
+      "name": "Stingray Hit List",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991117/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2407
+    },
+    {
+      "channelId": "99951421",
+      "name": "FOX LOCAL Detroit",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951421/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2551
+    },
+    {
+      "channelId": "99991118",
+      "name": "Stingray Hot Country",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991118/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2408
+    },
+    {
+      "channelId": "99991120",
+      "name": "Stingray Greatest Hits",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991120/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2410
+    },
+    {
+      "channelId": "99991121",
+      "name": "Stingray Soul Storm",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991121/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2411
+    },
+    {
+      "channelId": "99951420",
+      "name": "FOX LOCAL Los Angeles",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951420/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2546
+    },
+    {
+      "channelId": "99951182",
+      "name": "NBC 5 Dallas-Fort Worth News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951182/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2531
+    },
+    {
+      "channelId": "99951424",
+      "name": "FOX LOCAL Philadelphia",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951424/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2556
+    },
+    {
+      "channelId": "99991220",
+      "name": "Cheddar News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991220/600x336.jpg?type=channelTile",
+      "category": "News",
+      "number": 15
+    },
+    {
+      "channelId": "99991690",
+      "name": "WSB Atlanta",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991690/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2505
+    },
+    {
+      "channelId": "99951464",
+      "name": "iHeartCountry Classics",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951464/600x336.jpg?type=channelTile",
+      "category": "Music & Radio",
+      "number": 2405
+    },
+    {
+      "channelId": "99951426",
+      "name": "FOX LOCAL Atlanta",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951426/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2548
+    },
+    {
+      "channelId": "99951418",
+      "name": "FOX LOCAL Dallas-Fort Worth",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951418/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2541
+    },
+    {
+      "channelId": "99951166",
+      "name": "NBC 10 Philadelphia News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951166/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2522
+    },
+    {
+      "channelId": "99951427",
+      "name": "FOX LOCAL New York",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951427/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2552
+    },
+    {
+      "channelId": "99951431",
+      "name": "FOX LOCAL Minnesota",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951431/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2542
+    },
+    {
+      "channelId": "9995109",
+      "name": "WHIO Dayton",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995109/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2536
+    },
+    {
+      "channelId": "99951227",
+      "name": "Telemundo Noticias Florida",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951227/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2524
+    },
+    {
+      "channelId": "99951428",
+      "name": "FOX LOCAL Washington DC",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951428/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2554
+    },
+    {
+      "channelId": "99991142",
+      "name": "Cine Romántico",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991142/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1606
+    },
+    {
+      "channelId": "99991338",
+      "name": "JTV Jewelry Love",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991338/600x336.jpg?type=channelTile",
+      "category": "Travel & Lifestyle",
+      "number": 1514
+    },
+    {
+      "channelId": "99951165",
+      "name": "NBC 5 Chicago News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951165/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2520
+    },
+    {
+      "channelId": "9995112",
+      "name": "KIRO Seattle",
+      "logo": "https://image.xumo.com/v1/channels/channel/9995112/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2509
+    },
+    {
+      "channelId": "99951163",
+      "name": "NBC 4 New York News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951163/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2523
+    },
+    {
+      "channelId": "99951183",
+      "name": "NBC Connecticut News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951183/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2538
+    },
+    {
+      "channelId": "99951167",
+      "name": "NBC 6 South Florida News",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951167/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2525
+    },
+    {
+      "channelId": "99951430",
+      "name": "FOX LOCAL Austin",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951430/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2545
+    },
+    {
+      "channelId": "99951568",
+      "name": "La Fea Más Bella",
+      "logo": "https://image.xumo.com/v1/channels/channel/99951568/600x336.jpg?type=channelTile",
+      "category": "Latino",
+      "number": 1632
+    },
+    {
+      "channelId": "99991656",
+      "name": "CBS News Boston",
+      "logo": "https://image.xumo.com/v1/channels/channel/99991656/600x336.jpg?type=channelTile",
+      "category": "Local News",
+      "number": 2503
+    }
+  ]
+}

@@ -84,3 +84,20 @@ export const VIDAA_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'vidaa-playlist-addon
  * until it lands, so whale's schedule self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const WHALE_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'whale-playlist-addon.json');
+
+/**
+ * The xumo→gracenote EPG-link crosswalk (committed seed data). xumo's afterSync applies its HIGH-tier rows to
+ * never-touched xumo PlaylistChannels once per channel after a sync, BEFORE its own paginated market self-EPG
+ * fills the rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing
+ * file) until it lands, so xumo's market self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const XUMO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'xumo-playlist-addon.json');
+
+/**
+ * The freelivesports→gracenote EPG-link crosswalk (committed seed data). freelivesports' afterSync applies its
+ * HIGH-tier rows to never-touched freelivesports PlaylistChannels once per channel after a sync, BEFORE its own
+ * inline-program self-EPG fills the rest. NOT committed yet — the crosswalk call no-ops gracefully
+ * (applyEpgCrosswalk catches the missing file) until it lands, so freelivesports' catalog self-EPG is the guide in
+ * the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const FREELIVESPORTS_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'freelivesports-playlist-addon.json');

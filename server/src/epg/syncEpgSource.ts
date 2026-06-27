@@ -24,6 +24,8 @@ import { syncVizioEpg } from './vizio.js';
 import { syncLgEpg } from './lg.js';
 import { syncVidaaEpg } from './vidaa.js';
 import { syncWhaleEpg } from './whale.js';
+import { syncXumoEpg } from './xumo.js';
+import { syncFreeLiveSportsEpg } from './freelivesports.js';
 import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
@@ -222,13 +224,22 @@ export async function syncEpgSource(
       // whale builds its guide from the rlaxx platform's separate /epg schedule — live-only, per-source replace.
       // EPG-ONLY: channel self-links are owned by the whale playlist afterSync hook. See epg/whale.ts.
       counts = await syncWhaleEpg(src.id, offset);
+    } else if (kind === 'xumo') {
+      // xumo builds its guide from the Valencia backend's paginated MARKET EPG — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the xumo playlist afterSync hook. See epg/xumo.ts.
+      counts = await syncXumoEpg(src.id, offset);
+    } else if (kind === 'freelivesports') {
+      // freelivesports builds its guide from the catalog payload's inline epg.entries — live-only, per-source
+      // replace. EPG-ONLY: channel self-links are owned by the freelivesports playlist afterSync hook. See
+      // epg/freelivesports.ts.
+      counts = await syncFreeLiveSportsEpg(src.id, offset);
     } else if ((kind === 'remote url' || kind === 'jesmann') && src.url) {
       // A re-fetchable XMLTV URL — re-download it and per-source replace. 'remote url' = the Custom tab's
       // Remote URL feature; 'jesmann' = the Jesmann guided picker (same machinery, distinct kind). ('xml file'
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });
