@@ -299,158 +299,6 @@ creating the **first admin account**. After that:
 4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
    URL** for their IPTV client.
 
-> [!IMPORTANT]
-> This sample enviornment variable is also included in the release notes and the `main` branch repository: `.env.example` \
-> Ensure you update `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` with the appropriate folders for your system. \
-> \
-> For the best experience, create each folder path assigned to `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` before composing the docker stack. 
-> ```bash
-> mkdir compose && chown -R 1000:1000 ./compose && chmod -R 777 ./compose
-> mkdir backups && chown -R 1000:1000 ./backups && chmod -R 777 ./backups
-> mkdir mongo && chown -R 999:999 ./mongo && chmod -R 777 ./mongo
-> ```
-
-### Environment variables
-
-```yaml
-# EXAMPLE .env.example
-#
-# App settings seeded into the Mongo `settings` doc on first provisioning only
-# ($setOnInsert — changing these after the first boot has no effect; edit in the
-# Settings UI instead). Distinct from the infra config in config.json.
-# Host directory for composed .m3u + XMLTV guide exports (bind-mounted to
-# /app/compose) so they survive a container rebuild. Must be writable by the
-# container's `node` user (uid 1000): e.g.
-#   mkdir -p </absolute/path/> && sudo chown -R 1000:1000 </absolute/path/>
-# BACKUPS_PATH is the analogous host directory for scheduled backups (bind-mounted
-# to /backups, the settings.backupLocation default) — same uid-1000 writability
-# caveat as COMPOSE_PATH; defaults to ./backups if left unset.
-# ------------------------------------------------------------------------------------------
-
-DISPLAY_NAME=masqueradarr
-# DOMAIN is the URL clients use to reach the app — keep its port in sync with MASQUERADARR_PORT
-# (e.g. http://localhost:8080 if you publish on 8080).
-DOMAIN=http://localhost:3000
-# Host port the app is published on (maps to the container's fixed internal 3000).
-# Change this if 3000 is already taken on your host, then update DOMAIN to match.
-MASQUERADARR_PORT=3000
-TZ=America/New_York
-COMPOSE_PATH=/absolute/path/to/masqueradarr-vols/compose
-BACKUPS_PATH=/absolute/path/to/masqueradarr-vols/backups
-APP_USER_ID=1000
-APP_GROUP_ID=1000
-
-# Outbound-fetch DNS nameserver(s) for the app's OUTBOUND requests (M3U/EPG fetches, mirror
-# directory scrapes, HLS proxy) are NOT configured here — there is no NAMESERVER env. On first
-# provision the persisted `settings.nameservers` is seeded with a hardcoded default of
-# 8.8.8.8,8.8.4.4 (Google public DNS); edit it on the Settings screen afterwards (Mongo wins; the
-# change applies live, no restart). Affects global fetch() only — not MongoDB or the ffmpeg/Chromium
-# subprocesses. DNS_LOG_LEVEL (1|2|3) still seeds `settings.dnsLogLevel` on first provision: 1 =
-# lifecycle + issues only, 2 = + per-host resolution deduped, 3 = every lookup (shown in the View
-# logs drawer, core category).
-# ------------------------------------------------------------------------------------------
-
-DNS_LOG_LEVEL=2
-
-# MongoDB root credentials. Seed the `mongo` service's root user AND drive the app's config
-# bootstrap: the app self-provisions config.json in-container on boot (docker/app-entrypoint.sh)
-# as mongodb://<user>:<pass>@mongo:27017/masqueradarr?authSource=admin (creds URL-encoded — special
-# chars in the password are safe). There is no separate config-init service and no host config
-# mount; config.json lives at /app/config/config.json inside the container, regenerated each boot.
-# MONGO_HOST_PORT = Host port that maps to mongod's 27017 (override if 27017 is taken).
-# MONGO_DATA_PATH = Host directory for persistent MongoDB data (bind-mounted to /data/db).
-# ------------------------------------------------------------------------------------------
-
-MONGO_ROOT_USER=masqueradarr
-MONGO_ROOT_PASS=changeme
-MONGO_HOST_PORT=27017
-MONGO_DATA_PATH=/absolute/path/to/masqueradarr-vols/mongo
-MONGO_USER_ID=999
-MONGO_GROUP_ID=999
-
-# Optional: point the app at an external/remote Mongo instead of the compose `mongo` service.
-# Set MONGO_URI to a full connection string (used verbatim — e.g. an Atlas mongodb+srv:// URI),
-# or just MONGO_HOST/MONGO_HOST_PORT/MONGO_DB to assemble it from the creds.
-# ------------------------------------------------------------------------------------------
-# MONGO_PORT=27017
-# MONGO_HOST=mongo
-# MONGO_DB=masqueradarr
-# MONGO_URI=mongodb://MONGO_ROOT_USER:MONGO_ROOT_PASS@MONGO_HOST:MONGO_PORT/MONGO_DB?authSource=admin
-
-```
-
-### Docker compose
-
-```yaml
-services:
-  masqueradarr:
-    # SPECIFY THE IMAGE TAG TO USE ':dev' or ':latest'
-    # image: iflip721/masqueradarr:latest
-    image: iflip721/masqueradarr:dev
-    user: "${APP_USER_ID:-1000}:${APP_GROUP_ID:-1000}"
-    # build:
-    #   context: .
-    #   dockerfile: docker/app.Dockerfile
-    environment:
-      MONGO_ROOT_USER: ${MONGO_ROOT_USER}
-      MONGO_ROOT_PASS: ${MONGO_ROOT_PASS}
-      DISPLAY_NAME: ${DISPLAY_NAME:-masqueradarr}
-      DOMAIN: ${DOMAIN:-http://localhost:3000}
-      TZ: ${TZ:-America/New_York}
-      DNS_LOG_LEVEL: ${DNS_LOG_LEVEL:-2}
-    ports:
-      - "${MASQUERADARR_PORT:-3000}:3000"
-    volumes:
-      - ${COMPOSE_PATH:-./compose}:/app/compose:rw
-      - ${BACKUPS_PATH:-./backups}:/backups:rw
-    depends_on:
-      mongo:
-        condition: service_healthy
-    networks: [masqueradarr-net]
-    restart: unless-stopped
-    # ── Hardware-accelerated transcoding (WS6, opt-in) ──────────────────────────────────────────────────
-    # The externalPlayer engine (Settings → Video Configuration → Hardware acceleration) can offload transcoding
-    # to a GPU. The image already bundles a multi-vendor ffmpeg (jellyfin-ffmpeg: VAAPI/QSV/NVENC) on a glibc
-    # base, so no special image tag is needed — just pass the GPU. The server detects usable encoders at boot →
-    # videoconfig.hwAccel.detected (the card offers only those). Enable ONE of the following (left commented — a
-    # `devices:` entry for a missing node stops the container from starting, so don't uncomment on a GPU-less host):
-    #   • Intel Quick Sync / AMD VAAPI — pass the render node and join the group that owns it so uid 1000 can open it:
-    #       devices: ["/dev/dri:/dev/dri"]
-    #       group_add: ["${RENDER_GID:-44}"]   # GID owning /dev/dri/renderD128 on the host: stat -c '%g' /dev/dri/renderD128
-    #   • NVIDIA NVENC — install nvidia-container-toolkit on the host (the image already ships an nvenc-enabled
-    #     ffmpeg + NVIDIA_DRIVER_CAPABILITIES=compute,video,utility baked in), then:
-    #       deploy:
-    #         resources:
-    #           reservations:
-    #             devices: [{ driver: nvidia, count: all, capabilities: [gpu] }]
-
-  mongo:
-    # If you have issues using MongoDB 7.x due to legacy hardware switch value for MongoDB 4.x or highe
-    image: mongo:7.0.15
-    user: "${MONGO_USER_ID:-999}:${MONGO_GROUP_ID:-999}"
-    environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
-    ports:
-      - "${MONGO_HOST_PORT:-27017}:27017"
-    volumes:
-      - ${MONGO_DATA_PATH:-mongo-data}:/data/db
-    healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-    networks: [masqueradarr-net]
-    restart: unless-stopped
-
-volumes:
-  # Fallback named volume — used only when MONGO_DATA_PATH is unset.
-  mongo-data:
-
-networks:
-  masqueradarr-net:
-```
-
 ### Configuration
 
 All runtime settings live in **MongoDB** and are editable on the **Settings** screen (domain, DNS
@@ -459,6 +307,7 @@ boot**:
 
 | Variable | Purpose |
 |---|---|
+| `MASQUERADARR_PORT` | Host port mapped to masqueradarr (default `3000`). |
 | `MONGO_ROOT_USER` / `MONGO_ROOT_PASS` | MongoDB root credentials; also assemble the app's `mongoUri`. |
 | `DOMAIN` | Public base URL written into composed playlist / guide links. |
 | `DISPLAY_NAME` | App display name. |
@@ -472,6 +321,17 @@ boot**:
 
 > App-settings vars are seeded with `$setOnInsert` — they apply on the **first provision only**. Change
 > them in the Settings UI afterward; a redeploy won't clobber UI changes.
+
+> [!IMPORTANT]
+> This sample enviornment variable is also included in the release notes and the `main` branch repository: `.env.example` \
+> Ensure you update `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` with the appropriate folders for your system. \
+> \
+> For the best experience, create each folder path assigned to `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` before composing the docker stack. 
+> ```bash
+> mkdir compose && chown -R 1000:1000 ./compose && chmod -R 777 ./compose
+> mkdir backups && chown -R 1000:1000 ./backups && chmod -R 777 ./backups
+> mkdir mongo && chown -R 999:999 ./mongo && chmod -R 777 ./mongo
+> ```
 
 ### Development
 
