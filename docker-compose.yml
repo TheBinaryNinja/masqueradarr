@@ -4,9 +4,9 @@ services:
     # image: iflip721/masqueradarr:latest
     image: iflip721/masqueradarr:dev
     user: "${APP_USER_ID:-1000}:${APP_GROUP_ID:-1000}"
-    # build:
-    #   context: .
-    #   dockerfile: docker/app.Dockerfile
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
     environment:
       MONGO_ROOT_USER: ${MONGO_ROOT_USER}
       MONGO_ROOT_PASS: ${MONGO_ROOT_PASS}
