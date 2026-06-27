@@ -36,9 +36,15 @@ async function channelCountFor(doc: { id: string; source?: string | null }): Pro
   return PlaylistChannel.countDocuments({ source: isCustomPlaylistType(doc.source) ? doc.id : doc.source });
 }
 
-// Swap the origin (scheme + host) of a stored http(s) url to `domain`, preserving path/search/hash.
+// Swap the origin (scheme + host + port) of a stored http(s) url to `domain`, preserving path/search/hash.
 // Returns null for values that aren't real http(s) URLs (e.g. the `source://<id>` seed sentinel, or an
 // unparseable value) so the caller leaves them untouched.
+//
+// The WHATWG `host` SETTER is a trap here: assigning a value WITHOUT a port (e.g. 'tv.host.com') leaves the
+// URL's existing port intact — so `parsed.host = base.host` would turn http://localhost:3000/x into
+// http://tv.host.com:3000/x, retaining the stale :3000 when the new domain dropped it. We therefore adopt
+// the COMPLETE new origin field-by-field: protocol, hostname, and port (base.port is '' when the new domain
+// omits a port or uses the scheme default, which CLEARS the old port; non-empty when it specifies one).
 function swapOrigin(url: string, domain: string): string | null {
   let parsed: URL;
   try {
@@ -54,7 +60,8 @@ function swapOrigin(url: string, domain: string): string | null {
     return null;
   }
   parsed.protocol = base.protocol;
-  parsed.host = base.host;
+  parsed.hostname = base.hostname;
+  parsed.port = base.port;
   return parsed.toString();
 }
 
