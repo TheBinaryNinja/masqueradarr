@@ -14,6 +14,7 @@ import vidaaAdapter from './adapters/vidaa.js';
 import whaleAdapter from './adapters/whale.js';
 import xumoAdapter from './adapters/xumo.js';
 import freeLiveSportsAdapter from './adapters/freelivesports.js';
+import distroAdapter from './adapters/distro.js';
 import directAdapter from './adapters/direct.js';
 import hdhomerunAdapter from './adapters/hdhomerun/index.js';
 import type { SourceAdapter } from './types.js';
@@ -23,7 +24,7 @@ import type { SourceAdapter } from './types.js';
 // syncable source playlists). `direct` passes imported URLs straight through; `hdhomerun` remuxes a local
 // tuner's raw MPEG-TS to HLS (adapters/hdhomerun/). Both back custom-type playlists whose channels carry
 // origin:'<id>' for routing.
-export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, vidaaAdapter, whaleAdapter, xumoAdapter, freeLiveSportsAdapter, directAdapter, hdhomerunAdapter];
+export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, vidaaAdapter, whaleAdapter, xumoAdapter, freeLiveSportsAdapter, distroAdapter, directAdapter, hdhomerunAdapter];
 
 export function getSource(id: string): SourceAdapter | undefined {
   return SOURCES.find((s) => s.id === id);

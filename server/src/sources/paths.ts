@@ -101,3 +101,11 @@ export const XUMO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'xumo-playlist-addon.j
  * the meantime. Same shape + apply sequence as dlhd's.
  */
 export const FREELIVESPORTS_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'freelivesports-playlist-addon.json');
+
+/**
+ * The distro→gracenote EPG-link crosswalk (committed seed data). distro's afterSync applies its HIGH-tier rows to
+ * never-touched distro PlaylistChannels once per channel after a sync, BEFORE its own query.php self-EPG fills the
+ * rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing file)
+ * until it lands, so distro's schedule self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const DISTRO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'distro-playlist-addon.json');
