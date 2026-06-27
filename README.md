@@ -103,11 +103,13 @@ and rebuilds everything underneath it to lift those ceilings:
 | **State** | Flat files, no DB | MongoDB (Mongoose 8) |
 | **Frontend** | Links to generated files | Vue 3 + Vite management SPA |
 | **Backend** | Node.js scripts | Express 4 API (ESM, TypeScript) |
-| **Sources** | Hard-coded scrapers (TheTvApp, TVPass, MoveOnJoy) | Pluggable adapters (dulo, dlhd, …) |
+| **Sources** | Hard-coded scrapers (TheTvApp, TVPass, MoveOnJoy) | Pluggable adapters (dulo, dlhd, tubi) + URL / HDHomeRun / file imports |
+| **Guide data** | One bundled XMLTV grabber | Gracenote, EPG-PW, Jesmann, Custom XMLTV + self-EPG |
 | **Auth** | None | scrypt users, roles, per-user access lists |
 | **Auth'd sources** | Not possible | Supported (streamed-login session capture) |
 | **External clients** | Pass-through only | ffmpeg/VLC transcode engine, GPU HW accel |
-| **Observability** | Logs | Live WS telemetry, history/metrics, ffprobe, app logs |
+| **Observability** | Logs | Live WS telemetry, history/metrics, ffprobe, system stats, app logs |
+| **Backup** | None | Full-system gzip backup / restore + scheduled backups |
 | **Base image** | Alpine + s6-overlay | Debian bookworm (glibc) + tini |
 | **Config** | Environment variables | DB-backed settings + minimal `.env` bootstrap |
 
@@ -118,22 +120,30 @@ image stitches together — *not* a workspace, and they never import across the 
 
 - **`/` (root)** — the **Vue 3 + Vite SPA** (the management front end; `hls.js`, `vue-router`, `mitt`).
 - **`server/`** — the **Express 4 + Mongoose 8 API** (ESM, TypeScript `strict`), which serves the
-  built SPA, the `/api/*` REST surface, the HLS proxy + external-player engine, and three WebSockets
-  (login-stream, stream-stats, logs-stream).
+  built SPA, the `/api/*` REST surface, the HLS proxy + external-player engine, and five WebSockets
+  (login-stream, stream-stats, logs-stream, probe-progress, system-stats).
 
 Key subsystems:
 
 - **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → proxy) with
-  per-provider adapters. Current sources: **dulo** (authenticated, resolve-on-demand) and **dlhd**
-  (anonymous, scraped from a rotating mirror); a shared **common** tier is planned.
+  per-provider adapters. Current sources: **dulo** (authenticated, resolve-on-demand), **dlhd**
+  (anonymous, scraped from a rotating mirror), and **tubi** (anonymous FAST channels that carry their
+  own inline EPG); plus two synthetic, proxy-only sources — **direct** (passes user-imported stream
+  URLs straight through) and **hdhomerun** (remuxes a local tuner's MPEG-TS to HLS) — that back
+  bring-your-own playlists.
 - **Channel model** — a pristine synced reference (`sourcechannels`) projected into an editable,
   UI-facing store (`playlistchannels`); user edits survive re-syncs.
-- **EPG + scheduler** — Gracenote and EPG-PW ingestion behind a shared sync path, driven by a
-  `croner`-backed runtime scheduler over a persisted `cronjobs` collection.
+- **EPG + scheduler** — multiple guide ingesters behind one shared sync path — **Gracenote**,
+  **EPG-PW**, **Jesmann**, and user-supplied **Custom XMLTV** (file upload or re-fetchable remote URL,
+  streamed so multi-GB national guides parse with bounded memory) — plus the self-built guides that
+  **tubi** and **dlhd** carry. All driven by a `croner`-backed runtime scheduler over a persisted
+  `cronjobs` collection.
 - **Composition + export** — composes Global, per-user, and custom `.m3u` playlists with matching
   XMLTV guide siblings for downstream clients.
 - **externalPlayer engine** — ffmpeg / VLC transcode for third-party IPTV clients on a dedicated
   mount, with boot-time hardware-encoder detection.
+- **Backup & maintenance** — full-system gzip backup / restore, scheduled backups, and Mongo
+  index-rebuild / workspace-reset maintenance actions.
 
 ### Migration status
 
@@ -172,14 +182,33 @@ all new development happens here.
 - **dulo** — authenticated, resolve-on-demand; the login session is captured in-app via a server-streamed
   real Chromium (the password goes straight to the provider, only tokens are persisted).
 - **dlhd** — anonymous, scraped from a rotating mirror with a Referer-gated multi-hop resolve and a
-  self-built EPG. A shared **common** source tier is planned.
+  self-built EPG.
+- **tubi** — anonymous FAST channels scraped live, carrying their own inline EPG (guide + per-play
+  signed, AES-128 manifests re-resolved on demand).
+
+**Custom playlists** (bring your own)
+
+- **Clone** — hand-pick channels from any synced source into a curated playlist; the channels are
+  independent copies (so edits don't disturb the originals) but streams still route through the real adapter.
+- **Import** — pull in any remote **M3U URL** (re-syncable), upload a static **`.m3u` file**, or expose a
+  local **HDHomeRun** tuner (its raw MPEG-TS remuxed to HLS).
+- Every custom playlist rides the same per-user, token-gated **`.m3u` + XMLTV** export machinery as the
+  built-in sources.
+
+**Guide data (EPG)**
+
+- Ingests guide data from **Gracenote**, **EPG-PW**, **Jesmann** (guided picker), and any **Custom XMLTV**
+  source — an uploaded file or a re-fetchable remote URL, streamed so multi-GB national guides parse with
+  bounded memory — plus the self-built guides that **tubi** and **dlhd** carry.
+- **Channel Mapping** links channels to guide data with composite match-scoring and many-to-one EPG
+  linking; the link survives re-syncs.
 
 **Management SPA** (Vue 3)
 
 - Full screens for **Dashboard, Active Streams, History / Metrics, Playlists, EPG Sources, Channel
   Mapping, Users,** and **Settings**.
-- Channel Mapping with composite match-scoring; an editable channel store where **user edits survive
-  re-syncs**.
+- An editable channel store where **user edits survive re-syncs**, and shared progress modals for the
+  long-running sync / compose operations.
 
 **Users & access control**
 
@@ -191,6 +220,7 @@ all new development happens here.
 **Observability**
 
 - WebSocket-pushed **viewer / bandwidth / buffering telemetry** and **ffprobe** stream monitoring.
+- Live **system-performance** push (CPU / memory / GPU) on the Dashboard, including per-vendor GPU usage.
 - Persisted **view-session history** + per-user metrics, and **MongoDB-backed application logs** (12
   categories, 14-day TTL) with a live log drawer.
 - A **B-Roll placeholder slate** burned into real HLS while an in-app channel is establishing or
@@ -207,6 +237,15 @@ all new development happens here.
 
 - A `croner`-backed runtime scheduler over a persisted `cronjobs` collection: playlist re-sync, EPG
   re-sync, M3U / XMLTV recompose, and scheduled backups.
+
+**Backup & restore**
+
+- One-click **full-system backup** — a gzipped snapshot of every collection, downloaded or written to a
+  configured backup directory on a schedule.
+- **Restore** from an uploaded backup or a saved file; the restore re-orchestrates the dependent
+  subsystems (boot init, DNS, scheduler) in place.
+- **Maintenance** actions from Settings: rebuild MongoDB indexes, or reset the workspace (wipe content,
+  keep users / settings).
 
 # Getting started
 
@@ -448,6 +487,156 @@ cd server && npm install && npm run dev
 
 There is **no test runner and no linter** — correctness is verified by `npm run build` (type-check) in
 each package and by running the app.
+
+---
+
+# Playlists
+
+> **Scope:** the playlist data model — what a playlist *is*, the built-in vs. custom kinds, how guide
+> data binds to it, and how per-user access is granted. The catalog (`playlistchannels`) and the export
+> surface (`.m3u` + XMLTV guide sibling) meet here.
+
+### How Playlists work
+
+A **Playlist** is a row in the `playlists` collection — the *envelope* (name, hosted URL, endpoint mode,
+schedule, state). Its **channels live separately** in `playlistchannels`, queried by the playlist's
+`source` (or clone) id. A playlist row with no channels is a valid, paused shell.
+
+- **Two channel stores back every playlist.** A sync writes a pristine, source-of-truth `sourcechannels`
+  reference, then projects it into the editable, UI-facing `playlistchannels`. You edit the latter (rename,
+  disable, channel #, EPG link) and your edits **survive a re-sync**: a sync `$set`s source-derived fields,
+  `$setOnInsert`s the user-editable ones, and prunes channels that vanished upstream.
+- **Hosted URL + endpoint mode.** A `global`-endpoint playlist is served through the one consolidated Global
+  M3U endpoint; a `custom`-endpoint playlist is served at its own path. The `url` ("HOSTED AT") always
+  prepends `settings.domain`, so changing the domain in **Settings cascades** to every playlist's URL.
+- **State + schedule.** `state:false` pauses the endpoint (downstream clients get a 404). `interval` + `auto`
+  drive the scheduler; a manual **Sync now** is always available.
+- **Streaming is resolve-on-demand.** A channel's stream URL is *derived* (`/api/v1/<source>/<enc-entry>`),
+  never stored, so the proxy resolves the real upstream at play time. Every channel keeps an `origin` source,
+  so a cloned or imported channel still routes through the right adapter.
+
+### What kinds of playlists are possible
+
+| Kind | `source` tag | Created via | Channels |
+|---|---|---|---|
+| **(Default) source playlist** | `dulo` / `dlhd` / `tubi` | Add Playlist → **Built-In** (provisions a zero-channel shell; populates on first **Sync now**) | Synced from the adapter; `id === source` |
+| **Clone** | `clone` | Add Playlist → **Clone** — hand-pick channels from any synced source | Independent COPIES in `playlistchannels`; `origin` = the provider source for routing |
+| **URL import** | `url` | Add Playlist → **URL** — fetch a remote `.m3u` / `.m3u8` | Parsed from the upstream; re-syncable via the stored `remoteUrl` |
+| **File upload** | `file` | Add Playlist → **File** — upload a static `.m3u` | Parsed once from the uploaded file |
+| **HDHomeRun** | `hdhomerun` | Add Playlist → **HDHomeRun** — point at a LAN tuner (`deviceUrl`) | Discovered from the device; raw MPEG-TS remuxed to HLS, capped at the tuner count |
+
+Built-in defaults are **Global-endpoint** by default; the custom kinds are **Custom-endpoint** and ride the
+per-playlist export machinery (their own path + guide sibling). All the type tags (`clone`/`file`/`url`/
+`hdhomerun`) and modes (`global`/`custom`) are stored **lowercase**.
+
+### Playlists + EPG Sources with Playlist Binding
+
+Guide data reaches a playlist through **two distinct mechanisms** — keep them separate:
+
+1. **Channel-level guide linking (the everyday case).** EPG attaches to a playlist through its *channels*,
+   not the playlist row. Each channel carries a 2-factor **`(tvg_id, epg)`** link — set on the **Channel
+   Mapping** screen (or self-linked by sources that ship their own EPG). At compose time the guide is built
+   from exactly the channels that carry a link, so "which EPG sources feed this playlist" is simply
+   *whichever sources its channels are mapped to* — many sources can contribute to one playlist's guide.
+2. **Playlist-bound EPG sources (`playlistBinding`).** **tubi** and **dlhd** carry their *own* inline guide.
+   When you sync such a playlist, its `afterSync` hook writes the guide **and** upserts a matching EPG source
+   row flagged **`playlistBinding: true`**, then self-links the playlist's channels to it. These rows are
+   *owned by the playlist's sync* — the playlist drives their refresh cadence, so the EPG Sources screen
+   hides their manual-sync + schedule controls. You never add or schedule them by hand.
+
+### Assigning Playlist access to users
+
+- Access is a **per-user allow-list**, split to mirror the endpoint modes: `allowedPlaylists`
+  (Global-endpoint playlists) and `allowedCustomPlaylists` (Custom-endpoint playlists).
+- You assign membership on the **Playlists screen** (per playlist — it was moved here off the Users screen),
+  not by editing the user.
+- **Admins ⇒ every playlist.** An admin account's allow-lists are *materialized* to hold every playlist id
+  (a real invariant, not just a role bypass), and creating a new playlist auto-grants it to all admins — so
+  an admin always sees the full catalog.
+- Each user gets a personal, **tokenized** `.m3u` + XMLTV guide URL for their IPTV client: the **download is
+  token-free**, but the **stream is token-gated** to that user's allowed playlists.
+
+---
+
+# EPG Sources
+
+> **Scope:** the guide-data subsystem — what an EPG source *is*, the provider kinds, the one shared sync
+> path, how playlist-bound self-EPG differs, and how guide data is woven into a playlist's `.m3u` at
+> compose time. The XMLTV wire format itself is the sibling of the M3U export.
+
+### How EPG Sources work
+
+An **EPG source** is a row in `epgsources` registering one guide provider. A sync writes two collections:
+**`epgchannels`** (one row per guide channel) and **`programs`** (the airings), both keyed by a composite
+**`<epg>:<tvg_id>`** id so multiple sources never collide.
+
+- **One shared sync path.** Every kind goes through `syncEpgSource.ts`, whether triggered by a manual
+  **Sync now** or by a scheduler tick; it maintains the per-source `syncSuccessCount` / `syncFailCount` and
+  `status`.
+- **A sync is a per-source replace.** The source's old channels/programs are swapped for the fresh pull. The
+  streaming-XMLTV path replaces up-front, so a mid-stream failure marks the source `error` and the next good
+  sync heals it cleanly (the shared `epgchannels`/`programs` collections are scoped by `source`).
+- **Reorder + run-stats.** The EPG Sources screen is drag-to-reorder (`order`); the guide-generation
+  run-stats (`lastXmlAt`, `xmlGeneratedCount`, `xmlFailCount`) are credited during compose (below).
+
+### What kinds of EPG Sources are possible
+
+The `source` discriminator (stored lowercase):
+
+| Kind | Added via | Notes |
+|---|---|---|
+| **gracenote** | Add EPG Source → **Gracenote** | Provider/lineup grid; provenance fields (headend / lineup / postal / country / …) let the grid URL be rebuilt + re-synced |
+| **epg-pw** | Add EPG Source → **EPG-PW** | epg.pw per-channel XML |
+| **jesmann** | Add EPG Source → **Jesmann** (guided picker) | Large national XMLTV guides, **streamed** so multi-GB files parse with bounded memory |
+| **xml file** | Add EPG Source → **Custom** (upload) | One-shot uploaded XMLTV document |
+| **remote url** | Add EPG Source → **Custom** (URL) | Re-fetchable remote XMLTV URL (streamed, gzip-aware) |
+| **tubi** / **dlhd** | *(automatic)* — the playlist's `afterSync` | **Playlist-bound** self-EPG (`playlistBinding:true`); not user-added |
+
+### EPG Sources with a Playlist Binding + the syncing process
+
+- **Standalone sources** (gracenote / epg-pw / jesmann / custom XMLTV) sync on demand or on a `cronjobs`
+  schedule, independent of any playlist.
+- **Playlist-bound sources** (tubi / dlhd) have **no manual sync of their own.** They are written by the
+  *playlist's* `afterSync` hook off the same listing that playlist sync already fetched, and the bound source
+  row is re-asserted (`playlistBinding:true`) on every playlist sync. To refresh a bound guide you **sync its
+  playlist** — the EPG Sources screen deliberately hides their sync/schedule controls because the playlist
+  owns the cadence.
+- Either way, the *binding between guide data and a playlist's channels* is the channel-level
+  **`(tvg_id, epg)`** link — Channel Mapping for user-added sources, self-linked for tubi/dlhd.
+
+### How EPG Sources are ingested into playlists during a compose
+
+Guide data only reaches a downstream client at **compose** time, and composition is **playlist-scoped**: a
+guide is written as a **sibling of the M3U** by `composeGuide()`, which runs off the *same Active channel set*
+`composeM3u()` just wrote (the Global union, or one Custom playlist) — so a guide can never drift from its M3U.
+
+```mermaid
+graph LR
+    M["composeM3u(surface)<br/>Active channels"] --> G["composeGuide(sameChannels, path)"]
+    G --> S["keep Active + (tvg_id, epg)-linked<br/>key = &lt;epg&gt;:&lt;tvg_id&gt;"]
+    S --> C["epgchannels → &lt;channel&gt;<br/>(dedupe by bare tvg_id, first-wins)"]
+    S --> P["programs → &lt;programme&gt;<br/>(re-tag to bare tvg_id)"]
+    C --> X["&lt;tv&gt; written beside the .m3u"]
+    P --> X
+    X --> A["M3U advertises it via x-tvg-url<br/>token-free, NOT per-user"]
+    X --> R["credit each source:<br/>lastXmlAt + xmlGeneratedCount++"]
+```
+
+Per composed surface:
+
+1. **Select** — keep only **Active** channels that carry a 2-factor **`(tvg_id, epg)`** link; index them by
+   the composite key `<epg>:<tvg_id>`.
+2. **Channels** — resolve each key's `epgchannels` row (display-name / call-sign / channel-no) and emit one
+   `<channel>`, **de-duped by the bare `tvg_id`** (first-wins — two sources can publish the same id and a
+   player can't disambiguate anyway). A channel linked to an `epgchannels` row that isn't synced yet is
+   skipped, never orphaned.
+3. **Programmes** — pull the `programs` for those keys and emit `<programme>`s, **re-tagged to the bare
+   `tvg_id`** so each airing matches its `<channel id>`.
+4. **Merge + advertise** — the result merges programme data from **every EPG source the playlist's channels
+   link to** into one `<tv>` document written next to the `.m3u`, advertised via **`x-tvg-url`**. The guide is
+   **token-free** and **not per-user** (a superset of any one user's channels is harmless).
+5. **Credit** — every contributing source gets `lastXmlAt` + `xmlGeneratedCount++` (or `xmlFailCount++` on
+   failure).
 
 ---
 
