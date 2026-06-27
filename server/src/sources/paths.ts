@@ -66,3 +66,13 @@ export const VIZIO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'vizio-playlist-addon
  * until it lands, so lg's schedulelist self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const LG_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'lg-playlist-addon.json');
+
+/**
+ * The vidaa→gracenote EPG-link crosswalk (committed seed data). vidaa's afterSync applies its HIGH-tier rows to
+ * never-touched vidaa PlaylistChannels once per channel after a sync, BEFORE its own /epg/grid self-EPG fills the
+ * rest. Vidaa's catalog carries a `tva-stationId` (a Gracenote-adjacent station id) per channel, so this addon can
+ * be derived directly from the catalog (a follow-up generator). NOT committed yet — the crosswalk call no-ops
+ * gracefully (applyEpgCrosswalk catches the missing file) until it lands, so vidaa's grid self-EPG is the guide in
+ * the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const VIDAA_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'vidaa-playlist-addon.json');
