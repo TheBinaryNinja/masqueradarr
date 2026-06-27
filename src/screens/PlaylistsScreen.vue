@@ -45,13 +45,21 @@ async function syncRow(p: Playlist): Promise<OpRunResult> {
   syncingIds.value = new Set(syncingIds.value).add(p.id);
   let ok = true;
   try {
-    const res = await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
+    // Custom-type playlists with a live upstream re-sync via the custom-playlists route: 'hdhomerun' re-fetches
+    // the device lineup, 'url' re-fetches the stored remoteUrl m3u. A Default source playlist syncs via the
+    // registry source route. (Mirrors PlaylistDetailScreen.syncNow so both entry points converge on one path.)
+    const res =
+      src === 'hdhomerun' || src === 'url'
+        ? await fetch(`/api/custom-playlists/${encodeURIComponent(p.id)}/sync`, { method: 'POST' })
+        : await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const result = await res.json();
     // Reload the local playlist list AND the shared EPG store — a source sync's afterSync hook can
     // create/refresh EPG sources (dlhd/tubi self-EPG), which otherwise stay invisible until a page refresh.
     await Promise.all([reloadList(), reloadEpgSources().catch(() => {})]);
-    banner({ text: `Synced ${result.count ?? ''} channels${result.live === false ? ' (snapshot)' : ''}`.trim(), tone: 'good', icon: 'sync' });
+    // The custom-playlists sync returns { channels }; the source sync returns { count } — read either.
+    const cnt = result.count ?? result.channels ?? '';
+    banner({ text: `Synced ${cnt} channels${result.live === false ? ' (snapshot)' : ''}`.trim(), tone: 'good', icon: 'sync' });
   } catch (err) {
     ok = false;
     banner({ text: `Sync failed: ${(err as Error).message}`, tone: 'bad', icon: 'warn' });
@@ -81,6 +89,11 @@ async function composeRow(p: Playlist): Promise<void> {
 // (shared singleton state, so all Global buttons disable together and all Global rows show one bar).
 // Custom rows keep the per-id behavior above. `isCustom` selects which busy source a row reads.
 const isCustom = (p: Playlist): boolean => p.endpoint === 'custom';
+// Only custom types with a LIVE upstream that "Sync" can re-fetch surface a Sync action: 'url' (the stored
+// remoteUrl m3u) and 'hdhomerun' (the device lineup). 'file'/legacy 'import'/'clone' have no upstream, so a
+// Sync there would only ever 500 — they show Compose only.
+const SYNCABLE_CUSTOM = new Set(['url', 'hdhomerun']);
+const isSyncableCustom = (p: Playlist): boolean => !!p.source && SYNCABLE_CUSTOM.has(p.source);
 
 // Op preview modal — clicking "Sync" / "Sync Global" / "Compose" / "Compose Global" no longer fires the op
 // silently; it opens the shared PlaylistOpModal. In 'sync' mode it shows the scoped playlist list + each
@@ -165,7 +178,11 @@ function rowMenuItems(p: Playlist): RowActionItem[] {
   } else if (p.source === 'clone') {
     items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
   } else if (p.source) {
-    items.push({ key: 'sync', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
+    // Other custom types (url/hdhomerun/file/legacy import). Only 'url'/'hdhomerun' have a live upstream to
+    // sync; 'file'/'import' have none, so they show Compose only (like a clone) — a Sync would only ever 500.
+    if (isSyncableCustom(p)) {
+      items.push({ key: 'sync', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
+    }
     items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
   }
   items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { void editRow(p); } });
