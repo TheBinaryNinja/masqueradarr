@@ -76,3 +76,11 @@ export const LG_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'lg-playlist-addon.json'
  * the meantime. Same shape + apply sequence as dlhd's.
  */
 export const VIDAA_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'vidaa-playlist-addon.json');
+
+/**
+ * The whale→gracenote EPG-link crosswalk (committed seed data). whale's afterSync applies its HIGH-tier rows to
+ * never-touched whale PlaylistChannels once per channel after a sync, BEFORE its own /epg self-EPG fills the
+ * rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing file)
+ * until it lands, so whale's schedule self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const WHALE_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'whale-playlist-addon.json');

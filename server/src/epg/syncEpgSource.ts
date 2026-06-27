@@ -23,6 +23,7 @@ import { syncSamsungEpg } from './samsung.js';
 import { syncVizioEpg } from './vizio.js';
 import { syncLgEpg } from './lg.js';
 import { syncVidaaEpg } from './vidaa.js';
+import { syncWhaleEpg } from './whale.js';
 import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
@@ -217,13 +218,17 @@ export async function syncEpgSource(
       // vidaa builds its guide from the OVP's separate /epg/grid schedule — live-only, per-source replace.
       // EPG-ONLY: channel self-links are owned by the vidaa playlist afterSync hook. See epg/vidaa.ts.
       counts = await syncVidaaEpg(src.id, offset);
+    } else if (kind === 'whale') {
+      // whale builds its guide from the rlaxx platform's separate /epg schedule — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the whale playlist afterSync hook. See epg/whale.ts.
+      counts = await syncWhaleEpg(src.id, offset);
     } else if ((kind === 'remote url' || kind === 'jesmann') && src.url) {
       // A re-fetchable XMLTV URL — re-download it and per-source replace. 'remote url' = the Custom tab's
       // Remote URL feature; 'jesmann' = the Jesmann guided picker (same machinery, distinct kind). ('xml file'
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });
