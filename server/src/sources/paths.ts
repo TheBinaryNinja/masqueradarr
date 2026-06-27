@@ -48,3 +48,13 @@ export const DAMI_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dami-playlist-addon.j
  * per-region XMLTV self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const SAMSUNG_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'samsung-playlist-addon.json');
+
+/**
+ * The vizio→gracenote EPG-link crosswalk (committed seed data). vizio's afterSync applies its HIGH-tier rows to
+ * never-touched vizio PlaylistChannels once per channel after a sync, BEFORE its own /api/airings self-EPG fills
+ * the rest. Vizio's catalog carries a real `tmsStationId` (Gracenote station id) per channel, so this addon can
+ * be derived directly from the catalog (a follow-up generator). NOT committed yet — the crosswalk call no-ops
+ * gracefully (applyEpgCrosswalk catches the missing file) until it lands, so vizio's airings self-EPG is the
+ * guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const VIZIO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'vizio-playlist-addon.json');
