@@ -21,6 +21,7 @@ import { syncDlhdEpg } from './dlhd.js';
 import { syncDamiEpg } from './dami.js';
 import { syncSamsungEpg } from './samsung.js';
 import { syncVizioEpg } from './vizio.js';
+import { syncLgEpg } from './lg.js';
 import { syncXmltvUrl, type ImportProgress } from './xmltvIngest.js';
 import { toEpgChannelDoc } from './toEpgChannel.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
@@ -207,13 +208,17 @@ export async function syncEpgSource(
       // vizio builds its guide from the WatchFree+ /api/airings schedule grid — live-only, per-source replace.
       // EPG-ONLY: channel self-links are owned by the vizio playlist afterSync hook. See epg/vizio.ts.
       counts = await syncVizioEpg(src.id, offset);
+    } else if (kind === 'lg') {
+      // lg builds its guide from the schedulelist payload's inline programs[] — live-only, per-source replace.
+      // EPG-ONLY: channel self-links are owned by the lg playlist afterSync hook. See epg/lg.ts.
+      counts = await syncLgEpg(src.id, offset);
     } else if ((kind === 'remote url' || kind === 'jesmann') && src.url) {
       // A re-fetchable XMLTV URL — re-download it and per-source replace. 'remote url' = the Custom tab's
       // Remote URL feature; 'jesmann' = the Jesmann guided picker (same machinery, distinct kind). ('xml file'
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });

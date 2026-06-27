@@ -58,3 +58,11 @@ export const SAMSUNG_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'samsung-playlist-a
  * guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const VIZIO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'vizio-playlist-addon.json');
+
+/**
+ * The lg→gracenote EPG-link crosswalk (committed seed data). lg's afterSync applies its HIGH-tier rows to
+ * never-touched lg PlaylistChannels once per channel after a sync, BEFORE its own inline-program self-EPG fills
+ * the rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing file)
+ * until it lands, so lg's schedulelist self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const LG_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'lg-playlist-addon.json');

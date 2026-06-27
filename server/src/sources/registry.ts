@@ -9,6 +9,7 @@ import tubiAdapter from './adapters/tubi.js';
 import damiAdapter from './adapters/dami.js';
 import samsungAdapter from './adapters/samsung.js';
 import vizioAdapter from './adapters/vizio.js';
+import lgAdapter from './adapters/lg.js';
 import directAdapter from './adapters/direct.js';
 import hdhomerunAdapter from './adapters/hdhomerun/index.js';
 import type { SourceAdapter } from './types.js';
@@ -18,7 +19,7 @@ import type { SourceAdapter } from './types.js';
 // syncable source playlists). `direct` passes imported URLs straight through; `hdhomerun` remuxes a local
 // tuner's raw MPEG-TS to HLS (adapters/hdhomerun/). Both back custom-type playlists whose channels carry
 // origin:'<id>' for routing.
-export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, directAdapter, hdhomerunAdapter];
+export const SOURCES: SourceAdapter[] = [duloAdapter, dlhdAdapter, tubiAdapter, damiAdapter, samsungAdapter, vizioAdapter, lgAdapter, directAdapter, hdhomerunAdapter];
 
 export function getSource(id: string): SourceAdapter | undefined {
   return SOURCES.find((s) => s.id === id);
