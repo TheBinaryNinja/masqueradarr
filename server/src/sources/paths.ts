@@ -39,3 +39,12 @@ export const DLHD_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dlhd-playlist-addon.j
  * existing US Gracenote sources, same shape + apply sequence as dlhd's.
  */
 export const DAMI_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'dami-playlist-addon.json');
+
+/**
+ * The samsung→gracenote EPG-link crosswalk (committed seed data). samsung's afterSync applies its HIGH-tier
+ * rows to never-touched samsung PlaylistChannels once per channel after a sync, BEFORE its own XMLTV self-EPG
+ * fills the rest. Generated offline from FastChannels' gracenote_map.csv (samsung rows). NOT committed yet — the
+ * crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing file) until this lands, so samsung's
+ * per-region XMLTV self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const SAMSUNG_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'samsung-playlist-addon.json');
