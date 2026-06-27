@@ -94,7 +94,7 @@ and rebuilds everything underneath it to lift those ceilings:
   ffprobe stream monitoring, a B-Roll placeholder slate while a channel buffers, and MongoDB-backed
   application logs.
 
-### At a glance
+## At a glance
 
 | | **TVApp2** (deprecated) | **masqueradarr** |
 |---|---|---|
@@ -113,7 +113,7 @@ and rebuilds everything underneath it to lift those ceilings:
 | **Base image** | Alpine + s6-overlay | Debian bookworm (glibc) + tini |
 | **Config** | Environment variables | DB-backed settings + minimal `.env` bootstrap |
 
-### Architecture
+## Primary Architecture
 
 masqueradarr is **two independently-built, independently-versioned npm packages** that the Docker
 image stitches together — *not* a workspace, and they never import across the boundary:
@@ -172,7 +172,108 @@ all new development happens here.
 - **Composition + export** — builds Global, per-user, and custom `.m3u` playlists, each with a matching
   XMLTV guide sibling advertised via `x-tvg-url`.
 
-## Pluggable sources
+## Getting started
+
+masqueradarr ships as Docker images. There are two deployment shapes.
+
+### Option A — Compose stack (app + MongoDB)
+
+1. Copy the env template and fill it in:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   At minimum set `MONGO_ROOT_USER` / `MONGO_ROOT_PASS`, your `DOMAIN`, and the host volume paths
+   (`COMPOSE_PATH`, `BACKUPS_PATH`, `MONGO_DATA_PATH`) — each host dir must be writable by **uid 1000**
+   (the container's `node` user). To publish on a host port other than `3000`, set `MASQUERADARR_PORT`
+   (and update `DOMAIN` to match).
+
+2. Bring it up:
+
+   ```bash
+   docker compose up -d
+   ```
+
+3. Open `http://localhost:3000` (or your `DOMAIN`; the host port reflects `MASQUERADARR_PORT`). The app
+   **self-provisions** its `config.json` from the `.env` on every boot — there is no host config file to
+   manage.
+
+### Option B — All-in-one (single container)
+
+A second image bundles **app + MongoDB + config bootstrap** into one container, so the whole stack runs
+from a single `docker run` with no external database — ideal for a quick trial or a small home server. One
+`/data` volume persists the database, exports, config, and credentials. See **Migration status** above for
+the current published image name. *(On amd64, the bundled MongoDB 7.0 requires a CPU with AVX; on hosts
+without it, use the compose stack.)*
+
+To publish on a different host port, change the left side of the `-p` mapping — e.g. `-p 8080:3000`
+(the container always serves on `3000` internally; `MASQUERADARR_PORT` only applies to the compose stack).
+
+## First run
+
+On first launch there are **no users** — the app reports `needsSetup` and the SPA walks you through
+creating the **first admin account**. After that:
+
+1. **Add a playlist** — the Add Playlist modal offers every built-in source plus custom playlists
+   (clone / file / URL / HDHomeRun).
+2. For an **authenticated** source (dulo), capture a login session from **Settings** (a server-streamed
+   Chromium signs you in; only tokens are stored).
+3. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
+   **Channel Mapping** screen.
+4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
+   URL** for their IPTV client.
+
+### Configuration
+
+All runtime settings live in **MongoDB** and are editable on the **Settings** screen (domain, DNS
+nameservers, video configuration, backups, …). The `.env` only **bootstraps infrastructure on first
+boot**:
+
+| Variable | Purpose |
+|---|---|
+| `MASQUERADARR_PORT` | Host port mapped to masqueradarr (default `3000`). |
+| `MONGO_ROOT_USER` / `MONGO_ROOT_PASS` | MongoDB root credentials; also assemble the app's `mongoUri`. |
+| `DOMAIN` | Public base URL written into composed playlist / guide links. |
+| `DISPLAY_NAME` | App display name. |
+| `TZ` | Container timezone (used by the scheduler). |
+| `COMPOSE_PATH` | Host dir for composed `.m3u` + XMLTV exports (uid-1000 writable). |
+| `BACKUPS_PATH` | Host dir for scheduled backups. |
+| `MONGO_DATA_PATH` | Host dir for persistent MongoDB data. |
+| `MONGO_HOST_PORT` | Host port mapped to mongod (default `27017`). |
+| `MONGO_URI` / `MONGO_HOST` | Optional — point the app at an external / Atlas MongoDB instead of the compose `mongo` service. |
+| `DNS_LOG_LEVEL` | Outbound-DNS trace verbosity (`1`–`3`); seeds the setting on first boot. |
+
+> App-settings vars are seeded with `$setOnInsert` — they apply on the **first provision only**. Change
+> them in the Settings UI afterward; a redeploy won't clobber UI changes.
+
+> [!IMPORTANT]
+> This sample enviornment variable is also included in the release notes and the `main` branch repository: `.env.example` \
+> Ensure you update `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` with the appropriate folders for your system. \
+> \
+> For the best experience, create each folder path assigned to `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` before composing the docker stack. 
+> ```bash
+> mkdir compose && chown -R 1000:1000 ./compose && chmod -R 777 ./compose
+> mkdir backups && chown -R 1000:1000 ./backups && chmod -R 777 ./backups
+> mkdir mongo && chown -R 999:999 ./mongo && chmod -R 777 ./mongo
+> ```
+
+### Development
+
+The repo is **two independently-built npm packages** (not a workspace):
+
+```bash
+# Frontend (repo root) — Vite dev server on :5173, proxies /api → http://localhost:3000
+npm install && npm run dev
+
+# Backend (server/) — tsx watch on :3000 (needs a reachable MongoDB)
+cd server && npm install && npm run dev
+```
+
+There is **no test runner and no linter** — correctness is verified by `npm run build` (type-check) in
+each package and by running the app.
+
+# Pluggable sources
 
 - A **source-agnostic adapter framework**: adding a provider is one adapter file plus one registry line;
   the generic core (sync → normalize → dedupe → proxy) never branches per source.
@@ -196,7 +297,7 @@ all new development happens here.
 | Whale TV+ | `makeFastSource` · macro-expansion · keyless auth bootstrap (apiToken → short-lived bearer) · Ottera/SSAI ad macros (`[did]/[session_id]/[cachebuster]/…`) expanded per play via `resolveStream` |
 | Xumo Play | `makeFastSource` · sentinel+resolve · Valencia catalog yields channel IDs only · 3-hop per-play resolve (broadcast → asset → HLS source → macro-fill) |
 
- ## Custom playlists (bring your own)
+## Custom playlists (bring your own)
 
 - **Clone** — hand-pick channels from any synced source into a curated playlist; the channels are
   independent copies (so edits don't disturb the originals) but streams still route through the real adapter.
@@ -212,7 +313,7 @@ all new development happens here.
 > [!NOTE] 
 > **US-only.** Local Now is geo-gated to US IP addresses. Attempting to add a Local Now playlist from a non-US IP will return a clear error. No VPN workaround is built in; route the server through a US network to use this feature.
 
-#### _Local Now_ : City / Market Lookup
+### _Local Now_ : City / Market Lookup
 
 When adding a Local Now playlist you choose a **city/market** — the geographic unit Local Now uses to select a channel lineup. Masqueradarr exposes two ways to pick one:
 
@@ -335,108 +436,120 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 - **Maintenance** actions from Settings: rebuild MongoDB indexes, or reset the workspace (wipe content,
   keep users / settings).
 
-# Getting started
+# Channel Adapter Architecture : _Pluggable sources_
 
-masqueradarr ships as Docker images. There are two deployment shapes.
+All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`, `proxyHandler`) never branches per source — every per-source difference is encapsulated in the adapter object.
 
-#### Option A — Compose stack (app + MongoDB)
+```mermaid
+flowchart LR
+    REG["registry.ts\nSOURCES: SourceAdapter[]"]
 
-1. Copy the env template and fill it in:
+    REG --> SYN["Synthetic\nproxy-only · no catalog · synthetic: true\nboot init skips shell row · manifest omits"]
+    REG --> BIN["Built-in\nsyncable catalog · shell row on demand\nProvision → Sync now → playlistchannels"]
 
-   ```bash
-   cp .env.example .env
-   ```
+    %% ── Synthetic ──────────────────────────────────────────────
+    SYN --> DIRECT["direct\n'Imported'\nPassthrough for user-imported M3U URLs\nidentity resolveStream · any https allowed\nno shell row · channels carry origin:'direct'"]
+    SYN --> HDHOMERUN["hdhomerun\n'HDHomeRun'\nLocal OTA/cable tuner\nDevice TS URL → ffmpeg remux → loopback HLS\nSSRF gate: loopback only\nno shell row · channels carry origin:'hdhomerun'"]
+    SYN --> LOCAL["local\n'Local Now'\nlocalnow://id?slug sentinel\nresolveStream → rotating CDN master\ndynamic SSRF allow · no shell row\nchannels carry origin:'local'"]
 
-   At minimum set `MONGO_ROOT_USER` / `MONGO_ROOT_PASS`, your `DOMAIN`, and the host volume paths
-   (`COMPOSE_PATH`, `BACKUPS_PATH`, `MONGO_DATA_PATH`) — each host dir must be writable by **uid 1000**
-   (the container's `node` user). To publish on a host port other than `3000`, set `MASQUERADARR_PORT`
-   (and update `DOMAIN` to match).
+    %% ── Built-in ────────────────────────────────────────────────
+    BIN --> AUTH["Authenticated\nrequiresAuth: true"]
+    BIN --> ANON["Anonymous\nno auth surface"]
 
-2. Bring it up:
+    %% ── Authenticated ───────────────────────────────────────────
+    AUTH --> DULO["dulo\n'dulo.tv'\nSupabase session + device fingerprint\nCapture via headful Chromium (DuloLoginDrawer)\ndulo://channel/id sentinel\nresolveStream → fresh playbackUrl per play\nSSRF: dynamic allow (learned hosts)\nEPG: Gracenote crosswalk only\n(no self-EPG)"]
 
-   ```bash
-   docker compose up -d
-   ```
+    %% ── Anonymous ───────────────────────────────────────────────
+    ANON --> SCRAPE["Scrape-based\ncatalog from HTML/rotating mirror\nresolution via multi-hop scrape"]
+    ANON --> APISENTINEL["API Sentinel\ncatalog from JSON API\nstorage: opaque sentinel URL\nresolution: API call per play"]
+    ANON --> MACROFILL["Macro-fill\ncatalog from JSON API\nstorage: HLS URL with __MACRO__ slots\nresolution: fill macros per play"]
+    ANON --> IDENTITY["Identity / Direct\ncatalog carries real HLS master\nresolveStream: pre-allow host only"]
 
-3. Open `http://localhost:3000` (or your `DOMAIN`; the host port reflects `MASQUERADARR_PORT`). The app
-   **self-provisions** its `config.json` from the `.env` on every boot — there is no host config file to
-   manage.
+    %% ── Scrape-based ────────────────────────────────────────────
+    SCRAPE --> DLHD["dlhd\n'DaddyLive'\nCatalog: scraped rotating mirror HTML directory\nwatch.php?id=id sentinel\nresolveStream: 3-hop Referer-gated scrape\nSSRF: dynamic allow · segments disguised as image/pdf\nEPG: Gracenote crosswalk + self-EPG (afterSync)\ndefaultDisabled: 18+ channels"]
+    SCRAPE --> DAMI["dami\n'Dami.TV'\nDlhd-derived — reuses dlhd resolveStream + mirror\nOwn catalog (~878 ch, logos, ISO country grouping)\nfrom /papi/api/streams\nEPG: Gracenote crosswalk + self-EPG (afterSync)\nHard-depends on dlhd leaves"]
 
-#### Option B — All-in-one (single container)
+    %% ── API Sentinel ────────────────────────────────────────────
+    APISENTINEL --> TUBI["tubi\n'Tubi.TV'\ntubi://channel/id sentinel\nresolveStream: Tubi API per play\nSSRF: dynamic allow\nEPG: inline self-EPG (afterSync)\nprograms[] carried on raw catalog rows"]
+    APISENTINEL --> XUMO["xumo\n'Xumo Play'\nbroadcast.json URL sentinel\nresolveStream: 3-hop API resolve per play\nSSRF: dynamic allow\nEPG: paginated market guide (afterSync)"]
+    APISENTINEL --> STIRR["stirr\n'STIRR'\n/playable URL sentinel (video id in path)\nresolveStream: 1-hop POST /playable per play\nSSRF: dynamic allow\nEPG: two-tier per-channel guide (afterSync)"]
+    APISENTINEL --> TCL["tcl\n'TCL TV+'\nformat-stream-url?... sentinel\nresolveStream: 1-hop POST per play\nSSRF: dynamic allow\nEPG: category schedule + batched detail (afterSync)"]
+    APISENTINEL --> PLUTO["pluto\n'Pluto TV'\npluto://region/id sentinel\nresolveStream: region boot (cached) + URL construct\nSSRF: dynamic allow\nEPG: per-region timelines guide (afterSync)\nGracenote crosswalk wired"]
+    APISENTINEL --> ROKU["roku\n'The Roku Channel'\nroku://id sentinel\nresolveStream: session boot (cached) + playId resolve\nSSRF: dynamic allow\nEPG: content-proxy fanout guide (afterSync)"]
 
-A second image bundles **app + MongoDB + config bootstrap** into one container, so the whole stack runs
-from a single `docker run` with no external database — ideal for a quick trial or a small home server. One
-`/data` volume persists the database, exports, config, and credentials. See **Migration status** above for
-the current published image name. *(On amd64, the bundled MongoDB 7.0 requires a CPU with AVX; on hosts
-without it, use the compose stack.)*
+    %% ── Macro-fill ──────────────────────────────────────────────
+    MACROFILL --> SAMSUNG["samsung\n'Samsung TV Plus'\njmp2.uk redirect → CDN master\nresolveStream: follow redirect per play\nSSRF: dynamic allow\nEPG: self-EPG (afterSync)\nGracenote crosswalk wired"]
+    MACROFILL --> LG["lg\n'LG Channels'\nHLS URL with {MACRO} slots\nresolveStream: macro expand per play\nSSRF: dynamic allow\nEPG: inline program self-EPG (afterSync)"]
+    MACROFILL --> WHALE["whale\n'Whale TV+'\nHLS URL with macro slots\nresolveStream: macro fill per play\nSSRF: dynamic allow\nEPG: separate /epg fetch (afterSync, Vidaa shape)"]
+    MACROFILL --> DISTRO["distro\n'Distro TV'\nHLS URL with __MACRO__ VAST slots\nresolveStream: macro fill per play\nSSRF: dynamic allow\nEPG: tvg_id-keyed self-EPG (afterSync)"]
+    MACROFILL --> FLS["freelivesports\n'FreeLiveSports'\nHLS URL with device/cb/ref macro slots\nresolveStream: macro fill per play\nSSRF: dynamic allow\nEPG: inline program self-EPG (afterSync)"]
 
-To publish on a different host port, change the left side of the `-p` mapping — e.g. `-p 8080:3000`
-(the container always serves on `3000` internally; `MASQUERADARR_PORT` only applies to the compose stack).
+    %% ── Identity / Direct ───────────────────────────────────────
+    IDENTITY --> VIZIO["vizio\n'Vizio WatchFree+'\ncatalog: channelUrls[0] IS the real HLS master\nresolveStream: identity + pre-allow host\nSSRF: dynamic allow\nEPG: separate /api/airings schedule (afterSync)"]
+    IDENTITY --> VIDAA["vidaa\n'Vidaa Free TV'\ncatalog: macros already expanded at catalog time\nresolveStream: identity + pre-allow host\nSSRF: dynamic allow\nEPG: self-EPG via uid (afterSync)\nGracenote crosswalk wired"]
 
-#### First run
+    %% ── Styling ─────────────────────────────────────────────────
+    classDef synthetic fill:#2d2d3a,stroke:#7c7cad,color:#c8c8e8
+    classDef auth fill:#3a2020,stroke:#ad4040,color:#e8c8c8
+    classDef scrape fill:#1e2d1e,stroke:#4a8c4a,color:#c8e8c8
+    classDef sentinel fill:#1e2535,stroke:#4a7cad,color:#c8d8e8
+    classDef macro fill:#2d2020,stroke:#8c6a30,color:#e8d8b0
+    classDef identity fill:#252525,stroke:#666,color:#ccc
+    classDef group fill:#1a1a2a,stroke:#555,color:#aaa
+    classDef registry fill:#111,stroke:#888,color:#fff,font-weight:bold
 
-On first launch there are **no users** — the app reports `needsSetup` and the SPA walks you through
-creating the **first admin account**. After that:
-
-1. **Add a playlist** — the Add Playlist modal offers every built-in source plus custom playlists
-   (clone / file / URL / HDHomeRun).
-2. For an **authenticated** source (dulo), capture a login session from **Settings** (a server-streamed
-   Chromium signs you in; only tokens are stored).
-3. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
-   **Channel Mapping** screen.
-4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
-   URL** for their IPTV client.
-
-### Configuration
-
-All runtime settings live in **MongoDB** and are editable on the **Settings** screen (domain, DNS
-nameservers, video configuration, backups, …). The `.env` only **bootstraps infrastructure on first
-boot**:
-
-| Variable | Purpose |
-|---|---|
-| `MASQUERADARR_PORT` | Host port mapped to masqueradarr (default `3000`). |
-| `MONGO_ROOT_USER` / `MONGO_ROOT_PASS` | MongoDB root credentials; also assemble the app's `mongoUri`. |
-| `DOMAIN` | Public base URL written into composed playlist / guide links. |
-| `DISPLAY_NAME` | App display name. |
-| `TZ` | Container timezone (used by the scheduler). |
-| `COMPOSE_PATH` | Host dir for composed `.m3u` + XMLTV exports (uid-1000 writable). |
-| `BACKUPS_PATH` | Host dir for scheduled backups. |
-| `MONGO_DATA_PATH` | Host dir for persistent MongoDB data. |
-| `MONGO_HOST_PORT` | Host port mapped to mongod (default `27017`). |
-| `MONGO_URI` / `MONGO_HOST` | Optional — point the app at an external / Atlas MongoDB instead of the compose `mongo` service. |
-| `DNS_LOG_LEVEL` | Outbound-DNS trace verbosity (`1`–`3`); seeds the setting on first boot. |
-
-> App-settings vars are seeded with `$setOnInsert` — they apply on the **first provision only**. Change
-> them in the Settings UI afterward; a redeploy won't clobber UI changes.
-
-> [!IMPORTANT]
-> This sample enviornment variable is also included in the release notes and the `main` branch repository: `.env.example` \
-> Ensure you update `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` with the appropriate folders for your system. \
-> \
-> For the best experience, create each folder path assigned to `COMPOSE_PATH` `BACKUPS_PATH` `MONGO_DATA_PATH` before composing the docker stack. 
-> ```bash
-> mkdir compose && chown -R 1000:1000 ./compose && chmod -R 777 ./compose
-> mkdir backups && chown -R 1000:1000 ./backups && chmod -R 777 ./backups
-> mkdir mongo && chown -R 999:999 ./mongo && chmod -R 777 ./mongo
-> ```
-
-### Development
-
-The repo is **two independently-built npm packages** (not a workspace):
-
-```bash
-# Frontend (repo root) — Vite dev server on :5173, proxies /api → http://localhost:3000
-npm install && npm run dev
-
-# Backend (server/) — tsx watch on :3000 (needs a reachable MongoDB)
-cd server && npm install && npm run dev
+    class REG registry
+    class SYN,BIN,AUTH,ANON,SCRAPE,APISENTINEL,MACROFILL,IDENTITY group
+    class DIRECT,HDHOMERUN,LOCAL synthetic
+    class DULO auth
+    class DLHD,DAMI scrape
+    class TUBI,XUMO,STIRR,TCL,PLUTO,ROKU sentinel
+    class SAMSUNG,LG,WHALE,DISTRO,FLS macro
+    class VIZIO,VIDAA identity
 ```
 
-There is **no test runner and no linter** — correctness is verified by `npm run build` (type-check) in
-each package and by running the app.
+## Key Properties Summary
 
----
+| Adapter | Label | Auth | Resolve Strategy | Self-EPG | Gracenote XWalk |
+|---------|-------|------|-----------------|----------|-----------------|
+| `direct` | Imported | — | Identity (passthrough) | — | — |
+| `hdhomerun` | HDHomeRun | — | ffmpeg remux → loopback HLS | — | — |
+| `local` | Local Now | — | Sentinel → rotating CDN | — | — |
+| `dulo` | dulo.tv | session | `dulo://` sentinel → playbackUrl | — | yes |
+| `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape | yes | yes |
+| `dami` | Dami.TV | — | dlhd resolveStream (shared) | yes | yes |
+| `tubi` | Tubi.TV | — | `tubi://` → Tubi API | yes (inline) | — |
+| `xumo` | Xumo Play | — | broadcast.json → 3-hop API | yes | — |
+| `stirr` | STIRR | — | `/playable` → 1-hop POST | yes | — |
+| `tcl` | TCL TV+ | — | `format-stream-url` → 1-hop POST | yes | — |
+| `pluto` | Pluto TV | — | `pluto://` → region boot + URL | yes | yes (wired) |
+| `roku` | The Roku Channel | — | `roku://` → session + playId | yes | — |
+| `samsung` | Samsung TV Plus | — | jmp2.uk redirect | yes | yes (wired) |
+| `lg` | LG Channels | — | `{MACRO}` fill per play | yes | — |
+| `whale` | Whale TV+ | — | macro fill per play | yes | — |
+| `distro` | Distro TV | — | `__MACRO__` fill per play | yes | — |
+| `freelivesports` | FreeLiveSports | — | macro fill per play | yes | — |
+| `vizio` | Vizio WatchFree+ | — | Identity (direct HLS master) | yes (airings) | — |
+| `vidaa` | Vidaa Free TV | — | Identity (macros pre-expanded) | yes | yes (wired) |
+
+## Lifecycle: how a built-in source reaches the UI
+
+```mermaid
+flowchart TD
+    PROVISION["POST /api/sources/:id/provision\n→ ensureShellRow\nCreates a zero-channel Playlist doc"]
+    SYNC["Sync now\n→ syncLive\n→ adapter.listChannels()"]
+    NORMALIZE["adapter.normalize(raw)\n→ SourceChannel docs\n(sourcechannels)"]
+    PLAYLIST["toPlaylistChannel\n→ PlaylistChannel docs\n(playlistchannels)\nUser edits preserved via $setOnInsert"]
+    AFTERSYNC["adapter.afterSync()\n→ writes epgsources / epgchannels / programs\n(sources with self-EPG only)"]
+    PROXY["GET /api/v1/:source/:encUrl\n→ proxyHandler\n→ adapter.isEntryUrl()\n→ adapter.resolveStream()\n→ HLS master → variants → segments"]
+    SPA["SPA reads playlistchannels\nvia GET /api/playlists/:id/channels"]
+
+    PROVISION --> SYNC
+    SYNC --> NORMALIZE --> PLAYLIST
+    NORMALIZE --> AFTERSYNC
+    PLAYLIST --> SPA
+    SPA -->|"stream request"| PROXY
+```
 
 # Playlists
 
@@ -444,7 +557,7 @@ each package and by running the app.
 > data binds to it, and how per-user access is granted. The catalog (`playlistchannels`) and the export
 > surface (`.m3u` + XMLTV guide sibling) meet here.
 
-### How Playlists work
+## How Playlists work
 
 A **Playlist** is a row in the `playlists` collection — the *envelope* (name, hosted URL, endpoint mode,
 schedule, state). Its **channels live separately** in `playlistchannels`, queried by the playlist's
@@ -463,7 +576,7 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
   never stored, so the proxy resolves the real upstream at play time. Every channel keeps an `origin` source,
   so a cloned or imported channel still routes through the right adapter.
 
-### What kinds of playlists are possible
+## What kinds of playlists are possible
 
 | Kind | `source` tag | Created via | Channels |
 |---|---|---|---|
@@ -477,7 +590,7 @@ Built-in defaults are **Global-endpoint** by default; the custom kinds are **Cus
 per-playlist export machinery (their own path + guide sibling). All the type tags (`clone`/`file`/`url`/
 `hdhomerun`) and modes (`global`/`custom`) are stored **lowercase**.
 
-### Playlists + EPG Sources with Playlist Binding
+## Playlists + EPG Sources with Playlist Binding
 
 Guide data reaches a playlist through **two distinct mechanisms** — keep them separate:
 
@@ -492,7 +605,7 @@ Guide data reaches a playlist through **two distinct mechanisms** — keep them 
    *owned by the playlist's sync* — the playlist drives their refresh cadence, so the EPG Sources screen
    hides their manual-sync + schedule controls. You never add or schedule them by hand.
 
-### Assigning Playlist access to users
+## Assigning Playlist access to users
 
 - Access is a **per-user allow-list**, split to mirror the endpoint modes: `allowedPlaylists`
   (Global-endpoint playlists) and `allowedCustomPlaylists` (Custom-endpoint playlists).
@@ -512,7 +625,7 @@ Guide data reaches a playlist through **two distinct mechanisms** — keep them 
 > path, how playlist-bound self-EPG differs, and how guide data is woven into a playlist's `.m3u` at
 > compose time. The XMLTV wire format itself is the sibling of the M3U export.
 
-### How EPG Sources work
+## How EPG Sources work
 
 An **EPG source** is a row in `epgsources` registering one guide provider. A sync writes two collections:
 **`epgchannels`** (one row per guide channel) and **`programs`** (the airings), both keyed by a composite
@@ -527,7 +640,7 @@ An **EPG source** is a row in `epgsources` registering one guide provider. A syn
 - **Reorder + run-stats.** The EPG Sources screen is drag-to-reorder (`order`); the guide-generation
   run-stats (`lastXmlAt`, `xmlGeneratedCount`, `xmlFailCount`) are credited during compose (below).
 
-### What kinds of EPG Sources are possible
+## What kinds of EPG Sources are possible
 
 The `source` discriminator (stored lowercase):
 
@@ -540,7 +653,7 @@ The `source` discriminator (stored lowercase):
 | **remote url** | Add EPG Source → **Custom** (URL) | Re-fetchable remote XMLTV URL (streamed, gzip-aware) |
 | **playlist-bound** | *(automatic)* — the playlist's `afterSync` binding | **Playlist-bound** self-EPG (`playlistBinding:true`); not user-added |
 
-### EPG Sources with a Playlist Binding + the syncing process
+## EPG Sources with a Playlist Binding + the syncing process
 
 - **Standalone sources** (gracenote / epg-pw / jesmann / custom XMLTV) sync on demand or on a `cronjobs`
   schedule, independent of any playlist.
@@ -552,7 +665,7 @@ The `source` discriminator (stored lowercase):
 - Either way, the *binding between guide data and a playlist's channels* is the channel-level
   **`(tvg_id, epg)`** link — Channel Mapping for user-added sources, self-linked for channel-adapter built-in sources.
 
-### How EPG Sources are ingested into playlists during a compose
+## How EPG Sources are ingested into playlists during a compose
 
 Guide data only reaches a downstream client at **compose** time, and composition is **playlist-scoped**: a
 guide is written as a **sibling of the M3U** by `composeGuide()`, which runs off the *same Active channel set*
@@ -586,8 +699,6 @@ Per composed surface:
 5. **Credit** — every contributing source gets `lastXmlAt` + `xmlGeneratedCount++` (or `xmlFailCount++` on
    failure).
 
----
-
 # Video Engine
 
 > **Scope:** how a stream session opened by a **IPTV client** (TiviMate, IPTV Client, VLC, UHF, IPTV One,
@@ -604,7 +715,7 @@ Per composed surface:
 > opt-in **raw MPEG-TS socket**. With no engine enabled, `/api/ext` is a plain **B-Roll-free direct relay**, so
 > external clients keep working either way; a resolve/engine failure is a clean error (**502**), not a slate.
 
-### Plain language
+## Plain language
 
 A TiviMate/IPTV Client/VLC user downloads their personal playlist file from TVApp2 and the app plays its channels.
 Those channels point at a special server URL (`/api/ext/...`) that TVApp2 writes specifically for outside
@@ -632,7 +743,7 @@ If GPU hardware is present, the engine can offload re-encoding to it (NVENC / In
 detects what's usable at startup so the Settings screen only offers real options. If no engine is turned on,
 nothing changes — the URL just relays the source straight through.
 
-### Functional flow
+## Functional flow
 
 ```mermaid
 graph TD

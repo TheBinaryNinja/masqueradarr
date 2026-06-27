@@ -142,3 +142,11 @@ export const PLUTO_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'pluto-playlist-addon
  * sequence as dlhd's.
  */
 export const ROKU_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'roku-playlist-addon.json');
+
+/**
+ * The plex→gracenote EPG-link crosswalk (committed seed data). plex's afterSync applies its HIGH-tier rows to
+ * never-touched plex PlaylistChannels once per channel after a sync, BEFORE its own per-channel grid self-EPG fills
+ * the rest. NOT committed yet — the crosswalk call no-ops gracefully (applyEpgCrosswalk catches the missing file)
+ * until it lands, so plex's grid self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
+ */
+export const PLEX_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'plex-playlist-addon.json');
