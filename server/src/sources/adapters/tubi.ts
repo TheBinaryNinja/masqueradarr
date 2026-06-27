@@ -201,6 +201,18 @@ const tubiAdapter: SourceAdapter = {
     const counts = await writeTubiEpg(raw, sourceId, offset);
     await upsertTubiEpgSource(sourceId, counts);
   },
+
+  // ── snapshot-only slimming (rebuild:seed) ──────────────────────────────────────────
+  // The LIVE catalog now carries per-program artwork (programs[].images) so writeTubiEpg can map Program.icon
+  // (U2 — a richer XMLTV guide). That artwork is ~half the offline file's bytes, so strip it from the COMMITTED
+  // snapshot only: an offline sync (snapshot fallback) simply yields icon=null, never a broken guide.
+  snapshotTransform(raw: any[]): any[] {
+    return raw.map((r) =>
+      Array.isArray(r?.programs)
+        ? { ...r, programs: r.programs.map(({ images, ...rest }: Record<string, unknown>) => rest) }
+        : r,
+    );
+  },
 };
 
 export default tubiAdapter;

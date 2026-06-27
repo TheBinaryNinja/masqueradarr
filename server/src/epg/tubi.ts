@@ -31,6 +31,19 @@ function toEpoch(iso: unknown): number {
   return Date.parse(String(iso));
 }
 
+// Program artwork → a single poster URL (FastChannels' order: 2:3 poster, then landscape, then hero; each may
+// be an array or a bare string). null when the row carries no images — ALWAYS the case on a snapshot fallback,
+// where artwork is stripped to keep the file lean (see the tubi adapter's snapshotTransform). U2.
+function pickProgramImage(images: any): string | null {
+  if (!images) return null;
+  for (const key of ['poster', 'landscape', 'hero']) {
+    const v = images[key];
+    if (Array.isArray(v) && v.length) return String(v[0]);
+    if (typeof v === 'string' && v) return v;
+  }
+  return null;
+}
+
 /**
  * Map the shared Tubi catalog rows (each carrying content_id, title, group, and embedded programs[]) into the
  * local guide shapes and REPLACE the per-source stores (epgchannels + programs, both scoped by `source`).
@@ -80,10 +93,14 @@ export async function writeTubiEpg(
         channelNo: null,
         shortDesc: p.description || null,
         rating: p.ratings?.[0]?.code ?? null,
-        seriesId: null, // Tubi exposes no series id
+        // program_id is Tubi's STABLE program identifier (it recurs across a show's airings) — populate
+        // seriesId from it so a future cross-source dedup (U4) can group a show's episodes. (U2)
+        seriesId: p.program_id != null ? String(p.program_id) : null,
         season: p.season_number != null ? String(p.season_number) : null,
         episode: p.episode_number != null ? String(p.episode_number) : null,
         episodeTitle: p.episode_title || null,
+        icon: pickProgramImage(p.images), // live only — null on a snapshot fallback (artwork stripped). (U2)
+        originalAirDate: p.year != null && p.year !== '' ? String(p.year) : null, // Tubi's release year. (U2)
       });
     }
   }

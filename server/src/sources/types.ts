@@ -120,4 +120,12 @@ export interface SourceAdapter {
    * false on a snapshot fallback. Non-fatal: a throw here is logged and must not fail the channel sync.
    */
   afterSync?(ctx: { raw: any[]; live: boolean; sourceId: string }): Promise<void>;
+  /**
+   * Optional SNAPSHOT-only transform, applied by scripts/rebuild-source-seed.ts to the live `raw` listing
+   * BEFORE it is written to <id>.snapshot.json — NEVER on the sync path. The extension point for a source
+   * whose live rows carry heavy fields the runtime guide DOES want but the committed offline fallback does
+   * not (tubi keeps per-program artwork live for a richer XMLTV guide but strips it from the snapshot, where
+   * it would ~double the file). Pure + synchronous; absent → the raw listing is snapshotted verbatim.
+   */
+  snapshotTransform?(raw: any[]): any[];
 }
