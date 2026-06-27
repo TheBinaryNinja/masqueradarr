@@ -302,20 +302,41 @@ export async function resolvePlayback(videoId: string, slug: string | null): Pro
   return { masterUrl };
 }
 
+// The genre tag Local Now stamps on a channel that is NOT in the requested market — its own "More Cities"
+// pool of OTHER DMAs' local stations, served identically in every market (~249 channels in NY/Columbus/LA
+// alike). The requested market's own locals instead carry "My City" (mutually exclusive — never both), and
+// the national FAST channels carry neither. Confirmed against live /live/epg samples; the tag lives ONLY in
+// `genres` (never iab_genres/category). See .claude/docs/localnow-datasource.md.
+export const MORE_CITIES_GENRE = 'More Cities';
+
+/** True when a channel belongs to Local Now's cross-market "More Cities" pool (out of the requested market). */
+export function isMoreCities(ch: LocalRawChannel): boolean {
+  return (ch.genres ?? []).includes(MORE_CITIES_GENRE);
+}
+
 /**
- * Dedupe (by id) and drop the channels a Local Now playlist should not carry: ones with no id, and
- * subscription-locked ones (`subscription_access.unlocked === false`). Shared by the catalog sync and the
- * self-EPG so both operate on the SAME channel set. Returns [channel, bareId] pairs (id resolved once).
+ * Dedupe (by id) and drop the channels a Local Now playlist should not carry: ones with no id,
+ * subscription-locked ones (`subscription_access.unlocked === false`), and OUT-OF-MARKET "More Cities"
+ * channels (so a per-market playlist keeps only the market's own "My City" locals + the national channels,
+ * giving each market a definitive, non-overlapping lineup — the new default for every Local Now playlist).
+ * Shared by the catalog sync (import.ts) AND the standalone self-EPG (epg/local.ts) so both operate on the
+ * SAME scoped channel set. Returns [channel, bareId] pairs (id resolved once).
  */
 export function selectChannels(raw: LocalRawChannel[]): Array<{ ch: LocalRawChannel; id: string }> {
   const seen = new Set<string>();
   const out: Array<{ ch: LocalRawChannel; id: string }> = [];
+  let outOfMarket = 0;
   for (const ch of raw ?? []) {
     const id = String(ch.video_id ?? ch._id ?? '').trim();
     if (!id || seen.has(id)) continue;
     if (ch.subscription_access && ch.subscription_access.unlocked === false) continue; // locked → skip
+    if (isMoreCities(ch)) {
+      outOfMarket++;
+      continue; // out-of-market "More Cities" → skip (keep only this market's locals + national)
+    }
     seen.add(id);
     out.push({ ch, id });
   }
+  if (outOfMarket) logger.info('local', `excluded ${outOfMarket} out-of-market "More Cities" channel(s)`);
   return out;
 }

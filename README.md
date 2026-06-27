@@ -440,6 +440,12 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`, `proxyHandler`) never branches per source — every per-source difference is encapsulated in the adapter object.
 
+> [!NOTE]
+> Expand _Channel Adapter Architecture : Flowchart_ to view the visual diagram
+
+<details>
+  <summary><strong>Channel Adapter Architecture : Flowchart</strong></summary>
+
 ```mermaid
 flowchart LR
     REG["registry.ts\nSOURCES: SourceAdapter[]"]
@@ -507,6 +513,7 @@ flowchart LR
     class SAMSUNG,LG,WHALE,DISTRO,FLS macro
     class VIZIO,VIDAA identity
 ```
+</details>
 
 ## Key Properties Summary
 
@@ -743,7 +750,11 @@ If GPU hardware is present, the engine can offload re-encoding to it (NVENC / In
 detects what's usable at startup so the Settings screen only offers real options. If no engine is turned on,
 nothing changes — the URL just relays the source straight through.
 
-## Functional flow
+> [!NOTE]
+> Expand _Video Engine : Graph_ to view the visual diagram
+
+<details>
+  <summary>Video Engine : Graph</summary>
 
 ```mermaid
 graph TD
@@ -778,3 +789,4 @@ graph TD
 
     HW["boot hwDetect.ts: ffmpeg -encoders ∩ /dev nodes<br/>→ videoconfig.hwAccel.detected"] -. gates HW presets .-> C
 ```
+</details>
