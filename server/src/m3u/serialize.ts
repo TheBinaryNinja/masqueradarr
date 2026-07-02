@@ -23,8 +23,8 @@ export function channelToExtinf(ch: PlaylistChannelDoc, domain: string, token?: 
 
   // §4 URL line — DERIVED, never stored. This M3U is consumed by EXTERNAL IPTV clients (TiviMate/Kodi/VLC/…),
   // so it targets the externalPlayer mount /api/ext/v1 (not the in-app /api/v1 that src/data.ts
-  // appPlayerProxyPath() builds client-side): with the engine enabled those sessions route through the
-  // server-side ffmpeg/VLC engine for transcode + health capture; with it off /api/ext is a direct relay.
+  // appPlayerProxyPath() builds client-side): those sessions route through the always-on server-side ffmpeg
+  // engine for transcode + health capture.
   // The URL is FORMAT-NEUTRAL (the encoded entry never ends in .m3u8): the loopback-HLS path serves it as
   // application/vnd.apple.mpegurl and the raw-TS path (videoconfig.output==='ts') as video/mp2t — the served
   // content-type, decided by the runtime global, distinguishes the two, so one URL works for both and never

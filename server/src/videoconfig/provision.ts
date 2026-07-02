@@ -1,5 +1,5 @@
 import { VideoConfig, type VideoConfigDoc } from '../models/VideoConfig.js';
-import { VIDEO_CONFIG_ID, DEFAULT_FFMPEG_ARGS, DEFAULT_VLC_ARGS } from './translate.js';
+import { VIDEO_CONFIG_ID, DEFAULT_FFMPEG_ARGS } from './translate.js';
 import { logger } from '../sources/core/logger.js';
 
 // Provision a videoconfig doc on first use so Mongoose applies every sub-schema default (the comprehensive
@@ -19,7 +19,6 @@ export async function ensureVideoConfig(id: string = VIDEO_CONFIG_ID): Promise<V
       await VideoConfig.create({
         _id: VIDEO_CONFIG_ID,
         ffmpeg: { advancedArgs: DEFAULT_FFMPEG_ARGS },
-        vlc: { advancedArgs: DEFAULT_VLC_ARGS },
       });
       logger.info('settings', 'videoconfig provisioned (defaults seeded)');
     } else {
@@ -28,7 +27,7 @@ export async function ensureVideoConfig(id: string = VIDEO_CONFIG_ID): Promise<V
       const base = await ensureVideoConfig(VIDEO_CONFIG_ID);
       const copy: Record<string, unknown> = base
         ? { ...(base as unknown as Record<string, unknown>) }
-        : { ffmpeg: { advancedArgs: DEFAULT_FFMPEG_ARGS }, vlc: { advancedArgs: DEFAULT_VLC_ARGS } };
+        : { ffmpeg: { advancedArgs: DEFAULT_FFMPEG_ARGS } };
       delete copy._id;
       await VideoConfig.create({ _id: id, ...copy });
       logger.info('settings', `videoconfig provisioned (${id}, copied from ${VIDEO_CONFIG_ID})`);

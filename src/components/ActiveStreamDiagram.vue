@@ -205,8 +205,8 @@ function box(n: { x: number; y: number; w: number; h: number; hue: string }) {
         <div class="enc-id mono">{{ eng?.configId }} · {{ eng?.engine }}</div>
         <!-- Borderless two-pair table: each row holds two label→value pairs (left = static/config
              Mode/Output/Preset/HW, right = live -progress metrics FPS/BitRate/DropFrames/Speed). The
-             table only enforces column alignment — labels left, values right. ffmpeg fills the live
-             column; VLC leaves it '—'. -->
+             table only enforces column alignment — labels left, values right. The ffmpeg engine fills the
+             live column from its -progress stream (values are '—' until the first block). -->
         <table class="asd-engtbl mono">
           <tbody>
             <tr>

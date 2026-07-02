@@ -94,11 +94,8 @@ ARG TARGETARCH
 # toolkit-injected nvidia-smi). (MIRROR app.Dockerfile's VAAPI additions.) intel-gpu-tools is x86-only and has
 # NO arm64 Debian package, so it installs ONLY when TARGETARCH=amd64 (else the arm64 build fails to locate it);
 # on arm64 stats/gpu.ts just falls back off intel_gpu_top.
-# vlc = the SECONDARY externalPlayer engine (cvlc, headless; WS7 — MIRROR app.Dockerfile). ffmpeg stays the
-# recommended default; VLC's health is coarser. Large package (Qt/X deps) — baked in by choice so the engine
-# works out-of-the-box; the code degrades VLC→direct-relay gracefully if it were ever absent.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini ffmpeg vlc ca-certificates xvfb chromium fonts-liberation \
+ && apt-get install -y --no-install-recommends tini ffmpeg ca-certificates xvfb chromium fonts-liberation \
       libva2 va-driver-all vainfo radeontop \
  && if [ "${TARGETARCH}" = "amd64" ]; then \
       apt-get install -y --no-install-recommends intel-gpu-tools; \

@@ -9,16 +9,16 @@ import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import { PLAYLISTS, getJson, type Playlist } from '../data';
 import { bus } from '../composables/bus';
+import { VIDEO_ADDONS } from '../composables/videoAddons';
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 // Shape of GET /api/video-config/:id (server returns Omit<VideoConfigDoc, '_id'>) — only the fields shown.
 interface VideoConfigData {
-  enabledEngine: 'ffmpeg' | 'vlc' | null;
   mode: string;
   output: string;
+  addons?: string[];
   ffmpeg: { preset: string; advancedArgs: string };
-  vlc: { preset: string; advancedArgs: string };
   hwAccel: { enabled: boolean; encoder: string };
 }
 interface ConfigGroup {
@@ -77,7 +77,7 @@ onUnmounted(() => bus.off('tvapp:videoconfig-saved', onConfigSaved));
 // ── Layout (fixed node heights → deterministic coords shared by the cards and the SVG curves) ──
 const NODE_W_CONFIG = 300;
 const NODE_W_PL = 264;
-const CONFIG_H = 184;
+const CONFIG_H = 214; // room for the addon-badge strip under the args (deterministic fixed height)
 const PL_H = 114;
 const COL_GAP = 190;   // horizontal room between columns for the curves to breathe
 const PAD = 16;
@@ -132,13 +132,11 @@ const layout = computed(() => {
 });
 
 function engineLabel(d: VideoConfigData | null): string {
-  if (!d) return '—';
-  return d.enabledEngine ?? 'disabled';
+  return d ? 'ffmpeg' : '—';
 }
 function presetLabel(d: VideoConfigData | null): string {
   if (!d) return '—';
-  const eng = d.enabledEngine ?? 'ffmpeg';
-  return (eng === 'vlc' ? d.vlc?.preset : d.ffmpeg?.preset) || '—';
+  return d.ffmpeg?.preset || '—';
 }
 function hwLabel(d: VideoConfigData | null): string {
   if (!d) return '—';
@@ -146,8 +144,11 @@ function hwLabel(d: VideoConfigData | null): string {
 }
 function argsLabel(d: VideoConfigData | null): string {
   if (!d) return '';
-  const eng = d.enabledEngine ?? 'ffmpeg';
-  return (eng === 'vlc' ? d.vlc?.advancedArgs : d.ffmpeg?.advancedArgs) || '';
+  return d.ffmpeg?.advancedArgs || '';
+}
+// Selected addon ids → short chip labels (from the display catalog; falls back to the raw id if unknown).
+function addonBadges(d: VideoConfigData | null): string[] {
+  return (d?.addons ?? []).map((id) => VIDEO_ADDONS.find((a) => a.id === id)?.label ?? id);
 }
 </script>
 
@@ -186,6 +187,10 @@ function argsLabel(d: VideoConfigData | null): string {
             <div class="enc-row"><span>HW</span><b class="mono">{{ hwLabel(n.data) }}</b></div>
           </div>
           <div class="enc-args mono" :title="argsLabel(n.data)">{{ argsLabel(n.data) || '—' }}</div>
+          <div class="enc-addons" style="display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px;">
+            <span v-for="b in addonBadges(n.data)" :key="b"
+                  style="display: inline-block; padding: 1px 6px; border-radius: 6px; font-size: 9px; line-height: 1.5; border: 1px solid var(--hue); color: var(--hue);">{{ b }}</span>
+          </div>
         </div>
 
         <!-- Playlist nodes (right column) -->

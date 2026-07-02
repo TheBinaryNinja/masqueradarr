@@ -26,22 +26,13 @@ export async function getVideoConfigCached(id: string = VIDEO_CONFIG_ID): Promis
     cache.set(id, { doc, at: now });
     return doc;
   } catch {
-    return hit?.doc ?? null; // serve stale on error — the engine then falls back to a direct relay if null
+    return hit?.doc ?? null; // serve stale on error — a null doc just means the engine spawns from built-in defaults
   }
 }
 
 /** Drop a cached videoconfig doc so a PUT/DELETE is visible before the TTL lapses (called by the routes). */
 export function invalidateVideoConfig(id: string = VIDEO_CONFIG_ID): void {
   cache.delete(id);
-}
-
-/** Synchronous read of "is the engine active for `id`" (enabledEngine is 'ffmpeg' OR 'vlc'), from the most
- *  recent getVideoConfigCached(id) fill (false before the first read / when off). Retained as the single-writer
- *  predicate for any future inline phase-gate; the external path is now composer-free (the engine is the sole
- *  writer when active), so it no longer gates a live composer. */
-export function isEngineActiveSync(id: string = VIDEO_CONFIG_ID): boolean {
-  const doc = cache.get(id)?.doc;
-  return doc?.enabledEngine === 'ffmpeg' || doc?.enabledEngine === 'vlc';
 }
 
 // Per-playlist → config-id resolution. Maps a playlist's `videoconfig` field to the videoconfig doc id that

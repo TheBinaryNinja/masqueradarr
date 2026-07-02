@@ -44,7 +44,7 @@ export interface BufferEvent {
 
 // Which player produced a stream session: the in-app slide-out HLS player (appPlayer, the /api/v1 mount) or a
 // third-party IPTV client app — TiviMate/Kodi/VLC/… (externalPlayer, the /api/ext mount routed through the
-// configurable ffmpeg/VLC engine). The proxy derives it from the request mount and threads it here so Active
+// configurable ffmpeg engine). The proxy derives it from the request mount and threads it here so Active
 // Streams / History can classify every viewer + session.
 export type PlayerType = 'appPlayer' | 'externalPlayer';
 

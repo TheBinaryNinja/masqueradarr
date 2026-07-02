@@ -20,11 +20,9 @@
 // engine's -progress drives the channel phase (live/buffer/failed) exactly as the HLS engine does.
 //
 // fd layout (the key difference from externalEngine): stdout (pipe:1) carries the TS BYTES (ffmpeg `-f mpegts
-// pipe:1` / VLC `std{access=file,mux=ts,dst=/dev/stdout}`), so -progress can't use it — ffmpeg sends it to a
-// dedicated fd 3 (pipe:3); stderr (pipe:2) keeps the logs. VLC has no -progress, so its health is the TS
-// byte-flow cadence (appendChunk → noteProducerAlive) + the watchdog (coarser, like its HLS path). DB-free +
-// source-agnostic like the rest of sources/core. One shared engine process per channel; reaped a short delay
-// after the last client leaves (fast re-join) or when fully hung.
+// pipe:1`), so -progress can't use it — ffmpeg sends it to a dedicated fd 3 (pipe:3); stderr (pipe:2) keeps
+// the logs. DB-free + source-agnostic like the rest of sources/core. One shared engine process per channel;
+// reaped a short delay after the last client leaves (fast re-join) or when fully hung.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,10 +30,10 @@ import type { ServerResponse } from 'node:http';
 import type { Readable } from 'node:stream';
 import { logger } from './logger.js';
 import { streamKey, noteFailure, noteFailed } from './streamState.js';
-import { createEngineHealth, parseProgress, parseFreezeLines, watchdog, noteProducerAlive, newProgressCarry, newFreezeCarry, type EngineHealth, type ProgressCarry, type EngineSnapshot } from './engineHealth.js';
-import { buildFfmpegArgv, buildVlcArgv } from './engineArgs.js';
+import { createEngineHealth, parseProgress, parseFreezeLines, watchdog, newProgressCarry, newFreezeCarry, type EngineHealth, type ProgressCarry, type EngineSnapshot } from './engineHealth.js';
+import { buildFfmpegArgv } from './engineArgs.js';
 import { noteSocketViewerOpen, noteSocketBytes, noteSocketViewerClose, nextSocketConnId, type PlayerType } from './streamTelemetry.js';
-import { VLC_BIN, type ExternalEngineConfig } from './externalEngine.js';
+import { type ExternalEngineConfig } from './externalEngine.js';
 
 const TAG = 'stream:ext-ts';
 
@@ -70,7 +68,6 @@ interface TsProc {
   upstreamUrl: string; // the adapter-resolved master — ffmpeg's -i input
   proc: ChildProcess | null;
   startedAt: number;
-  engine: 'ffmpeg' | 'vlc'; // ffmpeg drives health from -progress (fd 3); vlc from raw-TS byte-flow cadence (no -progress)
   configId: string; // resolved videoconfig id this proc runs under ('app' | 'app_<playlistId>') — Active Streams panel
   mode: string; // spawn-time mode ('auto' | 'copy' | 'transcode')
   hs: EngineHealth; // shared -progress → streamState health (engineHealth.ts)
@@ -90,7 +87,6 @@ interface TsProc {
 const procs = new Map<string, TsProc>();
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let ffmpegMissingLogged = false;
-let vlcMissingLogged = false;
 let exitCleanupRegistered = false;
 
 function keyFor(channelKey: string): string {
@@ -125,8 +121,6 @@ function appendChunk(rec: TsProc, data: Buffer): void {
   rec.chunks.push({ idx: rec.nextChunkIdx++, data, at: Date.now() });
   rec.bytesBuffered += data.length;
   rec.producedFirst = true;
-  // VLC has no -progress: arriving TS bytes ARE the liveness signal (ffmpeg drives health from fd 3 instead).
-  if (rec.engine === 'vlc') noteProducerAlive(rec.hs, Date.now());
   // Evict oldest chunks past the byte cap (always keep ≥1 so a just-attached client has something to read).
   while (rec.bytesBuffered > MAX_BUFFER_BYTES && rec.chunks.length > 1) {
     rec.bytesBuffered -= rec.chunks.shift()!.data.length;
@@ -188,18 +182,14 @@ function startBehindIdx(rec: TsProc): number {
 // ── spawn / lifecycle ───────────────────────────────────────────────────────────────────────────────────
 
 function spawnTs(key: string, channelKey: string, upstreamUrl: string, headers: Record<string, string>, cfg: ExternalEngineConfig): TsProc {
-  // Raw-TS: stdout (pipe:1) carries the TS bytes (ffmpeg `-f mpegts pipe:1` / VLC `std{access=file,dst=/dev/stdout}`).
-  // ffmpeg sends -progress to a dedicated fd 3 (pipe:3); VLC has no -progress, so its health is the TS byte-flow
-  // cadence (appendChunk → noteProducerAlive) + the watchdog.
+  // Raw-TS: stdout (pipe:1) carries the TS bytes (ffmpeg `-f mpegts pipe:1`). ffmpeg sends -progress to a
+  // dedicated fd 3 (pipe:3); stderr (pipe:2) keeps the logs.
   const ua = headers['User-Agent'] || headers['user-agent'] || 'Masqueradarr-ext/1.0';
-  const isVlc = cfg.engine === 'vlc';
-  const bin = isVlc ? VLC_BIN : 'ffmpeg';
-  // ffmpeg-only freezedetect tap. Here stdout (fd 1) is the TS bytes and fd 3 is the -progress stream, so the
-  // freeze metadata pipe is fd 4.
-  const freezeOn = !isVlc && !!cfg.freezeDetect;
-  const argv = isVlc
-    ? buildVlcArgv(cfg.args, { placeholders: { INPUT: upstreamUrl, UA: ua }, headers })
-    : buildFfmpegArgv(cfg.args, { placeholders: { INPUT: upstreamUrl, UA: ua }, headers, progressPipe: 'pipe:3', statsPeriodS: STATS_PERIOD_S, inputArgs: cfg.inputArgs, freezePipe: freezeOn ? 'pipe:4' : undefined });
+  const bin = 'ffmpeg';
+  // freezedetect tap. Here stdout (fd 1) is the TS bytes and fd 3 is the -progress stream, so the freeze
+  // metadata pipe is fd 4.
+  const freezeOn = !!cfg.freezeDetect;
+  const argv = buildFfmpegArgv(cfg.args, { placeholders: { INPUT: upstreamUrl, UA: ua }, headers, progressPipe: 'pipe:3', statsPeriodS: STATS_PERIOD_S, inputArgs: cfg.inputArgs, fflags: cfg.fflags, outputArgs: cfg.outputArgs, freezePipe: freezeOn ? 'pipe:4' : undefined });
 
   const rec: TsProc = {
     key,
@@ -207,7 +197,6 @@ function spawnTs(key: string, channelKey: string, upstreamUrl: string, headers: 
     upstreamUrl,
     proc: null,
     startedAt: Date.now(),
-    engine: cfg.engine,
     configId: cfg.configId,
     mode: cfg.mode,
     hs: createEngineHealth(channelKey, cfg, Date.now()),
@@ -227,13 +216,10 @@ function spawnTs(key: string, channelKey: string, upstreamUrl: string, headers: 
 
   let proc: ChildProcess;
   try {
-    // fd 0 ignored, 1 = TS bytes, 2 = logs; ffmpeg adds fd 3 = -progress (VLC has none), and fd 4 =
-    // freezedetect metadata when the freeze tap is enabled.
-    const stdio: Array<'ignore' | 'pipe'> = isVlc
-      ? ['ignore', 'pipe', 'pipe']
-      : freezeOn
-        ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']
-        : ['ignore', 'pipe', 'pipe', 'pipe'];
+    // fd 0 ignored, 1 = TS bytes, 2 = logs, 3 = -progress; fd 4 = freezedetect metadata when the freeze tap is enabled.
+    const stdio: Array<'ignore' | 'pipe'> = freezeOn
+      ? ['ignore', 'pipe', 'pipe', 'pipe', 'pipe']
+      : ['ignore', 'pipe', 'pipe', 'pipe'];
     proc = spawn(bin, argv, { stdio });
   } catch {
     rec.exited = true;
@@ -243,7 +229,7 @@ function spawnTs(key: string, channelKey: string, upstreamUrl: string, headers: 
   rec.proc = proc;
 
   proc.stdout?.on('data', (d: Buffer) => onStdout(rec, d));
-  if (!isVlc) {
+  {
     // fd 3 = the ffmpeg -progress health stream (separate from the TS bytes on stdout and the logs on stderr).
     const progress = proc.stdio[3] as Readable | undefined | null;
     progress?.on('data', (d: Buffer) => parseProgress(rec.hs, d.toString(), rec.carry));
@@ -260,10 +246,9 @@ function spawnTs(key: string, channelKey: string, upstreamUrl: string, headers: 
   });
   proc.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'ENOENT') {
-      if (isVlc ? !vlcMissingLogged : !ffmpegMissingLogged) {
-        logger.warn(TAG, `${bin} not found — raw-TS ${cfg.engine} engine unavailable (external clients get a 502 until it is present)`);
-        if (isVlc) vlcMissingLogged = true;
-        else ffmpegMissingLogged = true;
+      if (!ffmpegMissingLogged) {
+        logger.warn(TAG, `${bin} not found — raw-TS engine unavailable (external clients get a 502 until it is present)`);
+        ffmpegMissingLogged = true;
       }
     } else {
       logger.error(TAG, `${bin} spawn error ${key}: ${err.message}`);
@@ -287,7 +272,7 @@ function spawnTs(key: string, channelKey: string, upstreamUrl: string, headers: 
     procs.delete(key);
   });
 
-  logger.info(TAG, `ts engine start ${key} (${cfg.engine}/${cfg.mode}) ← ${upstreamUrl}`);
+  logger.info(TAG, `ts engine start ${key} (ffmpeg/${cfg.mode}) ← ${upstreamUrl}`);
   return rec;
 }
 
@@ -431,7 +416,7 @@ export function enginesForChannel(channelKey: string): EngineSnapshot[] {
     if (rec.channelKey !== channelKey || !rec.proc || rec.exited) continue;
     out.push({
       output: 'ts',
-      engine: rec.engine,
+      engine: 'ffmpeg',
       configId: rec.configId,
       mode: rec.mode,
       upstreamUrl: rec.upstreamUrl,

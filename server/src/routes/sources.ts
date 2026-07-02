@@ -26,7 +26,8 @@ import {
 } from '../sources/core/externalEngine.js';
 import { ensureTsStream, attachTsClient } from '../sources/core/externalTsEngine.js';
 import { getVideoConfigCached, resolvePlaylistConfigId } from '../videoconfig/runtime.js';
-import { DEFAULT_FFMPEG_ARGS, DEFAULT_VLC_ARGS, DEFAULT_TS_ARGS, DEFAULT_VLC_TS_ARGS, VIDEO_CONFIG_ID } from '../videoconfig/translate.js';
+import { DEFAULT_FFMPEG_ARGS, DEFAULT_TS_ARGS, VIDEO_CONFIG_ID } from '../videoconfig/translate.js';
+import { composeAddonArgs } from '../videoconfig/addonCatalog.js';
 import { createMetrics, snapshotOne, type Metrics } from '../sources/core/metrics.js';
 import { streamKey, phaseFor } from '../sources/core/streamState.js';
 import { ensureProbe, probeFor } from '../sources/core/streamProbe.js';
@@ -111,59 +112,53 @@ function makePersistProbe(source: string): (entryUrl: string, probe: StreamProbe
 
 // Composer-free external HLS entry resolver — the externalPlayer's loopback-HLS path (it REPLACES the old
 // B-Roll composer on /api/ext, the solid separation from the in-app player). For a channel entry it routes the
-// adapter-resolved master through the per-channel ffmpeg/VLC engine (videoconfig-driven, per-playlist via
+// adapter-resolved master through the per-channel ffmpeg engine (videoconfig-driven, per-playlist via
 // ctx.configId) and returns the engine's 127.0.0.1 loopback HLS master for the proxy handler's common
-// fetch→rewrite→serve path; with the engine OFF it returns the adapter master unchanged (a B-Roll-free DIRECT
-// RELAY, so external clients keep working). Side effects on each entry poll: register the viewer (poll-recency
-// heartbeat → Active Streams/History) + kick the one-shot ffprobe (technical details). NO slate — a failure
-// throws and the proxy handler 502s (the externalPlayer's "truest path", exactly like the raw-TS path). The
-// videoconfig read is cached (5s TTL); a config change takes effect on the next channel establish.
+// fetch→rewrite→serve path. ffmpeg is the always-on external engine — there is no direct-relay bypass. Side
+// effects on each entry poll: register the viewer (poll-recency heartbeat → Active Streams/History) + kick the
+// one-shot ffprobe (technical details). NO slate — a failure throws and the proxy handler 502s (the
+// externalPlayer's "truest path", exactly like the raw-TS path). The videoconfig read is cached (5s TTL); a
+// config change takes effect on the next channel establish.
 function makeExternalHlsEntry(adapter: (typeof SOURCES)[number]): ServeEntry {
   const persist = makePersistProbe(adapter.id);
   return async (entryUrl, ctx) => {
     const cfg = await getVideoConfigCached(ctx.configId);
-    const engine = cfg?.enabledEngine;
     // The entry poll is the viewer heartbeat (poll-recency telemetry → Active Streams / History).
     noteViewer(adapter.id, entryUrl, ctx.ip, ctx.ua, ctx.username, 'externalPlayer');
-    // Fast path: the engine is on AND already streaming this channel. The running ffmpeg/VLC holds its own
-    // upstream connection (segments flow from the CDN), so externalPlayerEnsureStream would just DISCARD a
-    // freshly-resolved master. Re-resolving every poll only re-hits the rotating/flapping source mirror and
-    // 502s the poll the instant it blips — tearing down an otherwise-healthy stream. So while the engine is
-    // warm, skip the resolve entirely and just keep it alive (refresh the idle-sweep heartbeat).
-    if (cfg && (engine === 'ffmpeg' || engine === 'vlc')) {
-      const warm = externalPlayerKeepAlive(adapter.id, entryUrl, ctx.configId);
-      if (warm) return warm;
-    }
-    // Establish (no live engine yet) or direct-relay (engine off): we need a real upstream master.
+    // Fast path: the engine is already streaming this channel. The running ffmpeg holds its own upstream
+    // connection (segments flow from the CDN), so externalPlayerEnsureStream would just DISCARD a freshly-
+    // resolved master. Re-resolving every poll only re-hits the rotating/flapping source mirror and 502s the
+    // poll the instant it blips — tearing down an otherwise-healthy stream. So while the engine is warm, skip
+    // the resolve entirely and just keep it alive (refresh the idle-sweep heartbeat).
+    const warm = externalPlayerKeepAlive(adapter.id, entryUrl, ctx.configId);
+    if (warm) return warm;
+    // Establish (no live engine yet): we need a real upstream master. ffmpeg is always the external engine —
+    // there is no engine-off direct-relay branch; a null cfg just means the engine spawns from built-in defaults.
     const resolved = await adapter.resolveStream(entryUrl); // the real upstream master (per-source resolve)
-    let masterUrl: string;
-    if (cfg && (engine === 'ffmpeg' || engine === 'vlc')) {
-      // The engine fetches the upstream DIRECTLY (bypassing the proxy), so it needs the adapter's gate headers.
-      const headers = adapter.proxy.upstreamHeaders(resolved.masterUrl);
-      const ecfg: ExternalEngineConfig = {
-        engine,
-        args:
-          engine === 'vlc'
-            ? cfg.vlc?.advancedArgs?.trim() || DEFAULT_VLC_ARGS
-            : cfg.ffmpeg?.advancedArgs?.trim() || DEFAULT_FFMPEG_ARGS,
-        mode: cfg.mode,
-        output: cfg.output,
-        // Shared watchdog/thresholds (failTimeoutS gates both engines' stall→failed; stallSpeedThreshold is
-        // ffmpeg-only — VLC has no speed signal, its liveness is segment cadence).
-        stallSpeedThreshold: cfg.ffmpeg?.options?.stallSpeedThreshold ?? 0.95,
-        failTimeoutS: cfg.ffmpeg?.options?.failTimeoutS ?? 15,
-        configId: ctx.configId, // folded into the engine proc-map key → per-config process isolation
-        // ffmpeg-only: when this resolved per-playlist config has ExtPicky Override on, add `-extension_picky 0`
-        // so the HLS demuxer reads disguised-extension segments (e.g. dlhd's .js/.jpg). VLC has no such gate.
-        inputArgs: engine === 'ffmpeg' && cfg.extPickyOverride ? ['-extension_picky', '0'] : undefined,
-        // ffmpeg-only: when this resolved per-playlist config has Freeze detection on, spawn the decode-only
-        // freezedetect tap so frozen pictures register as buffering (VLC has no freezedetect — ignored downstream).
-        freezeDetect: !!cfg.freezeDetect,
-      };
-      ({ masterUrl } = await externalPlayerEnsureStream(adapter.id, entryUrl, resolved.masterUrl, headers, ecfg));
-    } else {
-      masterUrl = resolved.masterUrl; // engine off → B-Roll-free direct relay (adapter master, mirrored verbatim)
-    }
+    // The engine fetches the upstream DIRECTLY (bypassing the proxy), so it needs the adapter's gate headers.
+    const headers = adapter.proxy.upstreamHeaders(resolved.masterUrl);
+    const output = cfg?.output ?? 'hls';
+    // Compose the selected addons' flag-splices (ad-break resilience) for this output mode; extPicky prepends
+    // its input flag. buildFfmpegArgv does the per-flag skip so advancedArgs stays authoritative.
+    const addon = composeAddonArgs(cfg?.addons ?? [], output);
+    const ecfg: ExternalEngineConfig = {
+      args: cfg?.ffmpeg?.advancedArgs?.trim() || DEFAULT_FFMPEG_ARGS,
+      mode: cfg?.mode ?? 'auto',
+      output,
+      // Shared watchdog/thresholds (failTimeoutS gates the stall→failed escalation; stallSpeedThreshold is a
+      // captured metric).
+      stallSpeedThreshold: cfg?.ffmpeg?.options?.stallSpeedThreshold ?? 0.95,
+      failTimeoutS: cfg?.ffmpeg?.options?.failTimeoutS ?? 15,
+      configId: ctx.configId, // folded into the engine proc-map key → per-config process isolation
+      // Input flags: ExtPicky Override (`-extension_picky 0` for dlhd's disguised segments) + addon inputFlags.
+      inputArgs: [...(cfg?.extPickyOverride ? ['-extension_picky', '0'] : []), ...addon.inputFlags],
+      fflags: addon.fflags, // merged into the base -fflags token (discontinuity-tolerance)
+      outputArgs: addon.outputFlags, // muxer flags before the operator's output (discontinuity-tolerance)
+      // When this resolved per-playlist config has Freeze detection on, spawn the decode-only freezedetect tap
+      // so frozen pictures register as buffering.
+      freezeDetect: !!cfg?.freezeDetect,
+    };
+    const { masterUrl } = await externalPlayerEnsureStream(adapter.id, entryUrl, resolved.masterUrl, headers, ecfg);
     // One-shot ffprobe of what the client will actually receive (drives the drawer "Technical" block). Keyed by
     // the PLAIN streamKey so GET /api/sources/:id/stream-details reads it back (the engine proc key is config-scoped).
     ensureProbe(streamKey(adapter.id, entryUrl), masterUrl, adapter.proxy.upstreamHeaders(masterUrl), (p) =>
@@ -208,29 +203,24 @@ function createExternalTsHandler(adapter: (typeof SOURCES)[number], metrics: Met
       // ffmpeg fetches the upstream DIRECTLY (bypassing the proxy), so it needs the adapter's gate headers.
       const headers = adapter.proxy.upstreamHeaders(resolved.masterUrl);
       // The operative args must mux TS to STDOUT for the ring buffer. Use the user's advancedArgs only if it
-      // already targets stdout (a custom TS string), else the built-in per-engine default — the HLS-oriented
-      // advancedArgs write files, not a pipe. ffmpeg ⇒ `-f mpegts pipe:1`; VLC ⇒ `std{...dst=/dev/stdout}`.
-      const engine = cfg?.enabledEngine === 'vlc' ? 'vlc' : 'ffmpeg';
-      let args: string;
-      if (engine === 'vlc') {
-        const u = cfg?.vlc?.advancedArgs?.trim() || '';
-        args = u.includes('/dev/stdout') || u.includes('dst=-') ? u : DEFAULT_VLC_TS_ARGS;
-      } else {
-        const u = cfg?.ffmpeg?.advancedArgs?.trim() || '';
-        args = u.includes('pipe:1') ? u : DEFAULT_TS_ARGS;
-      }
+      // already targets stdout (a custom TS string), else the built-in default — the HLS-oriented advancedArgs
+      // write files, not a pipe. ffmpeg ⇒ `-f mpegts pipe:1`.
+      const u = cfg?.ffmpeg?.advancedArgs?.trim() || '';
+      const args = u.includes('pipe:1') ? u : DEFAULT_TS_ARGS;
+      const addon = composeAddonArgs(cfg?.addons ?? [], 'ts'); // ad-break resilience flag-splices for this config
       const ecfg: ExternalEngineConfig = {
-        engine,
         args,
         mode: cfg?.mode ?? 'auto',
         output: 'ts',
         stallSpeedThreshold: cfg?.ffmpeg?.options?.stallSpeedThreshold ?? 0.95,
         failTimeoutS: cfg?.ffmpeg?.options?.failTimeoutS ?? 15,
         configId, // folded into the engine proc-map key → per-config process isolation
-        // ffmpeg-only: raw-TS dlhd would fail identically without this — ExtPicky Override adds -extension_picky 0.
-        inputArgs: engine === 'ffmpeg' && cfg?.extPickyOverride ? ['-extension_picky', '0'] : undefined,
-        // ffmpeg-only: same per-playlist Freeze detection as the HLS path — spawn the decode-only freezedetect tap
-        // when this resolved config has it on (VLC has no freezedetect — ignored downstream).
+        // Input flags: ExtPicky Override (raw-TS dlhd fails identically without -extension_picky 0) + addon inputFlags.
+        inputArgs: [...(cfg?.extPickyOverride ? ['-extension_picky', '0'] : []), ...addon.inputFlags],
+        fflags: addon.fflags, // merged into the base -fflags token (discontinuity-tolerance)
+        outputArgs: addon.outputFlags, // muxer flags before the pipe:1 output (discontinuity-tolerance)
+        // Same per-playlist Freeze detection as the HLS path — spawn the decode-only freezedetect tap when this
+        // resolved config has it on.
         freezeDetect: !!cfg?.freezeDetect,
       };
       const rec = await ensureTsStream(adapter.id, entryUrl, resolved.masterUrl, headers, ecfg);
@@ -258,8 +248,8 @@ function createExternalTsHandler(adapter: (typeof SOURCES)[number], metrics: Met
 //     engine through makeExternalHlsEntry (serveEntry); raw-TS (videoconfig.output==='ts') via the held-socket
 //     ring buffer (createExternalTsHandler). extraAllowed lets the rewritten 127.0.0.1 loopback segment hops
 //     past the adapter's SSRF gate.
-// The engine is the SOLE streamState writer on the external path when active (there is no external composer to
-// race); when the engine is off, /api/ext is a B-Roll-free direct relay.
+// The engine is the SOLE streamState writer on the external path (there is no external composer to race);
+// ffmpeg is always on, so every /api/ext stream is engine-driven — there is no engine-off direct relay.
 const metricsById = new Map<string, Metrics>();
 const proxyHandlers = new Map<string, RequestHandler>();
 const externalHandlers = new Map<string, RequestHandler>();
@@ -281,8 +271,8 @@ for (const adapter of SOURCES) {
   proxyHandlers.set(adapter.id, createProxyHandler(adapter, m, composer) as RequestHandler);
 
   // External-client mount (externalPlayer), HLS output: composer-free + engine-driven (no B-Roll). The entry
-  // resolver routes through the ffmpeg/VLC engine (loopback HLS) or relays the adapter master when the engine is
-  // off; the proxy handler then fetches+rewrites+serves it (and proxies the loopback-allowed segment hops).
+  // resolver routes through the always-on ffmpeg engine (loopback HLS); the proxy handler then
+  // fetches+rewrites+serves it (and proxies the loopback-allowed segment hops).
   externalHandlers.set(
     adapter.id,
     createProxyHandler(adapter, m, undefined, {
@@ -482,10 +472,9 @@ sourcesRouter.get('/api/v1/:source/*', (req: AuthRequest, res) => {
 });
 
 // External-client mount (externalPlayer): the per-user M3U composer writes these URLs (m3u/serialize.ts). The
-// path is composer-free + engine-driven — NO B-Roll, a solid separation from the in-app /api/v1 player. When the
-// ffmpeg/VLC engine is enabled (per the playlist's resolved videoconfig) the session is routed through the
-// server-side engine for transcode/normalize + loading/buffering/failed health capture; when it's off /api/ext
-// is a B-Roll-free direct relay, so external clients keep working either way. Same access gate as /api/v1.
+// path is composer-free + engine-driven — NO B-Roll, a solid separation from the in-app /api/v1 player. Every
+// session is routed through the always-on server-side ffmpeg engine (per the playlist's resolved videoconfig)
+// for transcode/normalize + loading/buffering/failed health capture. Same access gate as /api/v1.
 //
 // Per-playlist config: the composed URL carries ?pl=<owningPlaylistId>; resolvePlaylistConfigId maps it to the
 // videoconfig (Default 'app' or Custom 'app_<id>'). The id is attached to the request so the entry resolver +
@@ -493,9 +482,8 @@ sourcesRouter.get('/api/v1/:source/*', (req: AuthRequest, res) => {
 // for one channel stay isolated). Old M3Us / source playlists without ?pl fall back to :source.
 //
 // Output split (videoconfig.output): the default 'hls' path serves the loopback-HLS engine (makeExternalHlsEntry);
-// the opt-in 'ts' path (ffmpeg OR vlc engine on) serves a held-open raw MPEG-TS socket via externalTsEngine.ts for
-// raw-only clients. The composed M3U URL is format-neutral, so the same URL works for either (served content-type
-// distinguishes them).
+// the opt-in 'ts' path serves a held-open raw MPEG-TS socket via externalTsEngine.ts for raw-only clients. The
+// composed M3U URL is format-neutral, so the same URL works for either (served content-type distinguishes them).
 sourcesRouter.get('/api/ext/v1/:source/*', async (req: AuthRequest, res) => {
   const source = req.params.source as string;
   if (!checkStreamAccess(req, res, source)) return;
@@ -504,7 +492,7 @@ sourcesRouter.get('/api/ext/v1/:source/*', async (req: AuthRequest, res) => {
   const configId = await resolvePlaylistConfigId(playlistId);
   (req as any).videoConfigId = configId;
   const cfg = await getVideoConfigCached(configId);
-  if ((cfg?.enabledEngine === 'ffmpeg' || cfg?.enabledEngine === 'vlc') && cfg.output === 'ts') {
+  if (cfg?.output === 'ts') {
     const tsHandler = externalTsHandlers.get(source);
     if (!tsHandler) {
       return res.status(404).type('text/plain').send(`Unknown source: ${source}`);

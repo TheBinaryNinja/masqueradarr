@@ -88,18 +88,13 @@ ARG TARGETARCH
 #   intel-gpu-tools is x86-only (Intel GPUs don't exist on arm64) and HAS NO arm64 Debian package, so it is
 #   installed ONLY when TARGETARCH=amd64 — otherwise the arm64 build fails with "Unable to locate package".
 #   On arm64 stats/gpu.ts simply finds no intel_gpu_top and degrades to the AMD/NVIDIA paths.
-# vlc = the SECONDARY externalPlayer engine (cvlc, headless; WS7) — operators can switch the engine to VLC in
-#   Settings → Video Configuration. ffmpeg is the recommended default (cleaner -progress health); VLC's health is
-#   coarser (segment/byte cadence). NOTE: `vlc` is a large package (Qt/X deps) — it's baked in by choice so the
-#   engine works out-of-the-box; remove it to slim the image if VLC is never used (the code then degrades
-#   VLC→direct-relay gracefully, logged once).
 # chromium (+ fonts-liberation) = the distro browser the dulo streamed-login drives via puppeteer-core
 # (executablePath=CHROMIUM_PATH=/usr/bin/chromium); nss/freetype/harfbuzz arrive transitively with chromium.
 # xvfb = virtual framebuffer / X server for that browser, which runs HEADFUL (Google's "Continue with Google"
 # gate blocks headless). app-entrypoint.sh starts Xvfb on DISPLAY=:99 before node.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      tini ffmpeg vlc ca-certificates xvfb chromium fonts-liberation \
+      tini ffmpeg ca-certificates xvfb chromium fonts-liberation \
       libva2 va-driver-all vainfo radeontop \
  && if [ "${TARGETARCH}" = "amd64" ]; then \
       apt-get install -y --no-install-recommends intel-gpu-tools; \

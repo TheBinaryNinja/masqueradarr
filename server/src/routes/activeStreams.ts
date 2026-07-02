@@ -55,11 +55,12 @@ function redactUpstream(raw: string): string {
 }
 
 // Per-channel external-player ENGINE snapshot (drives the Active Streams "Video Engine Service" diagram). One
-// entry per live ffmpeg/VLC engine process serving this channel (HLS + raw-TS cores unioned; usually 0 or 1).
+// entry per live ffmpeg engine process serving this channel (HLS + raw-TS cores unioned; usually 0 or 1).
 // Each core snapshot is enriched here with the videoconfig-derived preset/advancedArgs/hwEncoder (the cores
 // stay DB-free) and has its resolved upstream URL query-redacted. channelId = PlaylistChannel._id →
-// (origin ?? source, streamEntryUrl) → the engine channel key. An empty `engines` ⇒ no transcode engine (in-app
-// passthrough / engine off) ⇒ the SPA shows the passthrough note. Admin-only via the adminOnlyRoutes prefix.
+// (origin ?? source, streamEntryUrl) → the engine channel key. An empty `engines` ⇒ no live external engine for
+// this channel (only the in-app player is watching, or nobody) ⇒ the SPA shows the passthrough note. Admin-only
+// via the adminOnlyRoutes prefix.
 activeStreamsRouter.get('/:channelId/engine', async (req, res, next) => {
   try {
     const ch = await PlaylistChannel.findById(req.params.channelId, { source: 1, origin: 1, streamEntryUrl: 1 }).lean();
@@ -69,7 +70,7 @@ activeStreamsRouter.get('/:channelId/engine', async (req, res, next) => {
     const engines = await Promise.all(
       snapshots.map(async (s) => {
         const doc = await getVideoConfigCached(s.configId);
-        const sub = s.engine === 'vlc' ? doc?.vlc : doc?.ffmpeg;
+        const sub = doc?.ffmpeg;
         const hw = doc?.hwAccel;
         return {
           ...s,

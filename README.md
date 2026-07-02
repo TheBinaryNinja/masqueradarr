@@ -107,7 +107,7 @@ and rebuilds everything underneath it to lift those ceilings:
 | **Guide data** | One bundled XMLTV grabber | Gracenote, EPG-PW, Jesmann, Custom XMLTV + self-EPG |
 | **Auth** | None | scrypt users, roles, per-user access lists |
 | **Auth'd sources** | Not possible | Supported (streamed-login session capture) |
-| **External clients** | Pass-through only | ffmpeg/VLC transcode engine, GPU HW accel |
+| **External clients** | Pass-through only | ffmpeg transcode engine, GPU HW accel |
 | **Observability** | Logs | Live WS telemetry, history/metrics, ffprobe, system stats, app logs |
 | **Backup** | None | Full-system gzip backup / restore + scheduled backups |
 | **Base image** | Alpine + s6-overlay | Debian bookworm (glibc) + tini |
@@ -138,7 +138,7 @@ Key subsystems:
   `cronjobs` collection.
 - **Composition + export** — composes Global, per-user, and custom `.m3u` playlists with matching
   XMLTV guide siblings for downstream clients.
-- **externalPlayer engine** — ffmpeg / VLC transcode for third-party IPTV clients on a dedicated
+- **externalPlayer engine** — always-on ffmpeg transcode for third-party IPTV clients on a dedicated
   mount, with boot-time hardware-encoder detection.
 - **Backup & maintenance** — full-system gzip backup / restore, scheduled backups, and Mongo
   index-rebuild / workspace-reset maintenance actions.
@@ -417,7 +417,7 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 **Transcoding**
 
-- An optional per-playlist **ffmpeg / VLC engine** for external clients — **loopback-HLS** (default) or
+- An always-on per-playlist **ffmpeg engine** for external clients — **loopback-HLS** (default) or
   **raw MPEG-TS** output.
 - Multi-vendor **GPU hardware acceleration** (NVENC / VAAPI / QSV) with boot-time encoder detection, so
   the UI only offers what the host can actually do.
@@ -716,11 +716,11 @@ Per composed surface:
 > **One-line:** external clients subscribe to a per-user `.m3u` whose channel URLs are the **`/api/ext/v1`**
 > mount (the M3U composer writes them, carrying `&pl=<owningPlaylistId>` so the per-playlist config is selectable).
 > The external HLS path is **composer-free + engine-driven** — there is **no B-Roll slate** on external (that's the
-> in-app `/api/v1` path only). When an engine is enabled in **Settings → Video Configuration**, those sessions are
-> routed through a shared per-channel **ffmpeg or VLC** process that transcodes/normalizes **and** captures
+> in-app `/api/v1` path only). Every session is **always** routed through a shared per-channel **ffmpeg** process
+> (configured in **Settings → Video Configuration**) that transcodes/normalizes **and** captures
 > loading/buffering/failed health for an otherwise-opaque client — output as **loopback HLS** (default) or an
-> opt-in **raw MPEG-TS socket**. With no engine enabled, `/api/ext` is a plain **B-Roll-free direct relay**, so
-> external clients keep working either way; a resolve/engine failure is a clean error (**502**), not a slate.
+> opt-in **raw MPEG-TS socket**. ffmpeg is the single, always-on external engine (no engine selector, no
+> enable/disable toggle, no direct-relay bypass); a resolve/engine failure is a clean error (**502**), not a slate.
 
 ## Plain language
 
@@ -729,7 +729,7 @@ Those channels point at a special server URL (`/api/ext/...`) that TVApp2 writes
 apps. The problem this solves: an outside app is a **black box** — it never tells the server "I'm buffering" or
 "this failed," and it may need a different video format than the source provides.
 
-So TVApp2 can put a **media engine** (ffmpeg, or optionally VLC) in the middle. The engine pulls the channel
+So TVApp2 puts a **media engine** (ffmpeg) in the middle of every external session. The engine pulls the channel
 once, optionally re-encodes it to something every player accepts, and — crucially — **watches its own health**
 (is it keeping up? did it stall? did it die?) so the server can show that session's state on the **Active
 Streams** and **History** screens, exactly like an in-app session. One engine process is shared by everyone
@@ -747,8 +747,9 @@ to hand the bytes over:
   raw-only clients. This needs its own connection-counting because such a client never re-polls.
 
 If GPU hardware is present, the engine can offload re-encoding to it (NVENC / Intel QSV / VAAPI); the server
-detects what's usable at startup so the Settings screen only offers real options. If no engine is turned on,
-nothing changes — the URL just relays the source straight through.
+detects what's usable at startup so the Settings screen only offers real options. The default preset is a
+near-passthrough remux (`-c copy`), so the always-on engine adds little CPU for a source that's already
+browser-safe.
 
 > [!NOTE]
 > Expand _Video Engine : Graph_ to view the visual diagram
@@ -762,25 +763,22 @@ graph TD
     B -->|401/403| Bx["plain-text error"]
     B --> C0["resolvePlaylistConfigId(?pl)<br/>→ configId: 'app' | 'app_&lt;pl&gt;'"]
     C0 --> C["getVideoConfigCached(configId) (5s TTL, per-id)"]
-    C --> D{"enabledEngine?"}
-    D -->|"null (off)"| R["B-Roll-free DIRECT RELAY<br/>(serveEntry returns adapter master)"]
-    D -->|ffmpeg / vlc| E{"output?"}
+    C --> E{"output? (engine always ffmpeg)"}
 
     E -->|"hls (default)"| F["serveEntry = makeExternalHlsEntry<br/>resolveStream · noteViewer · ensureProbe<br/>(externalEngine.ts) — COMPOSER-FREE, no B-Roll"]
     F -->|resolve/engine fail| Fx["clean 502 (no slate)"]
-    F --> G["spawn ffmpeg/cvlc (shared per channel+config)<br/>key = streamKey#configId · advancedArgs → buildFfmpegArgv/buildVlcArgv"]
+    F --> G["spawn ffmpeg (shared per channel+config)<br/>key = streamKey#configId · advancedArgs → buildFfmpegArgv"]
     G --> H["live HLS window → 127.0.0.1 loopback dir"]
     H --> P["proxy handler direct-hop: fetch loopback master<br/>· child-rewrite /api/ext/v1 (+ &amp;token= &amp;pl=) · serve bytes<br/>engine owns streamState (no composer)"]
-    R --> P
     P --> A
 
     E -->|"ts (opt-in)"| J["createExternalTsHandler → ensureTsStream<br/>(externalTsEngine.ts)"]
-    J --> K["spawn ffmpeg -f mpegts pipe:1 / cvlc dst=/dev/stdout"]
+    J --> K["spawn ffmpeg -f mpegts pipe:1"]
     K --> L["188-aligned RING BUFFER (byte-capped)"]
     L --> M["fan-out to N client sockets (per-client cursor<br/>+ backpressure + skip-forward) · video/mp2t"]
     M --> A
 
-    G -. health .-> N["engineHealth: ffmpeg -progress (pipe:1 / pipe:3)<br/>VLC cadence noteProducerAlive + watchdog<br/>→ streamState live/buffer/failed"]
+    G -. health .-> N["engineHealth: ffmpeg -progress (pipe:1 / pipe:3)<br/>+ watchdog → streamState live/buffer/failed"]
     K -. health .-> N
     P -. poll-recency: noteViewer/noteBytes .-> T["streamTelemetry → ViewSession playerType=externalPlayer"]
     M -. socket-liveness: noteSocketViewerOpen/Bytes/Close .-> T

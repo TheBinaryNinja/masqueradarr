@@ -5,10 +5,10 @@ import { bus } from './bus';
 // GET/PUT /api/video-config/<configId> — 'app' is the global Default (Settings → Video Configuration card),
 // 'app_<playlistId>' is a per-playlist Custom config (the playlist editor). Each instance has its OWN refs,
 // hydration guard, and debounced PUT — the same shape as before, just no longer a module-level singleton. The
-// OPERATIVE field per engine is `advancedArgs` (the raw ffmpeg/VLC syntax the server spawns with); presets
-// just populate it. Loaded lazily by the card/drawer (admin-only config; not part of the global bootstrap).
+// OPERATIVE field is `ffmpeg.advancedArgs` (the raw ffmpeg syntax the server spawns with); presets just
+// populate it. ffmpeg is the always-on external engine (no engine selector, no enable toggle). Loaded lazily
+// by the card/drawer (admin-only config; not part of the global bootstrap).
 
-export type VideoEngine = 'ffmpeg' | 'vlc';
 export type VideoMode = 'auto' | 'copy' | 'transcode';
 export type VideoOutput = 'hls' | 'ts';
 
@@ -32,15 +32,13 @@ async function loadHwDetected(): Promise<void> {
 }
 
 export interface VideoConfigInstance {
-  enabledEngine: Ref<VideoEngine | null>;
   videoMode: Ref<VideoMode>;
   videoOutput: Ref<VideoOutput>;
   extPickyOverride: Ref<boolean>; // ffmpeg `-extension_picky 0` toggle (disguised-extension sources e.g. dlhd)
   freezeDetect: Ref<boolean>; // per-playlist ffmpeg freezedetect tap → frozen-content buffer state
+  addons: Ref<string[]>; // selected externalPlayer addon ids (ad-break resilience flag-splices); multi-select
   ffmpegPreset: Ref<string>;
   ffmpegArgs: Ref<string>;
-  vlcPreset: Ref<string>;
-  vlcArgs: Ref<string>;
   hwEnabled: Ref<boolean>;
   hwEncoder: Ref<string>;
   hwDetected: Ref<string[]>; // the shared host-global ref (same object for every instance)
@@ -48,15 +46,13 @@ export interface VideoConfigInstance {
 }
 
 export function useVideoConfig(configId: string = 'app'): VideoConfigInstance {
-  const enabledEngine = ref<VideoEngine | null>(null); // null ⇒ external engine off (/api/ext = direct relay)
   const videoMode = ref<VideoMode>('auto');
   const videoOutput = ref<VideoOutput>('hls');
-  const extPickyOverride = ref(false); // ffmpeg-only: add `-extension_picky 0` for disguised-extension segments
-  const freezeDetect = ref(true); // ffmpeg-only per-playlist: spawn the decode-only freezedetect tap (frozen content) — default ON
+  const extPickyOverride = ref(false); // add `-extension_picky 0` for disguised-extension segments
+  const freezeDetect = ref(true); // per-playlist: spawn the decode-only freezedetect tap (frozen content) — default ON
+  const addons = ref<string[]>([]); // selected addon ids (multi-select; default OFF/opt-in)
   const ffmpegPreset = ref('Remux / Copy (lowest CPU)');
   const ffmpegArgs = ref('');
-  const vlcPreset = ref('Remux / Copy → HLS');
-  const vlcArgs = ref('');
   const hwEnabled = ref(false);
   const hwEncoder = ref('none');
 
@@ -68,13 +64,12 @@ export function useVideoConfig(configId: string = 'app'): VideoConfigInstance {
       const res = await fetch(url);
       if (!res.ok) return;
       const c = await res.json();
-      enabledEngine.value = c.enabledEngine ?? null;
       videoMode.value = c.mode ?? 'auto';
       videoOutput.value = c.output ?? 'hls';
       extPickyOverride.value = !!c.extPickyOverride;
       freezeDetect.value = !!c.freezeDetect;
+      addons.value = Array.isArray(c.addons) ? c.addons : [];
       if (c.ffmpeg) { ffmpegPreset.value = c.ffmpeg.preset ?? ffmpegPreset.value; ffmpegArgs.value = c.ffmpeg.advancedArgs ?? ''; }
-      if (c.vlc) { vlcPreset.value = c.vlc.preset ?? vlcPreset.value; vlcArgs.value = c.vlc.advancedArgs ?? ''; }
       if (c.hwAccel) {
         hwEnabled.value = !!c.hwAccel.enabled;
         hwEncoder.value = c.hwAccel.encoder ?? 'none';
@@ -120,21 +115,19 @@ export function useVideoConfig(configId: string = 'app'): VideoConfigInstance {
     }, 500);
   }
 
-  watch(enabledEngine, (v) => persist({ enabledEngine: v }));
   watch(videoMode, (v) => persist({ mode: v }));
   watch(videoOutput, (v) => persist({ output: v }));
   watch(extPickyOverride, (v) => persist({ extPickyOverride: v }));
   watch(freezeDetect, (v) => persist({ freezeDetect: v }));
+  watch(addons, (v) => persist({ addons: v })); // toggleAddon replaces the array immutably → shallow watch fires
   watch(ffmpegPreset, (v) => persist({ ffmpeg: { preset: v } }));
   watch(ffmpegArgs, (v) => persist({ ffmpeg: { advancedArgs: v } }));
-  watch(vlcPreset, (v) => persist({ vlc: { preset: v } }));
-  watch(vlcArgs, (v) => persist({ vlc: { advancedArgs: v } }));
   watch(hwEnabled, (v) => persist({ hwAccel: { enabled: v } }));
   watch(hwEncoder, (v) => persist({ hwAccel: { encoder: v } }));
 
   return {
-    enabledEngine, videoMode, videoOutput, extPickyOverride, freezeDetect,
-    ffmpegPreset, ffmpegArgs, vlcPreset, vlcArgs,
+    videoMode, videoOutput, extPickyOverride, freezeDetect, addons,
+    ffmpegPreset, ffmpegArgs,
     hwEnabled, hwEncoder, hwDetected,
     loadVideoConfig,
   };

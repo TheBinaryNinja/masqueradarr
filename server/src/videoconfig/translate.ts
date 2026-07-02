@@ -1,4 +1,5 @@
 import type { VideoConfigDoc } from '../models/VideoConfig.js';
+import { ADDON_IDS } from './addonCatalog.js';
 
 // videoconfig boundary layer (mirrors settings/translate.ts): the default seed for first provision and the
 // request-body → whitelisted $set validator. There are no secrets to redact, so the read shape is the doc
@@ -6,10 +7,10 @@ import type { VideoConfigDoc } from '../models/VideoConfig.js';
 
 export const VIDEO_CONFIG_ID = 'app';
 
-// Default OPERATIVE args = the "Remux / Copy" preset (lowest CPU, lossless) for each engine, with the spawn
+// Default OPERATIVE args = the ffmpeg "Remux / Copy" preset (lowest CPU, lossless), with the spawn
 // placeholders <INPUT> <UA> <OUTDIR> <M3U8> <SEG> the engine substitutes at run time. Seeded on first
-// provision so /api/ext works out of the box once an engine is enabled. The full preset CATALOG lives
-// frontend-side (the Settings picker); these mirror its default entry so the engine has a sane starting args.
+// provision so /api/ext works out of the box. The full preset CATALOG lives frontend-side (the Settings
+// picker); this mirrors its default entry so the engine has sane starting args.
 export const DEFAULT_FFMPEG_ARGS =
   '-hide_banner -loglevel error -user_agent "<UA>" -reconnect 1 -reconnect_streamed 1 ' +
   '-reconnect_delay_max 4 -fflags +genpts -i "<INPUT>" -map 0:v:0 -map 0:a? -c copy -copyts ' +
@@ -23,20 +24,6 @@ export const DEFAULT_TS_ARGS =
   '-hide_banner -loglevel error -user_agent "<UA>" -reconnect 1 -reconnect_streamed 1 ' +
   '-reconnect_delay_max 4 -fflags +genpts -i "<INPUT>" -map 0:v:0 -map 0:a? -c copy -copyts -f mpegts pipe:1';
 
-export const DEFAULT_VLC_ARGS =
-  '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-  "--sout '#std{access=livehttp{seglen=6,delsegs=true,numsegs=6,index=<M3U8>,index-url=<SEG>-########.ts}," +
-  "mux=ts{use-key-frames},dst=<SEG>-########.ts}'";
-
-// Default OPERATIVE args for the VLC raw-TS passthrough (engine:'vlc' + output:'ts', externalTsEngine.ts): mux
-// MPEG-TS to STDOUT (dst=/dev/stdout, robust on Linux) so the ring buffer reads it exactly like ffmpeg's
-// `-f mpegts pipe:1`. Used when output==='ts' + engine==='vlc' UNLESS the user's vlc.advancedArgs already
-// targets stdout (dst=/dev/stdout or dst=-). Only <INPUT>/<UA> placeholders apply (no segment files).
-export const DEFAULT_VLC_TS_ARGS =
-  '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-  "--sout '#std{access=file,mux=ts,dst=/dev/stdout}'";
-
-const ENGINES = ['ffmpeg', 'vlc'] as const;
 const MODES = ['auto', 'copy', 'transcode'];
 const OUTPUTS = ['hls', 'ts'];
 // The selectable HW encoders (matches the VideoConfig HwEncoder union + hwDetect.ts). The Settings card only
@@ -56,20 +43,16 @@ const HW_ENCODERS = [
 
 type Patch = { ok: true; $set: Record<string, unknown> } | { ok: false; error: string };
 
-// Validate a PUT body into a whitelisted dotted-path $set. v1's write surface is the engine selector, mode,
-// output, each engine's preset + advancedArgs (the operative driver), and the hwAccel enable/encoder. The
-// comprehensive `options` catalog is accepted as a whole-object replace for a future structured UI; the
-// server-derived `hwAccel.detected` is read-only and ignored if sent.
+// Validate a PUT body into a whitelisted dotted-path $set. v1's write surface is mode, output, ffmpeg's preset
+// + advancedArgs (the operative driver), the extPickyOverride/freezeDetect toggles, and the hwAccel
+// enable/encoder. The comprehensive `options` catalog is accepted as a whole-object replace for a future
+// structured UI; the server-derived `hwAccel.detected` is read-only and ignored if sent. ffmpeg is the
+// always-on external engine — there is no engine-selector / enable field.
 export function toExternalVideoPatch(body: unknown): Patch {
   if (!body || typeof body !== 'object') return { ok: false, error: 'body must be an object' };
   const b = body as Record<string, any>;
   const $set: Record<string, unknown> = {};
 
-  if ('enabledEngine' in b) {
-    const v = b.enabledEngine;
-    if (v !== null && v !== 'ffmpeg' && v !== 'vlc') return { ok: false, error: "enabledEngine must be 'ffmpeg', 'vlc', or null" };
-    $set.enabledEngine = v;
-  }
   if ('mode' in b) {
     if (!MODES.includes(b.mode)) return { ok: false, error: 'mode must be auto|copy|transcode' };
     $set.mode = b.mode;
@@ -87,19 +70,28 @@ export function toExternalVideoPatch(body: unknown): Patch {
     // state). Per-playlist like extPickyOverride — editable on 'app' (Default) or a Custom 'app_<id>' doc.
     $set.freezeDetect = !!b.freezeDetect;
   }
-  for (const eng of ENGINES) {
-    const e = b[eng];
-    if (!e || typeof e !== 'object') continue;
-    if ('preset' in e) {
-      if (typeof e.preset !== 'string') return { ok: false, error: `${eng}.preset must be a string` };
-      $set[`${eng}.preset`] = e.preset;
+  if ('addons' in b) {
+    // Selected externalPlayer addon ids (ad-break resilience flag-splices). Validate it's a string[] and drop
+    // any id not in the known catalog (ADDON_IDS) — the server composes only recognised ids; unknown ⇒ ignored.
+    if (!Array.isArray(b.addons) || b.addons.some((x: unknown) => typeof x !== 'string')) {
+      return { ok: false, error: 'addons must be an array of strings' };
     }
-    if ('advancedArgs' in e) {
-      if (typeof e.advancedArgs !== 'string') return { ok: false, error: `${eng}.advancedArgs must be a string` };
-      $set[`${eng}.advancedArgs`] = e.advancedArgs;
-    }
-    if ('options' in e && e.options && typeof e.options === 'object') {
-      $set[`${eng}.options`] = e.options; // sub-schema casts; whole-object replace (reserved structured form)
+    $set.addons = [...new Set(b.addons as string[])].filter((id) => ADDON_IDS.has(id));
+  }
+  {
+    const e = b.ffmpeg;
+    if (e && typeof e === 'object') {
+      if ('preset' in e) {
+        if (typeof e.preset !== 'string') return { ok: false, error: 'ffmpeg.preset must be a string' };
+        $set['ffmpeg.preset'] = e.preset;
+      }
+      if ('advancedArgs' in e) {
+        if (typeof e.advancedArgs !== 'string') return { ok: false, error: 'ffmpeg.advancedArgs must be a string' };
+        $set['ffmpeg.advancedArgs'] = e.advancedArgs;
+      }
+      if ('options' in e && e.options && typeof e.options === 'object') {
+        $set['ffmpeg.options'] = e.options; // sub-schema casts; whole-object replace (reserved structured form)
+      }
     }
   }
   if (b.hwAccel && typeof b.hwAccel === 'object') {

@@ -1,20 +1,21 @@
 import { Schema, model } from 'mongoose';
 
-// videoconfig — the singleton (`_id:'app'`) config for the externalPlayer engine: which engine serves
-// third-party IPTV-client (TiviMate/Kodi/VLC/…) sessions through /api/ext, and how. Env-seeded on first read
-// (mirrors settings/translate.ts), Mongo authoritative thereafter.
+// videoconfig — the per-playlist config for the externalPlayer engine (`_id:'app'` = the global Default,
+// `_id:'app_<playlistId>'` = a per-playlist Custom config): HOW ffmpeg serves third-party IPTV-client
+// (TiviMate/Kodi/VLC/…) sessions through /api/ext. ffmpeg is the always-on external video engine — there is no
+// engine selector and no enable/disable toggle. Env-seeded on first read (mirrors settings/translate.ts),
+// Mongo authoritative thereafter.
 //
-// The OPERATIVE driver is each engine's `advancedArgs` — the raw single-line ffmpeg/VLC syntax the engine
-// spawns with (placeholders <INPUT> <UA> <OUTDIR> <M3U8> <SEG> are substituted at spawn time). The Settings
-// "Video Configuration" card populates it from a preset or lets the user type custom syntax.
+// The OPERATIVE driver is `ffmpeg.advancedArgs` — the raw single-line ffmpeg syntax the engine spawns with
+// (placeholders <INPUT> <UA> <OUTDIR> <M3U8> <SEG> are substituted at spawn time). The Settings "Video
+// Configuration" card populates it from a preset or lets the user type custom syntax.
 //
-// The `options` sub-objects are the COMPREHENSIVE catalog of every researched ffmpeg/VLC tunable — they exist
-// so the schema "holds all possible options" and so a future structured UI (or validation) can compose the
-// args string. They are OPTIONAL: a field that isn't being used is stored as explicit `null` (repo convention
-// — never fabricated), so an unset knob reads back null rather than a made-up value. v1 drives playback from
+// The `options` sub-object is the COMPREHENSIVE catalog of every researched ffmpeg tunable — it exists so the
+// schema "holds all possible options" and so a future structured UI (or validation) can compose the args
+// string. Fields are OPTIONAL: one that isn't being used is stored as explicit `null` (repo convention —
+// never fabricated), so an unset knob reads back null rather than a made-up value. v1 drives playback from
 // `advancedArgs`; `options` is the reserved structured form.
 
-export type VideoEngine = 'ffmpeg' | 'vlc';
 export type VideoMode = 'auto' | 'copy' | 'transcode';
 export type VideoOutput = 'hls' | 'ts';
 export type HwEncoder =
@@ -88,50 +89,10 @@ export interface FfmpegOptions {
   failTimeoutS: number; // no progress/bytes for N s ⇒ failed
 }
 
-// ── VLC option catalog (research Part E) ──────────────────────────────────────────────────────────────
-export interface VlcOptions {
-  networkCachingMs: number | null;
-  liveCachingMs: number | null;
-  httpUserAgent: string | null;
-  httpReferrer: string | null;
-  httpReconnect: boolean;
-  adaptiveMaxHeight: number | null;
-  runTimeS: number | null;
-  // #transcode{} (omit to remux only)
-  vcodec: string | null; // none | h264 | hevc | mp2v
-  vb: number | null; // video bitrate kb/s
-  venc: string | null; // encoder + opts, e.g. x264{preset=veryfast,tune=zerolatency}
-  scale: number | null;
-  width: number | null;
-  height: number | null;
-  fps: number | null;
-  deinterlace: boolean;
-  acodec: string | null; // mp4a | mpga | a52 | none
-  ab: number | null; // audio bitrate kb/s
-  channels: number | null;
-  samplerate: number | null;
-  threads: number | null;
-  // #std{} output
-  access: string; // livehttp | http | file | rtp | udp
-  mux: string; // ts | …
-  seglen: number | null; // livehttp segment seconds
-  numsegs: number | null; // livehttp window
-  delsegs: boolean;
-  // telemetry (coarser than ffmpeg — see WS7)
-  verbose: number | null; // --verbose level
-  httpStats: boolean; // --extraintf http + poll status.xml
-  httpPort: number | null;
-}
-
 export interface FfmpegEngineConfig {
   preset: string; // preset name | 'custom'
   advancedArgs: string; // ★ OPERATIVE raw args
   options: FfmpegOptions; // comprehensive catalog (reserved/structured)
-}
-export interface VlcEngineConfig {
-  preset: string;
-  advancedArgs: string;
-  options: VlcOptions;
 }
 export interface HwAccelConfig {
   enabled: boolean;
@@ -140,26 +101,28 @@ export interface HwAccelConfig {
 }
 
 export interface VideoConfigDoc {
-  _id: string; // always 'app'
-  enabledEngine: VideoEngine | null; // null ⇒ external engine OFF → /api/ext behaves as a direct relay
+  _id: string; // 'app' (global Default) | 'app_<playlistId>' (per-playlist Custom)
   mode: VideoMode; // auto | copy | transcode
   output: VideoOutput; // hls (default, reuses the whole stack) | ts (raw-TS passthrough)
-  // ffmpeg-only "ExtPicky Override": when true the external engine adds `-extension_picky 0` so ffmpeg's HLS
-  // demuxer will read segments with NON-media extensions. Sources like dlhd disguise their MPEG-TS segments as
+  // "ExtPicky Override": when true the external engine adds `-extension_picky 0` so ffmpeg's HLS demuxer will
+  // read segments with NON-media extensions. Sources like dlhd disguise their MPEG-TS segments as
   // .js/.jpg/.png/.pdf, which ffmpeg blocks by default ("Invalid data found"). Default false keeps the gate ON.
-  // No effect on VLC (no such gate) or the in-app /api/v1 player. Set on 'app' (all external) or a Custom
-  // 'app_<playlistId>' doc (that playlist only).
+  // No effect on the in-app /api/v1 player. Set on 'app' (all external) or a Custom 'app_<playlistId>' doc
+  // (that playlist only).
   extPickyOverride: boolean;
-  // "Freeze detection" toggle. When true the external ffmpeg engine spawns a decode-only freezedetect
-  // analysis tap whose freeze_start/_end metadata drives the buffer state for FROZEN CONTENT (a stuck slate /
-  // hung encoder — out_time keeps advancing but the picture is static, which the no-progress stall path can't
-  // see). Costs a per-stream decode (no re-encode). Default ON for every config (the more accurate buffer
-  // signal is worth the modest decode cost); the operator turns it off per-config if needed. Per-playlist like
-  // extPickyOverride: read from the route-resolved config — set on 'app' (all external) or a Custom
-  // 'app_<playlistId>' doc (that playlist only). ffmpeg-only (VLC has no freezedetect).
+  // "Freeze detection" toggle. When true the external engine spawns a decode-only freezedetect analysis tap
+  // whose freeze_start/_end metadata drives the buffer state for FROZEN CONTENT (a stuck slate / hung encoder —
+  // out_time keeps advancing but the picture is static, which the no-progress stall path can't see). Costs a
+  // per-stream decode (no re-encode). Default ON for every config (the more accurate buffer signal is worth the
+  // modest decode cost); the operator turns it off per-config if needed. Per-playlist like extPickyOverride:
+  // read from the route-resolved config — set on 'app' (all external) or a Custom 'app_<playlistId>' doc.
   freezeDetect: boolean;
+  // Selected addon ids (lowercase; the externalPlayer "Addons" — server catalog videoconfig/addonCatalog.ts,
+  // client display src/composables/videoAddons.ts). Each is an ADDITIVE, copy-compatible ffmpeg flag splice
+  // composed ON TOP of advancedArgs at spawn (resilience for SSAI ad-break / discontinuity failures). Default
+  // [] (all OFF, opt-in). Per-playlist like extPickyOverride/freezeDetect: read from the route-resolved config.
+  addons: string[];
   ffmpeg: FfmpegEngineConfig;
-  vlc: VlcEngineConfig;
   hwAccel: HwAccelConfig;
 }
 
@@ -223,53 +186,11 @@ const FfmpegOptionsSchema = new Schema<FfmpegOptions>(
   { _id: false },
 );
 
-const VlcOptionsSchema = new Schema<VlcOptions>(
-  {
-    networkCachingMs: { type: Number, default: 1500 },
-    liveCachingMs: { type: Number, default: null },
-    httpUserAgent: { type: String, default: null },
-    httpReferrer: { type: String, default: null },
-    httpReconnect: { type: Boolean, default: true },
-    adaptiveMaxHeight: { type: Number, default: null },
-    runTimeS: { type: Number, default: null },
-    vcodec: { type: String, default: null },
-    vb: { type: Number, default: null },
-    venc: { type: String, default: null },
-    scale: { type: Number, default: null },
-    width: { type: Number, default: null },
-    height: { type: Number, default: null },
-    fps: { type: Number, default: null },
-    deinterlace: { type: Boolean, default: false },
-    acodec: { type: String, default: null },
-    ab: { type: Number, default: null },
-    channels: { type: Number, default: null },
-    samplerate: { type: Number, default: null },
-    threads: { type: Number, default: null },
-    access: { type: String, default: 'livehttp' },
-    mux: { type: String, default: 'ts' },
-    seglen: { type: Number, default: null },
-    numsegs: { type: Number, default: null },
-    delsegs: { type: Boolean, default: true },
-    verbose: { type: Number, default: null },
-    httpStats: { type: Boolean, default: false },
-    httpPort: { type: Number, default: null },
-  },
-  { _id: false },
-);
-
 const FfmpegEngineSchema = new Schema<FfmpegEngineConfig>(
   {
     preset: { type: String, default: 'Remux / Copy (lowest CPU)' },
     advancedArgs: { type: String, default: '' },
     options: { type: FfmpegOptionsSchema, default: () => ({}) },
-  },
-  { _id: false },
-);
-const VlcEngineSchema = new Schema<VlcEngineConfig>(
-  {
-    preset: { type: String, default: 'Remux / Copy → HLS' },
-    advancedArgs: { type: String, default: '' },
-    options: { type: VlcOptionsSchema, default: () => ({}) },
   },
   { _id: false },
 );
@@ -285,13 +206,12 @@ const HwAccelSchema = new Schema<HwAccelConfig>(
 const VideoConfigSchema = new Schema<VideoConfigDoc>(
   {
     _id: { type: String, required: true },
-    enabledEngine: { type: String, default: null }, // null ⇒ external engine off
     mode: { type: String, default: 'auto' },
     output: { type: String, default: 'hls' },
     extPickyOverride: { type: Boolean, default: false }, // ffmpeg `-extension_picky 0` (dlhd disguised segments)
     freezeDetect: { type: Boolean, default: true }, // per-playlist ffmpeg freezedetect tap → frozen-content buffer state (default ON)
+    addons: { type: [String], default: [] }, // selected externalPlayer addon ids (ad-break resilience flag-splices); default OFF/opt-in
     ffmpeg: { type: FfmpegEngineSchema, default: () => ({}) },
-    vlc: { type: VlcEngineSchema, default: () => ({}) },
     hwAccel: { type: HwAccelSchema, default: () => ({}) },
   },
   { versionKey: false },

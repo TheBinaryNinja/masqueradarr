@@ -45,7 +45,7 @@ export interface EngineHealth {
   failTimeoutMs: number; // failTimeoutS × 1000 (cached)
   stallSpeed: number; // captured-only metric (no longer drives state — see handleProgressBlock)
   // Latest realtime metrics parsed off the ffmpeg -progress block, surfaced in the Active Streams engine
-  // panel. ffmpeg-only — VLC has no -progress, so these stay null for VLC sessions.
+  // panel. Null until the first progress block arrives.
   lastSpeed: number | null; // encode speed × (e.g. 1.01)
   lastFps: number | null; // output frame rate
   lastBitrateKbps: number | null; // output bitrate (kbit/s)
@@ -54,11 +54,11 @@ export interface EngineHealth {
 
 // A read-only per-process snapshot for the Active Streams engine panel (GET /api/active-streams/:id/engine).
 // Each engine core's enginesForChannel() builds one of these per live process serving a channel; the route
-// then enriches it (preset/advancedArgs/hwEncoder from the videoconfig) and redacts upstreamUrl. ffmpeg fills
-// speed/fps/bitrateKbps/outTimeMs/dropFrames; VLC leaves them null. `clients` is the raw-TS socket count (null for HLS).
+// then enriches it (preset/advancedArgs/hwEncoder from the videoconfig) and redacts upstreamUrl. `clients` is
+// the raw-TS socket count (null for HLS). `engine` is always 'ffmpeg' (the sole external engine).
 export interface EngineSnapshot {
   output: 'hls' | 'ts';
-  engine: 'ffmpeg' | 'vlc';
+  engine: 'ffmpeg';
   configId: string; // 'app' (Default) | 'app_<playlistId>' (Custom)
   mode: string; // 'auto' | 'copy' | 'transcode'
   upstreamUrl: string; // adapter-resolved master (raw here; the route redacts the query before responding)
@@ -68,7 +68,7 @@ export interface EngineSnapshot {
   fps: number | null;
   bitrateKbps: number | null;
   outTimeMs: number | null;
-  dropFrames: number | null; // cumulative dropped frames (ffmpeg -progress); null for VLC
+  dropFrames: number | null; // cumulative dropped frames (ffmpeg -progress)
   clients: number | null; // raw-TS attached socket count; null for the HLS engine
   producing: boolean;
 }
@@ -149,19 +149,6 @@ export function handleProgressBlock(h: EngineHealth, fields: Record<string, stri
     // the current state — the engine's readiness wait / process exit cover a true establish failure.
     markStall(h, now);
   }
-}
-
-// Positive liveness for an engine WITHOUT a -progress stream (VLC): the caller detects the engine is producing
-// output (a new HLS segment appeared / a new raw-TS chunk arrived) and calls this. It maps onto the same
-// streamState model as a healthy progress block — (re)establish → live, refresh the watchdog clock — so the
-// rest of the stack reads VLC sessions exactly like ffmpeg ones, just at coarser granularity (cadence, not
-// per-second progress). A stall is detected by `watchdog()` when no producer activity arrives within the fail
-// window. This is the documented "VLC health is coarser" path (no -progress; cadence-derived).
-export function noteProducerAlive(h: EngineHealth, now: number): void {
-  h.lastProgressAt = now;
-  if (h.health !== 'live') noteSuccess(h.channelKey); // (re)established → live; clears the failure counter
-  h.health = 'live';
-  h.bufferSince = null;
 }
 
 // The live→buffer transition (from a stalled progress block OR the watchdog). One noteFailure (the buffer

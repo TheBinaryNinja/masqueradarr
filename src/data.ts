@@ -138,7 +138,7 @@ export interface Program {
 // quality (codec/resolution/fps/…) off ffprobe; a passthrough proxy can't measure dropped frames or
 // playback latency, so those fields are intentionally absent.
 // Which player produced a session: the in-app slide-out HLS player (appPlayer) or a third-party IPTV client
-// app — TiviMate/Kodi/VLC/… (externalPlayer, routed through the server-side ffmpeg/VLC engine).
+// app — TiviMate/Kodi/VLC/… (externalPlayer, routed through the server-side ffmpeg engine).
 export type PlayerType = 'appPlayer' | 'externalPlayer';
 export interface ActiveStream {
   id: string; // = channelId (stable row id)
@@ -170,15 +170,16 @@ export interface StreamClient {
 }
 // One external-player ENGINE process serving a channel (GET /api/active-streams/:channelId/engine → { engines }).
 // Drives the "Video Engine Service" diagram on the Active Streams screen. ffmpeg fills speed/fps/bitrateKbps/
-// outTimeMs/dropFrames; VLC leaves them null (no -progress). `clients` is the raw-TS socket count (null for the HLS engine).
-// `upstreamUrl` is query-redacted (host+path) server-side. An empty engines[] ⇒ no transcode engine (in-app
-// passthrough / engine off) ⇒ the screen shows the passthrough note instead of the diagram.
+// outTimeMs/dropFrames (null until the first -progress block). `clients` is the raw-TS socket count (null for
+// the HLS engine). `upstreamUrl` is query-redacted (host+path) server-side. An empty engines[] ⇒ no live
+// external engine for this channel (only the in-app player is watching, or nobody) ⇒ the screen shows the
+// passthrough note instead of the diagram.
 export interface EngineSnapshot {
   output: 'hls' | 'ts';
-  engine: 'ffmpeg' | 'vlc';
+  engine: 'ffmpeg';
   configId: string; // 'app' (Default) | 'app_<playlistId>' (Custom)
   mode: string; // 'auto' | 'copy' | 'transcode'
-  preset: string | null; // from the resolved videoconfig (ffmpeg/vlc sub-object)
+  preset: string | null; // from the resolved videoconfig (ffmpeg sub-object)
   advancedArgs: string; // operative spawn args (from the videoconfig)
   hwEncoder: string | null; // resolved HW encoder (null = software → no GPU node)
   upstreamUrl: string; // resolved upstream master, query-redacted to host+path
@@ -188,7 +189,7 @@ export interface EngineSnapshot {
   fps: number | null;
   bitrateKbps: number | null;
   outTimeMs: number | null;
-  dropFrames: number | null; // cumulative dropped frames (ffmpeg -progress); null for VLC
+  dropFrames: number | null; // cumulative dropped frames (ffmpeg -progress)
   clients: number | null; // raw-TS attached socket count; null for the HLS engine
   producing: boolean;
 }

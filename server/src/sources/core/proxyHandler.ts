@@ -38,7 +38,7 @@ export interface EntryResolveCtx {
 }
 
 // A composer-free channel-entry resolver — the externalPlayer (/api/ext) HLS path. Given a channel entry
-// URL it resolves the upstream master to serve (routing through the ffmpeg/VLC engine → 127.0.0.1 loopback
+// URL it resolves the upstream master to serve (routing through the ffmpeg engine → 127.0.0.1 loopback
 // HLS, or relaying the adapter master when the engine is off) and performs the entry-time side effects
 // (viewer registration, one-shot ffprobe). The handler then fetches+rewrites+serves the returned masterUrl
 // through the SAME common path the in-app composer's live mirror uses. A throw becomes a 502 — there is NO
@@ -119,9 +119,9 @@ export function createProxyHandler(adapter: SourceAdapter, metrics: Metrics, bro
     if (adapter.isEntryUrl(upstreamUrl)) {
       if (serveEntry) {
         // (a) externalPlayer (/api/ext): composer-free, engine-driven, NO B-Roll slate. The resolver routes
-        //     through the ffmpeg/VLC engine (loopback HLS) — or relays the adapter master when the engine is
-        //     off — and does the entry side effects (viewer registration + ffprobe). We then fall through to
-        //     the common fetch→rewrite→serve below; loopback segment hops are SSRF-allowed via extraAllowed.
+        //     through the always-on ffmpeg engine (loopback HLS) and does the entry side effects (viewer
+        //     registration + ffprobe). We then fall through to the common fetch→rewrite→serve below; loopback
+        //     segment hops are SSRF-allowed via extraAllowed.
         metrics.requests.total++;
         metrics.requests.master++;
         try {

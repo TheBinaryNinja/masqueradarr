@@ -65,11 +65,20 @@ export interface BuildArgvContext {
   headers: Record<string, string>; // adapter upstream headers (User-Agent is skipped — carried by -user_agent)
   progressPipe?: string; // fd for -progress (default pipe:1; raw-TS uses pipe:3 to keep stdout for TS bytes)
   statsPeriodS?: number; // -stats_period (default 1)
-  // Extra ffmpeg INPUT options (flag/value pairs) to insert before -i — currently driven by the videoconfig
-  // "ExtPicky Override" toggle (['-extension_picky','0'] so disguised-extension segments like dlhd's .js/.jpg
-  // parse). Source-agnostic: the route decides the value; this builder just injects it (skipping any flag the
-  // operator already set in advancedArgs, so their value wins). Empty/absent ⇒ nothing added.
+  // Extra ffmpeg INPUT options (flag/value pairs) to insert before -i — driven by the videoconfig "ExtPicky
+  // Override" toggle (['-extension_picky','0'] so disguised-extension segments like dlhd's .js/.jpg parse) AND
+  // the selected addons' inputFlags (persistent-http-off / segment-resilience; addonCatalog.ts). The route
+  // concatenates them; this builder inserts each flag/value PAIR unless its flag is already set in advancedArgs
+  // (per-flag skip, so the operator's value wins). Empty/absent ⇒ nothing added.
   inputArgs?: string[];
+  // Addon `-fflags` flag NAMES (e.g. ['genpts','igndts','discardcorrupt'] for discontinuity-tolerance) to MERGE
+  // into the single -fflags token (union with the base preset's flags, usually +genpts) — never a second
+  // -fflags. Absent/empty ⇒ nothing merged.
+  fflags?: string[];
+  // Addon OUTPUT/muxer options (flag/value pairs, e.g. ['-avoid_negative_ts','make_zero','-max_muxing_queue_size','1024']
+  // for discontinuity-tolerance) inserted at the START of the output-options section (right after `-i <url>`),
+  // per-flag skip-if-operator-set. Binds to the operator's real output; the freezedetect tap is unaffected.
+  outputArgs?: string[];
   // When set, append a DECODE-ONLY freezedetect analysis output (`-f null`) that writes freeze metadata to
   // this pipe fd (e.g. 'pipe:3' for the HLS engine, 'pipe:4' for raw-TS). It runs alongside the operator's
   // real output (which may be `-c copy`) — the input decodes once for the tap; the served stream is untouched.
@@ -91,13 +100,43 @@ export function buildFfmpegArgv(args: string, ctx: BuildArgvContext): string[] {
     }
   }
 
-  // (b2) per-source ffmpeg INPUT options before -i (e.g. dlhd's -extension_picky 0 via the ExtPicky Override
-  // videoconfig toggle). Inject the whole set unless the operator already set one of its flags in advancedArgs
-  // (their value wins, mirroring the -headers/-progress skip-if-present rule). Flags are even-indexed tokens.
-  if (ctx.inputArgs?.length) {
-    const alreadySet = ctx.inputArgs.some((tok, k) => k % 2 === 0 && argv.includes(tok));
-    const iIdx = argv.indexOf('-i');
-    if (!alreadySet && iIdx >= 0) argv.splice(iIdx, 0, ...ctx.inputArgs);
+  // (b2) ffmpeg INPUT options before -i (flag/value pairs) — dlhd's -extension_picky 0 (ExtPicky Override) plus
+  // the selected addons' inputFlags. PER-FLAG skip: insert a pair only when its flag isn't already in
+  // advancedArgs (so an operator value always wins, and a multi-addon set isn't dropped wholesale because one
+  // flag happened to be set). Flags are even-indexed tokens; values odd.
+  if (ctx.inputArgs?.length && argv.includes('-i')) {
+    const add: string[] = [];
+    for (let k = 0; k + 1 < ctx.inputArgs.length; k += 2) {
+      const flag = ctx.inputArgs[k];
+      if (!argv.includes(flag)) add.push(flag, ctx.inputArgs[k + 1]);
+    }
+    if (add.length) argv.splice(argv.indexOf('-i'), 0, ...add);
+  }
+
+  // (b4) merge addon -fflags (e.g. igndts+discardcorrupt for discontinuity-tolerance) into the SINGLE -fflags
+  // token — union with the base preset's flags (usually +genpts), dedup, never a second -fflags. If the base
+  // has no -fflags, insert one before -i.
+  if (ctx.fflags?.length) {
+    const fIdx = argv.indexOf('-fflags');
+    if (fIdx >= 0 && fIdx + 1 < argv.length) {
+      const have = argv[fIdx + 1].split('+').filter(Boolean);
+      for (const f of ctx.fflags) if (!have.includes(f)) have.push(f);
+      argv[fIdx + 1] = '+' + have.join('+');
+    } else if (argv.includes('-i')) {
+      argv.splice(argv.indexOf('-i'), 0, '-fflags', '+' + [...new Set(ctx.fflags)].join('+'));
+    }
+  }
+
+  // (b5) addon OUTPUT/muxer flags inserted at the START of the output-options section (right after `-i <url>`),
+  // per-flag skip-if-operator-set. Binds to the operator's real (first) output; the freezedetect tap (step c,
+  // appended AFTER the whole argv with its own options) is unaffected.
+  if (ctx.outputArgs?.length && argv.includes('-i')) {
+    const add: string[] = [];
+    for (let k = 0; k + 1 < ctx.outputArgs.length; k += 2) {
+      const flag = ctx.outputArgs[k];
+      if (!argv.includes(flag)) add.push(flag, ctx.outputArgs[k + 1]);
+    }
+    if (add.length) argv.splice(argv.indexOf('-i') + 2, 0, ...add);
   }
 
   // (b3) deeper input probing before -i (-probesize/-analyzeduration) so sources with a mid-GOP live edge
@@ -136,20 +175,4 @@ export function buildFfmpegArgv(args: string, ctx: BuildArgvContext): string[] {
   const head: string[] = [];
   if (!argv.includes('-progress')) head.push('-progress', ctx.progressPipe ?? 'pipe:1', '-stats_period', String(ctx.statsPeriodS ?? 1));
   return [...head, ...argv, ...tail];
-}
-
-// Build the VLC (cvlc) argv from the operative args string + spawn context. VLC's vocabulary differs from
-// ffmpeg's: NO -progress (health is cadence-derived — engineHealth.noteProducerAlive), and gate headers can't
-// be injected generically. UA rides the args' own `--http-user-agent "<UA>"`; we additionally set
-// `--http-referrer` from the adapter's Referer (covers dlhd) when the user didn't already specify it. VLC has
-// no generic Origin-header support, so sources gated on Origin (dulo) may fail to authenticate via VLC — a
-// documented limitation of the secondary engine. Global options must precede the input MRL, so the referrer is
-// prepended.
-export function buildVlcArgv(args: string, ctx: { placeholders: Record<string, string>; headers: Record<string, string> }): string[] {
-  const argv = tokenizeArgs(args).map((t) => substitute(t, ctx.placeholders));
-  const referer = ctx.headers['Referer'] || ctx.headers['referer'];
-  if (referer && !argv.some((a) => a.startsWith('--http-referrer') || a.startsWith(':http-referrer'))) {
-    argv.unshift(`--http-referrer=${referer}`);
-  }
-  return argv;
 }

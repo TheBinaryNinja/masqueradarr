@@ -17,20 +17,20 @@
 // channel ride one process; an idle sweep reaps a process once the composer stops polling its loopback
 // playlist. Spawn/degradation mirrors core/broll.ts + remux.ts (bare `ffmpeg`, ENOENT logged once,
 // SIGKILL on exit). This engine is ffmpeg + HLS output (output:'hls'); the raw-TS passthrough (output:'ts')
-// is the sibling externalTsEngine.ts (WS5, shares engineHealth/engineArgs); VLC (WS7) comes later.
+// is the sibling externalTsEngine.ts (shares engineHealth/engineArgs). ffmpeg is the sole external engine.
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import { type Readable } from 'node:stream';
 import { createServer, type Server } from 'node:http';
 import { createHash } from 'node:crypto';
-import { mkdirSync, existsSync, createReadStream, rmSync, statSync } from 'node:fs';
+import { mkdirSync, existsSync, createReadStream, rmSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { logger } from './logger.js';
 import { streamKey, noteFailure, noteFailed } from './streamState.js';
-import { createEngineHealth, parseProgress, parseFreezeLines, watchdog, noteProducerAlive, newProgressCarry, newFreezeCarry, type EngineHealth, type EngineSnapshot } from './engineHealth.js';
-import { buildFfmpegArgv, buildVlcArgv } from './engineArgs.js';
+import { createEngineHealth, parseProgress, parseFreezeLines, watchdog, newProgressCarry, newFreezeCarry, type EngineHealth, type EngineSnapshot } from './engineHealth.js';
+import { buildFfmpegArgv } from './engineArgs.js';
 
 const TAG = 'stream:ext-engine';
 const ROOT = join(tmpdir(), 'masqueradarr-extengine'); // <ROOT>/<key>/{index.m3u8,seg*.ts}
@@ -44,10 +44,9 @@ const STATS_PERIOD_S = 1; // -progress emit cadence
 // stays DB-free — it never reads Mongo itself. `args` is the OPERATIVE ffmpeg advancedArgs (with placeholders).
 // Shared with the raw-TS engine (externalTsEngine.ts), which reads the same fields with output:'ts'.
 export interface ExternalEngineConfig {
-  engine: 'ffmpeg' | 'vlc'; // which binary serves this channel — ffmpeg (-progress health) or VLC (cadence health)
   args: string; // the operative spawn string (advancedArgs), placeholders substituted
   mode: 'auto' | 'copy' | 'transcode'; // informational in v1 (the preset/args already encode the codec choice)
-  output: 'hls' | 'ts'; // this engine handles 'hls'; the route dispatches 'ts' to externalTsEngine.ts (WS5)
+  output: 'hls' | 'ts'; // this engine handles 'hls'; the route dispatches 'ts' to externalTsEngine.ts
   stallSpeedThreshold: number; // ffmpeg speed below this ⇒ buffering
   failTimeoutS: number; // sustained stall longer than this ⇒ failed
   // The resolved per-playlist videoconfig id ('app' = global Default, 'app_<playlistId>' = a Custom config).
@@ -55,20 +54,20 @@ export interface ExternalEngineConfig {
   // get their OWN engine process (different args/loopback) — full per-config isolation. The streamState/health
   // key stays the plain streamKey (below) so Active Streams' phaseFor() read is unaffected.
   configId: string;
-  // Extra ffmpeg INPUT options (before -i) this stream needs — driven by the videoconfig "ExtPicky Override"
-  // toggle (['-extension_picky','0'] for sources like dlhd that disguise segments as .js/.jpg). Source-agnostic:
-  // the route decides the value; the engine just forwards it to buildFfmpegArgv. ffmpeg-only (VLC ignores it).
-  // Absent ⇒ none.
+  // Extra ffmpeg INPUT options (before -i) this stream needs — the videoconfig "ExtPicky Override" toggle
+  // (['-extension_picky','0'] for dlhd disguised segments) concatenated with the selected addons' inputFlags
+  // (persistent-http-off / segment-resilience; addonCatalog.ts). The route composes it; the engine forwards it.
   inputArgs?: string[];
+  // Addon `-fflags` flag names to MERGE into the base -fflags token (discontinuity-tolerance's igndts/discardcorrupt).
+  fflags?: string[];
+  // Addon OUTPUT/muxer flags (before the operator's output) — discontinuity-tolerance's -avoid_negative_ts /
+  // -max_muxing_queue_size. Route composes both from cfg.addons via composeAddonArgs; engine forwards verbatim.
+  outputArgs?: string[];
   // "Freeze detection" toggle (from the route-resolved per-playlist videoconfig). When true, ffmpeg spawns a
   // decode-only freezedetect analysis tap whose freeze_start/_end metadata drives the buffer state for frozen
-  // content. ffmpeg-only (VLC has no freezedetect — cadence health unchanged). Absent/false ⇒ no tap.
+  // content. Absent/false ⇒ no tap.
   freezeDetect?: boolean;
 }
-
-// The VLC binary (cvlc = headless `vlc -I dummy`). Overridable for an oddly-pathed install; PATH-resolved like
-// the bare `ffmpeg` spawn. Shared with externalTsEngine.ts (raw-TS VLC).
-export const VLC_BIN = process.env.VLC_PATH || 'cvlc';
 
 interface EngineProc {
   key: string; // sha1(channelKey).slice(0,16) — the opaque loopback path segment
@@ -78,9 +77,7 @@ interface EngineProc {
   proc: ChildProcess | null; // null once the process has exited
   startedAt: number;
   lastPollAt: number; // refreshed on every loopback fetch + ensureStream — drives the idle sweep
-  engine: 'ffmpeg' | 'vlc'; // ffmpeg drives health from -progress; vlc from segment-write cadence (no -progress)
   hs: EngineHealth; // shared -progress → streamState health state machine (engineHealth.ts)
-  lastPlaylistMtime: number; // VLC only: last seen index.m3u8 mtime (cadence liveness; 0 until first observed)
   configId: string; // resolved videoconfig id this proc runs under ('app' | 'app_<playlistId>') — Active Streams panel
   mode: string; // spawn-time mode ('auto' | 'copy' | 'transcode')
 }
@@ -92,19 +89,9 @@ let serverReady: Promise<void> | null = null;
 let port = 0;
 let sweepTimer: ReturnType<typeof setInterval> | null = null;
 let ffmpegMissingLogged = false;
-let vlcMissingLogged = false;
 
 function keyFor(channelKey: string): string {
   return createHash('sha1').update(channelKey).digest('hex').slice(0, 16);
-}
-// VLC cadence-liveness probe: the mtime of the engine's index.m3u8 (rewritten on every new segment). A fresh
-// mtime since the last sweep ⇒ the producer is alive (noteProducerAlive). 0 when not yet written.
-function playlistMtime(dir: string): number {
-  try {
-    return statSync(join(dir, 'index.m3u8')).mtimeMs;
-  } catch {
-    return 0;
-  }
 }
 function masterUrlFor(key: string): string {
   return `http://127.0.0.1:${port}/${key}/index.m3u8`;
@@ -205,17 +192,7 @@ function startSweep(): void {
         externalPlayerStop(rec, 'idle');
         continue;
       }
-      // VLC has no -progress: derive positive liveness from the index.m3u8 write cadence (a fresh mtime ⇒ a new
-      // segment landed). ffmpeg's liveness comes from its -progress stream instead.
-      if (rec.engine === 'vlc' && rec.proc) {
-        const m = playlistMtime(rec.dir);
-        if (m > rec.lastPlaylistMtime) {
-          rec.lastPlaylistMtime = m;
-          noteProducerAlive(rec.hs, now);
-        }
-      }
-      // Watchdog: a live/buffering proc with NO health signal (ffmpeg progress block / VLC segment) for longer
-      // than its fail window is hung. Drive the same escalation regardless of engine.
+      // Watchdog: a live/buffering proc with NO -progress block for longer than its fail window is hung.
       if (rec.proc) watchdog(rec.hs, now);
     }
   }, SWEEP_MS);
@@ -250,18 +227,14 @@ function externalPlayerSpawn(key: string, channelKey: string, upstreamUrl: strin
   }
   mkdirSync(dir, { recursive: true });
 
-  // Both engines write the live HLS window to FILES under <dir> (served by the loopback origin); the binary,
-  // argv vocabulary, and health source differ. ffmpeg: stdout (pipe:1) is free for the -progress health stream.
-  // VLC: no -progress — liveness is the segment-write cadence (the sweep), so stdout carries only logs.
+  // ffmpeg writes the live HLS window to FILES under <dir> (served by the loopback origin); stdout (pipe:1) is
+  // free for the -progress health stream.
   const ua = headers['User-Agent'] || headers['user-agent'] || 'Masqueradarr-ext/1.0';
   const placeholders = { INPUT: upstreamUrl, UA: ua, OUTDIR: dir, M3U8: join(dir, 'index.m3u8'), SEG: join(dir, 'seg') };
-  const isVlc = cfg.engine === 'vlc';
-  const bin = isVlc ? VLC_BIN : 'ffmpeg';
-  // ffmpeg-only freezedetect tap on a dedicated pipe (fd 3 here — stdout is the -progress fd, stderr the logs).
-  const freezeOn = !isVlc && !!cfg.freezeDetect;
-  const argv = isVlc
-    ? buildVlcArgv(cfg.args, { placeholders, headers })
-    : buildFfmpegArgv(cfg.args, { placeholders, headers, progressPipe: 'pipe:1', statsPeriodS: STATS_PERIOD_S, inputArgs: cfg.inputArgs, freezePipe: freezeOn ? 'pipe:3' : undefined });
+  const bin = 'ffmpeg';
+  // freezedetect tap on a dedicated pipe (fd 3 here — stdout is the -progress fd, stderr the logs).
+  const freezeOn = !!cfg.freezeDetect;
+  const argv = buildFfmpegArgv(cfg.args, { placeholders, headers, progressPipe: 'pipe:1', statsPeriodS: STATS_PERIOD_S, inputArgs: cfg.inputArgs, fflags: cfg.fflags, outputArgs: cfg.outputArgs, freezePipe: freezeOn ? 'pipe:3' : undefined });
 
   const rec: EngineProc = {
     key,
@@ -271,9 +244,7 @@ function externalPlayerSpawn(key: string, channelKey: string, upstreamUrl: strin
     proc: null,
     startedAt: Date.now(),
     lastPollAt: Date.now(),
-    engine: cfg.engine,
     hs: createEngineHealth(channelKey, cfg, Date.now()),
-    lastPlaylistMtime: 0,
     configId: cfg.configId,
     mode: cfg.mode,
   };
@@ -281,8 +252,7 @@ function externalPlayerSpawn(key: string, channelKey: string, upstreamUrl: strin
 
   let proc: ChildProcess;
   try {
-    // fd 0 ignored, 1 = -progress (ffmpeg) / logs (VLC), 2 = logs; ffmpeg adds fd 3 = freezedetect metadata
-    // when the freeze tap is enabled.
+    // fd 0 ignored, 1 = -progress, 2 = logs; fd 3 = freezedetect metadata when the freeze tap is enabled.
     proc = spawn(bin, argv, { stdio: freezeOn ? ['ignore', 'pipe', 'pipe', 'pipe'] : ['ignore', 'pipe', 'pipe'] });
   } catch {
     rec.proc = null;
@@ -291,9 +261,8 @@ function externalPlayerSpawn(key: string, channelKey: string, upstreamUrl: strin
   }
   rec.proc = proc;
 
-  // ffmpeg: stdout = the -progress health stream → streamState phases. VLC has no -progress (health is the
-  // segment cadence in the sweep), so its stdout is left unparsed.
-  if (!isVlc) {
+  // stdout = the -progress health stream → streamState phases.
+  {
     const carry = newProgressCarry();
     proc.stdout?.on('data', (d: Buffer) => parseProgress(rec.hs, d.toString(), carry));
   }
@@ -309,12 +278,11 @@ function externalPlayerSpawn(key: string, channelKey: string, upstreamUrl: strin
   });
   proc.on('error', (err: NodeJS.ErrnoException) => {
     if (err.code === 'ENOENT') {
-      // Mirror ffmpeg-missing degradation: a missing binary disables that engine; the composer falls back to a
-      // direct relay (driveStreamState becomes active again once no proc is running).
-      if (isVlc ? !vlcMissingLogged : !ffmpegMissingLogged) {
-        logger.warn(TAG, `${bin} not found — ${cfg.engine} external-player engine unavailable (external clients fall back to direct relay)`);
-        if (isVlc) vlcMissingLogged = true;
-        else ffmpegMissingLogged = true;
+      // A missing ffmpeg binary disables the external engine; the establish throws so the composer serves the
+      // failed card (ffmpeg is the always-on external engine — there is no direct-relay fallback).
+      if (!ffmpegMissingLogged) {
+        logger.warn(TAG, `${bin} not found — external-player engine unavailable`);
+        ffmpegMissingLogged = true;
       }
     } else {
       logger.error(TAG, `${bin} spawn error ${key}: ${err.message}`);
@@ -334,7 +302,7 @@ function externalPlayerSpawn(key: string, channelKey: string, upstreamUrl: strin
     procs.delete(rec.key);
   });
 
-  logger.info(TAG, `engine start ${key} (${cfg.engine}/${cfg.mode}) ← ${upstreamUrl}`);
+  logger.info(TAG, `engine start ${key} (ffmpeg/${cfg.mode}) ← ${upstreamUrl}`);
   return rec;
 }
 
@@ -394,7 +362,7 @@ export async function externalPlayerEnsureStream(
  * refresh its idle-sweep heartbeat (lastPollAt) and return its loopback HLS master — WITHOUT a fresh upstream
  * resolve. Returns null when no live process exists (the caller must then resolve + spawn via
  * externalPlayerEnsureStream). This lets the per-poll entry resolver skip re-resolving an established stream:
- * the running ffmpeg/VLC already holds its own upstream connection (segments come from the CDN), so a per-poll
+ * the running ffmpeg already holds its own upstream connection (segments come from the CDN), so a per-poll
  * re-resolve only re-hits the rotating/flapping source mirror and tears down a healthy stream when it blips.
  */
 export function externalPlayerKeepAlive(
@@ -421,7 +389,7 @@ export function enginesForChannel(channelKey: string): EngineSnapshot[] {
     if (rec.channelKey !== channelKey || !rec.proc) continue;
     out.push({
       output: 'hls',
-      engine: rec.engine,
+      engine: 'ffmpeg',
       configId: rec.configId,
       mode: rec.mode,
       upstreamUrl: rec.upstreamUrl,

@@ -1,9 +1,9 @@
-// externalPlayer engine preset catalog — the picker's source of truth (Settings → Video Configuration).
-// Selecting a preset POPULATES the engine's Advanced single-line input with `args`; the server substitutes
-// the spawn placeholders <INPUT> <UA> <OUTDIR> <M3U8> <SEG> at run time. Strings transcribed from the
-// ffmpeg/VLC research (Part D). `output` notes which output format the preset targets (hls = the default
-// loopback path; ts = the raw-TS passthrough path); `needsHw` flags hardware-encoder presets so the card can
-// gate them on detected host capability.
+// externalPlayer ffmpeg preset catalog — the picker's source of truth (Settings → Video Configuration).
+// Selecting a preset POPULATES the Advanced single-line input with `args`; the server substitutes the spawn
+// placeholders <INPUT> <UA> <OUTDIR> <M3U8> <SEG> at run time. Strings transcribed from the ffmpeg research
+// (Part D). `output` notes which output format the preset targets (hls = the default loopback path; ts = the
+// raw-TS passthrough path); `needsHw` flags hardware-encoder presets so the card can gate them on detected
+// host capability.
 
 export interface VideoPreset {
   name: string;
@@ -65,6 +65,21 @@ export const FFMPEG_PRESETS: VideoPreset[] = [
       '-hls_flags delete_segments+independent_segments+omit_endlist -hls_segment_filename "<OUTDIR>/seg_%05d.ts" "<M3U8>"',
   },
   {
+    name: 'Normalize (ad-splice safe)',
+    output: 'hls',
+    hint:
+      'Re-encode to a FIXED H.264 profile + constant frame rate + regular GOP so SSAI ad splices (a codec / ' +
+      'resolution / timeline change under stream-copy) are absorbed into one continuous output. The guaranteed ' +
+      'fix for streams that freeze/fail on commercial breaks. Moderate CPU (software x264).',
+    args:
+      '-hide_banner -loglevel error -user_agent "<UA>" -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 4 ' +
+      '-fflags +genpts+igndts+discardcorrupt -i "<INPUT>" -map 0:v:0 -map 0:a? -c:v libx264 -preset veryfast -tune zerolatency ' +
+      '-profile:v high -level 4.1 -pix_fmt yuv420p -r 30 -fps_mode cfr -sc_threshold 0 -g 60 -keyint_min 60 ' +
+      '-force_key_frames "expr:gte(t,n_forced*2)" -crf 23 -maxrate 4000k -bufsize 8000k -max_muxing_queue_size 1024 ' +
+      '-c:a aac -b:a 128k -ac 2 -ar 48000 -f hls -hls_time 2 -hls_list_size 6 ' +
+      '-hls_flags delete_segments+independent_segments+omit_endlist -hls_segment_filename "<OUTDIR>/seg_%05d.ts" "<M3U8>"',
+  },
+  {
     name: 'Hardware NVENC (1080p)',
     output: 'hls',
     needsHw: true,
@@ -109,55 +124,3 @@ export const FFMPEG_PRESETS: VideoPreset[] = [
       '-hls_flags delete_segments+omit_endlist -hls_segment_filename "<OUTDIR>/seg_%05d.aac" "<M3U8>"',
   },
 ];
-
-export const VLC_PRESETS: VideoPreset[] = [
-  {
-    name: 'Remux / Copy → HLS',
-    output: 'hls',
-    hint: 'No transcode; package the source into a live HLS window via VLC livehttp.',
-    args:
-      '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-      "--sout '#std{access=livehttp{seglen=6,delsegs=true,numsegs=6,index=<M3U8>,index-url=<SEG>-########.ts}," +
-      "mux=ts{use-key-frames},dst=<SEG>-########.ts}'",
-  },
-  {
-    name: 'Low-latency H.264 → HLS',
-    output: 'hls',
-    hint: 'Transcode to H.264 (x264 ultrafast/zerolatency) into a live HLS window.',
-    args:
-      '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-      "--sout '#transcode{vcodec=h264,venc=x264{preset=ultrafast,tune=zerolatency,keyint=60},vb=4000,acodec=mp4a,ab=128," +
-      'channels=2,samplerate=48000}:std{access=livehttp{seglen=2,delsegs=true,numsegs=6,index=<M3U8>,' +
-      "index-url=<SEG>-########.ts},mux=ts{use-key-frames},dst=<SEG>-########.ts}'",
-  },
-  {
-    name: '720p transcode → HLS',
-    output: 'hls',
-    hint: 'Scale to 720p and transcode to H.264 into a live HLS window.',
-    args:
-      '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-      "--sout '#transcode{vcodec=h264,venc=x264{preset=veryfast,tune=zerolatency,keyint=60},vb=3000,height=720," +
-      'acodec=mp4a,ab=128,channels=2,samplerate=48000,deinterlace}:std{access=livehttp{seglen=2,delsegs=true,numsegs=6,' +
-      "index=<M3U8>,index-url=<SEG>-########.ts},mux=ts{use-key-frames},dst=<SEG>-########.ts}'",
-  },
-  {
-    name: 'Remux / Copy → raw MPEG-TS',
-    output: 'ts',
-    hint: 'Raw MPEG-TS to stdout — the server pipes it through the shared ring buffer to clients (classic IPTV link). Pairs with the Raw TS output mode.',
-    args:
-      '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-      "--sout '#std{access=file,mux=ts,dst=/dev/stdout}'",
-  },
-  {
-    name: 'Audio-only → raw MPEG-TS',
-    output: 'ts',
-    hint: 'Drop video; mux AAC audio as MPEG-TS to stdout (served via the ring buffer).',
-    args:
-      '-I dummy --http-user-agent "<UA>" --network-caching 1500 "<INPUT>" vlc://quit ' +
-      "--sout '#transcode{vcodec=none,acodec=mp4a,ab=128,channels=2,samplerate=48000}:std{access=file,mux=ts,dst=/dev/stdout}'",
-  },
-];
-
-export function presetsFor(engine: 'ffmpeg' | 'vlc'): VideoPreset[] {
-  return engine === 'vlc' ? VLC_PRESETS : FFMPEG_PRESETS;
-}
