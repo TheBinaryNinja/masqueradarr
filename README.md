@@ -85,14 +85,14 @@ and rebuilds everything underneath it to lift those ceilings:
   **Vue 3 single-page app** with full screens for Dashboard, Active Streams, History / Metrics,
   Playlists, EPG Sources, Channel Mapping, Users, and Settings.
 - **Bespoke scrapers → a source-agnostic adapter framework.** Adding a provider is one adapter file
-  plus one registry line; the generic core (sync, proxy, B-Roll, telemetry) never branches per source.
-- **File server → an API + two delivery surfaces.** An in-app player **and** an external-client
-  engine that transcodes for TiviMate / VLC, with **GPU hardware acceleration** (NVENC / VAAPI / QSV).
+  plus one registry line; the generic core (sync, catalog, telemetry) never branches per source.
+- **File server → an API + a management SPA.** An in-app player shell and M3U / XMLTV export for
+  external clients. *(The stream byte-serving engine — the in-app proxy and the external-client
+  transcode engine — was torn down and is being rebuilt on a new code base; **no video plays yet**.)*
 - **Env-var toggles → users, roles & per-user access.** Real authentication (scrypt), session vs.
   stream tokens, and per-user tokenized playlist access.
 - **Blind scheduling → live observability.** WebSocket-pushed viewer/bandwidth/buffering telemetry,
-  ffprobe stream monitoring, a B-Roll placeholder slate while a channel buffers, and MongoDB-backed
-  application logs.
+  live system-performance stats, and MongoDB-backed application logs.
 
 ## At a glance
 
@@ -107,8 +107,8 @@ and rebuilds everything underneath it to lift those ceilings:
 | **Guide data** | One bundled XMLTV grabber | Gracenote, EPG-PW, Jesmann, Custom XMLTV + self-EPG |
 | **Auth** | None | scrypt users, roles, per-user access lists |
 | **Auth'd sources** | Not possible | Supported (streamed-login session capture) |
-| **External clients** | Pass-through only | ffmpeg transcode engine, GPU HW accel |
-| **Observability** | Logs | Live WS telemetry, history/metrics, ffprobe, system stats, app logs |
+| **External clients** | Pass-through only | M3U / XMLTV export (byte-serving engine being rebuilt) |
+| **Observability** | Logs | Live WS telemetry, history/metrics, system stats, app logs |
 | **Backup** | None | Full-system gzip backup / restore + scheduled backups |
 | **Base image** | Alpine + s6-overlay | Debian bookworm (glibc) + tini |
 | **Config** | Environment variables | DB-backed settings + minimal `.env` bootstrap |
@@ -120,14 +120,15 @@ image stitches together — *not* a workspace, and they never import across the 
 
 - **`/` (root)** — the **Vue 3 + Vite SPA** (the management front end; `hls.js`, `vue-router`, `mitt`).
 - **`server/`** — the **Express 4 + Mongoose 8 API** (ESM, TypeScript `strict`), which serves the
-  built SPA, the `/api/*` REST surface, the HLS proxy + external-player engine, and five WebSockets
-  (login-stream, stream-stats, logs-stream, probe-progress, system-stats).
+  built SPA, the `/api/*` REST surface, and four WebSockets
+  (login-stream, stream-stats, logs-stream, system-stats).
 
 Key subsystems:
 
-- **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → proxy) with
+- **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → docs) with
   per-provider adapters. Current sources: Pluggable adapters `<dynamix>`, proxy-only sources — **direct** (passes user-imported stream
-  URLs straight through) and **hdhomerun** (remuxes a local tuner's MPEG-TS to HLS) — that back
+  URLs straight through) and **hdhomerun** (imports a local tuner's channel lineup — playback is dormant
+  pending the video-engine rebuild) — that back
   bring-your-own playlists.
 - **Channel model** — a pristine synced reference (`sourcechannels`) projected into an editable,
   UI-facing store (`playlistchannels`); user edits survive re-syncs.
@@ -138,8 +139,10 @@ Key subsystems:
   `cronjobs` collection.
 - **Composition + export** — composes Global, per-user, and custom `.m3u` playlists with matching
   XMLTV guide siblings for downstream clients.
-- **externalPlayer engine** — always-on ffmpeg transcode for third-party IPTV clients on a dedicated
-  mount, with boot-time hardware-encoder detection.
+- **Video byte-serving — torn down, rebuild pending.** The former in-app HLS proxy and the always-on
+  external-client ffmpeg transcode engine (with GPU hardware acceleration, the B-Roll slate, and ffprobe
+  monitoring) were **removed** to be rebuilt on a new code base. Playlists still compose M3U / XMLTV, but
+  streams do not play yet.
 - **Backup & maintenance** — full-system gzip backup / restore, scheduled backups, and Mongo
   index-rebuild / workspace-reset maintenance actions.
 
@@ -165,10 +168,11 @@ all new development happens here.
 
 - Pulls **M3U playlists** and **EPG / XMLTV** guide data from multiple IPTV providers and normalizes
   them into one catalog.
-- **Resolve-on-demand streaming** — each stream is resolved at play time through an HLS proxy (no dead
-  URLs on disk), which is what makes **authenticated**, **token-gated**, and **rotating-mirror** sources
-  possible.
-- **Two delivery surfaces** — an in-app slide-out player and an external-client engine for TiviMate / VLC / Emby / Jellyfin / Plex.
+- **Resolve-on-demand catalog** — sources are built to resolve each stream at play time (no dead URLs on
+  disk), which is what makes **authenticated**, **token-gated**, and **rotating-mirror** sources possible.
+  *(The play-time HLS proxy that serves the bytes was torn down and is being rebuilt — see below.)*
+- **Delivery surfaces** — an in-app slide-out player **shell** and M3U / XMLTV export for external clients
+  (TiviMate / VLC / Emby / Jellyfin / Plex). *(Stream byte-serving is being rebuilt; no video plays yet.)*
 - **Composition + export** — builds Global, per-user, and custom `.m3u` playlists, each with a matching
   XMLTV guide sibling advertised via `x-tvg-url`.
 
@@ -302,7 +306,8 @@ each package and by running the app.
 - **Clone** — hand-pick channels from any synced source into a curated playlist; the channels are
   independent copies (so edits don't disturb the originals) but streams still route through the real adapter.
 - **Import** — pull in any remote **M3U URL** (re-syncable), upload a static **`.m3u` file**, or expose a
-  local **HDHomeRun** tuner (its raw MPEG-TS remuxed to HLS).
+  local **HDHomeRun** tuner (its channel lineup is imported; playback — the TS→HLS remux — is dormant
+  pending the video-engine rebuild).
 - Every custom playlist rides the same per-user, token-gated **`.m3u` + XMLTV** export machinery as the
   built-in sources.
 
@@ -408,19 +413,17 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 **Observability**
 
-- WebSocket-pushed **viewer / bandwidth / buffering telemetry** and **ffprobe** stream monitoring.
-- Live **system-performance** push (CPU / memory / GPU) on the Dashboard, including per-vendor GPU usage.
+- WebSocket-pushed **viewer / bandwidth / buffering telemetry** (the telemetry cores are kept but
+  currently dormant — nothing streams while the video engine is rebuilt).
+- Live **system-performance** push (CPU / memory) on the Dashboard.
 - Persisted **view-session history** + per-user metrics, and **MongoDB-backed application logs** (12
   categories, 14-day TTL) with a live log drawer.
-- A **B-Roll placeholder slate** burned into real HLS while an in-app channel is establishing or
-  re-buffering — so even headless clients see something.
 
-**Transcoding**
-
-- An always-on per-playlist **ffmpeg engine** for external clients — **loopback-HLS** (default) or
-  **raw MPEG-TS** output.
-- Multi-vendor **GPU hardware acceleration** (NVENC / VAAPI / QSV) with boot-time encoder detection, so
-  the UI only offers what the host can actually do.
+> **Video engine torn down (rebuild pending).** The stream byte-serving layer — the in-app HLS proxy, the
+> always-on external-client **ffmpeg** transcode engine, the B-Roll placeholder slate, ffprobe monitoring,
+> GPU hardware acceleration (NVENC / VAAPI / QSV), and the per-playlist Video Configuration — was **removed**
+> to be rebuilt on a new code base. The app still manages playlists / EPG / channels / users and exports
+> M3U / XMLTV, but **no video plays yet**.
 
 **Scheduling**
 
@@ -438,7 +441,7 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 # Channel Adapter Architecture : _Pluggable sources_
 
-All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`, `proxyHandler`) never branches per source — every per-source difference is encapsulated in the adapter object.
+All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`) never branches per source — every per-source difference is encapsulated in the adapter object. (Adapters still declare `resolveStream`/`proxy`, but those are **dormant** — the byte-serving proxy that called them was removed in the video-engine teardown.)
 
 > [!NOTE]
 > Expand _Channel Adapter Architecture : Flowchart_ to view the visual diagram
@@ -455,7 +458,7 @@ flowchart LR
 
     %% ── Synthetic ──────────────────────────────────────────────
     SYN --> DIRECT["direct\n'Imported'\nPassthrough for user-imported M3U URLs\nidentity resolveStream · any https allowed\nno shell row · channels carry origin:'direct'"]
-    SYN --> HDHOMERUN["hdhomerun\n'HDHomeRun'\nLocal OTA/cable tuner\nDevice TS URL → ffmpeg remux → loopback HLS\nSSRF gate: loopback only\nno shell row · channels carry origin:'hdhomerun'"]
+    SYN --> HDHOMERUN["hdhomerun\n'HDHomeRun'\nLocal OTA/cable tuner\nCatalog import only (channel lineup)\nresolveStream stubbed — playback removed, rebuild pending\nno shell row · channels carry origin:'hdhomerun'"]
     SYN --> LOCAL["local\n'Local Now'\nlocalnow://id?slug sentinel\nresolveStream → rotating CDN master\ndynamic SSRF allow · no shell row\nchannels carry origin:'local'"]
 
     %% ── Built-in ────────────────────────────────────────────────
@@ -520,7 +523,7 @@ flowchart LR
 | Adapter | Label | Auth | Resolve Strategy | Self-EPG | Gracenote XWalk |
 |---------|-------|------|-----------------|----------|-----------------|
 | `direct` | Imported | — | Identity (passthrough) | — | — |
-| `hdhomerun` | HDHomeRun | — | ffmpeg remux → loopback HLS | — | — |
+| `hdhomerun` | HDHomeRun | — | Catalog import only (playback removed, rebuild pending) | — | — |
 | `local` | Local Now | — | Sentinel → rotating CDN | — | — |
 | `dulo` | dulo.tv | session | `dulo://` sentinel → playbackUrl | — | yes |
 | `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape | yes | yes |
@@ -548,14 +551,14 @@ flowchart TD
     NORMALIZE["adapter.normalize(raw)\n→ SourceChannel docs\n(sourcechannels)"]
     PLAYLIST["toPlaylistChannel\n→ PlaylistChannel docs\n(playlistchannels)\nUser edits preserved via $setOnInsert"]
     AFTERSYNC["adapter.afterSync()\n→ writes epgsources / epgchannels / programs\n(sources with self-EPG only)"]
-    PROXY["GET /api/v1/:source/:encUrl\n→ proxyHandler\n→ adapter.isEntryUrl()\n→ adapter.resolveStream()\n→ HLS master → variants → segments"]
+    PROXY["stream request → /api/v1/:source/:encUrl\nbyte-serving proxy (proxyHandler + resolveStream)\nREMOVED in the video-engine teardown —\nrebuild pending, no video plays"]
     SPA["SPA reads playlistchannels\nvia GET /api/playlists/:id/channels"]
 
     PROVISION --> SYNC
     SYNC --> NORMALIZE --> PLAYLIST
     NORMALIZE --> AFTERSYNC
     PLAYLIST --> SPA
-    SPA -->|"stream request"| PROXY
+    SPA -.->|"stream request (torn down)"| PROXY
 ```
 
 # Playlists
@@ -579,9 +582,10 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
   prepends `settings.domain`, so changing the domain in **Settings cascades** to every playlist's URL.
 - **State + schedule.** `state:false` pauses the endpoint (downstream clients get a 404). `interval` + `auto`
   drive the scheduler; a manual **Sync now** is always available.
-- **Streaming is resolve-on-demand.** A channel's stream URL is *derived* (`/api/v1/<source>/<enc-entry>`),
-  never stored, so the proxy resolves the real upstream at play time. Every channel keeps an `origin` source,
-  so a cloned or imported channel still routes through the right adapter.
+- **Streaming is resolve-on-demand (byte-serving rebuild pending).** A channel's stream URL is *derived*
+  (`/api/v1/<source>/<enc-entry>`), never stored. The play-time HLS proxy that resolved the real upstream was
+  torn down in the video-engine teardown, so streams don't serve yet — but every channel still keeps an
+  `origin` source, so a cloned or imported channel will route through the right adapter once playback is rebuilt.
 
 ## What kinds of playlists are possible
 
@@ -591,7 +595,7 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
 | **Clone** | `clone` | Add Playlist → **Clone** — hand-pick channels from any synced source | Independent COPIES in `playlistchannels`; `origin` = the provider source for routing |
 | **URL import** | `url` | Add Playlist → **URL** — fetch a remote `.m3u` / `.m3u8` | Parsed from the upstream; re-syncable via the stored `remoteUrl` |
 | **File upload** | `file` | Add Playlist → **File** — upload a static `.m3u` | Parsed once from the uploaded file |
-| **HDHomeRun** | `hdhomerun` | Add Playlist → **HDHomeRun** — point at a LAN tuner (`deviceUrl`) | Discovered from the device; raw MPEG-TS remuxed to HLS, capped at the tuner count |
+| **HDHomeRun** | `hdhomerun` | Add Playlist → **HDHomeRun** — point at a LAN tuner (`deviceUrl`) | Discovered from the device (channel lineup); playback (TS→HLS remux) removed pending the video-engine rebuild |
 
 Built-in defaults are **Global-endpoint** by default; the custom kinds are **Custom-endpoint** and ride the
 per-playlist export machinery (their own path + guide sibling). All the type tags (`clone`/`file`/`url`/
@@ -708,83 +712,14 @@ Per composed surface:
 
 # Video Engine
 
-> **Scope:** how a stream session opened by a **IPTV client** (TiviMate, IPTV Client, VLC, UHF, IPTV One,
-> ffmpeg-tier players) is served and made observable — the **externalPlayer** path. This is the engine half of
-> the appPlayer / externalPlayer split (the "robust-donut" rollout); its sibling is the in-app slide-out player.
-> This doc traces only what is externalPlayer-specific.
+> **Torn down — rebuild pending.** The externalPlayer stream engine that used to live here — the
+> always-on per-channel **ffmpeg** process that served IPTV clients (TiviMate / VLC / Emby / …) on the
+> **`/api/ext/v1`** mount, the loopback-HLS + raw-MPEG-TS outputs, the per-playlist **Video Configuration**,
+> the remux-vs-transcode decision engine, GPU hardware acceleration (NVENC / VAAPI / QSV) with boot-time
+> encoder detection, the B-Roll slate, ffprobe monitoring, and the engine-health → telemetry fork — was
+> **removed** to be rebuilt on a new code base.
 >
-> **One-line:** external clients subscribe to a per-user `.m3u` whose channel URLs are the **`/api/ext/v1`**
-> mount (the M3U composer writes them, carrying `&pl=<owningPlaylistId>` so the per-playlist config is selectable).
-> The external HLS path is **composer-free + engine-driven** — there is **no B-Roll slate** on external (that's the
-> in-app `/api/v1` path only). Every session is **always** routed through a shared per-channel **ffmpeg** process
-> (configured in **Settings → Video Configuration**) that transcodes/normalizes **and** captures
-> loading/buffering/failed health for an otherwise-opaque client — output as **loopback HLS** (default) or an
-> opt-in **raw MPEG-TS socket**. ffmpeg is the single, always-on external engine (no engine selector, no
-> enable/disable toggle, no direct-relay bypass); a resolve/engine failure is a clean error (**502**), not a slate.
-
-## Plain language
-
-A TiviMate/IPTV Client/VLC user downloads their personal playlist file from TVApp2 and the app plays its channels.
-Those channels point at a special server URL (`/api/ext/...`) that TVApp2 writes specifically for outside
-apps. The problem this solves: an outside app is a **black box** — it never tells the server "I'm buffering" or
-"this failed," and it may need a different video format than the source provides.
-
-So TVApp2 puts a **media engine** (ffmpeg) in the middle of every external session. The engine pulls the channel
-once, optionally re-encodes it to something every player accepts, and — crucially — **watches its own health**
-(is it keeping up? did it stall? did it die?) so the server can show that session's state on the **Active
-Streams** and **History** screens, exactly like an in-app session. One engine process is shared by everyone
-watching that channel.
-
-Unlike the in-app player, the external path does **not** show the broadcast-style "holding card" (B-Roll) while
-a channel is starting up or failing — an outside app supplies its own loading/error UI, so the server just hands
-over the stream and, if it can't, returns a clean error (the in-app player keeps the slate). There are two ways
-to hand the bytes over:
-
-- **HLS (default)** — the engine writes a normal HLS stream the server already knows how to serve and count.
-  Works for almost every modern client (TiviMate, IPTV Client, VLC, Emby). The server fetches the engine's output and
-  rewrites/serves it through the same proxy plumbing the in-app path uses — but **without** the B-Roll composer.
-- **Raw TS (opt-in)** — the classic "IPTV link": one long-held connection streaming MPEG-TS, for older
-  raw-only clients. This needs its own connection-counting because such a client never re-polls.
-
-If GPU hardware is present, the engine can offload re-encoding to it (NVENC / Intel QSV / VAAPI); the server
-detects what's usable at startup so the Settings screen only offers real options. The default preset is a
-near-passthrough remux (`-c copy`), so the always-on engine adds little CPU for a source that's already
-browser-safe.
-
-> [!NOTE]
-> Expand _Video Engine : Graph_ to view the visual diagram
-
-<details>
-  <summary>Video Engine : Graph</summary>
-
-```mermaid
-graph TD
-    A["IPTV client (TiviMate/IPTV Client/VLC/…)<br/>downloads per-user .m3u → GET /api/ext/v1/&lt;src&gt;/&lt;enc&gt;?token=&amp;pl="] --> B["stream-access gate (routes/sources.ts)<br/>same token model as /api/v1"]
-    B -->|401/403| Bx["plain-text error"]
-    B --> C0["resolvePlaylistConfigId(?pl)<br/>→ configId: 'app' | 'app_&lt;pl&gt;'"]
-    C0 --> C["getVideoConfigCached(configId) (5s TTL, per-id)"]
-    C --> E{"output? (engine always ffmpeg)"}
-
-    E -->|"hls (default)"| F["serveEntry = makeExternalHlsEntry<br/>resolveStream · noteViewer · ensureProbe<br/>(externalEngine.ts) — COMPOSER-FREE, no B-Roll"]
-    F -->|resolve/engine fail| Fx["clean 502 (no slate)"]
-    F --> G["spawn ffmpeg (shared per channel+config)<br/>key = streamKey#configId · advancedArgs → buildFfmpegArgv"]
-    G --> H["live HLS window → 127.0.0.1 loopback dir"]
-    H --> P["proxy handler direct-hop: fetch loopback master<br/>· child-rewrite /api/ext/v1 (+ &amp;token= &amp;pl=) · serve bytes<br/>engine owns streamState (no composer)"]
-    P --> A
-
-    E -->|"ts (opt-in)"| J["createExternalTsHandler → ensureTsStream<br/>(externalTsEngine.ts)"]
-    J --> K["spawn ffmpeg -f mpegts pipe:1"]
-    K --> L["188-aligned RING BUFFER (byte-capped)"]
-    L --> M["fan-out to N client sockets (per-client cursor<br/>+ backpressure + skip-forward) · video/mp2t"]
-    M --> A
-
-    G -. health .-> N["engineHealth: ffmpeg -progress (pipe:1 / pipe:3)<br/>+ watchdog → streamState live/buffer/failed"]
-    K -. health .-> N
-    P -. poll-recency: noteViewer/noteBytes .-> T["streamTelemetry → ViewSession playerType=externalPlayer"]
-    M -. socket-liveness: noteSocketViewerOpen/Bytes/Close .-> T
-    N -.-> T
-    T --> U["Active Streams (External pill) + History"]
-
-    HW["boot hwDetect.ts: ffmpeg -encoders ∩ /dev nodes<br/>→ videoconfig.hwAccel.detected"] -. gates HW presets .-> C
-```
-</details>
+> The in-app player's `/api/v1` byte-serving path was removed too; only its inert UI shell remains. Composed
+> per-user `.m3u` files are still written with `/api/ext/v1/<src>/<enc>?token=&pl=` channel URLs (the composer
+> was deliberately left pointing at the old mount), but **those URLs no longer resolve** until the engine is
+> rebuilt. The app still manages playlists / EPG / channels / users and exports M3U / XMLTV; **no video plays yet**.

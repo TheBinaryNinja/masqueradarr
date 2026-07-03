@@ -7,8 +7,7 @@
 //   'playlist'     → runPlaylistSync (live-sync, the manual "Sync now"): a registry source → syncLive; a
 //                    custom playlist → its upstream re-fetch ('hdhomerun' device / 'url' stored remoteUrl)
 //   'playlist-m3u' → composeM3u (recompose the playlist's stream-ready m3u export, the manual "Compose m3u")
-//   'probe-all'    → probeAllChannels (the scheduled ffprobe sweep over every Active channel — one global
-//                    job, targetId:'app'; the same work as the manual POST /api/probe/run)
+//   'backup'       → runBackup (the scheduled full-system backup to disk — one global job, targetId:'app')
 // A playlist's sync ('playlist:<id>') and compose ('playlist-m3u:<id>') jobs are independent docs, so the
 // two cadences never collide. nextRun/lastRun/lastStatus/lastError are maintained here. See restapi.md
 // (the /api/cronjobs resource) + styles-backend.md.
@@ -19,7 +18,6 @@ import { Cronjob, type CronjobDoc } from '../models/Cronjob.js';
 import { syncEpgSource } from '../epg/syncEpgSource.js';
 import { syncLive } from '../sources/seed.js';
 import { composeM3u } from '../m3u/compose.js';
-import { probeAllChannels } from '../sources/probeAll.js';
 import { getSource } from '../sources/registry.js';
 import { Playlist } from '../models/Playlist.js';
 import { syncHdhrPlaylist } from '../sources/adapters/hdhomerun/import.js';
@@ -48,8 +46,8 @@ async function runPlaylistSync(targetId: string): Promise<void> {
 }
 
 // Scheduled full-system backup → builds the gzip envelope (lean scope, secrets included — it's the
-// operator's own disk) and writes it into settings.backupLocation. One global job (targetId 'app'),
-// mirroring probe-all. Throws on failure so runJob records lastStatus 'error' + lastError.
+// operator's own disk) and writes it into settings.backupLocation. One global job (targetId 'app').
+// Throws on failure so runJob records lastStatus 'error' + lastError.
 async function runBackup(_targetId: string): Promise<void> {
   const gzip = await buildBackupGzip({ includeHeavy: false, includeSecrets: true });
   await writeBackupFile(backupFilename(), gzip);
@@ -109,11 +107,6 @@ async function runJob(id: string): Promise<void> {
         // + compose on independent cadences. Recomposes the playlist's stream-ready m3u export (the same
         // work as the manual POST /api/playlists/:id/compose). targetId is the (Default) source playlist id.
         await composeM3u(doc.targetId);
-        break;
-      case 'probe-all':
-        // The scheduled ffprobe sweep over every Active channel in every playlist (one global job —
-        // targetId is 'app'). Self-guards against overlap, so a tick during a long run is a safe no-op.
-        await probeAllChannels();
         break;
       case 'backup':
         // Scheduled full-system backup to disk (one global job — targetId 'app'). Writes a gzip envelope

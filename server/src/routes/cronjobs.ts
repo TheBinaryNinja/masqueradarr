@@ -52,11 +52,6 @@ cronjobsRouter.put('/:targetId', async (req, res, next) => {
       return res.status(400).json({ error: 'frequency (object with a mode) required' });
     }
     const frequency = b.frequency as CronFrequency;
-    // The channel-probe sweep has a once-per-hour minimum (a full ffprobe pass is heavy) — reject the
-    // sub-hourly 'minutes' mode. Defense-in-depth: the Settings UI only offers hourly/daily/weekly.
-    if (targetType === 'probe-all' && frequency.mode === 'minutes') {
-      return res.status(400).json({ error: 'probe schedule minimum frequency is hourly' });
-    }
     const timezone = typeof b.timezone === 'string' && b.timezone ? b.timezone : null;
     const enabled = typeof b.enabled === 'boolean' ? b.enabled : true;
 

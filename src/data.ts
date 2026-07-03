@@ -31,9 +31,6 @@ export interface Playlist {
   // `isAuthenticated` = currently signed in (stored mirror of the owning playlistauths.status==='active').
   authentication?: boolean;
   isAuthenticated?: boolean;
-  // Per-playlist externalPlayer video config: 'default' (global app config) | 'app_<id>' (a Custom config doc).
-  // Governs how this playlist's channels are served to EXTERNAL IPTV clients only (the in-app player is unaffected).
-  videoconfig?: string;
   // Remote-URL import source — set ONLY for a remote-URL m3u import playlist (source:'url'); null/absent for
   // every other playlist. The upstream .m3u/.m3u8 URL the import fetched, persisted so a manual or scheduled
   // Sync re-fetches + reconciles this playlist's channels from it. (Distinct from `url`, the hosted URL.)
@@ -71,9 +68,8 @@ export interface EpgSource {
   timezone?: string | null;
   languagecode?: string | null;
 }
-// ffprobe-derived technical details (server/src/models/StreamSession.ts → StreamProbe). The latest snapshot
-// rides Channel.stream.probe; the ~10s time-series rides the StreamSession rows. `tbc` is intentionally
-// absent (removed from modern ffprobe); tbn/tbr are the faithful equivalents.
+// ffprobe-derived technical-detail shape. VESTIGIAL after the video-engine teardown: ffprobe was removed, so
+// Channel.stream.probe / ActiveStream.probe are always null now — retained as a nullable slot for the rebuild.
 export interface StreamProbe {
   video: {
     codec: string | null; profile: string | null; pixFmt: string | null;
@@ -168,31 +164,6 @@ export interface StreamClient {
   location?: string | null; // geo resolved from `ip` server-side ("City, Region, US" / "Local"); null/absent = geo off
   countryCode?: string | null; // ISO-3166-1 alpha-2 for the flag emoji
 }
-// One external-player ENGINE process serving a channel (GET /api/active-streams/:channelId/engine → { engines }).
-// Drives the "Video Engine Service" diagram on the Active Streams screen. ffmpeg fills speed/fps/bitrateKbps/
-// outTimeMs/dropFrames (null until the first -progress block). `clients` is the raw-TS socket count (null for
-// the HLS engine). `upstreamUrl` is query-redacted (host+path) server-side. An empty engines[] ⇒ no live
-// external engine for this channel (only the in-app player is watching, or nobody) ⇒ the screen shows the
-// passthrough note instead of the diagram.
-export interface EngineSnapshot {
-  output: 'hls' | 'ts';
-  engine: 'ffmpeg';
-  configId: string; // 'app' (Default) | 'app_<playlistId>' (Custom)
-  mode: string; // 'auto' | 'copy' | 'transcode'
-  preset: string | null; // from the resolved videoconfig (ffmpeg sub-object)
-  advancedArgs: string; // operative spawn args (from the videoconfig)
-  hwEncoder: string | null; // resolved HW encoder (null = software → no GPU node)
-  upstreamUrl: string; // resolved upstream master, query-redacted to host+path
-  startedAt: number;
-  state: 'init' | 'live' | 'buffer' | 'failed';
-  speed: number | null;
-  fps: number | null;
-  bitrateKbps: number | null;
-  outTimeMs: number | null;
-  dropFrames: number | null; // cumulative dropped frames (ffmpeg -progress)
-  clients: number | null; // raw-TS attached socket count; null for the HLS engine
-  producing: boolean;
-}
 // 1:1 with the per-source epgchannels store (server/src/models/EpgChannel.ts) — read verbatim from
 // GET /api/epg-channels ({ _id: 0 }). These are the guide's channels (the right-hand "EPG channel IDs" in
 // the mapping screen). `channelId` + `source` are the 2-factor EPG link target (= a channel's tvg_id + epg).
@@ -204,14 +175,6 @@ export interface EpgChannel {
   source: string;
 }
 export interface CustomPlaylist { id: string; name: string; slug: string; channels: number; updated: string }
-// 1:1 with the repurposed streamsessions store (server/src/models/StreamSession.ts) — the per-channel
-// stream-probe time-series. One row per ffprobe capture, linked to its channel by channelId (= a Channel.id
-// / PlaylistChannel._id). Read from GET /api/stream-sessions (newest first). Feeds the History/Metrics
-// build-out (later).
-export interface StreamSession {
-  channelId: string; capturedAt: number;
-  video: StreamProbe['video']; audio: StreamProbe['audio']; container: string | null;
-}
 // One buffering interval within a watch session (epoch-ms start + interval duration).
 export interface ViewBufferEvent { at: number; phase: 'buffer' | 'failed'; ms: number }
 // 1:1 with the viewsessions store (server/src/models/ViewSession.ts) — a completed per-viewer watch session
@@ -264,7 +227,6 @@ export interface BuiltinPlaylistMeta {
   globalPlaylist: boolean;
   clonePlaylist: boolean;
   syncSchedules: boolean;
-  videoEngineCustomization: boolean;
   playlistBoundEpg: boolean;
   epgSyncSchedules: boolean;
 }
@@ -305,38 +267,12 @@ export interface CronJob {
   createdAt: string;
   updatedAt: string;
 }
-// Live state of the scheduled ffprobe sweep (server/src/sources/probeAll.ts) — ephemeral, NOT a persisted
-// collection. Pushed over the /api/probe-progress WebSocket (useProbeProgress.ts) and read on demand via
-// GET /api/probe/status. Drives the sidebar "Probe: running" indicator. `running:false` = idle.
-export interface ProbeStatus {
-  running: boolean;
-  playlistId: string | null;
-  playlistName: string | null;
-  channelIndex: number; // 1-based position within the current playlist
-  channelTotal: number; // Active channels in the current playlist
-  currentChannelName: string | null;
-  startedAt: number | null; // epoch ms of the current run
-}
 // 1:1 with the live system-performance frame (server stats/systemStatsHub.ts → SystemStats) — ephemeral,
 // NOT a persisted collection. Read on demand via GET /api/system-stats and pushed every ~2.5s over the
 // /api/system-stats WebSocket (useSystemStats.ts). Drives the Dashboard "System Performance" banner.
 // `scope` reports where CPU/Memory were measured: cgroup ('container') vs Node os.* ('host'). diskIo/network
 // are null when /proc is unavailable (non-Linux dev); mongo connection fields are null when serverStatus is
-// unprivileged/unavailable. CPU usagePct is null until the second tick (needs a delta). `gpu` is null unless a
-// videoconfig has HW accel enabled (drives the Dashboard "GPU Performance" card); per-vendor numeric fields are
-// null when the host can't report them (no device / monitor tool missing / Intel shared memory).
-export interface GpuStats {
-  vendor: 'nvidia' | 'amd' | 'intel' | 'unknown';
-  name: string | null;
-  encoder: string | null; // the enabled HW encoder, e.g. 'h264_nvenc'
-  utilizationPct: number | null;
-  encoderPct: number | null; // dedicated encode-engine % (NVENC / Intel Video)
-  memUsedBytes: number | null;
-  memTotalBytes: number | null;
-  memUsedPct: number | null;
-  temperatureC: number | null;
-  source: 'nvidia-smi' | 'sysfs' | 'radeontop' | 'intel_gpu_top' | null;
-}
+// unprivileged/unavailable. CPU usagePct is null until the second tick (needs a delta).
 export interface SystemStats {
   ts: number;
   scope: 'cgroup-v2' | 'cgroup-v1' | 'host';
@@ -357,7 +293,6 @@ export interface SystemStats {
       scanAndOrderPerSec: number | null;
     } | null;
   };
-  gpu: GpuStats | null;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -371,17 +306,14 @@ export const CHANNELS: Ref<Channel[]> = ref([]);
 export const EPG_CHANNELS: Ref<EpgChannel[]> = ref([]);
 export const ACTIVE_STREAMS: Ref<ActiveStream[]> = ref([]);
 export const CUSTOM_PLAYLISTS: Ref<CustomPlaylist[]> = ref([]);
-export const STREAM_SESSIONS: Ref<StreamSession[]> = ref([]);
 export const VIEW_SESSIONS: Ref<ViewSession[]> = ref([]);
 export const USER_METRICS: Ref<UserMetric[]> = ref([]);
 export const LOGS: Ref<Log[]> = ref([]);
 export const CRON_JOBS: Ref<CronJob[]> = ref([]);
 export const EPG_PROGRAMS: Record<string, Program[]> = reactive({});
-// Ephemeral (not bootstrapped) — kept live by useProbeProgress.ts off the /api/probe-progress WebSocket.
-export const PROBE_STATUS: Ref<ProbeStatus | null> = ref(null);
 // Ephemeral (not bootstrapped) — kept live by useSystemStats.ts off the /api/system-stats WebSocket. NOT in
 // bootstrapData(): the route is admin-only, so a standard user's parallel bootstrap would 403; the admin
-// Dashboard subscribes on enter (mirrors PROBE_STATUS).
+// Dashboard subscribes on enter.
 export const SYSTEM_STATS: Ref<SystemStats | null> = ref(null);
 
 // ──────────────────────────────────────────────────────────────────────
@@ -440,14 +372,13 @@ export function bootstrapData(): Promise<void> {
     // loads epg-channels per-selected-source (fetchEpgChannelsForSource).
     const [
       playlists, epgSources, sources, activeStreams,
-      customPlaylists, streamSessions, viewSessions, logs, cronjobs,
+      customPlaylists, viewSessions, logs, cronjobs,
     ] = await Promise.all([
       getJson<Playlist[]>('/api/playlists'),
       getJson<EpgSource[]>('/api/epg-sources'),
       getJson<SourceManifestEntry[]>('/api/sources'),
       getJson<ActiveStream[]>('/api/active-streams'),
       getJson<CustomPlaylist[]>('/api/custom-playlists'),
-      getJson<StreamSession[]>('/api/stream-sessions'),
       getJson<ViewSession[]>('/api/view-sessions'),
       getJson<Log[]>('/api/logs?limit=200'),
       getJson<CronJob[]>('/api/cronjobs'),
@@ -469,7 +400,6 @@ export function bootstrapData(): Promise<void> {
     CHANNELS.value = channelLists.flat();
     ACTIVE_STREAMS.value = activeStreams;
     CUSTOM_PLAYLISTS.value = customPlaylists;
-    STREAM_SESSIONS.value = streamSessions;
     VIEW_SESSIONS.value = viewSessions;
     LOGS.value = logs;
     CRON_JOBS.value = cronjobs;

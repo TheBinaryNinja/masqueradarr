@@ -40,8 +40,6 @@ export interface BuiltinPlaylistMeta {
   clonePlaylist: boolean;
   /** Supports a recurring sync schedule (cronjobs targetType:'playlist'). */
   syncSchedules: boolean;
-  /** Supports a per-playlist externalPlayer video configuration (videoconfig 'app_<id>'). */
-  videoEngineCustomization: boolean;
   /** A playlist sync refreshes the source's OWN guide (self-EPG). false ⇒ user must match channels. */
   playlistBoundEpg: boolean;
   /** The Playlist EPG supports its own sync schedule (false for every current built-in). */
@@ -54,7 +52,6 @@ export const DEFAULT_BUILTIN_META: BuiltinPlaylistMeta = {
   globalPlaylist: true,
   clonePlaylist: true,
   syncSchedules: true,
-  videoEngineCustomization: true,
   playlistBoundEpg: false,
   epgSyncSchedules: false,
 };

@@ -13,7 +13,6 @@
 import { Playlist } from '../models/Playlist.js';
 import { PlaylistAuth } from '../models/PlaylistAuth.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
-import { StreamSession } from '../models/StreamSession.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { SourceChannel, type SourceChannelDoc } from '../models/SourceChannel.js';
 import { EpgSource } from '../models/EpgSource.js';
@@ -484,17 +483,13 @@ export async function bootInitSources(): Promise<void> {
     logger.warn('seed', `playlistauths index reconcile failed (continuing): ${(err as Error).message}`);
   }
 
-  // `streamsessions` is now 1:1 with the streaming channel: one row per channel, UPSERTED under a
-  // deterministic `_id` = PlaylistChannel._id (StreamSessionDoc). Reconcile to that shape: (1) drop legacy
-  // append-only rows that still carry an auto ObjectId `_id` so they can't linger as duplicates of the new
-  // deterministic rows (raw driver query so Mongoose doesn't cast `_id` to String; idempotent — no ObjectId
-  // `_id`s remain after the first run); (2) syncIndexes() drops the stale `order`/{channelId,capturedAt}
-  // indexes and builds {capturedAt:-1}. Idempotent + non-fatal.
+  // Video-engine teardown cleanup: drop any stale `probe-all` cronjobs left from the removed ffprobe sweep
+  // (its Settings UI is gone, so a lingering schedule would otherwise error on every tick with no way to
+  // delete it). Idempotent + non-fatal. Runs before startScheduler() so a stale job never gets registered.
   try {
-    await StreamSession.collection.deleteMany({ _id: { $type: 'objectId' } });
-    await StreamSession.syncIndexes();
+    await Cronjob.deleteMany({ targetType: 'probe-all' });
   } catch (err) {
-    logger.warn('seed', `streamsessions reconcile failed (continuing): ${(err as Error).message}`);
+    logger.warn('seed', `probe-all cronjob cleanup failed (continuing): ${(err as Error).message}`);
   }
 
   // One-time source-type/endpoint casing normalization (idempotent; non-fatal). Rewrites any persistent

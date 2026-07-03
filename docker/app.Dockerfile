@@ -55,69 +55,32 @@ COPY server/src/ ./src/
 RUN npm run build                       # tsc -p .  -> /server/dist
 
 # ---- Stage 3: runtime -------------------------------------------------------
-# Debian (bookworm) base — glibc, so the externalPlayer engine gets GPU hardware acceleration across all vendors:
-# NVIDIA NVENC works (the NVIDIA Container Toolkit injects glibc driver libs — libnvidia-encode / libcuda — that a
-# musl/Alpine runtime cannot dlopen), alongside AMD VAAPI and Intel QSV. This converges the base with the AIO image
-# (bookworm because its copied-in mongod is glibc-only); the only remaining divergence is the config bootstrap (see
-# SYNC NOTE). The dulo streamed-login browser drives Debian's apt `chromium`. Trade-off: the image is ~0.5–0.7 GB
-# larger than the former Alpine runtime.
+# Debian (bookworm) base — glibc, matching the AIO image (bookworm because its copied-in mongod is glibc-only);
+# the only remaining divergence is the config bootstrap (see SYNC NOTE). The dulo streamed-login browser drives
+# Debian's apt `chromium`. (The video engine + all ffmpeg/GPU-hwaccel deps were removed in the video-engine
+# teardown — see the runtime deps below; the base stays Debian for mongod parity, not for NVENC.)
 FROM node:22-bookworm-slim AS runtime
 ENV NODE_ENV=production \
     MASQUERADARR_CONFIG=/app/config/config.json \
     CHROMIUM_PATH=/usr/bin/chromium \
-    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
     DISPLAY=:99
 WORKDIR /app
 ARG TARGETARCH
 
 # tini = correct PID 1 (forwards SIGTERM/SIGINT to the graceful-shutdown handler in index.ts; Debian's apt
 # installs it at /usr/bin/tini — see ENTRYPOINT).
-# ffmpeg = needed by the B-Roll slate encoder (sources/core/broll.ts) AND the externalPlayer engine
-#   (externalEngine.ts / externalTsEngine.ts) that remuxes/transcodes third-party-client streams; the stream
-#   probe (streamProbe.ts) needs the matching ffprobe. The B-Roll text is rasterized in pure Node (no drawtext/
-#   freetype). The apt ffmpeg is a baseline only — it has NO NVENC (that needs proprietary nv-codec-headers at
-#   build time). NVENC (+ a curated multi-vendor VAAPI/QSV runtime) comes from jellyfin-ffmpeg, overlaid below
-#   and symlinked onto /usr/local/bin so every consumer that spawns `ffmpeg`/`ffprobe` by bare name uses it.
-#   libva2 + va-driver-all + vainfo give a VAAPI baseline + the vainfo diagnostic. For NVIDIA run the nvidia
-#   container runtime + pass the GPU; for AMD/Intel pass /dev/dri (docker-compose.yml). Boot detection
-#   (videoconfig/hwDetect.ts) then lists only what's actually usable on the host.
-# intel-gpu-tools + radeontop = LIVE GPU usage monitors for the Dashboard "GPU Performance" card
-#   (stats/gpu.ts): intel_gpu_top (Intel render/video engine %) and radeontop (AMD utilization fallback when
-#   sysfs gpu_busy_percent is absent). AMD's primary path is /sys/class/drm sysfs (no binary); NVIDIA needs no
-#   monitor here — nvidia-smi is injected at runtime by the NVIDIA Container Toolkit (utility capability).
-#   intel-gpu-tools is x86-only (Intel GPUs don't exist on arm64) and HAS NO arm64 Debian package, so it is
-#   installed ONLY when TARGETARCH=amd64 — otherwise the arm64 build fails with "Unable to locate package".
-#   On arm64 stats/gpu.ts simply finds no intel_gpu_top and degrades to the AMD/NVIDIA paths.
 # chromium (+ fonts-liberation) = the distro browser the dulo streamed-login drives via puppeteer-core
 # (executablePath=CHROMIUM_PATH=/usr/bin/chromium); nss/freetype/harfbuzz arrive transitively with chromium.
 # xvfb = virtual framebuffer / X server for that browser, which runs HEADFUL (Google's "Continue with Google"
 # gate blocks headless). app-entrypoint.sh starts Xvfb on DISPLAY=:99 before node.
+# (Video-engine teardown: ffmpeg/ffprobe + the jellyfin-ffmpeg overlay + all GPU-hwaccel deps —
+# NVIDIA_DRIVER_CAPABILITIES, libva2/va-driver-all/vainfo, intel-gpu-tools, radeontop — were removed. No video
+# is served until a new playback engine is rebuilt.)
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      tini ffmpeg ca-certificates xvfb chromium fonts-liberation \
-      libva2 va-driver-all vainfo radeontop \
- && if [ "${TARGETARCH}" = "amd64" ]; then \
-      apt-get install -y --no-install-recommends intel-gpu-tools; \
-    fi \
+      tini ca-certificates xvfb chromium fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-
-# jellyfin-ffmpeg = a multi-vendor ffmpeg/ffprobe that bundles its OWN GPU runtime (VAAPI, Intel QSV via
-# iHD/oneVPL, and NVIDIA NVENC/NVDEC) — this is what actually unlocks NVENC, which the apt ffmpeg lacks (and is
-# why the runtime is glibc/Debian, not musl/Alpine). The .deb is fetched per target arch (amd64/arm64) and pinned
-# for reproducible builds (bump JELLYFIN_FFMPEG_VERSION to upgrade). It installs under /usr/lib/jellyfin-ffmpeg;
-# we symlink ffmpeg+ffprobe into /usr/local/bin (ahead of /usr/bin on PATH) so the engine, B-Roll encoder, and
-# stream probe pick it up by bare name with no code change. curl is purged after use (keeps the image curl-free).
-ARG JELLYFIN_FFMPEG_VERSION=7.1.4-3
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
- && curl -fsSL -o /tmp/jellyfin-ffmpeg.deb \
-      "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v${JELLYFIN_FFMPEG_VERSION}/jellyfin-ffmpeg7_${JELLYFIN_FFMPEG_VERSION}-bookworm_${TARGETARCH}.deb" \
- && apt-get install -y --no-install-recommends /tmp/jellyfin-ffmpeg.deb \
- && ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg  /usr/local/bin/ffmpeg \
- && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe \
- && apt-get purge -y --auto-remove curl \
- && rm -f /tmp/jellyfin-ffmpeg.deb \
- && rm -rf /var/lib/apt/lists/*
 
 # Prod-only server deps (express, mongoose, ws, puppeteer-core). puppeteer-core ships no browser binary — the
 # dulo login uses the distro `chromium` installed above — so there's no browser download to skip here.

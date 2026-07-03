@@ -126,7 +126,6 @@ const distroAdapter = makeFastSource({
     globalPlaylist: true,
     clonePlaylist: true,
     syncSchedules: true,
-    videoEngineCustomization: true,
     playlistBoundEpg: true,
     epgSyncSchedules: false,
   },

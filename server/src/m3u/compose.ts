@@ -1,7 +1,8 @@
 // M3U composition — turns the editable PlaylistChannel store into stream-ready EXTM3U files on disk.
 // DB-aware (reads Playlist + PlaylistChannel + Settings.domain) but source-AGNOSTIC: the URL line is
-// always the /api/ext/v1 externalPlayer proxy path (this M3U is for third-party IPTV clients; serialize.ts
-// builds it), so there is no per-source branching here (SKILL.md §6). Two trigger
+// always the /api/ext/v1 path (serialize.ts builds it), so there is no per-source branching here (SKILL.md §6).
+// NOTE: that externalPlayer mount was removed in the video-engine teardown, so the exported URLs are dead until
+// a playback engine is rebuilt (the export files still generate — see serialize.ts §4). Two trigger
 // paths share this core: the manual button (POST /api/playlists/:id/compose) and the scheduled
 // `playlist-m3u` cron tick — both call composeM3u(). See .claude/skills/m3u/SKILL.md.
 //

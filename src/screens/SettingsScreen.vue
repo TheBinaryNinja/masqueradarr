@@ -6,12 +6,10 @@ import Toggle from '../components/Toggle.vue';
 import SettingsRow from '../components/SettingsRow.vue';
 import EndpointField from '../components/EndpointField.vue';
 import DuloAuthPanel from '../components/DuloAuthPanel.vue';
-import VideoConfigPanel from '../components/VideoConfigPanel.vue';
-import EncoderDiagramPanel from '../components/EncoderDiagramPanel.vue';
 import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
-import { PROBE_STATUS, type CronFrequency } from '../data';
+import { type CronFrequency } from '../data';
 import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
 import {
@@ -25,14 +23,9 @@ import {
 
 const toast = useToast();
 
-// Settings is split into two tabs: General (General + Data cards) and Advanced (Geolocation, Channel
-// Probing, Dulo.tv Authentication, Video Configuration).
+// Settings is split into two tabs: General (General + Data cards) and Advanced (Geolocation,
+// Dulo.tv Authentication).
 const activeTab = ref<'general' | 'advanced'>('general');
-
-// Encoder Diagram split-pane (Advanced tab only) — opened from the Video Configuration card header button.
-// When open, the settings column shares the row with the diagram panel; leaving Advanced closes it.
-const diagramOpen = ref(false);
-watch(activeTab, (t) => { if (t !== 'advanced') diagramOpen.value = false; });
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
 // the region prefix for the <optgroup>s. Falls back to a small common set on the rare runtime without the API.
@@ -103,87 +96,6 @@ async function clearLicenseKey() {
   keySaveState.value = ok ? 'saved' : 'error';
   if (ok) licenseKeyInput.value = '';
   setTimeout(() => (keySaveState.value = 'idle'), 2200);
-}
-
-// ── Channel probing ────────────────────────────────────────────────────────
-// The recurring ffprobe sweep schedule is a single cronjob row (targetType:'probe-all', targetId:'app')
-// managed via /api/cronjobs — the SAME FrequencyBuilder the playlists use, but with the modes restricted to
-// hourly/daily/weekly so the once-per-hour minimum is structural. "Run probe now" fires POST /api/probe/run.
-const PROBE_MODES = [
-  { value: 'hourly', label: 'Hourly', icon: 'refresh' },
-  { value: 'daily', label: 'Daily', icon: 'sync' },
-  { value: 'weekly', label: 'Weekly', icon: 'sync' },
-];
-const probeAuto = ref(false);
-const probeFreq = reactive<CronFrequency>({ mode: 'hourly', every: 1, atHour: null, atMinute: 0, daysOfWeek: null });
-const probeRawCron = ref('0 * * * *');
-const probeSaving = ref(false);
-const probeSaveState = ref<'idle' | 'saved' | 'error'>('idle');
-const probeStarting = ref(false);
-
-onMounted(async () => {
-  // Hydrate from the persisted probe-all cronjob, if one exists (else the hourly defaults stand).
-  try {
-    const res = await fetch('/api/cronjobs/app?targetType=probe-all');
-    if (res.ok) {
-      const job = await res.json();
-      probeAuto.value = !!job.enabled;
-      if (job.frequency && typeof job.frequency === 'object') Object.assign(probeFreq, job.frequency);
-      if (typeof job.cron === 'string' && job.cron) probeRawCron.value = job.cron;
-    }
-  } catch {
-    /* no schedule yet — defaults stand */
-  }
-});
-
-async function saveProbeSchedule() {
-  probeSaving.value = true;
-  probeSaveState.value = 'idle';
-  try {
-    const path = '/api/cronjobs/app?targetType=probe-all';
-    if (probeAuto.value) {
-      const res = await fetch(path, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetType: 'probe-all',
-          cron: buildCron(probeFreq, probeRawCron.value),
-          frequency: { ...probeFreq },
-          timezone: timezone.value || null,
-          enabled: true,
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } else {
-      // Manual → unschedule (idempotent; a 404 just means there was nothing to remove).
-      const res = await fetch(path, { method: 'DELETE' });
-      if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
-    }
-    probeSaveState.value = 'saved';
-  } catch {
-    probeSaveState.value = 'error';
-  } finally {
-    probeSaving.value = false;
-    setTimeout(() => (probeSaveState.value = 'idle'), 2200);
-  }
-}
-
-async function runProbeNow() {
-  probeStarting.value = true;
-  try {
-    const res = await fetch('/api/probe/run', { method: 'POST' });
-    if (res.status === 202) {
-      toast.lowerRight({ tone: 'good', icon: 'refresh', title: 'Probe started', text: 'Sweeping every Active channel — watch the sidebar for progress.' });
-    } else if (res.status === 409) {
-      toast.lowerRight({ tone: 'warn', icon: 'refresh', title: 'Probe already running', text: 'A sweep is in progress — let it finish first.' });
-    } else {
-      throw new Error(`HTTP ${res.status}`);
-    }
-  } catch {
-    toast.lowerRight({ tone: 'bad', icon: 'warn', title: 'Could not start probe', text: 'Please try again.' });
-  } finally {
-    probeStarting.value = false;
-  }
 }
 
 // ── Data card ──────────────────────────────────────────────────────────────
@@ -318,8 +230,8 @@ async function fireReset() {
 </script>
 
 <template>
-  <div :class="diagramOpen ? 'settings-split' : ''">
-    <div class="col settings-col" :style="diagramOpen ? undefined : { maxWidth: '760px' }">
+  <div>
+    <div class="col settings-col" :style="{ maxWidth: '760px' }">
     <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
       { value: 'general', label: 'General' },
       { value: 'advanced', label: 'Advanced' },
@@ -436,31 +348,7 @@ async function fireReset() {
       </div>
     </div>
 
-    <div class="card" v-if="activeTab === 'advanced'">
-      <h3 class="section-title">Channel Probing</h3>
-      <div class="muted" style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
-        Run ffprobe across every Active channel — one playlist at a time — to refresh each channel's
-        Live/Down status, resolution pill, and video details. Minimum frequency is once per hour.
-      </div>
-      <FrequencyBuilder :freq="probeFreq" v-model:auto="probeAuto" v-model:rawCron="probeRawCron"
-                        :modes="PROBE_MODES" label="Probe schedule" icon="refresh"
-                        manualHint="Probes run only when triggered manually. Switch to Automatic to run them on a schedule." />
-      <div class="row" style="gap: 8px; margin-top: 14px; align-items: center;">
-        <Btn variant="primary" icon="check" :disabled="probeSaving" @click="saveProbeSchedule">
-          {{ probeSaving ? 'Saving…' : 'Save schedule' }}
-        </Btn>
-        <Btn variant="ghost" icon="refresh" :disabled="probeStarting || PROBE_STATUS?.running" @click="runProbeNow">
-          {{ PROBE_STATUS?.running ? 'Probe running…' : 'Run probe now' }}
-        </Btn>
-        <span v-if="probeSaveState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
-        <span v-else-if="probeSaveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
-      </div>
-    </div>
-
     <DuloAuthPanel v-if="activeTab === 'advanced'" />
-
-    <VideoConfigPanel v-if="activeTab === 'advanced'"
-                      :diagram-open="diagramOpen" @toggle-diagram="diagramOpen = !diagramOpen" />
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">Data</h3>
@@ -550,6 +438,5 @@ async function fireReset() {
       <RestoreBackupModal v-if="restoreModalOpen" @close="restoreModalOpen = false" @restored="onRestored" />
     </div>
     </div>
-    <EncoderDiagramPanel v-if="diagramOpen && activeTab === 'advanced'" @close="diagramOpen = false" />
   </div>
 </template>

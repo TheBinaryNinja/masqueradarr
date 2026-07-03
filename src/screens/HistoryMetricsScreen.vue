@@ -6,7 +6,7 @@ import Pill from '../components/Pill.vue';
 import SearchInput from '../components/SearchInput.vue';
 import Segmented from '../components/Segmented.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
-import { CHANNELS, VIEW_SESSIONS, STREAM_SESSIONS, reloadViewSessions, flagEmoji, type StreamSession, type UserMetric, type PlayerType } from '../data';
+import { CHANNELS, VIEW_SESSIONS, reloadViewSessions, flagEmoji, type StreamProbe, type UserMetric, type PlayerType } from '../data';
 import { useStreamStats } from '../composables/useStreamStats';
 
 // Local presentation shape derived from the persisted ViewSession rows (real per-viewer watch sessions).
@@ -219,22 +219,9 @@ const sel = computed(() => sessions.value.find((s) => s.id === selectedId.value)
 
 function chOf(s: Session) { return CHANNELS.value.find((c) => c.id === s.channelId)!; }
 
-// The selected session's matching ffprobe technical details (streamsessions time-series). No per-session
-// foreign key exists, so match by channel + nearest capture time to the watch window (0 if during it).
-const selProbe = computed<StreamSession | null>(() => {
-  const s = sel.value;
-  if (!s) return null;
-  const probes = STREAM_SESSIONS.value.filter((p) => p.channelId === s.channelId);
-  if (!probes.length) return null;
-  const start = s.startedAt, end = s.startedAt + s.duration * 60000;
-  let best = probes[0], bestDist = Infinity;
-  for (const p of probes) {
-    const dist = p.capturedAt < start ? start - p.capturedAt
-               : p.capturedAt > end ? p.capturedAt - end : 0;
-    if (dist < bestDist) { bestDist = dist; best = p; }
-  }
-  return best;
-});
+// Per-session ffprobe technical details were removed in the video-engine teardown (the streamsessions store
+// is gone), so this is always null now — the presenters + detail block below degrade to '—' / hidden.
+const selProbe = computed<StreamProbe | null>(() => null);
 
 // Compact one-line presenters for the ffprobe technical details (null → row shows '—'). Mirrors ChannelDrawer.
 const videoLine = computed(() => {

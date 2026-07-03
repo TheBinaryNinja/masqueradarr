@@ -10,8 +10,6 @@ import { logger } from '../sources/core/logger.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
 import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from './import.js';
-import { VideoConfig } from '../models/VideoConfig.js';
-import { invalidateVideoConfig, invalidatePlaylistConfig } from '../videoconfig/runtime.js';
 import { EpgSource } from '../models/EpgSource.js';
 import { EpgChannel } from '../models/EpgChannel.js';
 import { Program } from '../models/Program.js';
@@ -280,10 +278,6 @@ export async function cascadeDeleteCustomPlaylist(id: string, url: string): Prom
     logger.warn('m3u', `prune after playlist delete failed: ${(err as Error).message}`),
   );
   await User.updateMany({}, { $pull: { allowedCustomPlaylists: id } });
-  // Drop any per-playlist Custom videoconfig doc (orphan cleanup) + its resolver caches.
-  await VideoConfig.deleteOne({ _id: `app_${id}` });
-  invalidateVideoConfig(`app_${id}`);
-  invalidatePlaylistConfig(id);
   logger.info('playlists', `deleted playlist ${id}`);
 }
 

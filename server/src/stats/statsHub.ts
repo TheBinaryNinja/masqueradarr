@@ -2,22 +2,21 @@
 //
 // Two responsibilities, both keeping streamTelemetry source-agnostic and DB-free:
 //   1. Builds the DISPLAY snapshot — resolves each active channel's telemetry to a real channelId
-//      (PlaylistChannel), attaches the live phase (streamState) + ffprobe quality (streamProbe), and formats
-//      bytes/sec into Mbps + a human uptime. Served by GET /api/active-streams AND pushed over the WS.
+//      (PlaylistChannel), attaches the live phase (streamState), and formats bytes/sec into Mbps + a human
+//      uptime. Served by GET /api/active-streams AND pushed over the WS. (ffprobe quality annotation was
+//      removed in the video-engine teardown, so codec/resolution/fps fields now always read null.)
 //   2. WebSocket fan-out on /api/stream-stats — pushes the active-streams snapshot every BROADCAST_MS (only
 //      while ≥1 client is connected) plus one-shot buffer-event frames, and persists a ViewSession row when
 //      the telemetry core reports a closed viewer session.
 //
-// Mirrors routes/sources.ts → makePersistProbe: the core invokes injected sinks; the DB access lives here.
+// The core invokes injected sinks; the DB access (ViewSession persistence) lives here.
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
 import { snapshotRaw, onSessionClose, onBufferEvent, type ClosedSession } from '../sources/core/streamTelemetry.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
-import { probeFor } from '../sources/core/streamProbe.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { ViewSession } from '../models/ViewSession.js';
-import type { StreamProbe } from '../models/StreamSession.js';
 import { resolveGeo } from '../geoip/geoip.js';
 
 const BROADCAST_MS = 2500;
@@ -75,7 +74,7 @@ export interface DisplayStream {
   container: string | null;
   resolution: string | null;
   fps: number | null;
-  probe: (StreamProbe & { probedAt: string }) | null;
+  probe: null; // was the ffprobe technical snapshot — always null after the video-engine teardown
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -107,12 +106,6 @@ function humanUptime(ms: number): string {
   return `${h}h ${min % 60}m`;
 }
 
-function resolutionLabel(probe: (StreamProbe & { probedAt: string }) | null): string | null {
-  if (!probe) return null;
-  if (probe.video.height) return `${probe.video.height}p`;
-  return probe.video.resolution;
-}
-
 /** Build the live Active Streams snapshot (resolved + quality-annotated). Served by REST and the WS. */
 export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
   const raw = snapshotRaw();
@@ -124,7 +117,6 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
     if (!channelId) continue; // a channel with no PlaylistChannel row (shouldn't happen for a real play)
     activeKeys.add(r.channelKey);
     const { phase, status } = displayPhase(r.channelKey, phaseFor(r.channelKey).phase, now);
-    const probe = probeFor(r.channelKey);
     out.push({
       id: channelId,
       channelId,
@@ -140,12 +132,12 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       bitrate: mbps(r.bitrateBps),
       bandwidth: mbps(r.egressBps),
       bytesTotal: r.bytesTotal,
-      codec: probe?.video.codec ?? null,
-      audio: probe?.audio.codec ?? null,
-      container: probe?.container ?? null,
-      resolution: resolutionLabel(probe),
-      fps: probe?.video.fps ?? null,
-      probe,
+      codec: null, // ffprobe removed (video-engine teardown) — quality fields no longer sampled
+      audio: null,
+      container: null,
+      resolution: null,
+      fps: null,
+      probe: null,
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
@@ -160,7 +152,6 @@ async function persistSession(s: ClosedSession): Promise<void> {
   try {
     const channelId = await resolveChannelId(s.source, s.entryUrl);
     if (!channelId) return;
-    const probe = probeFor(s.channelKey);
     // bytes*8 / ms  =  bits per millisecond  =  kbps.
     const avgBitrate = s.durationMs > 0 ? Math.round((s.bytesTotal * 8) / s.durationMs) : 0;
     const rebufRatio = s.durationMs > 0 ? s.rebufferMs / s.durationMs : 0;
@@ -186,8 +177,8 @@ async function persistSession(s: ClosedSession): Promise<void> {
       durationMs: s.durationMs,
       bytesTotal: s.bytesTotal,
       avgBitrate,
-      resolution: resolutionLabel(probe),
-      codec: probe?.video.codec ?? null,
+      resolution: null,
+      codec: null,
       bufferCount: s.bufferCount,
       rebufferMs: s.rebufferMs,
       bufferEvents: s.bufferEvents,

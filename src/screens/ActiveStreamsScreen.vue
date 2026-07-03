@@ -8,16 +8,12 @@ import SearchInput from '../components/SearchInput.vue';
 import Segmented from '../components/Segmented.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
 import LivelineChart from '../components/LivelineChart.vue';
-import { ACTIVE_STREAMS, CHANNELS, EPG_PROGRAMS, SYSTEM_STATS, fetchProgramsFor, flagEmoji, type ActiveStream, type Program, type StreamClient, type EngineSnapshot } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, EPG_PROGRAMS, fetchProgramsFor, flagEmoji, type ActiveStream, type Program, type StreamClient } from '../data';
 import { useStreamStats } from '../composables/useStreamStats';
-import { useSystemStats } from '../composables/useSystemStats';
-import ActiveStreamDiagram from '../components/ActiveStreamDiagram.vue';
 
 // Live snapshot over the /api/stream-stats WebSocket (updates ACTIVE_STREAMS in place). Only show streams
 // whose channelId resolves to a real channel in the global list.
 const { subscribe, release, bitrateSeries } = useStreamStats();
-// GPU frame for the diagram's GPU node (admin-only feed; same audience as this screen). gpuSeries → mini liveline.
-const { subscribe: subscribeSys, release: releaseSys } = useSystemStats();
 const liveStreams = computed(() => ACTIVE_STREAMS.value.filter((s) => CHANNELS.value.some((c) => c.id === s.channelId)));
 
 const selId = ref<string | null>(null);
@@ -153,26 +149,11 @@ async function loadClients(id: string | undefined) {
 }
 watch([() => sel.value?.id, ACTIVE_STREAMS], () => loadClients(sel.value?.id), { immediate: true });
 
-// Per-channel external-player engine snapshot — drives the "Video Engine Service" diagram. Same monotonic-token
-// pattern as loadClients; refreshes on selection + each WS tick. Empty ⇒ no transcode engine (passthrough/relay).
-const engine = ref<EngineSnapshot[]>([]);
-let engineReq = 0;
-async function loadEngine(id: string | undefined) {
-  const my = ++engineReq;
-  if (!id) { engine.value = []; return; }
-  try {
-    const res = await fetch(`/api/active-streams/${encodeURIComponent(id)}/engine`);
-    if (my !== engineReq) return; // superseded by a newer selection
-    if (res.ok) engine.value = ((await res.json()) as { engines: EngineSnapshot[] }).engines;
-  } catch { /* best-effort */ }
-}
-watch([() => sel.value?.id, ACTIVE_STREAMS], () => loadEngine(sel.value?.id), { immediate: true });
-
 function onView() { if (!sel.value) return; viewing.value = sel.value.id; playing.value = sel.value.status !== 'bad'; muted.value = false; }
 function close() { viewing.value = null; }
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape' && viewing.value) close(); }
-onMounted(() => { subscribe(); subscribeSys(); window.addEventListener('keydown', onKey); });
-onBeforeUnmount(() => { release(); releaseSys(); window.removeEventListener('keydown', onKey); });
+onMounted(() => { subscribe(); window.addEventListener('keydown', onKey); });
+onBeforeUnmount(() => { release(); window.removeEventListener('keydown', onKey); });
 
 // Programs are stored epoch-ms — format an absolute epoch-ms time as local HH:MM.
 function formatTime(ms: number) { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -424,24 +405,6 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
             </div>
           </div>
             </div>
-            <aside class="stream-detail-engine">
-              <div class="asd-railhd">
-                <Icon name="topology" :size="15" />
-                <h2>Video Engine Service</h2>
-                <span class="spacer" />
-                <span class="asd-cap">ENGINE // DECODE</span>
-              </div>
-              <ActiveStreamDiagram
-                v-if="engine.length"
-                :channel="chOf(sel)" :stream="sel" :engines="engine"
-                :clients="clients" :gpu="SYSTEM_STATS.gpu"
-              />
-              <div v-else class="asd-note">
-                <Icon name="tv" :size="22" />
-                <div class="asd-note-t">Served directly to the in-app player</div>
-                <div class="muted">HLS passthrough — no transcode engine for this stream.</div>
-              </div>
-            </aside>
           </div>
         </div>
       </div>

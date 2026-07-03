@@ -5,7 +5,6 @@ import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import Toggle from './Toggle.vue';
 import FrequencyBuilder from './FrequencyBuilder.vue';
-import VideoConfigPanel from './VideoConfigPanel.vue';
 import { type Channel, type Playlist, type CronFrequency, type CronJob, CRON_JOBS, reloadCronjobs } from '../data';
 import { domain, timezone } from '../composables/useSettings';
 import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/useSchedule';
@@ -254,19 +253,6 @@ function setMode(m: 'global' | 'custom') {
   save({ endpoint: m, url: hostedUrl.value });
 }
 
-// ── Per-playlist Video Configuration (externalPlayer engine) ───────────────────────────────────────────
-// Default = use the global 'app' config from Settings; Custom = a per-playlist 'app_<id>' config edited inline
-// below (the embedded bare VideoConfigPanel). The SERVER owns the 'app_<id>' doc lifecycle (create on Custom /
-// delete on Default) on the playlist PUT, so the field is all the client persists. External IPTV clients only.
-const customConfigId = computed(() => `app_${props.playlist.id}`);
-const videoConfigMode = ref<'default' | 'custom'>(
-  props.playlist.videoconfig && props.playlist.videoconfig !== 'default' ? 'custom' : 'default',
-);
-function setVideoConfigMode(m: 'default' | 'custom') {
-  videoConfigMode.value = m;
-  save({ videoconfig: m === 'custom' ? customConfigId.value : 'default' });
-}
-
 let pathTimer: ReturnType<typeof setTimeout> | null = null;
 function onCustomPath(v: string) {
   customPath.value = v;
@@ -374,41 +360,6 @@ function onCustomPath(v: string) {
                 </div>
               </div>
             </label>
-          </div>
-        </div>
-
-        <div class="divider" />
-
-        <!-- ④ Per-playlist Video Configuration (externalPlayer engine): Default (global app config) vs Custom. -->
-        <div class="form-row">
-          <div class="field-lbl">Video Configuration | Playlist</div>
-          <div style="display: grid; gap: 8px;">
-            <label class="row" style="gap: 10px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer;"
-                   :style="videoConfigMode === 'default' ? 'border-color: var(--accent); background: var(--accent-soft);' : ''">
-              <input type="radio" name="videoconfig-mode" :checked="videoConfigMode === 'default'" @change="setVideoConfigMode('default')" />
-              <div style="flex: 1;">
-                <div style="font-weight: 500; font-size: var(--fs-sm);">Default</div>
-                <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
-                  Uses the app-wide Default video configuration set on the Settings screen (applies to every
-                  playlist set to Default). Governs how this playlist's channels are served to <b>external</b>
-                  IPTV clients only — the in-app player is unaffected.
-                </div>
-              </div>
-            </label>
-            <label class="row" style="gap: 10px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer; align-items: flex-start;"
-                   :style="videoConfigMode === 'custom' ? 'border-color: var(--accent); background: var(--accent-soft);' : ''">
-              <input type="radio" name="videoconfig-mode" :checked="videoConfigMode === 'custom'" @change="setVideoConfigMode('custom')" style="margin-top: 4px;" />
-              <div style="flex: 1;">
-                <div style="font-weight: 500; font-size: var(--fs-sm);">Custom</div>
-                <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
-                  A configuration just for this playlist (seeded from the current Default). For HDHomeRun playlists
-                  the engine does not apply, so a custom config is inert there.
-                </div>
-              </div>
-            </label>
-          </div>
-          <div v-if="videoConfigMode === 'custom'" style="margin-top: 12px;">
-            <VideoConfigPanel :config-id="customConfigId" bare />
           </div>
         </div>
 

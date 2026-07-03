@@ -15,11 +15,9 @@ import DocsDrawer from './components/DocsDrawer.vue';
 import ToastBanner from './components/ToastBanner.vue';
 import ToastUpperRight from './components/ToastUpperRight.vue';
 import ToastLowerRight from './components/ToastLowerRight.vue';
-import { PLAYLISTS, EPG_SOURCES, ACTIVE_STREAMS, PROBE_STATUS, bootstrapData, reloadPlaylists, reloadChannels, type Channel } from './data';
+import { PLAYLISTS, EPG_SOURCES, ACTIVE_STREAMS, bootstrapData, reloadPlaylists, reloadChannels, type Channel } from './data';
 import { useTweaks } from './composables/useTweaks';
 import { useStreamStats } from './composables/useStreamStats';
-import { useProbeProgress } from './composables/useProbeProgress';
-import Pill from './components/Pill.vue';
 import { loadSettings } from './composables/useSettings';
 import { startCronWatch, stopCronWatch } from './composables/useCronWatch';
 import { bus, type RestoreItem } from './composables/bus';
@@ -27,7 +25,6 @@ import { currentUser, logout } from './composables/useAuth';
 
 const { tweaks, setTweak } = useTweaks();
 const { subscribe, release } = useStreamStats();
-const { subscribe: subscribeProbe, release: releaseProbe } = useProbeProgress();
 const router = useRouter();
 const route = useRoute();
 
@@ -169,7 +166,6 @@ async function loadAppData() {
     loadSettings().catch((err) => console.error('[settings] load failed:', err));
     startCronWatch();
     subscribe(); // keep /api/stream-stats live app-wide so the nav dot reflects real-time sessions
-    subscribeProbe(); // keep /api/probe-progress live so the sidebar shows a running ffprobe sweep
   } else {
     // Scoped boot for standard users
     loadSettings().catch((err) => console.error('[settings] load failed:', err));
@@ -189,7 +185,6 @@ watch(currentUser, (user) => {
     initialized = false;
     stopCronWatch();
     release();
-    releaseProbe();
   }
 }, { immediate: true });
 
@@ -204,7 +199,6 @@ onBeforeUnmount(() => {
   bus.off('tvapp:docs-open', onDocsOpen);
   stopCronWatch();
   release(); // symmetric teardown
-  releaseProbe();
 });
 </script>
 
@@ -236,16 +230,6 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="sidebar-foot-stack">
-        <div v-if="currentUser?.role === 'admin' && PROBE_STATUS?.running" class="probe-status">
-          <div class="probe-status-head">
-            <span class="dot good pulse" style="width: 6px; height: 6px;" />
-            <span>Probe: running</span>
-          </div>
-          <div class="probe-status-body">
-            <Pill tone="cyan">{{ PROBE_STATUS.playlistName || PROBE_STATUS.playlistId }}</Pill>
-            <span class="mono">{{ PROBE_STATUS.channelIndex }} of {{ PROBE_STATUS.channelTotal }}</span>
-          </div>
-        </div>
         <button v-if="currentUser?.role === 'admin'" class="logs-btn" @click="logsOpen = true">
           <span class="logs-btn-ico">
             <Icon name="file" :size="14" />

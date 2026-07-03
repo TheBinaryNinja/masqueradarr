@@ -21,7 +21,7 @@ export interface CronFrequency {
 
 export interface CronjobDoc {
   _id: string; // "<targetType>:<targetId>"
-  targetType: string; // 'epg-source' (EPG sync) | 'playlist' | 'playlist-m3u' | 'probe-all'; extensible — the scheduler switches on this
+  targetType: string; // 'epg-source' (EPG sync) | 'playlist' | 'playlist-m3u' | 'backup'; extensible — the scheduler switches on this
   targetId: string; // the target resource id (e.g. EpgSource.id)
   cron: string; // 5-field expression the scheduler runs (croner-validated)
   frequency: CronFrequency;

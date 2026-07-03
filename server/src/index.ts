@@ -14,13 +14,9 @@ import { customPlaylistsRouter } from './routes/customPlaylists.js';
 import { importRouter } from './routes/import.js';
 import { programsRouter } from './routes/programs.js';
 import { epgChannelsRouter } from './routes/epgChannels.js';
-import { streamSessionsRouter } from './routes/streamSessions.js';
 import { viewSessionsRouter } from './routes/viewSessions.js';
 import { settingsRouter } from './routes/settings.js';
-import { videoConfigRouter } from './routes/videoConfig.js';
-import { brollRouter } from './routes/broll.js';
 import { cronjobsRouter } from './routes/cronjobs.js';
-import { probeRouter } from './routes/probe.js';
 import { backupRouter } from './routes/backup.js';
 import { systemRouter } from './routes/system.js';
 import { sourcesRouter } from './routes/sources.js';
@@ -36,11 +32,9 @@ import { startStreamTelemetry, stopStreamTelemetry } from './sources/core/stream
 import { startStatsHub, closeAllStats, attachStats } from './stats/statsHub.js';
 import { startSystemStatsHub, closeAllSystemStats, attachSystemStats } from './stats/systemStatsHub.js';
 import { systemStatsRouter } from './routes/systemStats.js';
-import { startProbeHub, closeAllProbe, attachProbe } from './sources/probeHub.js';
 import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
-import { applyHwDetection } from './videoconfig/hwDetect.js';
 import { logger } from './sources/core/logger.js';
 
 // Same-origin gate for the dulo login-stream WebSocket. Compares HOSTNAMES (ignoring port) so the Vite dev
@@ -92,15 +86,6 @@ async function main() {
     logger.error('startup', `dns settings apply error (continuing): ${(err as Error).message}`);
   }
 
-  // Detect host hardware-encoder capability (ffmpeg -encoders + device nodes) → videoconfig.hwAccel.detected,
-  // so the Settings → Video Configuration card only offers encoders that can actually run here (WS6). Non-fatal:
-  // software transcode + the loopback/raw-TS engines work regardless of GPU presence.
-  try {
-    await applyHwDetection();
-  } catch (err) {
-    logger.error('startup', `hw detection error (continuing): ${(err as Error).message}`);
-  }
-
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler
   // failure must not prevent the API from serving.
   try {
@@ -113,7 +98,6 @@ async function main() {
   try {
     startStreamTelemetry();
     startStatsHub();
-    startProbeHub();
     startSystemStatsHub();
   } catch (err) {
     logger.error('startup', `stream telemetry init error (continuing): ${(err as Error).message}`);
@@ -162,10 +146,6 @@ async function main() {
 
   // Protect admin-only endpoints (GET settings is allowed for standard users, PUT is admin-only)
   app.put('/api/settings', requireAdmin);
-  // videoconfig mirrors settings: GET is open (no secrets — drives the externalPlayer engine), PUT/DELETE are
-  // admin-only. DELETE removes a per-playlist Custom config ('app_<playlistId>'); the global 'app' is undeletable.
-  app.put('/api/video-config/:id', requireAdmin);
-  app.delete('/api/video-config/:id', requireAdmin);
 
   const adminOnlyRoutes = [
     '/api/epg-sources',
@@ -176,11 +156,8 @@ async function main() {
     '/api/epg-programs',
     '/api/epg-channels',
     '/api/logs',
-    '/api/stream-sessions',
     '/api/view-sessions',
     '/api/cronjobs',
-    '/api/probe',
-    '/api/broll',
     '/api/system-stats',
     '/api/backup',
     '/api/system',
@@ -199,13 +176,9 @@ async function main() {
   app.use('/api/epg-programs', programsRouter);
   app.use('/api/epg-channels', epgChannelsRouter);
   app.use('/api/logs', logsRouter);
-  app.use('/api/stream-sessions', streamSessionsRouter);
   app.use('/api/view-sessions', viewSessionsRouter);
   app.use('/api/settings', settingsRouter);
-  app.use('/api/video-config', videoConfigRouter);
   app.use('/api/cronjobs', cronjobsRouter);
-  app.use('/api/probe', probeRouter); // manual trigger + status for the scheduled ffprobe sweep
-  app.use('/api/broll', brollRouter); // dev/preview aid for the B-Roll renderer (see routes/broll.ts)
   app.use('/api/system-stats', systemStatsRouter); // latest system-performance snapshot (live feed is the WS)
   app.use('/api/backup', backupRouter); // full-system backup generate/list/restore (Settings → Data)
   app.use('/api/system', systemRouter); // index rebuild + workspace reset (Settings → Data)
@@ -261,16 +234,14 @@ async function main() {
   // dulo streamed-login WebSocket (sources/adapters/dulo/loginBrowser.ts). Mounted on the raw http.Server's
   // 'upgrade' event — Express has no native WS. The browser launches lazily on connect, so this adds zero
   // boot cost; it spans only /api/dulo/login-stream and never touches the SPA static / catch-all.
-  // Five WS endpoints share the one upgrade handler, dispatched by pathname (Express has no native WS):
+  // Four WS endpoints share the one upgrade handler, dispatched by pathname (Express has no native WS):
   //   /api/dulo/login-stream → the dulo streamed-login browser
   //   /api/stream-stats       → the live Active Streams / metrics push (stats/statsHub.ts)
   //   /api/logs-stream        → the live application-log tail (logs/logStore.ts)
-  //   /api/probe-progress     → the scheduled ffprobe sweep's live counter (sources/probeHub.ts)
   //   /api/system-stats       → the live system-performance push (stats/systemStatsHub.ts)
   const wss = new WebSocketServer({ noServer: true });
   const wssStats = new WebSocketServer({ noServer: true });
   const wssLogs = new WebSocketServer({ noServer: true });
-  const wssProbe = new WebSocketServer({ noServer: true });
   const wssSystem = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';
@@ -289,8 +260,6 @@ async function main() {
       wssStats.handleUpgrade(req, socket, head, (ws) => attachStats(ws));
     } else if (pathname === '/api/logs-stream') {
       wssLogs.handleUpgrade(req, socket, head, (ws) => attachLogs(ws));
-    } else if (pathname === '/api/probe-progress') {
-      wssProbe.handleUpgrade(req, socket, head, (ws) => attachProbe(ws));
     } else if (pathname === '/api/system-stats') {
       wssSystem.handleUpgrade(req, socket, head, (ws) => attachSystemStats(ws));
     } else {
@@ -303,14 +272,12 @@ async function main() {
     await duloLoginBrowser.closeAll();
     closeAllStats();
     closeAllSystemStats();
-    closeAllProbe();
     closeAllLogs();
     stopStreamTelemetry();
     await stopLogStore(); // detach the sink + flush the final batch (incl. the shutdown line) before disconnect
     wss.close();
     wssStats.close();
     wssLogs.close();
-    wssProbe.close();
     wssSystem.close();
     server.close();
     await disconnect();

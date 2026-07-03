@@ -55,12 +55,6 @@ const PlaylistSchema = new Schema(
     // lifecycle (PlaylistAuthState.save → Playlist write-back); $setOnInsert false on first provision so a
     // re-sync never clobbers the live value. The playlistauths doc remains the authority.
     isAuthenticated: { type: Boolean, required: true, default: false },
-    // Per-playlist externalPlayer video configuration selector: 'default' (use the global 'app' videoconfig set
-    // on the Settings screen) or 'app_<playlistId>' (a Custom config doc edited in the playlist editor). Read at
-    // stream time (resolvePlaylistConfigId) to pick the engine/args for THIS playlist's external clients; the
-    // in-app player is unaffected. The Custom doc lifecycle (create-on-Custom / delete-on-Default / cascade-on-
-    // delete) is owned by the playlist routes. Stored value is 'default' or 'app_<id>'.
-    videoconfig: { type: String, default: 'default' },
   },
   { versionKey: false },
 );

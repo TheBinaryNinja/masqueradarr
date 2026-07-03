@@ -1,6 +1,6 @@
 // System maintenance resource (admin-only; mounted at /api/system) — the Settings → Data danger-zone /
 // maintenance actions: rebuild MongoDB indexes across every collection, and reset the workspace (wipe the
-// content collections, keep users/settings/videoconfigs). Thin handlers per restapi.md conventions.
+// content collections, keep users/settings). Thin handlers per restapi.md conventions.
 
 import { Router } from 'express';
 import type { Model } from 'mongoose';
@@ -41,7 +41,7 @@ systemRouter.post('/rebuild-indexes', async (_req, res, next) => {
   }
 });
 
-// The content collections wiped by a workspace reset. KEEPS users, settings, videoconfigs (and sessions —
+// The content collections wiped by a workspace reset. KEEPS users, settings (and sessions —
 // so the admin performing the reset stays logged in). Order is not significant (each is an independent drop).
 const RESET_COLLECTIONS: { name: string; model: Model<any> }[] = [
   { name: 'playlists', model: Playlist },
@@ -55,7 +55,7 @@ const RESET_COLLECTIONS: { name: string; model: Model<any> }[] = [
 ];
 
 // Danger zone: permanently delete all playlists, EPG data, mappings, schedules and auth — back to an empty
-// workspace. Keeps users + settings + video configs. Drops in-memory cron instances then re-runs the
+// workspace. Keeps users + settings. Drops in-memory cron instances then re-runs the
 // idempotent boot init (reconciles indexes, re-seeds the settings singleton).
 systemRouter.post('/reset-workspace', async (_req, res, next) => {
   try {

@@ -106,7 +106,6 @@ const damiAdapter: SourceAdapter = {
     globalPlaylist: true,
     clonePlaylist: true,
     syncSchedules: true,
-    videoEngineCustomization: true,
     playlistBoundEpg: true,
     epgSyncSchedules: false,
   },

@@ -7,8 +7,8 @@
 // Scope decision (see .claude/plans + schemas.md): the DEFAULT backup is LEAN — configuration + the
 // editable channel mappings + auth tokens (CORE_BACKUP_SPECS) — enough to rebuild a system from a blank
 // Mongo. The bulky derived data (sourcechannels/epgchannels/programs, HEAVY_BACKUP_SPECS) is excluded by
-// default: it repopulates on the next sync. The ephemeral collections (sessions/logs/viewsessions/
-// streamsessions) are never backed up (TTL'd / telemetry); they only appear in ALL_MODELS for index rebuild.
+// default: it repopulates on the next sync. The ephemeral collections (sessions/logs/viewsessions) are
+// never backed up (TTL'd / telemetry); they only appear in ALL_MODELS for index rebuild.
 
 import type { Model } from 'mongoose';
 import { Settings } from '../models/Settings.js';
@@ -18,13 +18,11 @@ import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { EpgSource } from '../models/EpgSource.js';
 import { PlaylistAuth } from '../models/PlaylistAuth.js';
 import { Cronjob } from '../models/Cronjob.js';
-import { VideoConfig } from '../models/VideoConfig.js';
 import { SourceChannel } from '../models/SourceChannel.js';
 import { EpgChannel } from '../models/EpgChannel.js';
 import { Program } from '../models/Program.js';
 import { Log } from '../models/Log.js';
 import { Session } from '../models/Session.js';
-import { StreamSession } from '../models/StreamSession.js';
 import { ViewSession } from '../models/ViewSession.js';
 
 export interface BackupSpec {
@@ -50,7 +48,6 @@ export const CORE_BACKUP_SPECS: BackupSpec[] = [
   { name: 'epgsources', model: EpgSource, restoreOrder: 50 },
   { name: 'playlistauths', model: PlaylistAuth, restoreOrder: 60, secretFields: ['accessToken', 'refreshToken'] },
   { name: 'cronjobs', model: Cronjob, restoreOrder: 70 },
-  { name: 'videoconfigs', model: VideoConfig, restoreOrder: 80 },
 ];
 
 // Derived bulk data — excluded from the lean default, captured only when includeHeavy is set. Interleaved
@@ -63,8 +60,8 @@ export const HEAVY_BACKUP_SPECS: BackupSpec[] = [
 
 // Every registered model — used by POST /api/system/rebuild-indexes to syncIndexes() across the database.
 export const ALL_MODELS: Model<any>[] = [
-  Settings, User, Playlist, PlaylistChannel, EpgSource, PlaylistAuth, Cronjob, VideoConfig,
-  SourceChannel, EpgChannel, Program, Log, Session, StreamSession, ViewSession,
+  Settings, User, Playlist, PlaylistChannel, EpgSource, PlaylistAuth, Cronjob,
+  SourceChannel, EpgChannel, Program, Log, Session, ViewSession,
 ];
 
 // The specs to back up / restore for a given option set, sorted by restoreOrder.
