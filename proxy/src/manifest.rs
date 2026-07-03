@@ -13,10 +13,35 @@
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use url::Url;
 
+/// Decode metadata declared IN the manifest — parsed WITHOUT ffprobe (the video-engine teardown removed it).
+/// A MASTER playlist's `#EXT-X-STREAM-INF` carries RESOLUTION/CODECS/FRAME-RATE (we keep the highest-BANDWIDTH
+/// variant's); a MEDIA playlist implies the container (`#EXT-X-MAP` init segment ⇒ fMP4, else `#EXTINF`
+/// segments ⇒ TS). Each field is independently optional — the master and the media playlist are separate
+/// polls, so Node merges them per channel (non-null overwrite) before humanizing for Active Streams.
+#[derive(Default)]
+pub struct MediaInfo {
+    pub resolution: Option<String>,
+    pub codecs: Option<String>,
+    pub frame_rate: Option<String>,
+    pub container: Option<String>,
+}
+
+impl MediaInfo {
+    /// True when at least one field was learned (so the caller can skip an empty telemetry emit).
+    pub fn any(&self) -> bool {
+        self.resolution.is_some()
+            || self.codecs.is_some()
+            || self.frame_rate.is_some()
+            || self.container.is_some()
+    }
+}
+
 pub struct RewriteResult {
     pub body: String,
     /// Lowercased hosts referenced by the rewritten child URIs — the caller adds these to the allowlist.
     pub hosts: Vec<String>,
+    /// Decode metadata declared in this manifest (empty for a plain media playlist with no MAP/STREAM-INF).
+    pub media: MediaInfo,
 }
 
 // Matches JS encodeURIComponent (leaves A-Za-z0-9 and -_.!~*'() unescaped) so the sidecar's child-URL
@@ -75,21 +100,95 @@ fn rewrite_uri_attrs(line: &str, base: &Url, prefix: &str, suffix: &str, hosts: 
 pub fn rewrite_manifest(body: &str, base: &Url, prefix: &str, suffix: &str) -> RewriteResult {
     let mut hosts: Vec<String> = Vec::new();
     let mut lines: Vec<String> = Vec::with_capacity(body.len() / 32 + 8);
+    // DEC: accumulate manifest-declared decode metadata in the SAME walk (no second parse pass).
+    let mut media = MediaInfo::default();
+    let mut best_bw: i64 = -1; // keep the highest-BANDWIDTH variant's #EXT-X-STREAM-INF attributes
+    let mut saw_map = false; // an #EXT-X-MAP init segment ⇒ fMP4 container
+    let mut saw_extinf = false; // an #EXTINF media segment ⇒ TS container (unless MAP already said fMP4)
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw);
         let trimmed = line.trim();
         if trimmed.is_empty() {
             lines.push(line.to_string());
         } else if trimmed.starts_with('#') {
+            // Media hints read the ORIGINAL tag; independent of (and in addition to) the URI rewrite below.
+            if let Some(rest) = trimmed.strip_prefix("#EXT-X-STREAM-INF:") {
+                let attrs = parse_attrs(rest);
+                let bw = attr(&attrs, "BANDWIDTH").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+                if bw >= best_bw {
+                    best_bw = bw;
+                    if let Some(v) = attr(&attrs, "RESOLUTION") {
+                        media.resolution = Some(v.to_string());
+                    }
+                    if let Some(v) = attr(&attrs, "CODECS") {
+                        media.codecs = Some(v.to_string());
+                    }
+                    if let Some(v) = attr(&attrs, "FRAME-RATE") {
+                        media.frame_rate = Some(v.to_string());
+                    }
+                }
+            } else if trimmed.starts_with("#EXT-X-MAP") {
+                saw_map = true;
+            } else if trimmed.starts_with("#EXTINF") {
+                saw_extinf = true;
+            }
             lines.push(rewrite_uri_attrs(line, base, prefix, suffix, &mut hosts));
         } else {
             lines.push(rewrite_one(trimmed, base, prefix, suffix, &mut hosts));
         }
     }
+    if saw_map {
+        media.container = Some("fmp4".to_string());
+    } else if saw_extinf {
+        media.container = Some("ts".to_string());
+    }
     RewriteResult {
         body: lines.join("\n"),
         hosts,
+        media,
     }
+}
+
+/// Find an attribute value by (case-sensitive) key, treating an empty value as absent.
+fn attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
+    attrs
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
+        .filter(|v| !v.is_empty())
+}
+
+/// Parse a comma-separated `KEY=VALUE` attribute list (HLS `#EXT-X-STREAM-INF` etc.), honoring double-quoted
+/// values so a quoted `CODECS="avc1,mp4a"` stays ONE value (its inner comma is not a separator). Quotes are
+/// stripped from the returned value; keys and values are trimmed.
+fn parse_attrs(s: &str) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    let (mut key, mut val) = (String::new(), String::new());
+    let mut in_key = true;
+    let mut in_quotes = false;
+    for ch in s.chars() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            '=' if in_key && !in_quotes => in_key = false,
+            ',' if !in_quotes => {
+                out.push((key.trim().to_string(), val.trim().to_string()));
+                key.clear();
+                val.clear();
+                in_key = true;
+            }
+            _ => {
+                if in_key {
+                    key.push(ch);
+                } else {
+                    val.push(ch);
+                }
+            }
+        }
+    }
+    if !key.trim().is_empty() {
+        out.push((key.trim().to_string(), val.trim().to_string()));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -140,5 +239,42 @@ mod tests {
         assert!(r.body.contains("#EXTM3U"));
         assert!(r.body.contains("#EXT-X-VERSION:3"));
         assert!(r.hosts.is_empty());
+    }
+
+    #[test]
+    fn extracts_master_decode_metadata_highest_bandwidth() {
+        // Two variants; the higher-BANDWIDTH one (1080p60) must win regardless of file order.
+        let m = "#EXTM3U\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=6000000,RESOLUTION=1920x1080,CODECS=\"avc1.640028,mp4a.40.2\",FRAME-RATE=60\n\
+             1080.m3u8\n\
+             #EXT-X-STREAM-INF:BANDWIDTH=3000000,RESOLUTION=1280x720,CODECS=\"avc1.4d401f,mp4a.40.2\",FRAME-RATE=30\n\
+             720.m3u8\n";
+        let r = rewrite_manifest(m, &base(), "/p/", "");
+        assert_eq!(r.media.resolution.as_deref(), Some("1920x1080"));
+        // The quoted CODECS comma is preserved as one value (not split into two attributes).
+        assert_eq!(r.media.codecs.as_deref(), Some("avc1.640028,mp4a.40.2"));
+        assert_eq!(r.media.frame_rate.as_deref(), Some("60"));
+        // A master carries no segments → no container hint yet (learned on the variant/media poll).
+        assert_eq!(r.media.container, None);
+        // The variant URIs are still rewritten through the proxy.
+        assert!(r.body.contains("/p/https%3A%2F%2Fcdn.example.com%2Flive%2F1080.m3u8"));
+    }
+
+    #[test]
+    fn detects_ts_container_from_media_playlist() {
+        let m = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg1.ts\n";
+        let r = rewrite_manifest(m, &base(), "/p/", "");
+        assert_eq!(r.media.container.as_deref(), Some("ts"));
+        assert!(r.media.resolution.is_none()); // a media playlist declares no resolution
+    }
+
+    #[test]
+    fn detects_fmp4_container_from_map() {
+        let m = "#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6.0,\nseg1.m4s\n";
+        let r = rewrite_manifest(m, &base(), "/p/", "");
+        // An init segment ⇒ fMP4 even though #EXTINF segments follow.
+        assert_eq!(r.media.container.as_deref(), Some("fmp4"));
+        // The init-segment URI is still rewritten through the proxy (else the player fetches it direct).
+        assert!(r.body.contains("URI=\"/p/https%3A%2F%2Fcdn.example.com%2Flive%2Finit.mp4\""));
     }
 }

@@ -218,6 +218,43 @@ export function noteBytes(ip: string, ua: string, bytes: number, username?: stri
   c.lastSeen = Date.now();
 }
 
+// ── Manifest-declared decode metadata (DEC) ────────────────────────────────────────────────────────────
+// The Rust data plane parses each proxied manifest for its declared decode metadata (master
+// #EXT-X-STREAM-INF resolution/codecs/frame-rate; media-playlist container hint) — the ffprobe-free
+// successor to the removed streamProbe monitor. A master poll and a variant/media poll are SEPARATE fetches,
+// each carrying only what it declares, so we MERGE per channel (non-null overwrite): the master fills
+// resolution/codecs/frame-rate, the variant fills the container. statsHub reads + humanizes this for the
+// Active Streams "Technical // Decode" card. Bounded by distinct channels + in-memory like streamState.states
+// (no sweep; resets on restart).
+
+export interface MediaInfo {
+  resolution: string | null; // raw "1920x1080" (humanized to "1080p" by statsHub)
+  codecs: string | null; // raw HLS CODECS list e.g. "avc1.640028,mp4a.40.2" (split + humanized by statsHub)
+  frameRate: string | null; // raw "60" / "29.970"
+  container: string | null; // 'fmp4' | 'ts'
+}
+
+const mediaByChannel = new Map<string, MediaInfo>(); // channelKey → merged decode metadata
+
+/** Merge manifest-declared decode metadata for a channel (only the non-null fields of this poll overwrite). */
+export function noteMedia(source: string, entryUrl: string, m: MediaInfo): void {
+  const key = streamKey(source, entryUrl);
+  const cur = mediaByChannel.get(key);
+  if (!cur) {
+    mediaByChannel.set(key, { ...m });
+    return;
+  }
+  if (m.resolution !== null) cur.resolution = m.resolution;
+  if (m.codecs !== null) cur.codecs = m.codecs;
+  if (m.frameRate !== null) cur.frameRate = m.frameRate;
+  if (m.container !== null) cur.container = m.container;
+}
+
+/** The merged decode metadata for a channel (null until its first manifest declares anything). */
+export function mediaFor(channelKey: string): MediaInfo | null {
+  return mediaByChannel.get(channelKey) ?? null;
+}
+
 // ── Socket-liveness hooks (the raw-TS fork) ───────────────────────────────────────────────────────────
 // Raw-TS external clients (externalTsEngine.ts) hold ONE long-lived HTTP socket and never poll, so the
 // poll-recency model above is blind to them. These three hooks give them a parallel accounting that feeds the

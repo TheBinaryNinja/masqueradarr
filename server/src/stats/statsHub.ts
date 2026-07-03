@@ -3,8 +3,11 @@
 // Two responsibilities, both keeping streamTelemetry source-agnostic and DB-free:
 //   1. Builds the DISPLAY snapshot — resolves each active channel's telemetry to a real channelId
 //      (PlaylistChannel), attaches the live phase (streamState), and formats bytes/sec into Mbps + a human
-//      uptime. Served by GET /api/active-streams AND pushed over the WS. (ffprobe quality annotation was
-//      removed in the video-engine teardown, so codec/resolution/fps fields now always read null.)
+//      uptime. Served by GET /api/active-streams AND pushed over the WS. The codec/audio/container/resolution/
+//      fps fields are the MANIFEST-DECLARED decode metadata (the ffprobe-free successor to the removed probe):
+//      the Rust data plane parses each proxied manifest (#EXT-X-STREAM-INF + container hint), streamTelemetry
+//      stores it per channel, and this layer humanizes it (avc1→H.264, mp4a→AAC, fmp4→fMP4, 1920x1080→1080p).
+//      `probe` stays null — the deep ffprobe technical snapshot is not rebuilt.
 //   2. WebSocket fan-out on /api/stream-stats — pushes the active-streams snapshot every BROADCAST_MS (only
 //      while ≥1 client is connected) plus one-shot buffer-event frames, and persists a ViewSession row when
 //      the telemetry core reports a closed viewer session.
@@ -13,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, onSessionClose, onBufferEvent, type ClosedSession } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo } from '../sources/core/streamTelemetry.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { ViewSession } from '../models/ViewSession.js';
@@ -106,6 +109,79 @@ function humanUptime(ms: number): string {
   return `${h}h ${min % 60}m`;
 }
 
+// ── Manifest-declared decode humanizers (DEC) ─────────────────────────────────────────────────────────
+// Turn the raw HLS decode metadata (streamTelemetry.MediaInfo) into the friendly labels the Active Streams
+// "Technical // Decode" card shows. The raw CODECS list holds BOTH the video and audio codecs (e.g.
+// "avc1.640028,mp4a.40.2"); we pick each side by its RFC 6381 fourcc prefix. Unknown values fall back to the
+// raw string; a missing value is null (the SPA renders an em-dash).
+
+/** First CODECS entry whose fourcc matches `re`, or null. */
+function pickCodec(codecs: string | null, re: RegExp): string | null {
+  if (!codecs) return null;
+  return codecs.split(',').map((c) => c.trim()).find((c) => re.test(c)) ?? null;
+}
+
+function humanVideoCodec(codecs: string | null): string | null {
+  const v = pickCodec(codecs, /^(avc1|avc3|hvc1|hev1|dvh[1e]|av01|vp0?9|mp4v)/i);
+  if (!v) return null;
+  const p = v.toLowerCase();
+  if (p.startsWith('avc1') || p.startsWith('avc3')) return 'H.264';
+  if (p.startsWith('hvc1') || p.startsWith('hev1') || p.startsWith('dvh')) return 'H.265';
+  if (p.startsWith('av01')) return 'AV1';
+  if (p.startsWith('vp9') || p.startsWith('vp09')) return 'VP9';
+  if (p.startsWith('mp4v')) return 'MPEG-4';
+  return v;
+}
+
+function humanAudioCodec(codecs: string | null): string | null {
+  const a = pickCodec(codecs, /^(mp4a|ac-3|ec-3|opus|flac|alac|dts)/i);
+  if (!a) return null;
+  const p = a.toLowerCase();
+  if (p.startsWith('mp4a')) return 'AAC';
+  if (p.startsWith('ac-3')) return 'AC-3';
+  if (p.startsWith('ec-3')) return 'E-AC-3';
+  if (p.startsWith('opus')) return 'Opus';
+  if (p.startsWith('flac')) return 'FLAC';
+  if (p.startsWith('alac')) return 'ALAC';
+  if (p.startsWith('dts')) return 'DTS';
+  return a;
+}
+
+function humanContainer(container: string | null): string | null {
+  if (!container) return null;
+  if (container === 'fmp4') return 'fMP4';
+  if (container === 'ts') return 'MPEG-TS';
+  return container;
+}
+
+// Common broadcast heights → friendly labels; anything else keeps the raw "WxH".
+const RES_LABELS: Record<number, string> = {
+  4320: '8K', 2160: '4K', 1440: '1440p', 1080: '1080p', 720: '720p', 576: '576p', 480: '480p', 360: '360p', 240: '240p',
+};
+function humanResolution(res: string | null): string | null {
+  if (!res) return null;
+  const m = /^(\d+)x(\d+)$/.exec(res);
+  if (!m) return res;
+  return RES_LABELS[Number(m[2])] ?? res;
+}
+
+function parseFps(frameRate: string | null): number | null {
+  if (!frameRate) return null;
+  const n = Number.parseFloat(frameRate);
+  return Number.isFinite(n) && n > 0 ? Math.round(n * 100) / 100 : null;
+}
+
+/** Humanize a channel's merged manifest decode metadata into the DisplayStream decode fields. */
+function decodeFields(m: MediaInfo | null): Pick<DisplayStream, 'codec' | 'audio' | 'container' | 'resolution' | 'fps'> {
+  return {
+    codec: humanVideoCodec(m?.codecs ?? null),
+    audio: humanAudioCodec(m?.codecs ?? null),
+    container: humanContainer(m?.container ?? null),
+    resolution: humanResolution(m?.resolution ?? null),
+    fps: parseFps(m?.frameRate ?? null),
+  };
+}
+
 /** Build the live Active Streams snapshot (resolved + quality-annotated). Served by REST and the WS. */
 export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
   const raw = snapshotRaw();
@@ -117,6 +193,7 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
     if (!channelId) continue; // a channel with no PlaylistChannel row (shouldn't happen for a real play)
     activeKeys.add(r.channelKey);
     const { phase, status } = displayPhase(r.channelKey, phaseFor(r.channelKey).phase, now);
+    const decode = decodeFields(mediaFor(r.channelKey));
     out.push({
       id: channelId,
       channelId,
@@ -132,12 +209,14 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       bitrate: mbps(r.bitrateBps),
       bandwidth: mbps(r.egressBps),
       bytesTotal: r.bytesTotal,
-      codec: null, // ffprobe removed (video-engine teardown) — quality fields no longer sampled
-      audio: null,
-      container: null,
-      resolution: null,
-      fps: null,
-      probe: null,
+      // Manifest-declared decode metadata (humanized). Null until the channel's first manifest declares it —
+      // e.g. a media-playlist-only upstream that carries no #EXT-X-STREAM-INF has null codec/resolution/fps.
+      codec: decode.codec,
+      audio: decode.audio,
+      container: decode.container,
+      resolution: decode.resolution,
+      fps: decode.fps,
+      probe: null, // the deep ffprobe technical snapshot is not rebuilt (video-engine teardown)
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).

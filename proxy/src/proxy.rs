@@ -18,7 +18,7 @@ use std::net::IpAddr;
 use std::sync::atomic::Ordering;
 use url::Url;
 
-use crate::manifest::{enc, rewrite_manifest};
+use crate::manifest::{enc, rewrite_manifest, RewriteResult};
 use crate::state::{AppState, SourcePolicy};
 
 pub async fn proxy(
@@ -114,12 +114,23 @@ pub async fn proxy(
     let req_headers = build_headers(&policy);
     let resp = match state.client.get(fetch_url.as_str()).headers(req_headers).send().await {
         Ok(r) => r,
-        Err(err) => return text(502, &format!("upstream fetch failed: {err}")),
+        Err(err) => {
+            // A transport/fetch error yields NO HTTP response → a TRANSIENT upstream failure. Report it so
+            // Node's phase machine spends a retry (status 0 ⇒ noteFailure), then surface a 502 to the client.
+            state.report(serde_json::json!({
+                "kind": "upstream", "ok": false, "status": 0, "source": source, "entryUrl": stream_entry.as_str(),
+            }));
+            return text(502, &format!("upstream fetch failed: {err}"));
+        }
     };
 
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
-        // Forward upstream non-2xx verbatim (404 = not live, 403 = gate).
+        // A DEFINITIVE non-2xx response (404 = not live, 403 = gate, 5xx = upstream error). Report it so the
+        // phase machine drops straight to `failed` (a real status ⇒ noteFailed), then forward it verbatim.
+        state.report(serde_json::json!({
+            "kind": "upstream", "ok": false, "status": status, "source": source, "entryUrl": stream_entry.as_str(),
+        }));
         let ct = resp
             .headers()
             .get("content-type")
@@ -145,21 +156,32 @@ pub async fn proxy(
         };
         let prefix = format!("{mount_path}/{source}/h/");
         let suffix = build_child_query(token.as_deref(), pl.as_deref(), &stream_entry);
-        let result = rewrite_manifest(&text_body, &final_url, &prefix, &suffix);
+        let RewriteResult { body, hosts, media } = rewrite_manifest(&text_body, &final_url, &prefix, &suffix);
         // Grow the source's SSRF allowlist with every host referenced in the manifest (dynamic-allow).
-        if !result.hosts.is_empty() {
+        if !hosts.is_empty() {
             let mut set = policy.hosts.write().unwrap();
-            for h in result.hosts {
+            for h in hosts {
                 set.insert(h);
             }
         }
-        // Telemetry: a manifest poll is the viewer heartbeat (also carries the manifest byte count).
+        // DEC: manifest-declared decode metadata (master #EXT-X-STREAM-INF + media-playlist container hint).
+        // Node merges the master + variant polls per channel and humanizes for Active Streams. Only emit when
+        // something was learned so a plain media playlist doesn't spam empty events.
+        if media.any() {
+            state.report(serde_json::json!({
+                "kind": "media", "source": source, "entryUrl": stream_entry.as_str(),
+                "resolution": media.resolution, "codecs": media.codecs,
+                "frameRate": media.frame_rate, "container": media.container,
+            }));
+        }
+        // Telemetry: a served manifest poll is the viewer heartbeat (also carries the manifest byte count) AND
+        // a 2xx upstream success that drives the phase machine establishing→live.
         state.report(serde_json::json!({
-            "kind": "viewer", "source": source, "entryUrl": stream_entry,
+            "kind": "viewer", "source": source, "entryUrl": stream_entry.as_str(),
             "ip": ip, "ua": ua, "username": username, "playerType": player,
-            "bytes": result.body.len() as u64,
+            "bytes": body.len() as u64,
         }));
-        return manifest_response(result.body);
+        return manifest_response(body);
     }
 
     // Segment (or any non-manifest): relabel the content-type per the source, count bytes, pipe through.
@@ -182,8 +204,11 @@ pub async fn proxy(
         .and_then(|s| s.parse::<u64>().ok())
     {
         if n > 0 {
+            // Bytes carry source+entryUrl too: noteBytes attributes egress by client identity, but the phase
+            // machine uses the channel key to note a segment as a 2xx success (keeps a live channel `live`).
             state.report(serde_json::json!({
-                "kind": "bytes", "ip": ip, "ua": ua, "username": username, "bytes": n,
+                "kind": "bytes", "source": source, "entryUrl": stream_entry.as_str(),
+                "ip": ip, "ua": ua, "username": username, "bytes": n,
             }));
         }
     }

@@ -131,8 +131,9 @@ export interface Program {
 // 1:1 with the live in-memory Active Streams snapshot (server stats/statsHub.ts → DisplayStream), served by
 // GET /api/active-streams and pushed over the /api/stream-stats WebSocket. One row per channel with ≥1
 // active viewer. Real-metrics-only: viewers/bandwidth/bitrate are measured off the proxy byte stream and
-// quality (codec/resolution/fps/…) off ffprobe; a passthrough proxy can't measure dropped frames or
-// playback latency, so those fields are intentionally absent.
+// quality (codec/audio/container/resolution/fps) is MANIFEST-DECLARED (parsed from #EXT-X-STREAM-INF by the
+// Rust data plane, humanized server-side; null for a media-playlist-only upstream). The deep ffprobe `probe`
+// snapshot is not rebuilt (always null) — a passthrough proxy still can't measure dropped frames or latency.
 // Which player produced a session: the in-app slide-out HLS player (appPlayer) or a third-party IPTV client
 // app — TiviMate/Kodi/VLC/… (externalPlayer, routed through the server-side ffmpeg engine).
 export type PlayerType = 'appPlayer' | 'externalPlayer';

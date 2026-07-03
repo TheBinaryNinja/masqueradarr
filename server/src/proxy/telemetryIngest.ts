@@ -1,16 +1,22 @@
-import { noteViewer, noteBytes, type PlayerType } from '../sources/core/streamTelemetry.js';
+import { noteViewer, noteBytes, noteMedia, type PlayerType } from '../sources/core/streamTelemetry.js';
+import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core/streamState.js';
 
 // TELEMETRY INGEST (TEL). The sidecar measures the true byte edge (viewers, bytes) and reports events here;
-// Node stays the telemetry AUTHORITY, feeding the SAME dormant cores the old in-process proxy drove
-// (streamTelemetry → the /api/stream-stats WS + GET /api/active-streams; the 30s heartbeat-stop sweep then
-// persists a ViewSession for History/Metrics). So Active Streams + History light up again with edge-measured
-// data. Best-effort + fire-and-forget from Rust's side — a telemetry hiccup must never affect streaming.
+// Node stays the telemetry AUTHORITY, feeding the SAME cores the old in-process proxy drove (streamTelemetry →
+// the /api/stream-stats WS + GET /api/active-streams; streamState → the phase machine; the 30s heartbeat-stop
+// sweep then persists a ViewSession for History/Metrics). So Active Streams + History light up with
+// edge-measured data. Best-effort + fire-and-forget from Rust's side — a telemetry hiccup must never affect
+// streaming.
 //
-// Event kinds:
-//  · viewer — one per manifest poll Rust serves (the heartbeat that keeps a viewer "active"; 30s TTL). May
-//    also carry the manifest's byte count. Fields: { source, entryUrl, ip, ua, username?, playerType, bytes? }.
-//  · bytes  — one per segment/other send. Fields: { ip, ua, bytes, username? }. Channel attribution is via
-//    the last viewer heartbeat for this identity (streamTelemetry's lastChannelByIdentity), so no entryUrl.
+// Event kinds (all carry { source, entryUrl } so the channel's phase-machine key = streamKey(source, entryUrl)):
+//  · viewer   — one per manifest poll Rust serves (the heartbeat that keeps a viewer "active"; 30s TTL). Also
+//    a 2xx success → noteSuccess (→ live). Fields: { source, entryUrl, ip, ua, username?, playerType, bytes? }.
+//  · bytes    — one per segment/other 2xx send. Drives noteBytes (egress, attributed by identity) AND
+//    noteSuccess (keeps the channel live). Fields: { source, entryUrl, ip, ua, username?, bytes }.
+//  · upstream — a non-2xx (ok:false, status>0) → noteFailed (→ failed) or a transport error (status 0) →
+//    noteFailure (spends one retry). Fields: { source, entryUrl, status }.
+//  · media    — manifest-declared decode metadata → noteMedia. Fields: { source, entryUrl, resolution?,
+//    codecs?, frameRate?, container? } (any subset; nulls mean "no update this poll").
 // A body may be a single event or { events: [...] } (batched — a P3 optimization); both are accepted.
 
 interface TelemetryEvent {
@@ -22,6 +28,11 @@ interface TelemetryEvent {
   username?: unknown;
   playerType?: unknown;
   bytes?: unknown;
+  status?: unknown;
+  resolution?: unknown;
+  codecs?: unknown;
+  frameRate?: unknown;
+  container?: unknown;
 }
 
 function str(v: unknown): string {
@@ -36,13 +47,39 @@ function applyEvent(e: TelemetryEvent): void {
   const ip = str(e.ip);
   const ua = str(e.ua);
   const username = optStr(e.username);
+  const source = str(e.source);
+  const entryUrl = str(e.entryUrl);
   const bytes = typeof e.bytes === 'number' && e.bytes > 0 ? e.bytes : 0;
+
   if (e.kind === 'viewer') {
     const playerType: PlayerType = e.playerType === 'externalPlayer' ? 'externalPlayer' : 'appPlayer';
-    noteViewer(str(e.source), str(e.entryUrl), ip, ua, username, playerType);
+    noteViewer(source, entryUrl, ip, ua, username, playerType);
     if (bytes) noteBytes(ip, ua, bytes, username);
+    // PHZ: a served manifest poll is a 2xx upstream success → drive establishing→live.
+    if (source && entryUrl) noteSuccess(streamKey(source, entryUrl));
   } else if (e.kind === 'bytes') {
     if (bytes) noteBytes(ip, ua, bytes, username);
+    // PHZ: a served segment is a 2xx upstream success → keep the channel live.
+    if (source && entryUrl) noteSuccess(streamKey(source, entryUrl));
+  } else if (e.kind === 'upstream') {
+    // PHZ: an upstream failure. A definitive non-2xx (status>0) → noteFailed (straight to `failed`); a
+    // transport error with no response (status 0) → noteFailure (one retry toward the budget).
+    if (source && entryUrl) {
+      const key = streamKey(source, entryUrl);
+      const status = typeof e.status === 'number' ? e.status : 0;
+      if (status > 0) noteFailed(key);
+      else noteFailure(key);
+    }
+  } else if (e.kind === 'media') {
+    // DEC: merge manifest-declared decode metadata for this channel (null fields = no update this poll).
+    if (source && entryUrl) {
+      noteMedia(source, entryUrl, {
+        resolution: optStr(e.resolution) ?? null,
+        codecs: optStr(e.codecs) ?? null,
+        frameRate: optStr(e.frameRate) ?? null,
+        container: optStr(e.container) ?? null,
+      });
+    }
   }
 }
 
