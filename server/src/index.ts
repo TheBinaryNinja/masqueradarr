@@ -38,7 +38,7 @@ import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
 import { logger } from './sources/core/logger.js';
-import { startProxySidecar, stopProxySidecar } from './proxy/sidecar.js';
+import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
 import { streamGate } from './middleware/streamGate.js';
 import { proxyRelay } from './proxy/relay.js';
@@ -109,14 +109,9 @@ async function main() {
     logger.error('startup', `stream telemetry init error (continuing): ${(err as Error).message}`);
   }
 
-  // Durable video data plane: spawn + supervise the Rust proxy sidecar (server/src/proxy/sidecar.ts →
-  // repo `proxy/` crate). Loopback-only; the reverse-proxy for stream paths lands in P1. Non-fatal — a
-  // missing/failed sidecar disables streaming but must not crash the API (parity with the inits above).
-  try {
-    startProxySidecar(config.port);
-  } catch (err) {
-    logger.error('startup', `proxy sidecar start error (continuing): ${(err as Error).message}`);
-  }
+  // NB: the Rust proxy sidecar is spawned AFTER app.listen() (see below), not here — in EDGE mode Rust binds
+  // the PUBLIC port and reverse-proxies back to this Node process on a loopback internal port, so Node's
+  // listener must be up first or the edge would 502 during the boot window.
 
   const app = express();
   // The proxy attributes viewers/bandwidth by client ip — read the real client IP from X-Forwarded-For
@@ -255,9 +250,35 @@ async function main() {
     res.status(500).json({ error: 'internal_error' });
   });
 
-  const server = app.listen(config.port, () => {
-    logger.info('api', `listening on :${config.port}`);
-  });
+  // EDGE-3: in edge mode Node listens on a loopback INTERNAL port (default 8080), while config.port stays the
+  // PUBLIC port that Rust binds — so the listen port is independent of config.json and toggling MASQ_EDGE works
+  // even against an already-written config (esp. the AIO image, whose config-init leaves an existing file alone).
+  // In sidecar mode Node is the public front door on config.port (unchanged).
+  const nodePort = EDGE ? Number(process.env.MASQ_EDGE_NODE_PORT) || 8080 : config.port;
+
+  const onListening = () => {
+    logger.info(
+      'api',
+      EDGE
+        ? `listening on 127.0.0.1:${nodePort} (internal; Rust owns the public edge on :${config.port})`
+        : `listening on :${nodePort}`,
+    );
+    // Durable video data plane: spawn + supervise the Rust proxy sidecar (server/src/proxy/sidecar.ts → repo
+    // `proxy/` crate). Spawned HERE — after the HTTP server is listening — so that in EDGE mode Rust (which
+    // binds the public port and reverse-proxies to this now-ready internal listener) never races an unready
+    // Node. nodePort is handed to the sidecar as its Node callback URL. Non-fatal — a missing/failed sidecar
+    // disables streaming (sidecar mode) but must not crash the API.
+    try {
+      startProxySidecar(nodePort);
+    } catch (err) {
+      logger.error('startup', `proxy sidecar start error (continuing): ${(err as Error).message}`);
+    }
+  };
+  // EDGE mode: bind loopback only — Rust is the public front door and proxies here. Sidecar mode: Node is the
+  // public front door, so bind all interfaces (today's behavior).
+  const server = EDGE
+    ? app.listen(nodePort, '127.0.0.1', onListening)
+    : app.listen(nodePort, onListening);
 
   // dulo streamed-login WebSocket (sources/adapters/dulo/loginBrowser.ts). Mounted on the raw http.Server's
   // 'upgrade' event — Express has no native WS. The browser launches lazily on connect, so this adds zero

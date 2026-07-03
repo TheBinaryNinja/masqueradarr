@@ -27,33 +27,47 @@ export function extractToken(req: Request): string {
     return '';
 }
 
+/**
+ * Resolve a raw token to its user with the two-source precedence `authenticate` uses: a stateful Web-UI
+ * session first (TTL-checked), then a permanent `streamToken` (IPTV players / stream clients). Returns the
+ * user plus whether it was via a session, or null when the token matches neither. Extracted so the same
+ * lookup is reused by `authenticate` (the request gate) AND the resolve-seam authorize step — the stream
+ * gate that runs in Node even after Rust owns the public socket (EDGE-3). `viaSession` lets a caller set
+ * `req.sessionToken` only for the session case.
+ */
+export async function userFromToken(
+    token: string,
+): Promise<{ user: UserDoc & { _id: any }; viaSession: boolean } | null> {
+    if (!token) return null;
+
+    // Stateful Web UI session first
+    const sessionDoc = await Session.findOne({ token }).lean();
+    if (sessionDoc) {
+        // Check if session has expired (TTL index runs periodically, so we do an explicit check as well)
+        if (sessionDoc.expiresAt.getTime() > Date.now()) {
+            const userDoc = await User.findById(sessionDoc.userId);
+            if (userDoc) return { user: userDoc, viaSession: true };
+        }
+    }
+
+    // Permanent streamToken (IPTV players / stream clients)
+    const userDoc = await User.findOne({ streamToken: token, streamTokenEnabled: true });
+    if (userDoc) return { user: userDoc, viaSession: false };
+
+    return null;
+}
+
 export async function authenticate(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
     try {
         const token = extractToken(req);
-
         if (!token) {
             return next();
         }
 
-        // 3. Try to authenticate via stateful Web UI session
-        const sessionDoc = await Session.findOne({ token }).lean();
-        if (sessionDoc) {
-            // Check if session has expired (TTL index runs periodically, so we do an explicit check as well)
-            if (sessionDoc.expiresAt.getTime() > Date.now()) {
-                const userDoc = await User.findById(sessionDoc.userId);
-                if (userDoc) {
-                    req.user = userDoc;
-                    req.sessionToken = token;
-                    return next();
-                }
-            }
-        }
-
-        // 4. Try to authenticate via permanent streamToken (IPTV players / stream clients)
-        const userDoc = await User.findOne({ streamToken: token, streamTokenEnabled: true });
-        if (userDoc) {
-            req.user = userDoc;
-            return next();
+        const found = await userFromToken(token);
+        if (found) {
+            req.user = found.user;
+            if (found.viaSession) req.sessionToken = token;
         }
 
         next();

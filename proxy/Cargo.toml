@@ -17,7 +17,13 @@ path = "src/main.rs"
 [dependencies]
 # Web framework + async runtime (the client-facing surface + graceful shutdown).
 axum = "0.7"
-tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time", "io-util"] }
+# EDGE-3: the public-edge reverse proxy. The plain-HTTP leg reuses reqwest; the WebSocket-upgrade leg needs
+# hyper's low-level client (dial Node, forward the Upgrade, splice the two `Upgraded` IOs). All three are
+# already in the tree transitively via axum 0.7 — declaring them direct adds no new fetch.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
 # Stream adapters: ReceiverStream (drain a bounded mpsc buffer into an axum Body) + StreamExt::next (drive
 # reqwest's bytes_stream in the RSL segment pump / DST TS concat). Already in the tree via tokio/reqwest.
 tokio-stream = "0.1"

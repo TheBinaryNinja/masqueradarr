@@ -14,6 +14,10 @@ services:
       DOMAIN: ${DOMAIN:-http://localhost:3000}
       TZ: ${TZ:-America/New_York}
       DNS_LOG_LEVEL: ${DNS_LOG_LEVEL:-2}
+      # EDGE-3 (opt-in): unset/empty = today's topology (Node is the public edge, Rust a loopback sidecar).
+      # Set MASQ_EDGE=1 to invert — Rust binds the public :3000 and reverse-proxies to Node on a loopback
+      # internal port. Same public port + no other change; fully reversible by clearing it. See .env.example.
+      MASQ_EDGE: ${MASQ_EDGE:-}
     ports:
       - "${MASQUERADARR_PORT:-3000}:3000"
     volumes:

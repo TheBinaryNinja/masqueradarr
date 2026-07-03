@@ -36,20 +36,51 @@ fn is_retryable_status(status: u16) -> bool {
     matches!(status, 502..=504)
 }
 
+/// Client identity for telemetry attribution, sourced per topology: the loopback SIDECAR handler reads the
+/// relay-set `x-masq-*` headers; the public EDGE dispatcher (edge.rs) synthesizes it from the socket (peer/XFF
+/// ip, the real `User-Agent`, the gate-resolved username). NOT part of it: `player` — `serve_stream` derives
+/// that from the mount path, so an externalPlayer stream is never mislabeled appPlayer in either topology.
+pub struct Identity {
+    pub ip: String,
+    pub ua: String,
+    pub username: Option<String>,
+}
+
+/// The loopback SIDECAR stream handler (:8787) — secret-gated; identity from the relay's `x-masq-*` headers.
+/// Registered as the internal listener's axum fallback; delegates to the shared `serve_stream`. The PUBLIC
+/// edge path does NOT pass through here — edge.rs gates by stream token (via the auth cache), not the secret.
 pub async fn proxy(
     State(state): State<AppState>,
     method: Method,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Response {
-    // The relay (or the sidecar's own edge, later) must carry the shared secret.
     if !check_secret(&headers, &state.secret) {
         return text(403, "forbidden");
     }
+    let ip = header_str(&headers, "x-masq-client-ip");
+    let ua = header_str(&headers, "x-masq-client-ua");
+    let username = {
+        let u = header_str(&headers, "x-masq-username");
+        if u.is_empty() {
+            None
+        } else {
+            Some(u)
+        }
+    };
+    serve_stream(state, method, uri.path(), uri.query().unwrap_or(""), Identity { ip, ua, username }).await
+}
 
-    let path = uri.path();
-    let query = uri.query().unwrap_or("");
-
+/// The shared stream engine — the faithful proxyHandler.ts control flow. Called by the sidecar handler above
+/// AND by the public edge dispatcher (edge.rs, which has already run the stream-token gate + synthesized the
+/// Identity). `player` is derived from the mount path here (not an inbound header).
+pub async fn serve_stream(
+    state: AppState,
+    method: Method,
+    path: &str,
+    query: &str,
+    id: Identity,
+) -> Response {
     // Mount + marker: /api/ext/v1 is checked first (it contains /api/…/v1/, not /api/v1/).
     let (mount_path, marker): (&str, &str) = if path.contains("/api/ext/v1/") {
         ("/api/ext/v1", "/api/ext/v1/")
@@ -80,17 +111,10 @@ pub async fn proxy(
     };
 
     let (token, pl, e_param) = parse_query(query);
-    let ip = header_str(&headers, "x-masq-client-ip");
-    let ua = header_str(&headers, "x-masq-client-ua");
-    let username = {
-        let u = header_str(&headers, "x-masq-username");
-        if u.is_empty() {
-            None
-        } else {
-            Some(u)
-        }
-    };
-    let player = if header_str(&headers, "x-masq-player") == "externalPlayer" {
+    let ip = id.ip;
+    let ua = id.ua;
+    let username = id.username;
+    let player = if mount_path == "/api/ext/v1" {
         "externalPlayer"
     } else {
         "appPlayer"
@@ -346,12 +370,10 @@ pub(crate) fn check_secret(h: &HeaderMap, secret: &str) -> bool {
     if secret.is_empty() {
         return true; // no secret configured (manual dev run) → allow; Node always sets one in prod
     }
-    h.get("x-masq-secret")
-        .and_then(|v| v.to_str().ok())
-        .map_or(false, |v| v == secret)
+    h.get("x-masq-secret").and_then(|v| v.to_str().ok()) == Some(secret)
 }
 
-fn header_str(h: &HeaderMap, k: &str) -> String {
+pub(crate) fn header_str(h: &HeaderMap, k: &str) -> String {
     h.get(k)
         .and_then(|v| v.to_str().ok())
         .unwrap_or("")
@@ -362,7 +384,7 @@ fn dec(s: &str) -> Option<String> {
     percent_decode_str(s).decode_utf8().ok().map(|c| c.into_owned())
 }
 
-fn parse_query(q: &str) -> (Option<String>, Option<String>, Option<String>) {
+pub(crate) fn parse_query(q: &str) -> (Option<String>, Option<String>, Option<String>) {
     let (mut token, mut pl, mut e) = (None, None, None);
     for (k, v) in url::form_urlencoded::parse(q.as_bytes()) {
         match k.as_ref() {

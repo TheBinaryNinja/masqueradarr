@@ -28,10 +28,30 @@ const TELEMETRY_FLUSH_MS: u64 = 250;
 /// entries. (P3 could honor a per-grant `expiresAt` instead of a fixed cap.)
 const TARGET_TTL: Duration = Duration::from_secs(60);
 
+// EDGE-3 gate cache. When Rust is the public edge, the stream-token gate lives in Node (POST
+// /api/internal/authorize) but Rust must gate EVERY request — including warm hops that never re-hit the
+// resolve seam. So each (token, source) decision is cached for AUTH_TTL: warm requests are an in-memory
+// check (no Node round-trip), and revocation of streamTokenEnabled/allowedPlaylists takes effect within the
+// TTL. AUTH_CACHE_MAX bounds memory against random-token spam (prune-expired-then-skip on overflow).
+const AUTH_TTL: Duration = Duration::from_secs(30);
+const AUTH_CACHE_MAX: usize = 4096;
+
+struct AuthDecision {
+    allowed: bool,
+    status: u16,             // deny HTTP status (401/403) when !allowed
+    message: String,         // deny plain-text (mirrors sidecar streamGate's exact message); empty when allowed
+    username: Option<String>,
+    expires: Instant,
+}
+
 #[derive(Clone)]
 pub struct AppState {
-    /// The DEFAULT client — used for the loopback Node calls (resolve/telemetry) and as a build fallback.
+    /// The DEFAULT client — used for the loopback Node calls (resolve/authorize/telemetry) and as a build fallback.
     pub client: reqwest::Client,
+    /// EDGE-3: the reverse-proxy client for the non-stream leg (SPA / /api/* → Node). Distinct from `client`
+    /// because a TRANSPARENT proxy must NOT auto-follow redirects (relay Node's 3xx verbatim) or auto-decompress
+    /// (gzip off — else a stale Content-Length survives a stripped Content-Encoding). Only used on the edge path.
+    pub proxy_client: reqwest::Client,
     pub node_url: String,
     pub secret: String,
     cache: Arc<Mutex<HashMap<String, Arc<SourcePolicy>>>>,
@@ -48,6 +68,9 @@ pub struct AppState {
     /// one id (open→sbytes→close carry it) that Node maps to a socket-viewer connId (noteSocketViewer*). Node
     /// overwrites the mapping on `open`, so a counter reset after a sidecar restart cannot collide.
     stream_seq: Arc<AtomicU64>,
+    /// EDGE-3: the per-(token, source) stream-gate decision cache (see AUTH_TTL). Only consulted on the public
+    /// edge path (edge.rs); the loopback sidecar path is gated by Node's Express streamGate as before.
+    auth_cache: Arc<Mutex<HashMap<(String, String), AuthDecision>>>,
 }
 
 pub struct SourcePolicy {
@@ -160,6 +183,12 @@ impl AppState {
             .connect_timeout(Duration::from_secs(15))
             .build()
             .expect("failed to build reqwest client");
+        // EDGE-3 reverse-proxy client: no redirect-follow + no auto-gzip so Node's responses relay byte-exact.
+        let proxy_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .gzip(false)
+            .build()
+            .unwrap_or_else(|_| client.clone());
         // TEL: the telemetry queue + its single background flusher (spawned once; new() runs inside the tokio
         // runtime from #[tokio::main]). Best-effort — the byte path never waits on telemetry.
         let (telemetry_tx, telemetry_rx) = mpsc::channel::<serde_json::Value>(TELEMETRY_QUEUE);
@@ -171,6 +200,7 @@ impl AppState {
         ));
         Self {
             client,
+            proxy_client,
             node_url,
             secret,
             cache: Arc::new(Mutex::new(HashMap::new())),
@@ -178,6 +208,7 @@ impl AppState {
             upstream_clients: Arc::new(Mutex::new(HashMap::new())),
             telemetry_tx,
             stream_seq: Arc::new(AtomicU64::new(0)),
+            auth_cache: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -317,6 +348,86 @@ impl AppState {
     /// path never blocks or grows unbounded; a failure must never affect streaming).
     pub fn report(&self, event: serde_json::Value) {
         let _ = self.telemetry_tx.try_send(event);
+    }
+
+    /// EDGE-3 gate: may `token` play `source`? Cached per (token, source) for AUTH_TTL; on miss/expiry ask Node
+    /// (POST /api/internal/authorize). Ok(username) on allow (username for telemetry attribution); Err((status,
+    /// message)) on deny — the exact 401/403 + plain text the sidecar-mode streamGate would have returned.
+    /// FAILS CLOSED (403) and does NOT cache when Node is unreachable, so a transient blip re-checks next request
+    /// rather than blocking for the whole TTL — consistent with entry resolve, which also can't proceed sans Node.
+    pub async fn authorize(&self, token: &str, source: &str) -> Result<Option<String>, (u16, String)> {
+        let key = (token.to_string(), source.to_string());
+        {
+            let cache = self.auth_cache.lock().unwrap();
+            if let Some(d) = cache.get(&key) {
+                if d.expires > Instant::now() {
+                    return if d.allowed {
+                        Ok(d.username.clone())
+                    } else {
+                        Err((d.status, d.message.clone()))
+                    };
+                }
+            }
+        }
+        let (allowed, status, message, username) = match self.authorize_remote(token, source).await {
+            Some(v) => v,
+            None => return Err((403, "Forbidden: authorization unavailable".to_string())),
+        };
+        {
+            let mut cache = self.auth_cache.lock().unwrap();
+            if cache.len() >= AUTH_CACHE_MAX {
+                let now = Instant::now();
+                cache.retain(|_, d| d.expires > now);
+            }
+            if cache.len() < AUTH_CACHE_MAX {
+                cache.insert(
+                    key,
+                    AuthDecision {
+                        allowed,
+                        status,
+                        message: message.clone(),
+                        username: username.clone(),
+                        expires: Instant::now() + AUTH_TTL,
+                    },
+                );
+            }
+        }
+        if allowed {
+            Ok(username)
+        } else {
+            Err((status, message))
+        }
+    }
+
+    /// Ask Node for a fresh gate decision. Returns (allowed, status, message, username) or None on any transport/
+    /// parse failure (→ the caller fails closed). HTTP stays 2xx for both allow and deny — the decision is the body.
+    async fn authorize_remote(&self, token: &str, source: &str) -> Option<(bool, u16, String, Option<String>)> {
+        let body = serde_json::json!({ "token": token, "source": source });
+        let resp = self
+            .client
+            .post(format!("{}/api/internal/authorize", self.node_url))
+            .header("x-masq-secret", &self.secret)
+            .json(&body)
+            .send()
+            .await
+            .ok()?;
+        if !resp.status().is_success() {
+            return None;
+        }
+        let v: serde_json::Value = resp.json().await.ok()?;
+        let ok = v.get("ok").and_then(|b| b.as_bool()).unwrap_or(false);
+        if ok {
+            let username = v.get("username").and_then(|s| s.as_str()).map(|s| s.to_string());
+            Some((true, 200, String::new(), username))
+        } else {
+            let status = v.get("status").and_then(|n| n.as_u64()).unwrap_or(403) as u16;
+            let message = v
+                .get("message")
+                .and_then(|s| s.as_str())
+                .unwrap_or("Forbidden: access denied")
+                .to_string();
+            Some((false, status, message, None))
+        }
     }
 }
 
