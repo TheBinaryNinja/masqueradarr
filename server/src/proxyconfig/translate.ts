@@ -25,9 +25,11 @@ export type ProxyConfigData = Omit<ProxyConfigDoc, '_id'>;
 // (no secret fields to redact) — kept as a distinct alias so a future redaction has one place to land.
 export type RuntimeProxyConfig = ProxyConfigData;
 
-// The only distribution container honored today (remux-free HLS core). Other formats (ts/mp4/dash) need the
-// P3 DST/RMX work, so the input gate rejects them for now — the field exists as forward-compat scaffolding.
-export const OUTPUT_FORMATS = ['hls'] as const;
+// The distribution containers honored today (remux-free core): 'hls' (per-segment passthrough + manifest
+// rewrite) and 'ts' (P3.2/DST — a continuous raw-TS stream on the external-player mount, for pure-MPEG-TS
+// upstreams; the data plane falls back to HLS for fMP4/AES). 'mp4'/'dash' still need RMX (deferred), so the
+// input gate rejects them. 'ts' applies to the /api/ext/v1 mount; the in-app player (/api/v1) is always HLS.
+export const OUTPUT_FORMATS = ['hls', 'ts'] as const;
 
 // Clamp an integer env var into [min, max], falling back to `def` for an unset/invalid value.
 function envInt(raw: string | undefined, def: number, min: number, max: number): number {

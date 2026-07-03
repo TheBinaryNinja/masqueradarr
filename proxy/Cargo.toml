@@ -18,6 +18,9 @@ path = "src/main.rs"
 # Web framework + async runtime (the client-facing surface + graceful shutdown).
 axum = "0.7"
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "signal", "net", "sync", "time"] }
+# Stream adapters: ReceiverStream (drain a bounded mpsc buffer into an axum Body) + StreamExt::next (drive
+# reqwest's bytes_stream in the RSL segment pump / DST TS concat). Already in the tree via tokio/reqwest.
+tokio-stream = "0.1"
 # HTTP client for upstream fetches + the Node resolve-seam / telemetry calls. rustls (not native-tls) so the
 # binary has no system OpenSSL dependency; `stream` gives bytes_stream() for zero-copy segment piping.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream", "gzip", "http2", "json"] }
@@ -25,6 +28,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 url = "2"
 percent-encoding = "2"
+# Name the byte-buffer type for the RSL segment pump channel (already in the tree via axum/reqwest).
+bytes = "1"
 
 # A lean, durable release binary (this runs 24/7 on modest hardware — a Pi / small VPS).
 [profile.release]

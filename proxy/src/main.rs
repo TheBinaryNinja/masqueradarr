@@ -12,6 +12,8 @@ mod manifest;
 mod probe;
 mod proxy;
 mod state;
+mod stream;
+mod tsmux;
 
 use axum::{
     routing::{get, post},

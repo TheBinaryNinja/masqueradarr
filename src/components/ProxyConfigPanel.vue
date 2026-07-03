@@ -3,9 +3,10 @@
 //   · (Default)  Settings → Advanced      → <ProxyConfigPanel config-id="app" />
 //   · (Custom)   playlist drawer          → <ProxyConfigPanel :config-id="'app_' + playlist.id" flat />
 // Auto-saves every edit (no save button) via useProxyConfig(configId) — the useSettings hydrate-guard + 500 ms
-// debounce, scoped per config id. The knobs split into ACTIVE-NOW (applied by the Rust data plane today) and
-// RESERVED (persisted + shipped in the grant, applied when a later phase gains the capability). See
-// src/composables/useProxyConfig.ts + .claude/plans/durable-iptv-proxy.md.
+// debounce, scoped per config id. The knobs split into ACTIVE-NOW (applied by the Rust data plane today —
+// connect/read timeout, max redirects, buffer size, header overrides, and the output format incl. P3.2 raw-TS)
+// and RESERVED (persisted + shipped in the grant, applied when a later phase gains the capability — segment
+// cache). See src/composables/useProxyConfig.ts + .claude/plans/durable-iptv-proxy.md.
 
 import { ref, onMounted, watch } from 'vue';
 import Icon from './Icon.vue';
@@ -44,14 +45,18 @@ function setNum(field: 'connectTimeoutMs' | 'maxRedirects', raw: string, min: nu
   const n = Math.round(Number(raw));
   state[field] = Number.isFinite(n) ? Math.max(min, n) : min;
 }
-function setNullableNum(field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheTtlSec', raw: string) {
+function setNullableNum(
+  field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheTtlSec',
+  raw: string,
+  min = 0,
+) {
   const t = raw.trim();
   if (t === '') {
     state[field] = null;
     return;
   }
   const n = Math.round(Number(t));
-  state[field] = Number.isFinite(n) ? Math.max(0, n) : null;
+  state[field] = Number.isFinite(n) ? Math.max(min, n) : null;
 }
 
 onMounted(async () => {
@@ -108,6 +113,42 @@ watch(
             How many upstream redirects to follow when resolving a stream.
           </div>
         </div>
+        <div class="form-row">
+          <div class="field-lbl">Read timeout <span class="mono muted" style="font-weight: 400;">· ms</span></div>
+          <div class="input">
+            <input type="number" min="0" :value="state.readTimeoutMs ?? ''" placeholder="none"
+                   @input="setNullableNum('readTimeoutMs', ($event.target as HTMLInputElement).value)" />
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Stall guard: if the upstream goes silent for this long mid-stream, the segment is dropped + retried.
+            Blank = never time out a slow segment.
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field-lbl">Buffer size <span class="mono muted" style="font-weight: 400;">· KiB</span></div>
+          <div class="input">
+            <input type="number" min="16" :value="state.bufferSizeKb ?? ''" placeholder="minimal"
+                   @input="setNullableNum('bufferSizeKb', ($event.target as HTMLInputElement).value, 16)" />
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Read-ahead buffer between the upstream and the viewer that absorbs brief upstream jitter. Blank = a
+            minimal pipeline.
+          </div>
+        </div>
+      </div>
+
+      <div class="form-row" style="margin-top: 14px;">
+        <div class="field-lbl">Output format</div>
+        <Segmented
+          :value="state.outputFormat"
+          @change="(v) => (state.outputFormat = v)"
+          :options="[{ value: 'hls', label: 'HLS' }, { value: 'ts', label: 'Raw TS' }]"
+        />
+        <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+          How streams reach third-party players (the in-app player is always HLS). <b>HLS</b> rewrites the
+          playlist per segment; <b>Raw TS</b> serves one continuous MPEG-TS stream for clients that prefer it
+          (pure-TS sources only — encrypted / fMP4 upstreams fall back to HLS automatically).
+        </div>
       </div>
 
       <div class="field-lbl" style="margin: 14px 0 6px;">Upstream header overrides</div>
@@ -138,31 +179,13 @@ watch(
       </div>
       <div class="form-grid-2" style="margin-top: 8px;">
         <div class="form-row">
-          <div class="field-lbl">Read timeout <span class="mono muted" style="font-weight: 400;">· ms</span></div>
-          <div class="input">
-            <input type="number" min="0" :value="state.readTimeoutMs ?? ''" placeholder="none"
-                   @input="setNullableNum('readTimeoutMs', ($event.target as HTMLInputElement).value)" />
-          </div>
-        </div>
-        <div class="form-row">
-          <div class="field-lbl">Buffer size <span class="mono muted" style="font-weight: 400;">· KiB</span></div>
-          <div class="input">
-            <input type="number" min="16" :value="state.bufferSizeKb ?? ''" placeholder="unbounded"
-                   @input="setNullableNum('bufferSizeKb', ($event.target as HTMLInputElement).value)" />
-          </div>
-        </div>
-        <div class="form-row">
           <div class="field-lbl">Segment cache TTL <span class="mono muted" style="font-weight: 400;">· s</span></div>
           <div class="input">
             <input type="number" min="0" :value="state.segmentCacheTtlSec ?? ''" placeholder="no-store"
                    @input="setNullableNum('segmentCacheTtlSec', ($event.target as HTMLInputElement).value)" />
           </div>
-        </div>
-        <div class="form-row">
-          <div class="field-lbl">Output format</div>
-          <Segmented :value="state.outputFormat" :options="[{ value: 'hls', label: 'HLS' }]" />
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            More distribution formats arrive with the distribution layer.
+            Cache fetched segments this long to serve repeat requests without re-fetching.
           </div>
         </div>
       </div>

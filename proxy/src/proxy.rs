@@ -16,10 +16,25 @@ use axum::response::Response;
 use percent_encoding::percent_decode_str;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use url::Url;
 
 use crate::manifest::{enc, rewrite_manifest, RewriteResult};
 use crate::state::{AppState, SourcePolicy};
+use crate::stream::{segment_body, TelemetryCtx};
+
+// RSL-3 upstream retry. A transient failure (transport error, or a 502/503/504 gateway status) is retried with
+// bounded backoff before the request is failed; a definitive response (2xx, 4xx, or a non-gateway 5xx) is used
+// as-is. Kept small so a genuinely dead upstream fails fast (the total added latency is bounded by the sum of
+// RETRY_BACKOFF_MS) and a flaky CDN edge still recovers within a poll.
+const MAX_UPSTREAM_RETRIES: u32 = 2; // total attempts = 1 + this
+const RETRY_BACKOFF_MS: [u64; 2] = [200, 500];
+
+/// Retryable = a transient gateway status. 404 (not live) / 403 (gate) / other 4xx and a plain 500 are
+/// DEFINITIVE (retrying would just repeat them) and forwarded verbatim.
+fn is_retryable_status(status: u16) -> bool {
+    matches!(status, 502..=504)
+}
 
 pub async fn proxy(
     State(state): State<AppState>,
@@ -81,8 +96,9 @@ pub async fn proxy(
         "appPlayer"
     };
 
-    // Resolve the policy + the URL to fetch + the stream's entry (for telemetry attribution).
-    let (policy, fetch_url, stream_entry) = if is_hop {
+    // Resolve the policy + the URL to fetch + the stream's entry (for telemetry attribution). fetch_url is `mut`
+    // so the RSL ENTRY failover below can swap in a freshly-resolved master when the first target is dead.
+    let (policy, mut fetch_url, stream_entry) = if is_hop {
         let policy = match state.get(source) {
             Some(p) => p,
             None => {
@@ -124,22 +140,63 @@ pub async fn proxy(
         return text(400, "bad request: upstream host not allowed");
     }
 
-    // Fetch upstream (headers replayed from the policy; connect timeout + redirect cap per the resolved
-    // proxy-config knobs — PXY-2; the client is cached by (connect_timeout, max_redirects)).
-    let req_headers = build_headers(&policy);
+    // RSL per-stream knobs (NOT client-level): idle/read timeout for stall detection + read-ahead buffer depth.
+    let read_timeout_ms = policy.read_timeout_ms.load(Ordering::Relaxed);
+    let buffer_size_kb = policy.buffer_size_kb.load(Ordering::Relaxed);
+
+    // Fetch upstream with RSL retry (transient transport error / 502/503/504 → bounded backoff; 4xx and other
+    // definitive responses are used as-is). Client cached by (connect_timeout, max_redirects) — PXY-2; headers
+    // replayed from the (possibly just-refreshed) policy.
     let client = state.client_for(
         policy.connect_timeout_ms.load(Ordering::Relaxed),
         policy.max_redirects.load(Ordering::Relaxed),
     );
-    let resp = match client.get(fetch_url.as_str()).headers(req_headers).send().await {
-        Ok(r) => r,
-        Err(err) => {
-            // A transport/fetch error yields NO HTTP response → a TRANSIENT upstream failure. Report it so
-            // Node's phase machine spends a retry (status 0 ⇒ noteFailure), then surface a 502 to the client.
+    let mut resp = fetch_with_retry(&client, &fetch_url, &build_headers(&policy), read_timeout_ms)
+        .await
+        .ok();
+
+    // RSL mirror failover on a persistent fetch failure:
+    //  · ENTRY — the resolved master is dead (the mirror rotated between resolve and fetch). Drop the cached
+    //    target and force a FRESH resolve (Node re-runs resolveStream → dlhd/dami reprobeMirror), then fetch the
+    //    new master. `policy` is the same cached Arc, re-populated in place by the fresh resolve.
+    //  · HOP — a child segment/variant host died; a fresh master can't be substituted for a child mid-poll, so
+    //    kick a best-effort async policy refresh (so a re-requested entry / cold hop rides the live mirror) and
+    //    fail this request (the player refetches).
+    if resp.is_none() {
+        if is_hop {
+            if !stream_entry.is_empty() {
+                let (st, src, ent, plc) =
+                    (state.clone(), source.to_string(), stream_entry.clone(), pl.clone());
+                tokio::spawn(async move {
+                    let _ = st.resolve_fresh(&src, &ent, plc.as_deref()).await;
+                });
+            }
+        } else {
+            state.invalidate_target(source, &stream_entry);
+            if let Ok((_p, target2)) = state.resolve_fresh(source, &stream_entry, pl.as_deref()).await {
+                let client2 = state.client_for(
+                    policy.connect_timeout_ms.load(Ordering::Relaxed),
+                    policy.max_redirects.load(Ordering::Relaxed),
+                );
+                if let Ok(r) =
+                    fetch_with_retry(&client2, &target2, &build_headers(&policy), read_timeout_ms).await
+                {
+                    fetch_url = target2;
+                    resp = Some(r);
+                }
+            }
+        }
+    }
+
+    let resp = match resp {
+        Some(r) => r,
+        None => {
+            // Retries (+ entry failover) exhausted → a transport-level failure with no HTTP response → a
+            // TRANSIENT upstream failure (status 0 ⇒ noteFailure), then a 502 to the client.
             state.report(serde_json::json!({
                 "kind": "upstream", "ok": false, "status": 0, "source": source, "entryUrl": stream_entry.as_str(),
             }));
-            return text(502, &format!("upstream fetch failed: {err}"));
+            return text(502, "upstream fetch failed (after retries)");
         }
     };
 
@@ -169,10 +226,53 @@ pub async fn proxy(
         .to_string();
 
     if is_manifest(&final_url, &fetch_url, &ct) {
-        let text_body = match resp.text().await {
-            Ok(t) => t,
-            Err(err) => return text(502, &format!("read manifest failed: {err}")),
+        // Bound the manifest read by the same idle timeout (a manifest is small; a hang here is a stalled
+        // upstream → a transient failure, not a definitive one).
+        let read = resp.text();
+        let text_body = if read_timeout_ms > 0 {
+            match tokio::time::timeout(Duration::from_millis(read_timeout_ms), read).await {
+                Ok(Ok(t)) => t,
+                Ok(Err(err)) => return text(502, &format!("read manifest failed: {err}")),
+                Err(_) => {
+                    state.report(serde_json::json!({
+                        "kind": "upstream", "ok": false, "status": 0, "source": source, "entryUrl": stream_entry.as_str(),
+                    }));
+                    return text(502, "read manifest timed out");
+                }
+            }
+        } else {
+            match read.await {
+                Ok(t) => t,
+                Err(err) => return text(502, &format!("read manifest failed: {err}")),
+            }
         };
+        // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
+        // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
+        // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
+        // the HLS rewrite below (text_body + final_url are cloned so the fallback still owns them).
+        if !is_hop && mount_path == "/api/ext/v1" && policy.output_format.read().unwrap().as_str() == "ts" {
+            let ts_ctx = crate::tsmux::TsContext {
+                state: state.clone(),
+                policy: policy.clone(),
+                source: source.to_string(),
+                entry: stream_entry.clone(),
+                pl: pl.clone(),
+                client: state.client_for(
+                    policy.connect_timeout_ms.load(Ordering::Relaxed),
+                    policy.max_redirects.load(Ordering::Relaxed),
+                ),
+                read_timeout_ms,
+                ip: ip.clone(),
+                ua: ua.clone(),
+                username: username.clone(),
+            };
+            if let Some(ts) =
+                crate::tsmux::try_ts_response(text_body.clone(), final_url.clone(), ts_ctx, buffer_size_kb).await
+            {
+                return ts;
+            }
+        }
+
         let prefix = format!("{mount_path}/{source}/h/");
         let suffix = build_child_query(token.as_deref(), pl.as_deref(), &stream_entry);
         let RewriteResult { body, hosts, media } = rewrite_manifest(&text_body, &final_url, &prefix, &suffix);
@@ -203,7 +303,12 @@ pub async fn proxy(
         return manifest_response(body);
     }
 
-    // Segment (or any non-manifest): relabel the content-type per the source, count bytes, pipe through.
+    // Segment (or any non-manifest): relabel the content-type per the source, then stream via the RSL counted +
+    // bounded-buffer + stall-guarded pipe (stream::segment_body). It reports ACCURATE egress at end-of-body
+    // (including chunked / no-Content-Length segments the old header-based count missed — which also cured the
+    // false client-side buffering that undercount produced), turns an idle stall / mid-body error into a
+    // transient upstream event, and reports the partial bytes actually delivered on a client disconnect. HEAD
+    // carries no body.
     let out_ct = policy
         .relabel_segment
         .read()
@@ -216,29 +321,22 @@ pub async fn proxy(
                 ct.clone()
             }
         });
-    if let Some(n) = resp
-        .headers()
-        .get("content-length")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-    {
-        if n > 0 {
-            // Bytes carry source+entryUrl too: noteBytes attributes egress by client identity, but the phase
-            // machine uses the channel key to note a segment as a 2xx success (keeps a live channel `live`).
-            state.report(serde_json::json!({
-                "kind": "bytes", "source": source, "entryUrl": stream_entry.as_str(),
-                "ip": ip, "ua": ua, "username": username, "bytes": n,
-            }));
-        }
-    }
     if method == Method::HEAD {
         return raw(200, &out_ct, Vec::new());
     }
+    let ctx = TelemetryCtx {
+        state: state.clone(),
+        source: source.to_string(),
+        entry: stream_entry.clone(),
+        ip,
+        ua,
+        username,
+    };
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", out_ct)
         .header("cache-control", "no-store")
-        .body(Body::from_stream(resp.bytes_stream()))
+        .body(segment_body(resp, ctx, read_timeout_ms, buffer_size_kb))
         .unwrap()
 }
 
@@ -303,7 +401,7 @@ fn is_manifest(final_url: &Url, orig: &str, ct: &str) -> bool {
     }
 }
 
-fn is_private_host(host: &str) -> bool {
+pub(crate) fn is_private_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
@@ -341,7 +439,7 @@ fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
     policy.hosts.read().unwrap().contains(&host)
 }
 
-fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap {
+pub(crate) fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderMap as RHeaderMap, HeaderName, HeaderValue};
     let mut hm = RHeaderMap::new();
     let snapshot: Vec<(String, String)> = policy.headers.read().unwrap().clone();
@@ -354,6 +452,57 @@ fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap {
         }
     }
     hm
+}
+
+/// Fetch an upstream URL with RSL retry (transport error + 502/503/504 → bounded-backoff retry; 4xx / other
+/// definitive responses returned as-is). `read_timeout_ms` (when >0) bounds the wait for RESPONSE HEADERS —
+/// a connect-but-never-answer stall — per attempt; the body-stall case is handled downstream in stream::pump.
+/// Returns the final Response (which may be a definitive non-2xx to forward verbatim) or the last error string
+/// after every attempt fails at the transport level.
+pub(crate) async fn fetch_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    headers: &reqwest::header::HeaderMap,
+    read_timeout_ms: u64,
+) -> Result<reqwest::Response, String> {
+    let idle = if read_timeout_ms > 0 {
+        Some(Duration::from_millis(read_timeout_ms))
+    } else {
+        None
+    };
+    let mut last_err = String::from("upstream unreachable");
+    for attempt in 0..=MAX_UPSTREAM_RETRIES {
+        if attempt > 0 {
+            let backoff = RETRY_BACKOFF_MS.get((attempt - 1) as usize).copied().unwrap_or(500);
+            tokio::time::sleep(Duration::from_millis(backoff)).await;
+        }
+        let send = client.get(url).headers(headers.clone()).send();
+        let res = match idle {
+            Some(d) => match tokio::time::timeout(d, send).await {
+                Ok(r) => r,
+                Err(_) => {
+                    last_err = "timed out awaiting upstream response".to_string();
+                    continue;
+                }
+            },
+            None => send.await,
+        };
+        match res {
+            Ok(resp) => {
+                let s = resp.status().as_u16();
+                if is_retryable_status(s) && attempt < MAX_UPSTREAM_RETRIES {
+                    last_err = format!("upstream {s}");
+                    continue;
+                }
+                return Ok(resp);
+            }
+            Err(e) => {
+                last_err = e.to_string();
+                continue;
+            }
+        }
+    }
+    Err(last_err)
 }
 
 pub(crate) fn text(code: u16, msg: &str) -> Response {

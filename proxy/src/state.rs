@@ -11,7 +11,15 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use serde::Deserialize;
+use tokio::sync::mpsc;
 use url::Url;
+
+// TEL batching (P3.1). Telemetry events are queued and flushed as one batched `{events:[...]}` POST rather than
+// one POST per event, so a burst (a manifest poll + its media + N segment bytes) coalesces. Best-effort: a full
+// queue drops (never block/grow the byte path); a short debounce coalesces without latency the stream can feel.
+const TELEMETRY_QUEUE: usize = 4096;
+const TELEMETRY_MAX_BATCH: usize = 256;
+const TELEMETRY_FLUSH_MS: u64 = 250;
 
 /// How long a resolved ENTRY target is reused before re-resolving. This collapses per-poll resolves for a
 /// media-playlist entry (so a few-second player poll doesn't re-mint a dulo playbackUrl / re-scrape dlhd
@@ -33,6 +41,13 @@ pub struct AppState {
     /// Custom overrides), so this stays a tiny bounded cache; the Default combo serves every non-overriding
     /// source, preserving connection pooling for the common case. Built lazily on first use (client_for).
     upstream_clients: Arc<Mutex<HashMap<(u64, u32), reqwest::Client>>>,
+    /// TEL batching (P3.1): report() enqueues here; a single background flusher (spawned in new()) coalesces +
+    /// POSTs `{events:[...]}`. Sender is Clone, so every AppState clone shares the one queue + one flusher.
+    telemetry_tx: mpsc::Sender<serde_json::Value>,
+    /// DST (P3.2): a monotonic per-process stream-id source for continuous raw-TS sessions. Each TS stream mints
+    /// one id (open→sbytes→close carry it) that Node maps to a socket-viewer connId (noteSocketViewer*). Node
+    /// overwrites the mapping on `open`, so a counter reset after a sidecar restart cannot collide.
+    stream_seq: Arc<AtomicU64>,
 }
 
 pub struct SourcePolicy {
@@ -49,6 +64,14 @@ pub struct SourcePolicy {
     /// policy (pre-resolve) behaves exactly as before.
     pub connect_timeout_ms: AtomicU64,
     pub max_redirects: AtomicU32,
+    /// P3.1/RSL: PER-STREAM knobs (NOT client-level — applied in the streaming loop, never in client_for).
+    /// read_timeout_ms is an IDLE/read timeout for stall detection (0 = disabled → today's no-truncation
+    /// behavior); buffer_size_kb is the bounded read-ahead buffer size (0 = disabled → the direct counted pipe).
+    pub read_timeout_ms: AtomicU64,
+    pub buffer_size_kb: AtomicU64,
+    /// P3.2/DST: the distribution output format for this source's streams — "hls" (per-segment passthrough) or
+    /// "ts" (continuous raw-TS, honored only on the /api/ext/v1 mount). RwLock<String> so a re-resolve can flip it.
+    pub output_format: RwLock<String>,
 }
 
 impl SourcePolicy {
@@ -60,6 +83,9 @@ impl SourcePolicy {
             hosts: RwLock::new(HashSet::new()),
             connect_timeout_ms: AtomicU64::new(15000),
             max_redirects: AtomicU32::new(10),
+            read_timeout_ms: AtomicU64::new(0),
+            buffer_size_kb: AtomicU64::new(0),
+            output_format: RwLock::new("hls".to_string()),
         }
     }
 }
@@ -82,14 +108,24 @@ pub struct Grant {
     // (Node's grant also carries `isEntry`; the sidecar decides entry/hop from the path, so serde ignores it.)
 }
 
-/// The subset of the resolved proxy config Rust applies in P2 (both CLIENT-level in reqwest). Defaults match
-/// the old hardcoded client so a grant from an older Node (or a missing field) degrades to today's behavior.
-#[derive(Deserialize, Clone, Copy)]
+/// The resolved proxy config Rust applies. connectTimeoutMs + maxRedirects are CLIENT-level in reqwest (keyed
+/// into client_for); readTimeoutMs + bufferSizeKb are PER-STREAM (P3.1/RSL — applied in the streaming loop);
+/// outputFormat selects the distribution shape (P3.2/DST). Defaults match the old hardcoded client so a grant
+/// from an older Node — or a missing/null field — degrades to today's behavior. NOT Copy: output_format owns a
+/// String. Node sends readTimeoutMs/bufferSizeKb as `number | null`, so those are Option (serde `default` only
+/// covers an ABSENT key, never an explicit null — Option maps a present null → None → disabled).
+#[derive(Deserialize, Clone)]
 pub struct ProxyConfigWire {
     #[serde(rename = "connectTimeoutMs", default = "default_connect_ms")]
     pub connect_timeout_ms: u64,
     #[serde(rename = "maxRedirects", default = "default_max_redirects")]
     pub max_redirects: u32,
+    #[serde(rename = "readTimeoutMs", default)]
+    pub read_timeout_ms: Option<u64>,
+    #[serde(rename = "bufferSizeKb", default)]
+    pub buffer_size_kb: Option<u64>,
+    #[serde(rename = "outputFormat", default = "default_output_format")]
+    pub output_format: String,
 }
 
 fn default_connect_ms() -> u64 {
@@ -98,10 +134,19 @@ fn default_connect_ms() -> u64 {
 fn default_max_redirects() -> u32 {
     10
 }
+fn default_output_format() -> String {
+    "hls".to_string()
+}
 
 impl Default for ProxyConfigWire {
     fn default() -> Self {
-        Self { connect_timeout_ms: default_connect_ms(), max_redirects: default_max_redirects() }
+        Self {
+            connect_timeout_ms: default_connect_ms(),
+            max_redirects: default_max_redirects(),
+            read_timeout_ms: None,
+            buffer_size_kb: None,
+            output_format: default_output_format(),
+        }
     }
 }
 
@@ -115,6 +160,15 @@ impl AppState {
             .connect_timeout(Duration::from_secs(15))
             .build()
             .expect("failed to build reqwest client");
+        // TEL: the telemetry queue + its single background flusher (spawned once; new() runs inside the tokio
+        // runtime from #[tokio::main]). Best-effort — the byte path never waits on telemetry.
+        let (telemetry_tx, telemetry_rx) = mpsc::channel::<serde_json::Value>(TELEMETRY_QUEUE);
+        tokio::spawn(telemetry_flusher(
+            telemetry_rx,
+            client.clone(),
+            format!("{node_url}/api/internal/telemetry"),
+            secret.clone(),
+        ));
         Self {
             client,
             node_url,
@@ -122,7 +176,14 @@ impl AppState {
             cache: Arc::new(Mutex::new(HashMap::new())),
             targets: Arc::new(Mutex::new(HashMap::new())),
             upstream_clients: Arc::new(Mutex::new(HashMap::new())),
+            telemetry_tx,
+            stream_seq: Arc::new(AtomicU64::new(0)),
         }
+    }
+
+    /// DST: mint a unique-per-process continuous-TS stream id (monotonic; Node maps it → a socket connId).
+    pub fn next_stream_id(&self) -> String {
+        format!("ts{}", self.stream_seq.fetch_add(1, Ordering::Relaxed))
     }
 
     /// PXY-2: return the upstream client for the given proxy-config knobs, building + caching it on first use.
@@ -174,6 +235,31 @@ impl AppState {
         Ok((policy, target))
     }
 
+    /// RSL failover: force a FRESH resolve (bypass the target cache) and re-cache the result. Used when a
+    /// cached/resolved target's fetch fails — Node re-runs `resolveStream`, which drives dlhd/dami
+    /// `reprobeMirror()` (mirror failover), so a mirror that died mid-window self-heals onto a live base.
+    pub async fn resolve_fresh(
+        &self,
+        source: &str,
+        entry: &str,
+        pl: Option<&str>,
+    ) -> Result<(Arc<SourcePolicy>, String), String> {
+        let (policy, target) = self.resolve(source, entry, pl).await?;
+        let key = format!("{source}\u{0}{entry}");
+        self.targets
+            .lock()
+            .unwrap()
+            .insert(key, (target.clone(), Instant::now() + TARGET_TTL));
+        Ok((policy, target))
+    }
+
+    /// Drop a cached resolved target so the next ENTRY request re-resolves (RSL: a dead target that failed to
+    /// fetch must not be re-served from cache for the rest of its TTL).
+    pub fn invalidate_target(&self, source: &str, entry: &str) {
+        let key = format!("{source}\u{0}{entry}");
+        self.targets.lock().unwrap().remove(&key);
+    }
+
     pub fn get(&self, source: &str) -> Option<Arc<SourcePolicy>> {
         self.cache.lock().unwrap().get(source).cloned()
     }
@@ -215,6 +301,10 @@ impl AppState {
         // PXY-2: record the resolved client knobs so proxy.rs selects the matching upstream client per hop.
         policy.connect_timeout_ms.store(grant.proxy_config.connect_timeout_ms, Ordering::Relaxed);
         policy.max_redirects.store(grant.proxy_config.max_redirects, Ordering::Relaxed);
+        // P3.1/RSL: the per-stream knobs (null → 0 → disabled). P3.2/DST: the output format.
+        policy.read_timeout_ms.store(grant.proxy_config.read_timeout_ms.unwrap_or(0), Ordering::Relaxed);
+        policy.buffer_size_kb.store(grant.proxy_config.buffer_size_kb.unwrap_or(0), Ordering::Relaxed);
+        *policy.output_format.write().unwrap() = grant.proxy_config.output_format.clone();
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write().unwrap().insert(h.to_lowercase());
@@ -223,18 +313,40 @@ impl AppState {
         Ok((policy, grant.target))
     }
 
-    /// Fire-and-forget a telemetry event to Node (best-effort — a failure must never affect streaming).
+    /// Enqueue a telemetry event for the batched flusher (best-effort — a full queue DROPS the event so the byte
+    /// path never blocks or grows unbounded; a failure must never affect streaming).
     pub fn report(&self, event: serde_json::Value) {
-        let client = self.client.clone();
-        let url = format!("{}/api/internal/telemetry", self.node_url);
-        let secret = self.secret.clone();
-        tokio::spawn(async move {
-            let _ = client
-                .post(url)
-                .header("x-masq-secret", secret)
-                .json(&event)
-                .send()
-                .await;
-        });
+        let _ = self.telemetry_tx.try_send(event);
+    }
+}
+
+/// The single telemetry flusher: block for the first queued event, coalesce whatever else is immediately
+/// available (up to TELEMETRY_MAX_BATCH or a TELEMETRY_FLUSH_MS debounce), then POST them as one
+/// `{ events: [...] }` batch. Runs until every AppState (hence every Sender) is dropped — i.e. process exit.
+async fn telemetry_flusher(
+    mut rx: mpsc::Receiver<serde_json::Value>,
+    client: reqwest::Client,
+    url: String,
+    secret: String,
+) {
+    loop {
+        let first = match rx.recv().await {
+            Some(ev) => ev,
+            None => break, // all senders dropped → shutting down
+        };
+        let mut batch = vec![first];
+        let deadline = tokio::time::sleep(Duration::from_millis(TELEMETRY_FLUSH_MS));
+        tokio::pin!(deadline);
+        while batch.len() < TELEMETRY_MAX_BATCH {
+            tokio::select! {
+                _ = &mut deadline => break,
+                next = rx.recv() => match next {
+                    Some(ev) => batch.push(ev),
+                    None => break, // channel closed mid-coalesce — flush what we have, then the outer recv exits
+                },
+            }
+        }
+        let body = serde_json::json!({ "events": batch });
+        let _ = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await;
     }
 }
