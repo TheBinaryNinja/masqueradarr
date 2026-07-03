@@ -12,6 +12,7 @@
 
 import type { Model } from 'mongoose';
 import { Settings } from '../models/Settings.js';
+import { ProxyConfig } from '../models/ProxyConfig.js';
 import { User } from '../models/User.js';
 import { Playlist } from '../models/Playlist.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -42,6 +43,9 @@ export interface BackupSpec {
 // Always-included config + editable mappings + auth. restoreOrder enforces the dependency sequence.
 export const CORE_BACKUP_SPECS: BackupSpec[] = [
   { name: 'settings', model: Settings, restoreOrder: 10, secretFields: ['maxmindLicenseKey'] },
+  // Durable video-engine knobs (Default + per-playlist Custom). headerOverrides may carry an upstream auth
+  // header, so it is redacted from a no-secrets (shareable) backup; the default from-nothing backup keeps it.
+  { name: 'proxyconfigs', model: ProxyConfig, restoreOrder: 15, secretFields: ['headerOverrides'] },
   { name: 'users', model: User, restoreOrder: 20, secretFields: ['passwordHash', 'streamToken'] },
   { name: 'playlists', model: Playlist, restoreOrder: 30 },
   { name: 'playlistchannels', model: PlaylistChannel, restoreOrder: 40 },
@@ -60,7 +64,7 @@ export const HEAVY_BACKUP_SPECS: BackupSpec[] = [
 
 // Every registered model — used by POST /api/system/rebuild-indexes to syncIndexes() across the database.
 export const ALL_MODELS: Model<any>[] = [
-  Settings, User, Playlist, PlaylistChannel, EpgSource, PlaylistAuth, Cronjob,
+  Settings, ProxyConfig, User, Playlist, PlaylistChannel, EpgSource, PlaylistAuth, Cronjob,
   SourceChannel, EpgChannel, Program, Log, Session, ViewSession,
 ];
 

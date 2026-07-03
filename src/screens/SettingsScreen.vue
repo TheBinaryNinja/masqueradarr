@@ -6,6 +6,7 @@ import Toggle from '../components/Toggle.vue';
 import SettingsRow from '../components/SettingsRow.vue';
 import EndpointField from '../components/EndpointField.vue';
 import DuloAuthPanel from '../components/DuloAuthPanel.vue';
+import ProxyConfigPanel from '../components/ProxyConfigPanel.vue';
 import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
@@ -484,6 +485,10 @@ async function fireReset() {
         </template>
       </SettingsRow>
     </div>
+
+    <!-- Durable video engine — the (Default) proxy config applied to every playlist (per-playlist Custom
+         overrides live in the playlist editor drawer). Auto-saves on change. [UICFG] -->
+    <ProxyConfigPanel v-if="activeTab === 'advanced'" config-id="app" title="Video proxy engine" />
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">Data</h3>

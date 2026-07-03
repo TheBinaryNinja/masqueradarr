@@ -124,9 +124,14 @@ pub async fn proxy(
         return text(400, "bad request: upstream host not allowed");
     }
 
-    // Fetch upstream (headers replayed from the policy; redirects followed).
+    // Fetch upstream (headers replayed from the policy; connect timeout + redirect cap per the resolved
+    // proxy-config knobs — PXY-2; the client is cached by (connect_timeout, max_redirects)).
     let req_headers = build_headers(&policy);
-    let resp = match state.client.get(fetch_url.as_str()).headers(req_headers).send().await {
+    let client = state.client_for(
+        policy.connect_timeout_ms.load(Ordering::Relaxed),
+        policy.max_redirects.load(Ordering::Relaxed),
+    );
+    let resp = match client.get(fetch_url.as_str()).headers(req_headers).send().await {
         Ok(r) => r,
         Err(err) => {
             // A transport/fetch error yields NO HTTP response → a TRANSIENT upstream failure. Report it so

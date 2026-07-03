@@ -16,6 +16,7 @@ import { programsRouter } from './routes/programs.js';
 import { epgChannelsRouter } from './routes/epgChannels.js';
 import { viewSessionsRouter } from './routes/viewSessions.js';
 import { settingsRouter } from './routes/settings.js';
+import { proxyConfigsRouter } from './routes/proxyConfigs.js';
 import { cronjobsRouter } from './routes/cronjobs.js';
 import { backupRouter } from './routes/backup.js';
 import { systemRouter } from './routes/system.js';
@@ -176,6 +177,7 @@ async function main() {
     '/api/backup',
     '/api/system',
     '/api/probe',
+    '/api/proxy-configs', // durable video-engine knobs — headerOverrides can hold an upstream secret, so ALL methods are admin-only
     '/api/sources'
   ];
   for (const routePath of adminOnlyRoutes) {
@@ -193,6 +195,7 @@ async function main() {
   app.use('/api/logs', logsRouter);
   app.use('/api/view-sessions', viewSessionsRouter);
   app.use('/api/settings', settingsRouter);
+  app.use('/api/proxy-configs', proxyConfigsRouter); // durable video-engine knobs: Default (app) + per-playlist Custom (app_<pl>) [CFG]
   app.use('/api/cronjobs', cronjobsRouter);
   app.use('/api/system-stats', systemStatsRouter); // latest system-performance snapshot (live feed is the WS)
   app.use('/api/backup', backupRouter); // full-system backup generate/list/restore (Settings → Data)

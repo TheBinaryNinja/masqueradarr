@@ -6,7 +6,7 @@
 //! trusted upstream manifest — never an arbitrary/injected host (and private IPs are rejected outright).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -22,11 +22,17 @@ const TARGET_TTL: Duration = Duration::from_secs(60);
 
 #[derive(Clone)]
 pub struct AppState {
+    /// The DEFAULT client — used for the loopback Node calls (resolve/telemetry) and as a build fallback.
     pub client: reqwest::Client,
     pub node_url: String,
     pub secret: String,
     cache: Arc<Mutex<HashMap<String, Arc<SourcePolicy>>>>,
     targets: Arc<Mutex<HashMap<String, (String, Instant)>>>,
+    /// PXY-2: upstream clients keyed by the proxy-config knobs that are CLIENT-level in reqwest
+    /// (connect_timeout_ms, max_redirects). Distinct combos are few (the Default + a handful of per-playlist
+    /// Custom overrides), so this stays a tiny bounded cache; the Default combo serves every non-overriding
+    /// source, preserving connection pooling for the common case. Built lazily on first use (client_for).
+    upstream_clients: Arc<Mutex<HashMap<(u64, u32), reqwest::Client>>>,
 }
 
 pub struct SourcePolicy {
@@ -38,6 +44,11 @@ pub struct SourcePolicy {
     pub allow_private: AtomicBool,
     /// The growing SSRF allowlist (lowercased hosts): seed = resolved master host, grown from manifest children.
     pub hosts: RwLock<HashSet<String>>,
+    /// PXY-2: the resolved proxy-config CLIENT knobs for this source's streams (from the grant). proxy.rs
+    /// selects the upstream client by these via client_for. Defaults match the old hardcoded client so a cold
+    /// policy (pre-resolve) behaves exactly as before.
+    pub connect_timeout_ms: AtomicU64,
+    pub max_redirects: AtomicU32,
 }
 
 impl SourcePolicy {
@@ -47,6 +58,8 @@ impl SourcePolicy {
             relabel_segment: RwLock::new(None),
             allow_private: AtomicBool::new(false),
             hosts: RwLock::new(HashSet::new()),
+            connect_timeout_ms: AtomicU64::new(15000),
+            max_redirects: AtomicU32::new(10),
         }
     }
 }
@@ -61,7 +74,35 @@ pub struct Grant {
     pub relabel_segment: Option<String>,
     #[serde(rename = "allowPrivate")]
     pub allow_private: bool,
+    // PXY-2: the resolved (Custom→Default→env) proxy config. Node already merged headerOverrides into
+    // upstreamHeaders, so this struct declares only the two CLIENT-level knobs Rust applies in P2; serde
+    // silently ignores the deferred fields (readTimeoutMs/bufferSizeKb/segmentCacheTtlSec/outputFormat).
+    #[serde(rename = "proxyConfig", default)]
+    pub proxy_config: ProxyConfigWire,
     // (Node's grant also carries `isEntry`; the sidecar decides entry/hop from the path, so serde ignores it.)
+}
+
+/// The subset of the resolved proxy config Rust applies in P2 (both CLIENT-level in reqwest). Defaults match
+/// the old hardcoded client so a grant from an older Node (or a missing field) degrades to today's behavior.
+#[derive(Deserialize, Clone, Copy)]
+pub struct ProxyConfigWire {
+    #[serde(rename = "connectTimeoutMs", default = "default_connect_ms")]
+    pub connect_timeout_ms: u64,
+    #[serde(rename = "maxRedirects", default = "default_max_redirects")]
+    pub max_redirects: u32,
+}
+
+fn default_connect_ms() -> u64 {
+    15000
+}
+fn default_max_redirects() -> u32 {
+    10
+}
+
+impl Default for ProxyConfigWire {
+    fn default() -> Self {
+        Self { connect_timeout_ms: default_connect_ms(), max_redirects: default_max_redirects() }
+    }
 }
 
 impl AppState {
@@ -80,7 +121,31 @@ impl AppState {
             secret,
             cache: Arc::new(Mutex::new(HashMap::new())),
             targets: Arc::new(Mutex::new(HashMap::new())),
+            upstream_clients: Arc::new(Mutex::new(HashMap::new())),
         }
+    }
+
+    /// PXY-2: return the upstream client for the given proxy-config knobs, building + caching it on first use.
+    /// Only connect_timeout + max_redirects are CLIENT-level in reqwest, so the cache key is exactly those two.
+    /// There is still NO overall/read timeout — segment streams are long-lived and a total timeout would
+    /// truncate them (the deferred readTimeoutMs lands in P3). Falls back to the default client on build error.
+    pub fn client_for(&self, connect_timeout_ms: u64, max_redirects: u32) -> reqwest::Client {
+        // Guard a degenerate 0 connect timeout (Node clamps to >=100, but never trust the wire).
+        let connect_ms = if connect_timeout_ms == 0 { 15000 } else { connect_timeout_ms };
+        let key = (connect_ms, max_redirects);
+        {
+            let m = self.upstream_clients.lock().unwrap();
+            if let Some(c) = m.get(&key) {
+                return c.clone();
+            }
+        }
+        let built = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(max_redirects as usize))
+            .connect_timeout(Duration::from_millis(connect_ms))
+            .build()
+            .unwrap_or_else(|_| self.client.clone());
+        let mut m = self.upstream_clients.lock().unwrap();
+        m.entry(key).or_insert_with(|| built).clone()
     }
 
     /// Resolve an ENTRY to (policy, target), reusing a recently-resolved target within TARGET_TTL so a
@@ -147,6 +212,9 @@ impl AppState {
         *policy.headers.write().unwrap() = grant.upstream_headers.into_iter().collect();
         *policy.relabel_segment.write().unwrap() = grant.relabel_segment;
         policy.allow_private.store(grant.allow_private, Ordering::Relaxed);
+        // PXY-2: record the resolved client knobs so proxy.rs selects the matching upstream client per hop.
+        policy.connect_timeout_ms.store(grant.proxy_config.connect_timeout_ms, Ordering::Relaxed);
+        policy.max_redirects.store(grant.proxy_config.max_redirects, Ordering::Relaxed);
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write().unwrap().insert(h.to_lowercase());

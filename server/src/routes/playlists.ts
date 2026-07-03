@@ -4,6 +4,7 @@ import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { SourceChannel } from '../models/SourceChannel.js';
 import { EpgSource, type EpgSourceDoc } from '../models/EpgSource.js';
 import { PlaylistAuth } from '../models/PlaylistAuth.js';
+import { ProxyConfig } from '../models/ProxyConfig.js';
 import { User } from '../models/User.js';
 import { Cronjob, cronjobId } from '../models/Cronjob.js';
 import { removeCronjob } from '../scheduler/index.js';
@@ -392,6 +393,7 @@ async function cascadeDeleteBuiltinPlaylist(p: {
     removeCronjob(jobId);
   }
   await PlaylistAuth.deleteOne({ _id: src });
+  await ProxyConfig.deleteOne({ _id: `app_${p.id}` }); // its Custom proxy override (if any) — same stale-reuse guard as the access lists
   await User.updateMany({}, { $pull: { allowedPlaylists: p.id, allowedCustomPlaylists: p.id } });
 
   // 4. Rebuild/prune the exports this playlist contributed to (best-effort — a compose hiccup must never fail

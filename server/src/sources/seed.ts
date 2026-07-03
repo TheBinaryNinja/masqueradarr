@@ -21,6 +21,7 @@ import { getSource } from './registry.js';
 import { buildSource } from './core/buildSource.js';
 import { logger } from './core/logger.js';
 import { seedSettings } from './seedSettings.js';
+import { seedProxyConfig } from '../proxyconfig/seed.js';
 import { envDefaults } from '../settings/translate.js';
 import { toPlaylistChannelDoc } from './toPlaylistChannel.js';
 import type { SourceAdapter } from './types.js';
@@ -547,6 +548,14 @@ export async function bootInitSources(): Promise<void> {
     await seedSettings();
   } catch (err) {
     logger.warn('seed', `settings seed failed (continuing): ${(err as Error).message}`);
+  }
+
+  // Seed the (Default) proxy-config singleton (app) from env defaults (non-fatal) — the durable video engine's
+  // knob set. Per-playlist Custom rows (app_<playlistId>) are created on demand, not seeded here. [CFG]
+  try {
+    await seedProxyConfig();
+  } catch (err) {
+    logger.warn('seed', `proxy config seed failed (continuing): ${(err as Error).message}`);
   }
 
   // NOTE: built-in source playlists are NO LONGER auto-registered here. They are provisioned ON DEMAND when
