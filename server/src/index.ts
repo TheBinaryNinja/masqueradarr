@@ -37,6 +37,9 @@ import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/lo
 import { applyDnsFromSettings } from './settings/applyDns.js';
 import { logger } from './sources/core/logger.js';
 import { startProxySidecar, stopProxySidecar } from './proxy/sidecar.js';
+import { internalRouter } from './routes/internal.js';
+import { streamGate } from './middleware/streamGate.js';
+import { proxyRelay } from './proxy/relay.js';
 
 // Same-origin gate for the dulo login-stream WebSocket. Compares HOSTNAMES (ignoring port) so the Vite dev
 // proxy (localhost:5173 → localhost:3000) and the co-served prod SPA both pass, while a cross-site page is
@@ -108,7 +111,7 @@ async function main() {
   // repo `proxy/` crate). Loopback-only; the reverse-proxy for stream paths lands in P1. Non-fatal — a
   // missing/failed sidecar disables streaming but must not crash the API (parity with the inits above).
   try {
-    startProxySidecar();
+    startProxySidecar(config.port);
   } catch (err) {
     logger.error('startup', `proxy sidecar start error (continuing): ${(err as Error).message}`);
   }
@@ -193,8 +196,17 @@ async function main() {
   app.use('/api/backup', backupRouter); // full-system backup generate/list/restore (Settings → Data)
   app.use('/api/system', systemRouter); // index rebuild + workspace reset (Settings → Data)
 
-  // Generic source API (manifest, stream proxy, status, sync/reset) — mounted at root since its
-  // paths span /api/sources and /api/v1.
+  // ── Durable video engine (P1): internal control channel + the stream-proxy relay ───────────────
+  // internalRouter = the loopback+shared-secret seam the Rust sidecar calls (resolve grant + telemetry).
+  // The /api/v1 (appPlayer) + /api/ext/v1 (externalPlayer) stream mounts run the rebuilt stream-token gate
+  // (users.md §5, plain-text errors) and then reverse-proxy the bytes to the loopback sidecar. Both sit
+  // AFTER the global `authenticate` (req.user populated) and are intentionally NOT in adminOnlyRoutes —
+  // streaming is reachable by any user with a valid streamToken, scoped by the gate.
+  app.use('/api/internal', internalRouter);
+  app.use(['/api/v1', '/api/ext/v1'], streamGate, proxyRelay);
+
+  // Generic source API (manifest, status, sync/reset, provisioning, dulo auth) — mounted at root since its
+  // paths span /api/sources.
   app.use(sourcesRouter);
 
   // composeDir holds the m3u exports (decoupled from the SPA's publicDir). Files are PER-USER ONLY

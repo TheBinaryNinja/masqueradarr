@@ -3,6 +3,7 @@ import { existsSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { logger } from '../sources/core/logger.js';
+import { PROXY_SECRET } from './secret.js';
 
 // The masqueradarr durable video DATA PLANE is a separate Rust binary (repo `proxy/` crate → `masq-proxy`)
 // run as a LOOPBACK sidecar that Node spawns + supervises (plan topology "sidecar behind Node", staged to a
@@ -45,8 +46,12 @@ let child: ChildProcess | null = null;
 let alive = false;
 let shuttingDown = false;
 let restarts = 0;
+// The Node base URL the sidecar calls back on (the resolve seam + telemetry ingest). Set from the API port
+// when the sidecar starts; defaulted so a stray restart before start() still has a sane value.
+let nodeUrl = 'http://127.0.0.1:3000';
 
-export function startProxySidecar(): void {
+export function startProxySidecar(nodePort: number): void {
+  nodeUrl = `http://127.0.0.1:${nodePort}`;
   const bin = resolveBinary();
   if (!bin) {
     logger.warn(
@@ -62,7 +67,13 @@ function spawnOnce(bin: string): void {
   const startedAt = Date.now();
   const proc = spawn(bin, [], {
     stdio: 'inherit', // sidecar logs flow to node's stdout (captured by `docker logs`)
-    env: { ...process.env, MASQ_PROXY_HOST: PROXY_HOST, MASQ_PROXY_PORT: String(PROXY_PORT) },
+    env: {
+      ...process.env,
+      MASQ_PROXY_HOST: PROXY_HOST,
+      MASQ_PROXY_PORT: String(PROXY_PORT),
+      MASQ_PROXY_SECRET: PROXY_SECRET, // shared secret for the Node↔sidecar internal channel (secret.ts)
+      MASQ_NODE_URL: nodeUrl, // where the sidecar calls the resolve seam + telemetry ingest
+    },
   });
   child = proc;
   alive = true;
