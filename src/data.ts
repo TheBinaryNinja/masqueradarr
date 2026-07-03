@@ -176,8 +176,10 @@ export interface EpgChannel {
   source: string;
 }
 export interface CustomPlaylist { id: string; name: string; slug: string; channels: number; updated: string }
-// One buffering interval within a watch session (epoch-ms start + interval duration).
-export interface ViewBufferEvent { at: number; phase: 'buffer' | 'failed'; ms: number }
+// One buffering interval within a watch session (epoch-ms start + interval duration). `side` is which edge it
+// was observed on: 'upstream' (phase-derived) vs 'client' (this viewer's download rate fell below bitrate);
+// OPTIONAL — rows written before the two-sided split omit it and are treated as 'upstream'.
+export interface ViewBufferEvent { at: number; phase: 'buffer' | 'failed'; ms: number; side?: 'upstream' | 'client' }
 // 1:1 with the viewsessions store (server/src/models/ViewSession.ts) — a completed per-viewer watch session
 // written when a client goes stale. Read from GET /api/view-sessions (newest first). Feeds the History /
 // Metrics screen (session table, buffer histogram, problem channels, QoE). avgBitrate is kbps.

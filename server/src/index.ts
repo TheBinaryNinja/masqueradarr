@@ -19,6 +19,7 @@ import { settingsRouter } from './routes/settings.js';
 import { cronjobsRouter } from './routes/cronjobs.js';
 import { backupRouter } from './routes/backup.js';
 import { systemRouter } from './routes/system.js';
+import { probeRouter } from './routes/probe.js';
 import { sourcesRouter } from './routes/sources.js';
 import { bootInitSources } from './sources/seed.js';
 import { authRouter } from './routes/auth.js';
@@ -174,6 +175,7 @@ async function main() {
     '/api/system-stats',
     '/api/backup',
     '/api/system',
+    '/api/probe',
     '/api/sources'
   ];
   for (const routePath of adminOnlyRoutes) {
@@ -195,6 +197,7 @@ async function main() {
   app.use('/api/system-stats', systemStatsRouter); // latest system-performance snapshot (live feed is the WS)
   app.use('/api/backup', backupRouter); // full-system backup generate/list/restore (Settings → Data)
   app.use('/api/system', systemRouter); // index rebuild + workspace reset (Settings → Data)
+  app.use('/api/probe', probeRouter); // manual channel-probe run + status (Settings → Advanced; PRB)
 
   // ── Durable video engine (P1): internal control channel + the stream-proxy relay ───────────────
   // internalRouter = the loopback+shared-secret seam the Rust sidecar calls (resolve grant + telemetry).

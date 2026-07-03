@@ -24,6 +24,9 @@ pub struct MediaInfo {
     pub codecs: Option<String>,
     pub frame_rate: Option<String>,
     pub container: Option<String>,
+    /// The chosen variant's declared BANDWIDTH (bits/sec) — the "channel bitrate" Node's client-side buffering
+    /// inference compares each viewer's measured download rate against (P1.2/BUF). None for a media playlist.
+    pub bandwidth: Option<i64>,
 }
 
 impl MediaInfo {
@@ -33,6 +36,7 @@ impl MediaInfo {
             || self.codecs.is_some()
             || self.frame_rate.is_some()
             || self.container.is_some()
+            || self.bandwidth.is_some()
     }
 }
 
@@ -95,52 +99,67 @@ fn rewrite_uri_attrs(line: &str, base: &Url, prefix: &str, suffix: &str, hosts: 
     out
 }
 
-/// Rewrite a whole manifest body. `prefix` is the proxied child mount (e.g. "/api/ext/v1/dlhd/h/") and
-/// `suffix` the re-embedded query ("?token=…&pl=…&e=…"). Line endings are normalized to LF (as the TS did).
-pub fn rewrite_manifest(body: &str, base: &Url, prefix: &str, suffix: &str) -> RewriteResult {
-    let mut hosts: Vec<String> = Vec::new();
-    let mut lines: Vec<String> = Vec::with_capacity(body.len() / 32 + 8);
-    // DEC: accumulate manifest-declared decode metadata in the SAME walk (no second parse pass).
+/// Parse manifest-declared decode metadata WITHOUT rewriting — the single-source DEC parser, shared by
+/// `rewrite_manifest` (the live proxy path) and the `/probe` endpoint (the scheduled channel sweep). A MASTER
+/// playlist's highest-BANDWIDTH `#EXT-X-STREAM-INF` supplies resolution/codecs/frame-rate/bandwidth; a MEDIA
+/// playlist's `#EXT-X-MAP`/`#EXTINF` supplies the container hint (fMP4 vs TS).
+pub fn extract_media(body: &str) -> MediaInfo {
     let mut media = MediaInfo::default();
-    let mut best_bw: i64 = -1; // keep the highest-BANDWIDTH variant's #EXT-X-STREAM-INF attributes
+    let mut best_bw: i64 = -1; // keep the highest-BANDWIDTH variant's attributes
     let mut saw_map = false; // an #EXT-X-MAP init segment ⇒ fMP4 container
     let mut saw_extinf = false; // an #EXTINF media segment ⇒ TS container (unless MAP already said fMP4)
     for raw in body.split('\n') {
-        let line = raw.strip_suffix('\r').unwrap_or(raw);
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            lines.push(line.to_string());
-        } else if trimmed.starts_with('#') {
-            // Media hints read the ORIGINAL tag; independent of (and in addition to) the URI rewrite below.
-            if let Some(rest) = trimmed.strip_prefix("#EXT-X-STREAM-INF:") {
-                let attrs = parse_attrs(rest);
-                let bw = attr(&attrs, "BANDWIDTH").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
-                if bw >= best_bw {
-                    best_bw = bw;
-                    if let Some(v) = attr(&attrs, "RESOLUTION") {
-                        media.resolution = Some(v.to_string());
-                    }
-                    if let Some(v) = attr(&attrs, "CODECS") {
-                        media.codecs = Some(v.to_string());
-                    }
-                    if let Some(v) = attr(&attrs, "FRAME-RATE") {
-                        media.frame_rate = Some(v.to_string());
-                    }
+        let trimmed = raw.trim();
+        if let Some(rest) = trimmed.strip_prefix("#EXT-X-STREAM-INF:") {
+            let attrs = parse_attrs(rest);
+            let bw = attr(&attrs, "BANDWIDTH").and_then(|v| v.parse::<i64>().ok()).unwrap_or(0);
+            if bw >= best_bw {
+                best_bw = bw;
+                if bw > 0 {
+                    media.bandwidth = Some(bw);
                 }
-            } else if trimmed.starts_with("#EXT-X-MAP") {
-                saw_map = true;
-            } else if trimmed.starts_with("#EXTINF") {
-                saw_extinf = true;
+                if let Some(v) = attr(&attrs, "RESOLUTION") {
+                    media.resolution = Some(v.to_string());
+                }
+                if let Some(v) = attr(&attrs, "CODECS") {
+                    media.codecs = Some(v.to_string());
+                }
+                if let Some(v) = attr(&attrs, "FRAME-RATE") {
+                    media.frame_rate = Some(v.to_string());
+                }
             }
-            lines.push(rewrite_uri_attrs(line, base, prefix, suffix, &mut hosts));
-        } else {
-            lines.push(rewrite_one(trimmed, base, prefix, suffix, &mut hosts));
+        } else if trimmed.starts_with("#EXT-X-MAP") {
+            saw_map = true;
+        } else if trimmed.starts_with("#EXTINF") {
+            saw_extinf = true;
         }
     }
     if saw_map {
         media.container = Some("fmp4".to_string());
     } else if saw_extinf {
         media.container = Some("ts".to_string());
+    }
+    media
+}
+
+/// Rewrite a whole manifest body. `prefix` is the proxied child mount (e.g. "/api/ext/v1/dlhd/h/") and
+/// `suffix` the re-embedded query ("?token=…&pl=…&e=…"). Line endings are normalized to LF (as the TS did).
+pub fn rewrite_manifest(body: &str, base: &Url, prefix: &str, suffix: &str) -> RewriteResult {
+    // DEC: decode metadata comes from the shared parser (one source of truth). A separate pass over the small
+    // manifest body is negligible vs. the fetch, and keeps the rewrite loop below purely about URIs.
+    let media = extract_media(body);
+    let mut hosts: Vec<String> = Vec::new();
+    let mut lines: Vec<String> = Vec::with_capacity(body.len() / 32 + 8);
+    for raw in body.split('\n') {
+        let line = raw.strip_suffix('\r').unwrap_or(raw);
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            lines.push(line.to_string());
+        } else if trimmed.starts_with('#') {
+            lines.push(rewrite_uri_attrs(line, base, prefix, suffix, &mut hosts));
+        } else {
+            lines.push(rewrite_one(trimmed, base, prefix, suffix, &mut hosts));
+        }
     }
     RewriteResult {
         body: lines.join("\n"),
@@ -254,6 +273,8 @@ mod tests {
         // The quoted CODECS comma is preserved as one value (not split into two attributes).
         assert_eq!(r.media.codecs.as_deref(), Some("avc1.640028,mp4a.40.2"));
         assert_eq!(r.media.frame_rate.as_deref(), Some("60"));
+        // The chosen variant's declared BANDWIDTH is surfaced (the client-side buffering reference).
+        assert_eq!(r.media.bandwidth, Some(6_000_000));
         // A master carries no segments → no container hint yet (learned on the variant/media poll).
         assert_eq!(r.media.container, None);
         // The variant URIs are still rewritten through the proxy.

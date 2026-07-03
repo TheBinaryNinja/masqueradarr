@@ -20,7 +20,7 @@ interface Session {
   buffers: number; rebuffMs: number;
   avgBitrate: number; resolution: string; codec: string; // avgBitrate in Mbps
   score: number; health: 'good' | 'warn' | 'bad'; ended: boolean;
-  events: { atMin: number; dur: number; cause: string }[];
+  events: { atMin: number; dur: number; cause: string; side: 'upstream' | 'client' }[];
 }
 
 const VIEW_HISTORY = computed<Session[]>(() => {
@@ -52,7 +52,8 @@ const VIEW_HISTORY = computed<Session[]>(() => {
       .map((e) => ({
         atMin: Math.max(0, Math.round((e.at - v.startedAt) / 60000)),
         dur: e.ms,
-        cause: e.phase === 'failed' ? 'stream failed' : 'rebuffering',
+        cause: e.phase === 'failed' ? 'stream failed' : e.side === 'client' ? 'client rebuffering' : 'rebuffering',
+        side: e.side ?? 'upstream', // rows written before the two-sided split are treated as upstream
       }))
       .sort((a, b) => a.atMin - b.atMin),
   }));
@@ -185,19 +186,31 @@ const uniqueIps = computed(() => new Set(sessions.value.map((s) => s.ip)).size);
 const uniqueChannels = computed(() => new Set(sessions.value.map((s) => s.channelId)).size);
 const avgScore = computed(() => sessions.value.length ? Math.round(sessions.value.reduce((a, s) => a + s.score, 0) / sessions.value.length) : 0);
 
-// 24 hourly buckets of buffer events, counted at each event's actual time (last 24h).
+// Buffer-event histogram — BUF_BINS buckets spanning the SELECTED range (fixes the old hardcoded-24h bug that
+// silently dropped 7d/30d events since `sessions` is range-gated), split into the two sides (upstream vs
+// client) so the bars stack. Each bucket = span/BUF_BINS; bin 0 is oldest, the last bin is now.
+const BUF_BINS = 24;
 const bufBins = computed(() => {
-  const b = Array(24).fill(0);
+  const span = RANGE_MS[range.value] ?? 86400000;
   const now = Date.now();
+  const start = now - span;
+  const binMs = span / BUF_BINS;
+  const upstream = Array(BUF_BINS).fill(0);
+  const client = Array(BUF_BINS).fill(0);
   sessions.value.forEach((s) => {
     s.events.forEach((e) => {
       const at = s.startedAt + e.atMin * 60000;
-      const hourAgo = Math.floor((now - at) / 3600000);
-      if (hourAgo >= 0 && hourAgo <= 23) b[23 - hourAgo] += 1;
+      if (at < start || at > now) return;
+      const idx = Math.min(BUF_BINS - 1, Math.max(0, Math.floor((at - start) / binMs)));
+      if (e.side === 'client') client[idx] += 1;
+      else upstream[idx] += 1;
     });
   });
-  return b;
+  return { upstream, client, total: upstream.map((u, i) => u + client[i]) };
 });
+const bufMax = computed(() => Math.max(1, ...bufBins.value.total));
+const totalClientBuffers = computed(() => bufBins.value.client.reduce((a, b) => a + b, 0));
+const totalUpstreamBuffers = computed(() => bufBins.value.upstream.reduce((a, b) => a + b, 0));
 
 const problemChannels = computed(() => {
   const byChannel: Record<string, { ch: any; sessions: number; buffers: number; scores: number[] }> = {};
@@ -252,7 +265,20 @@ const timingLine = computed(() => {
   return parts.length ? parts.join(' · ') : null;
 });
 
-const { subscribe, release } = useStreamStats();
+const { subscribe, release, liveBufferEvents } = useStreamStats();
+// Live buffering tally since this screen opened — counts the buffer-event WS frames by side as they arrive
+// (each frame is a buffering-interval START, pushed before the session closes + persists). Reactive: the
+// composable's rolling log grows on each frame, so this re-tallies without a timer.
+const mountedAt = Date.now();
+const liveTally = computed(() => {
+  let upstream = 0, client = 0;
+  for (const e of liveBufferEvents) {
+    if (e.recvAt < mountedAt) continue;
+    if (e.side === 'client') client++;
+    else upstream++;
+  }
+  return { upstream, client, total: upstream + client };
+});
 const ready = ref(false);
 onMounted(() => {
   requestAnimationFrame(() => ready.value = true);
@@ -266,22 +292,24 @@ onMounted(() => {
 });
 onBeforeUnmount(() => release());
 
-function barStyle(v: number, i: number) {
-  const max = Math.max(1, ...bufBins.value);
-  const ratio = v / max;
-  const h = ratio * 100;
-  const L = (0.88 - ratio * 0.33).toFixed(3);
-  const C = (0.10 + ratio * 0.07).toFixed(3);
-  const tone = `oklch(${L} ${C} 220)`;
+// The stack's total height animates 0→ratio with the staggered reveal; the two side-segments fill it in
+// proportion to their counts (upstream on the bottom, client stacked above).
+function stackStyle(i: number) {
+  const ratio = bufBins.value.total[i] / bufMax.value;
   const total = 1500, perBar = 520;
-  const stagger = (total - perBar) / Math.max(1, bufBins.value.length - 1);
+  const stagger = (total - perBar) / Math.max(1, BUF_BINS - 1);
   const delay = i * stagger;
   return {
-    height: ready.value ? h + '%' : '0%',
-    background: tone,
-    boxShadow: v > 0 && ready.value ? `0 0 8px ${tone}` : 'none',
-    transition: `height ${perBar}ms cubic-bezier(.2,.8,.2,1) ${delay}ms, box-shadow 240ms ease ${delay + perBar - 100}ms`,
+    height: ready.value ? ratio * 100 + '%' : '0%',
+    transition: `height ${perBar}ms cubic-bezier(.2,.8,.2,1) ${delay}ms`,
   };
+}
+function segStyle(count: number, total: number) {
+  return { height: (total > 0 ? (count / total) * 100 : 0) + '%' };
+}
+function binTitle(i: number) {
+  const u = bufBins.value.upstream[i], c = bufBins.value.client[i];
+  return `${u + c} buffer events (${u} upstream · ${c} client)`;
 }
 
 const events = computed(() => sel.value?.events ?? []);
@@ -348,19 +376,28 @@ function metricColor(tone?: string) {
     <div v-if="viewMode === 'sessions'" style="display: grid; grid-template-columns: 1.5fr 1fr; gap: 14px;">
       <div class="card">
         <div class="row" style="margin-bottom: 10px;">
-          <div style="font-weight: 600; font-size: 14px;">Buffer events · last 24h</div>
+          <div style="font-weight: 600; font-size: 14px;">Buffer events · {{ range }}</div>
           <span class="spacer" />
+          <Pill v-if="liveTally.total" tone="cyan" :title="`${liveTally.upstream} upstream · ${liveTally.client} client since opened`">◉ {{ liveTally.total }} live</Pill>
           <Pill tone="warn">{{ totalBuffers }} total</Pill>
-          <Pill>{{ Math.max(...bufBins) }} peak / hour</Pill>
+          <Pill>{{ bufMax }} peak</Pill>
         </div>
         <div>
           <div class="buf-bars">
-            <div v-for="(v, i) in bufBins" :key="i" class="buf-bar-wrap" :title="`${23 - i}h ago: ${v} buffer events`">
-              <div class="buf-bar" :style="barStyle(v, i)" />
+            <div v-for="(t, i) in bufBins.total" :key="i" class="buf-bar-wrap" :title="binTitle(i)">
+              <div class="buf-bar-stack" :style="stackStyle(i)">
+                <div class="buf-seg buf-seg-client" :style="segStyle(bufBins.client[i], t)" />
+                <div class="buf-seg buf-seg-upstream" :style="segStyle(bufBins.upstream[i], t)" />
+              </div>
             </div>
           </div>
           <div class="row" style="justify-content: space-between; margin-top: 6px; font-size: 10px; color: var(--text-3);">
-            <span class="mono">−24h</span><span class="mono">−18h</span><span class="mono">−12h</span><span class="mono">−6h</span><span class="mono">now</span>
+            <span class="mono">−{{ range }}</span>
+            <span class="row" style="gap: 10px;">
+              <span class="buf-legend"><i class="buf-swatch buf-seg-upstream" /> upstream {{ totalUpstreamBuffers }}</span>
+              <span class="buf-legend"><i class="buf-swatch buf-seg-client" /> client {{ totalClientBuffers }}</span>
+            </span>
+            <span class="mono">now</span>
           </div>
         </div>
       </div>
@@ -532,7 +569,8 @@ function metricColor(tone?: string) {
                 No buffer events
               </div>
               <template v-else>
-                <div v-for="(e, i) in events" :key="i" class="buf-event"
+                <div v-for="(e, i) in events" :key="i"
+                     :class="['buf-event', e.side === 'client' ? 'buf-event--client' : 'buf-event--upstream']"
                      :style="{ left: (e.atMin / sel.duration * 100) + '%', width: Math.max(2, (e.dur / 60000 / sel.duration * 100)) + '%' }"
                      :title="`${formatMs(e.dur)} ${e.cause} at +${e.atMin}m`" />
               </template>
@@ -541,6 +579,7 @@ function metricColor(tone?: string) {
               <div v-for="(e, i) in events.slice(0, 6)" :key="i" class="row" style="font-size: var(--fs-xs); color: var(--text-2);">
                 <span class="mono" style="width: 50px; color: var(--text-1);">+{{ e.atMin }}m</span>
                 <span class="mono" :style="{ width: '70px', color: e.dur > 1000 ? 'var(--warn)' : 'var(--text-1)' }">{{ formatMs(e.dur) }}</span>
+                <i class="buf-dot" :class="e.side === 'client' ? 'buf-seg-client' : 'buf-seg-upstream'" />
                 <span>{{ e.cause }}</span>
               </div>
               <span v-if="events.length > 6" class="muted mono" style="font-size: 11px;">+ {{ events.length - 6 }} more</span>

@@ -2111,6 +2111,22 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-radius: 3px 3px 0 0;
   min-height: 2px;
 }
+/* Two-sided stacked buffer bar: upstream (bottom) + client (top) segments fill a height-animated stack. */
+.buf-bar-stack {
+  width: 100%;
+  min-height: 2px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: 3px 3px 0 0;
+  overflow: hidden;
+}
+.buf-seg { width: 100%; }
+.buf-seg-upstream { background: oklch(0.66 0.12 220); }  /* cyan — upstream (stream-side) */
+.buf-seg-client { background: oklch(0.74 0.15 65); }     /* amber — client (viewer-side) */
+.buf-legend { display: inline-flex; align-items: center; gap: 4px; }
+.buf-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.buf-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 
 /* Buffering timeline */
 .buf-timeline {
@@ -2139,6 +2155,9 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: 0 0 8px oklch(0.7 0.18 25 / 0.6);
   cursor: default;
 }
+/* Timeline event colored by side: upstream stays red (stream outage); client is amber (viewer-side). */
+.buf-event--upstream { background: var(--bad); box-shadow: 0 0 8px oklch(0.7 0.18 25 / 0.6); }
+.buf-event--client { background: oklch(0.74 0.15 65); box-shadow: 0 0 8px oklch(0.74 0.15 65 / 0.55); }
 
 .logs-scroll-btn {
   position: absolute;

@@ -93,7 +93,14 @@ pub async fn proxy(
                 }
                 match state.resolve_entry(source, &entry, pl.as_deref()).await {
                     Ok((p, _)) => p,
-                    Err(err) => return text(502, &format!("resolve failed: {err}")),
+                    Err(err) => {
+                        // A cold-hop re-resolve failed (session/mirror gone) — the channel can't produce a
+                        // stream, so mark it failed (a resolve failure has no HTTP status → 502 sentinel).
+                        state.report(serde_json::json!({
+                            "kind": "upstream", "ok": false, "status": 502, "source": source, "entryUrl": entry.as_str(),
+                        }));
+                        return text(502, &format!("resolve failed: {err}"));
+                    }
                 }
             }
         };
@@ -101,7 +108,14 @@ pub async fn proxy(
     } else {
         match state.resolve_entry(source, &decoded, pl.as_deref()).await {
             Ok((p, target)) => (p, target, decoded.clone()),
-            Err(err) => return text(502, &format!("resolve failed: {err}")),
+            Err(err) => {
+                // The channel could not be resolved (unknown source / dead upstream / expired auth) — mark it
+                // failed (a resolve failure has no HTTP status → 502 sentinel → noteFailed → `failed`).
+                state.report(serde_json::json!({
+                    "kind": "upstream", "ok": false, "status": 502, "source": source, "entryUrl": decoded.as_str(),
+                }));
+                return text(502, &format!("resolve failed: {err}"));
+            }
         }
     };
 
@@ -171,7 +185,7 @@ pub async fn proxy(
             state.report(serde_json::json!({
                 "kind": "media", "source": source, "entryUrl": stream_entry.as_str(),
                 "resolution": media.resolution, "codecs": media.codecs,
-                "frameRate": media.frame_rate, "container": media.container,
+                "frameRate": media.frame_rate, "container": media.container, "bandwidth": media.bandwidth,
             }));
         }
         // Telemetry: a served manifest poll is the viewer heartbeat (also carries the manifest byte count) AND
@@ -225,7 +239,7 @@ pub async fn proxy(
 
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────────
 
-fn check_secret(h: &HeaderMap, secret: &str) -> bool {
+pub(crate) fn check_secret(h: &HeaderMap, secret: &str) -> bool {
     if secret.is_empty() {
         return true; // no secret configured (manual dev run) → allow; Node always sets one in prod
     }
@@ -337,7 +351,7 @@ fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap {
     hm
 }
 
-fn text(code: u16, msg: &str) -> Response {
+pub(crate) fn text(code: u16, msg: &str) -> Response {
     Response::builder()
         .status(StatusCode::from_u16(code).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR))
         .header("content-type", "text/plain")

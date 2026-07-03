@@ -13,7 +13,8 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //    a 2xx success → noteSuccess (→ live). Fields: { source, entryUrl, ip, ua, username?, playerType, bytes? }.
 //  · bytes    — one per segment/other 2xx send. Drives noteBytes (egress, attributed by identity) AND
 //    noteSuccess (keeps the channel live). Fields: { source, entryUrl, ip, ua, username?, bytes }.
-//  · upstream — a non-2xx (ok:false, status>0) → noteFailed (→ failed) or a transport error (status 0) →
+//  · upstream — a failure: a non-2xx response OR a Node resolve failure (ok:false, status>0 — Rust uses a 502
+//    sentinel for a resolve failure) → noteFailed (→ failed); a transport error with no response (status 0) →
 //    noteFailure (spends one retry). Fields: { source, entryUrl, status }.
 //  · media    — manifest-declared decode metadata → noteMedia. Fields: { source, entryUrl, resolution?,
 //    codecs?, frameRate?, container? } (any subset; nulls mean "no update this poll").
@@ -33,6 +34,7 @@ interface TelemetryEvent {
   codecs?: unknown;
   frameRate?: unknown;
   container?: unknown;
+  bandwidth?: unknown;
 }
 
 function str(v: unknown): string {
@@ -78,6 +80,7 @@ function applyEvent(e: TelemetryEvent): void {
         codecs: optStr(e.codecs) ?? null,
         frameRate: optStr(e.frameRate) ?? null,
         container: optStr(e.container) ?? null,
+        bandwidth: typeof e.bandwidth === 'number' && e.bandwidth > 0 ? e.bandwidth : null,
       });
     }
   }

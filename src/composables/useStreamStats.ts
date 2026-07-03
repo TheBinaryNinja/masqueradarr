@@ -9,10 +9,24 @@ import { ACTIVE_STREAMS, VIEW_SESSIONS, type ActiveStream, type ViewSession } fr
 
 const SERIES_MAX = 60; // points kept per channel for the bitrate chart
 const SESSIONS_MAX = 500; // mirror GET /api/view-sessions' .limit(500)
+const LIVE_BUFFER_MAX = 200; // rolling cap on live buffer-event frames kept in memory
 const RECONNECT_MS = 3000;
 
 // channelId → recent per-viewer bitrate samples (Mbps). reactive so the chart computed re-renders.
 const series = reactive<Record<string, number[]>>({});
+
+// A live buffering-interval START pushed over the WS the moment the telemetry core opens one (before the
+// session closes + persists). `side` distinguishes an upstream (phase-derived) from a client (rate-inferred)
+// event. Kept as a reactive rolling log so a mounted History screen can tally live buffering by side.
+export interface LiveBufferEvent {
+  channelId: string | null;
+  channelKey: string;
+  phase: 'buffer' | 'failed';
+  at: number; // server epoch-ms the interval began
+  side: 'upstream' | 'client';
+  recvAt: number; // client epoch-ms the frame arrived (for windowing)
+}
+const liveBufferEvents = reactive<LiveBufferEvent[]>([]);
 
 let ws: WebSocket | null = null;
 let refCount = 0;
@@ -41,6 +55,20 @@ function ingestSession(s: ViewSession): void {
   VIEW_SESSIONS.value = [s, ...rest].slice(0, SESSIONS_MAX);
 }
 
+// A live buffering-interval start — append to the rolling log (bounded). `side` defaults to 'upstream' for
+// resilience against an older server that doesn't send it.
+function ingestBufferEvent(m: { channelId?: string | null; channelKey?: string; phase?: 'buffer' | 'failed'; at?: number; side?: 'upstream' | 'client' }): void {
+  liveBufferEvents.push({
+    channelId: m.channelId ?? null,
+    channelKey: m.channelKey ?? '',
+    phase: m.phase === 'failed' ? 'failed' : 'buffer',
+    at: typeof m.at === 'number' ? m.at : Date.now(),
+    side: m.side === 'client' ? 'client' : 'upstream',
+    recvAt: Date.now(),
+  });
+  if (liveBufferEvents.length > LIVE_BUFFER_MAX) liveBufferEvents.splice(0, liveBufferEvents.length - LIVE_BUFFER_MAX);
+}
+
 function connect(): void {
   if (ws) return;
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
@@ -48,10 +76,19 @@ function connect(): void {
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
     try {
-      const msg = JSON.parse(ev.data) as { type?: string; streams?: ActiveStream[]; session?: ViewSession };
+      const msg = JSON.parse(ev.data) as {
+        type?: string;
+        streams?: ActiveStream[];
+        session?: ViewSession;
+        channelId?: string | null;
+        channelKey?: string;
+        phase?: 'buffer' | 'failed';
+        at?: number;
+        side?: 'upstream' | 'client';
+      };
       if (msg.type === 'active-streams' && Array.isArray(msg.streams)) ingest(msg.streams);
       else if (msg.type === 'view-session' && msg.session) ingestSession(msg.session);
-      // 'buffer-event' frames are already reflected in the next snapshot's status, so no extra handling yet.
+      else if (msg.type === 'buffer-event' && msg.channelKey) ingestBufferEvent(msg);
     } catch {
       /* ignore a malformed frame */
     }
@@ -105,5 +142,5 @@ export function useStreamStats() {
   function bitrateSeries(channelId: string): number[] {
     return series[channelId] ?? [];
   }
-  return { subscribe, release, bitrateSeries };
+  return { subscribe, release, bitrateSeries, liveBufferEvents };
 }

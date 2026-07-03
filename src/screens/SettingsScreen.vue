@@ -212,6 +212,106 @@ async function saveBackupSchedule() {
   }
 }
 
+// Scheduled channel probe (PRB) — cronjob targetType:'channel-probe', targetId:'app'. Modes are limited to
+// hourly/daily/weekly (a probe resolves + checks EVERY channel upstream, so there's a once-per-hour floor —
+// no minutes/custom). Mirrors the backup-schedule pattern; adds a "Run now" one-off (POST /api/probe/run).
+const PROBE_MODES = [
+  { value: 'hourly', label: 'Hourly', icon: 'refresh' },
+  { value: 'daily', label: 'Daily', icon: 'sync' },
+  { value: 'weekly', label: 'Weekly', icon: 'sync' },
+];
+const probeAuto = ref(false);
+const probeFreq = reactive<CronFrequency>({ mode: 'hourly', every: 6, atHour: null, atMinute: 0, daysOfWeek: null });
+const probeRawCron = ref('0 */6 * * *');
+const probeSaving = ref(false);
+const probeSaveState = ref<'idle' | 'saved' | 'error'>('idle');
+const probeRunning = ref(false);
+
+onMounted(async () => {
+  // Hydrate the probe schedule from its cronjob, if one exists (else the every-6-hours defaults stand).
+  try {
+    const res = await fetch('/api/cronjobs/app?targetType=channel-probe');
+    if (res.ok) {
+      const job = await res.json();
+      probeAuto.value = !!job.enabled;
+      if (job.frequency && typeof job.frequency === 'object') Object.assign(probeFreq, job.frequency);
+      if (typeof job.cron === 'string' && job.cron) probeRawCron.value = job.cron;
+    }
+  } catch {
+    /* no schedule yet — defaults stand */
+  }
+  // Reflect an already-running sweep (kicked elsewhere) in the button state.
+  try {
+    const res = await fetch('/api/probe/status');
+    if (res.ok) probeRunning.value = !!(await res.json()).running;
+  } catch {
+    /* ignore */
+  }
+});
+
+async function saveProbeSchedule() {
+  probeSaving.value = true;
+  probeSaveState.value = 'idle';
+  try {
+    const path = '/api/cronjobs/app?targetType=channel-probe';
+    if (probeAuto.value) {
+      const res = await fetch('/api/cronjobs/app', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetType: 'channel-probe',
+          cron: buildCron(probeFreq, probeRawCron.value),
+          frequency: { ...probeFreq },
+          timezone: timezone.value || null,
+          enabled: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } else {
+      // Manual → unschedule (idempotent; a 404 just means there was nothing to remove).
+      const res = await fetch(path, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+    }
+    probeSaveState.value = 'saved';
+  } catch {
+    probeSaveState.value = 'error';
+  } finally {
+    probeSaving.value = false;
+    setTimeout(() => (probeSaveState.value = 'idle'), 2200);
+  }
+}
+
+// Fire an immediate sweep, then poll status so the button clears when it finishes (no progress WS in P1.3).
+async function runProbeNow() {
+  probeRunning.value = true;
+  try {
+    const res = await fetch('/api/probe/run', { method: 'POST' });
+    if (res.status === 202 || res.ok) {
+      toast.lowerRight({ tone: 'good', icon: 'check', title: 'Probe started', text: 'Checking every active channel…' });
+    } else if (res.status === 409) {
+      toast.lowerRight({ tone: 'warn', icon: 'warn', title: 'Probe already running', text: 'A sweep is in progress.' });
+    } else {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  } catch {
+    toast.lowerRight({ tone: 'bad', icon: 'warn', title: 'Could not start probe', text: 'Please try again.' });
+    probeRunning.value = false;
+    return;
+  }
+  const poll = async () => {
+    try {
+      const res = await fetch('/api/probe/status');
+      if (!res.ok) return void (probeRunning.value = false);
+      const s = await res.json();
+      probeRunning.value = !!s.running;
+      if (s.running) setTimeout(poll, 3000);
+    } catch {
+      probeRunning.value = false;
+    }
+  };
+  setTimeout(poll, 3000);
+}
+
 // Danger zone — wipe the entire workspace, then reload into the fresh state.
 const resetting = ref(false);
 const resetConfirm = ref(false);
@@ -349,6 +449,41 @@ async function fireReset() {
     </div>
 
     <DuloAuthPanel v-if="activeTab === 'advanced'" />
+
+    <div class="card" v-if="activeTab === 'advanced'">
+      <h3 class="section-title">Channel Probe Scheduler</h3>
+      <div class="muted" style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
+        Periodically check every active channel and refresh its status + resolution, so the Channels and Active
+        Streams screens stay accurate even for channels nobody is watching. Each channel is resolved and probed
+        through the video engine, so this runs at most once per hour.
+      </div>
+      <SettingsRow label="Automatic probe" hint="Sweep all channels on a schedule.">
+        <template #right>
+          <Toggle :on="probeAuto" @change="(v) => { probeAuto = v; saveProbeSchedule(); }" />
+        </template>
+      </SettingsRow>
+
+      <template v-if="probeAuto">
+        <FrequencyBuilder :freq="probeFreq" :auto="probeAuto" v-model:rawCron="probeRawCron"
+                          :modes="PROBE_MODES" hideMode label="Schedule" icon="refresh" manualHint="" />
+        <div class="row" style="gap: 8px; margin-top: 14px; align-items: center;">
+          <Btn variant="primary" icon="check" :disabled="probeSaving" @click="saveProbeSchedule">
+            {{ probeSaving ? 'Saving…' : 'Save schedule' }}
+          </Btn>
+          <span v-if="probeSaveState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
+          <span v-else-if="probeSaveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
+        </div>
+      </template>
+
+      <div class="divider" />
+      <SettingsRow label="Run a probe now" hint="Immediately check every active channel once.">
+        <template #right>
+          <Btn variant="ghost" icon="refresh" :disabled="probeRunning" @click="runProbeNow">
+            {{ probeRunning ? 'Running…' : 'Run now' }}
+          </Btn>
+        </template>
+      </SettingsRow>
+    </div>
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">Data</h3>

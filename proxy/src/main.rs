@@ -9,10 +9,14 @@
 //! `.claude/plans/use-ultrathink-durable-vectorized-comet.md`.
 
 mod manifest;
+mod probe;
 mod proxy;
 mod state;
 
-use axum::{routing::get, Json, Router};
+use axum::{
+    routing::{get, post},
+    Json, Router,
+};
 use serde_json::json;
 use state::AppState;
 use std::net::SocketAddr;
@@ -39,6 +43,7 @@ async fn main() {
     let state = AppState::new(node_url.clone(), secret);
     let app = Router::new()
         .route("/health", get(health))
+        .route("/probe", post(probe::probe)) // PRB: the scheduled channel-probe batch (loopback + secret)
         .fallback(proxy::proxy)
         .with_state(state);
 

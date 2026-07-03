@@ -8,6 +8,7 @@
 //                    custom playlist → its upstream re-fetch ('hdhomerun' device / 'url' stored remoteUrl)
 //   'playlist-m3u' → composeM3u (recompose the playlist's stream-ready m3u export, the manual "Compose m3u")
 //   'backup'       → runBackup (the scheduled full-system backup to disk — one global job, targetId:'app')
+//   'channel-probe'→ probeAllChannels (the scheduled Rust-assisted channel health sweep — one global job, targetId:'app')
 // A playlist's sync ('playlist:<id>') and compose ('playlist-m3u:<id>') jobs are independent docs, so the
 // two cadences never collide. nextRun/lastRun/lastStatus/lastError are maintained here. See restapi.md
 // (the /api/cronjobs resource) + styles-backend.md.
@@ -25,6 +26,7 @@ import { syncLocalPlaylist } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from '../routes/import.js';
 import { buildBackupGzip, backupFilename } from '../backup/buildBackup.js';
 import { writeBackupFile } from '../backup/paths.js';
+import { probeAllChannels } from '../sources/probeAll.js';
 
 // A 'playlist' sync job's targetId is the playlist ID. Dispatch by what backs it: a registry source (a
 // Default source playlist; id === source) → syncLive; a custom playlist with a live upstream → its type's
@@ -112,6 +114,12 @@ async function runJob(id: string): Promise<void> {
         // Scheduled full-system backup to disk (one global job — targetId 'app'). Writes a gzip envelope
         // into settings.backupLocation; the same payload as the manual GET /api/backup/generate download.
         await runBackup(doc.targetId);
+        break;
+      case 'channel-probe':
+        // Scheduled channel probe (one global job — targetId 'app'). Resolves + Rust-probes every Active
+        // channel and refreshes stream.status/stream.res. Same work as the manual POST /api/probe/run. Self-
+        // guards against overlap; NOT 'probe-all' (that legacy type is boot-deleted by seed.ts). See PRB/PSCHED.
+        await probeAllChannels();
         break;
       default:
         throw new Error(`unsupported targetType: ${doc.targetType}`);
