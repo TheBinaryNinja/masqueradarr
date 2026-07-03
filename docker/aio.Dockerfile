@@ -64,6 +64,15 @@ COPY server/tsconfig.json ./
 COPY server/src/ ./src/
 RUN npm run build                       # tsc -p .  -> /server/dist
 
+# ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) — MIRRORS docker/app.Dockerfile ----
+# Debian bookworm base → glibc, matching the runtime stage (and this image's copied-in mongod). The durable
+# video DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts). Produces
+# /proxy/target/release/masq-proxy. See app.Dockerfile for the full rationale (keep the two in sync).
+FROM rust:1-bookworm AS proxy-build
+WORKDIR /proxy
+COPY proxy/ ./
+RUN cargo build --release
+
 # ---- Stage 3: runtime (app + mongod + config-init supervisor) ----
 # Debian (bookworm) base — same as app.Dockerfile (both are glibc). This image additionally MUST stay glibc
 # regardless of the app image: the mongod binary copied in from the official mongo image (the `mongo` stage) is
@@ -112,6 +121,11 @@ COPY --from=mongo /usr/bin/mongod /usr/bin/mongod
 COPY --from=server-build /server/dist  ./dist
 COPY --from=spa-build    /spa/dist     ./public
 COPY server/seed-data                  ./seed-data
+
+# Rust video-proxy sidecar — spawned + supervised by node on loopback (server/src/proxy/sidecar.ts). MIRRORS
+# app.Dockerfile. The aio entrypoint gosu-drops node to uid 1000; the child inherits that uid and execs this
+# root-owned 0755 binary. node forwards shutdown to the child; the supervisor stops node first, then mongod.
+COPY --from=proxy-build /proxy/target/release/masq-proxy /usr/local/bin/masq-proxy
 
 # /app/compose is non-overridable (server/src/paths.ts resolves it relative to the compiled module),
 # so redirect it into the single /data volume. The app's boot mkdirSync + every export write then land

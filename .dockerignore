@@ -2,6 +2,7 @@ node_modules
 server/node_modules
 dist
 server/dist
+proxy/target
 .git
 .claude
 Screenshots

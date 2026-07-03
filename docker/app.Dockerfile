@@ -54,6 +54,17 @@ COPY server/tsconfig.json ./
 COPY server/src/ ./src/
 RUN npm run build                       # tsc -p .  -> /server/dist
 
+# ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) --------------
+# Debian bookworm base → glibc, matching the runtime stage so the binary loads (a musl/Alpine build would
+# not run on the glibc runtime — the same base constraint as the Node stages). This is the durable video
+# DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts); the control plane
+# (resolve/policy/auth) stays in Node. `COPY proxy/ ./` pulls the whole crate (Cargo.toml + src, and
+# Cargo.lock when committed); cargo generates a lock if absent. Produces /proxy/target/release/masq-proxy.
+FROM rust:1-bookworm AS proxy-build
+WORKDIR /proxy
+COPY proxy/ ./
+RUN cargo build --release
+
 # ---- Stage 3: runtime -------------------------------------------------------
 # Debian (bookworm) base — glibc, matching the AIO image (bookworm because its copied-in mongod is glibc-only);
 # the only remaining divergence is the config bootstrap (see SYNC NOTE). The dulo streamed-login browser drives
@@ -91,6 +102,10 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=server-build /server/dist  ./dist
 COPY --from=spa-build    /spa/dist ./public
 COPY server/seed-data                  ./seed-data
+
+# Rust video-proxy sidecar — spawned + supervised by node on loopback (server/src/proxy/sidecar.ts). Root-owned
+# 0755, so USER node can exec it. No entrypoint change: node forwards its own SIGTERM-driven shutdown to the child.
+COPY --from=proxy-build /proxy/target/release/masq-proxy /usr/local/bin/masq-proxy
 
 # /app/compose is the runtime write target for composed .m3u exports — m3u/compose.ts creates dirs + writes
 # files under composeDir as USER node (the manual "Compose m3u" button + the playlist-m3u cron tick), and

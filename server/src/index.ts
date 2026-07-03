@@ -36,6 +36,7 @@ import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
 import { logger } from './sources/core/logger.js';
+import { startProxySidecar, stopProxySidecar } from './proxy/sidecar.js';
 
 // Same-origin gate for the dulo login-stream WebSocket. Compares HOSTNAMES (ignoring port) so the Vite dev
 // proxy (localhost:5173 → localhost:3000) and the co-served prod SPA both pass, while a cross-site page is
@@ -101,6 +102,15 @@ async function main() {
     startSystemStatsHub();
   } catch (err) {
     logger.error('startup', `stream telemetry init error (continuing): ${(err as Error).message}`);
+  }
+
+  // Durable video data plane: spawn + supervise the Rust proxy sidecar (server/src/proxy/sidecar.ts →
+  // repo `proxy/` crate). Loopback-only; the reverse-proxy for stream paths lands in P1. Non-fatal — a
+  // missing/failed sidecar disables streaming but must not crash the API (parity with the inits above).
+  try {
+    startProxySidecar();
+  } catch (err) {
+    logger.error('startup', `proxy sidecar start error (continuing): ${(err as Error).message}`);
   }
 
   const app = express();
@@ -269,6 +279,7 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info('shutdown', `received ${signal}`);
+    await stopProxySidecar(); // stop the data plane first — halts byte-serving + drains in-flight streams
     await duloLoginBrowser.closeAll();
     closeAllStats();
     closeAllSystemStats();
