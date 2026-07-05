@@ -86,9 +86,9 @@ and rebuilds everything underneath it to lift those ceilings:
   Playlists, EPG Sources, Channel Mapping, Users, and Settings.
 - **Bespoke scrapers → a source-agnostic adapter framework.** Adding a provider is one adapter file
   plus one registry line; the generic core (sync, catalog, telemetry) never branches per source.
-- **File server → an API + a management SPA.** An in-app player shell and M3U / XMLTV export for
-  external clients. *(The stream byte-serving engine — the in-app proxy and the external-client
-  transcode engine — was torn down and is being rebuilt on a new code base; **no video plays yet**.)*
+- **File server → an API + a live video proxy.** An in-app player and M3U / XMLTV export for external
+  clients, with playback served by a **rebuilt, durable Rust proxy engine** (`masq-proxy`) that resolves
+  each stream on demand — HLS today; the few remux-dependent paths (e.g. HDHomeRun TS→HLS) are still pending.
 - **Env-var toggles → users, roles & per-user access.** Real authentication (scrypt), session vs.
   stream tokens, and per-user tokenized playlist access.
 - **Blind scheduling → live observability.** WebSocket-pushed viewer/bandwidth/buffering telemetry,
@@ -107,7 +107,8 @@ and rebuilds everything underneath it to lift those ceilings:
 | **Guide data** | One bundled XMLTV grabber | Gracenote, EPG-PW, Jesmann, Custom XMLTV + self-EPG |
 | **Auth** | None | scrypt users, roles, per-user access lists |
 | **Auth'd sources** | Not possible | Supported (streamed-login session capture) |
-| **External clients** | Pass-through only | M3U / XMLTV export (byte-serving engine being rebuilt) |
+| **External clients** | Pass-through only | M3U / XMLTV export + live Rust HLS / raw-TS proxy |
+| **Video engine** | None (static URLs) | Remux-free Rust data-plane proxy (resolve-on-demand; retry / failover / raw-TS) |
 | **Observability** | Logs | Live WS telemetry, history/metrics, system stats, app logs |
 | **Backup** | None | Full-system gzip backup / restore + scheduled backups |
 | **Base image** | Alpine + s6-overlay | Debian bookworm (glibc) + tini |
@@ -123,13 +124,36 @@ image stitches together — *not* a workspace, and they never import across the 
   built SPA, the `/api/*` REST surface, and four WebSockets
   (login-stream, stream-stats, logs-stream, system-stats).
 
+At a high level, the SPA and IPTV clients talk to the Express **control plane**, which owns MongoDB and
+drives a Rust **data-plane** sidecar (`masq-proxy`) for stream bytes:
+
+```mermaid
+graph TD
+    subgraph Clients
+      BROWSER["Browser — Vue 3 SPA"]
+      IPTV["IPTV clients<br/>TiviMate · VLC · Plex · Jellyfin"]
+    end
+    subgraph Container["masqueradarr container"]
+      NODE["Express 4 API — Node<br/>control plane"]
+      RUST["masq-proxy — Rust<br/>data-plane sidecar"]
+      MONGO[("MongoDB")]
+    end
+    UP["Upstream IPTV sources<br/>dulo · DaddyLive · Pluto · Roku · …"]
+    BROWSER -->|"/api/* · WebSockets"| NODE
+    IPTV -->|"token-gated .m3u + XMLTV download"| NODE
+    IPTV -->|"stream bytes · /api/ext/v1"| NODE
+    NODE <--> MONGO
+    NODE -->|"gate + relay"| RUST
+    RUST -->|"internal seams · loopback"| NODE
+    RUST -->|"resolve · fetch · rewrite · pipe"| UP
+```
+
 Key subsystems:
 
-- **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → docs) with
-  per-provider adapters. Current sources: Pluggable adapters `<dynamix>`, proxy-only sources — **direct** (passes user-imported stream
-  URLs straight through) and **hdhomerun** (imports a local tuner's channel lineup — playback is dormant
-  pending the video-engine rebuild) — that back
-  bring-your-own playlists.
+- **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → resolve) with
+  ~17 per-provider adapters, plus proxy-only sources — **direct** (passes user-imported stream URLs
+  straight through) and **hdhomerun** (imports a local tuner's channel lineup; playback is dormant
+  pending remux support in the video engine) — that back bring-your-own playlists.
 - **Channel model** — a pristine synced reference (`sourcechannels`) projected into an editable,
   UI-facing store (`playlistchannels`); user edits survive re-syncs.
 - **EPG + scheduler** — multiple guide ingesters behind one shared sync path — **Gracenote**,
@@ -139,21 +163,21 @@ Key subsystems:
   `cronjobs` collection.
 - **Composition + export** — composes Global, per-user, and custom `.m3u` playlists with matching
   XMLTV guide siblings for downstream clients.
-- **Video byte-serving — torn down, rebuild pending.** The former in-app HLS proxy and the always-on
-  external-client ffmpeg transcode engine (with GPU hardware acceleration, the B-Roll slate, and ffprobe
-  monitoring) were **removed** to be rebuilt on a new code base. Playlists still compose M3U / XMLTV, but
-  streams do not play yet.
+- **Video proxy engine — live.** A **remux-free Rust data-plane sidecar** (`masq-proxy`) resolves each
+  stream on demand and serves it over a durable HLS / raw-TS pipe (retry, mirror failover, read-ahead
+  buffering). Node stays the control plane (auth, resolve, token gate, telemetry authority); Rust moves
+  the bytes. See [Video Proxy Engine](#video-proxy-engine).
 - **Backup & maintenance** — full-system gzip backup / restore, scheduled backups, and Mongo
   index-rebuild / workspace-reset maintenance actions.
 
 ### Migration status
 
-The rename and re-architecture are **in flight**. The codebase, brand, and runtime are masqueradarr;
-the **published Docker repositories still carry the `tvapp2` names** (`iflip721/tvapp2-app-stack` for
-the standard image, `iflip721/tvapp2` for the all-in-one) until the registry rename completes. If
-you're coming from TVApp2: there is **no in-place upgrade path** — masqueradarr is a new application
-with a new data model (MongoDB instead of flat files), so stand it up fresh and re-add your sources
-through the UI.
+The rename and re-architecture are effectively complete: the codebase, brand, runtime, and Docker
+images are all **masqueradarr**. The compose stack pulls the standard app image
+**`iflip721/masqueradarr`** (built from `docker/app.Dockerfile`); the all-in-one variant is built from
+`docker/aio.Dockerfile`. If you're coming from TVApp2: there is **no in-place upgrade path** —
+masqueradarr is a new application with a new data model (MongoDB instead of flat files), so stand it up
+fresh and re-add your sources through the UI.
 
 ### Lineage & credits
 
@@ -168,11 +192,11 @@ all new development happens here.
 
 - Pulls **M3U playlists** and **EPG / XMLTV** guide data from multiple IPTV providers and normalizes
   them into one catalog.
-- **Resolve-on-demand catalog** — sources are built to resolve each stream at play time (no dead URLs on
-  disk), which is what makes **authenticated**, **token-gated**, and **rotating-mirror** sources possible.
-  *(The play-time HLS proxy that serves the bytes was torn down and is being rebuilt — see below.)*
-- **Delivery surfaces** — an in-app slide-out player **shell** and M3U / XMLTV export for external clients
-  (TiviMate / VLC / Emby / Jellyfin / Plex). *(Stream byte-serving is being rebuilt; no video plays yet.)*
+- **Resolve-on-demand catalog** — each stream is resolved at play time (no dead URLs on disk), which is
+  what makes **authenticated**, **token-gated**, and **rotating-mirror** sources possible. The bytes are
+  served by the **Rust video proxy engine** (see [Video Proxy Engine](#video-proxy-engine) below).
+- **Delivery surfaces** — an in-app slide-out player and M3U / XMLTV export for external clients
+  (TiviMate / VLC / Emby / Jellyfin / Plex).
 - **Composition + export** — builds Global, per-user, and custom `.m3u` playlists, each with a matching
   XMLTV guide sibling advertised via `x-tvg-url`.
 
@@ -207,9 +231,9 @@ masqueradarr ships as Docker images. There are two deployment shapes.
 
 A second image bundles **app + MongoDB + config bootstrap** into one container, so the whole stack runs
 from a single `docker run` with no external database — ideal for a quick trial or a small home server. One
-`/data` volume persists the database, exports, config, and credentials. See **Migration status** above for
-the current published image name. *(On amd64, the bundled MongoDB 7.0 requires a CPU with AVX; on hosts
-without it, use the compose stack.)*
+`/data` volume persists the database, exports, config, and credentials. It's published under the
+**`iflip721/masqueradarr`** name (see **Migration status** above). *(On amd64, the bundled MongoDB 7.0
+requires a CPU with AVX; on hosts without it, use the compose stack.)*
 
 To publish on a different host port, change the left side of the `-p` mapping — e.g. `-p 8080:3000`
 (the container always serves on `3000` internally; `MASQUERADARR_PORT` only applies to the compose stack).
@@ -247,6 +271,7 @@ boot**:
 | `MONGO_HOST_PORT` | Host port mapped to mongod (default `27017`). |
 | `MONGO_URI` / `MONGO_HOST` | Optional — point the app at an external / Atlas MongoDB instead of the compose `mongo` service. |
 | `DNS_LOG_LEVEL` | Outbound-DNS trace verbosity (`1`–`3`); seeds the setting on first boot. |
+| `MASQ_EDGE` | Optional (default off). `1` inverts the topology so the Rust proxy owns the public port and Node runs behind it on a loopback internal port — same public port, reversible. Enable for scale / high concurrency. See [Public edge mode](#public-edge-mode-masq_edge). |
 
 > App-settings vars are seeded with `$setOnInsert` — they apply on the **first provision only**. Change
 > them in the Settings UI afterward; a redeploy won't clobber UI changes.
@@ -307,7 +332,7 @@ each package and by running the app.
   independent copies (so edits don't disturb the originals) but streams still route through the real adapter.
 - **Import** — pull in any remote **M3U URL** (re-syncable), upload a static **`.m3u` file**, or expose a
   local **HDHomeRun** tuner (its channel lineup is imported; playback — the TS→HLS remux — is dormant
-  pending the video-engine rebuild).
+  pending remux support in the video engine).
 - Every custom playlist rides the same per-user, token-gated **`.m3u` + XMLTV** export machinery as the
   built-in sources.
 
@@ -413,17 +438,18 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 **Observability**
 
-- WebSocket-pushed **viewer / bandwidth / buffering telemetry** (the telemetry cores are kept but
-  currently dormant — nothing streams while the video engine is rebuilt).
+- WebSocket-pushed **viewer / bandwidth / buffering telemetry** — the Rust proxy measures the true byte
+  edge and reports it over the telemetry seam, so **Active Streams** and **History / Metrics** show real,
+  live sessions.
 - Live **system-performance** push (CPU / memory) on the Dashboard.
-- Persisted **view-session history** + per-user metrics, and **MongoDB-backed application logs** (12
-  categories, 14-day TTL) with a live log drawer.
+- Persisted **view-session history** + per-user metrics, and **MongoDB-backed application logs** (13
+  categories, 14-day TTL) with a live log drawer — including a dedicated **`proxy`** category fed by the
+  Rust engine's full resolve→fetch→rewrite→serve lineage.
 
-> **Video engine torn down (rebuild pending).** The stream byte-serving layer — the in-app HLS proxy, the
-> always-on external-client **ffmpeg** transcode engine, the B-Roll placeholder slate, ffprobe monitoring,
-> GPU hardware acceleration (NVENC / VAAPI / QSV), and the per-playlist Video Configuration — was **removed**
-> to be rebuilt on a new code base. The app still manages playlists / EPG / channels / users and exports
-> M3U / XMLTV, but **no video plays yet**.
+> **The video engine is a rebuilt Rust proxy.** The old always-on **ffmpeg** transcode engine (with the
+> B-Roll slate, ffprobe monitoring, and GPU hardware acceleration) was replaced by a **remux-free Rust
+> data-plane sidecar** — see [Video Proxy Engine](#video-proxy-engine) for the full picture. The one part
+> still pending is remux / transcode (e.g. HDHomeRun TS→HLS).
 
 **Scheduling**
 
@@ -441,7 +467,7 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 # Channel Adapter Architecture : _Pluggable sources_
 
-All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`) never branches per source — every per-source difference is encapsulated in the adapter object. (Adapters still declare `resolveStream`/`proxy`, but those are **dormant** — the byte-serving proxy that called them was removed in the video-engine teardown.)
+All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`) never branches per source — every per-source difference is encapsulated in the adapter object. Each adapter's `resolveStream`/`proxy` are **live** — the Rust data-plane engine calls them per stream through the resolve seam (see [Video Proxy Engine](#video-proxy-engine)).
 
 > [!NOTE]
 > Expand _Channel Adapter Architecture : Flowchart_ to view the visual diagram
@@ -458,7 +484,7 @@ flowchart LR
 
     %% ── Synthetic ──────────────────────────────────────────────
     SYN --> DIRECT["direct\n'Imported'\nPassthrough for user-imported M3U URLs\nidentity resolveStream · any https allowed\nno shell row · channels carry origin:'direct'"]
-    SYN --> HDHOMERUN["hdhomerun\n'HDHomeRun'\nLocal OTA/cable tuner\nCatalog import only (channel lineup)\nresolveStream stubbed — playback removed, rebuild pending\nno shell row · channels carry origin:'hdhomerun'"]
+    SYN --> HDHOMERUN["hdhomerun\n'HDHomeRun'\nLocal OTA/cable tuner\nCatalog import (channel lineup) live\nplayback dormant — needs TS→HLS remux\nno shell row · channels carry origin:'hdhomerun'"]
     SYN --> LOCAL["local\n'Local Now'\nlocalnow://id?slug sentinel\nresolveStream → rotating CDN master\ndynamic SSRF allow · no shell row\nchannels carry origin:'local'"]
 
     %% ── Built-in ────────────────────────────────────────────────
@@ -523,7 +549,7 @@ flowchart LR
 | Adapter | Label | Auth | Resolve Strategy | Self-EPG | Gracenote XWalk |
 |---------|-------|------|-----------------|----------|-----------------|
 | `direct` | Imported | — | Identity (passthrough) | — | — |
-| `hdhomerun` | HDHomeRun | — | Catalog import only (playback removed, rebuild pending) | — | — |
+| `hdhomerun` | HDHomeRun | — | Catalog import (playback dormant — needs remux) | — | — |
 | `local` | Local Now | — | Sentinel → rotating CDN | — | — |
 | `dulo` | dulo.tv | session | `dulo://` sentinel → playbackUrl | — | yes |
 | `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape | yes | yes |
@@ -551,14 +577,14 @@ flowchart TD
     NORMALIZE["adapter.normalize(raw)\n→ SourceChannel docs\n(sourcechannels)"]
     PLAYLIST["toPlaylistChannel\n→ PlaylistChannel docs\n(playlistchannels)\nUser edits preserved via $setOnInsert"]
     AFTERSYNC["adapter.afterSync()\n→ writes epgsources / epgchannels / programs\n(sources with self-EPG only)"]
-    PROXY["stream request → /api/v1/:source/:encUrl\nbyte-serving proxy (proxyHandler + resolveStream)\nREMOVED in the video-engine teardown —\nrebuild pending, no video plays"]
+    PROXY["stream request → /api/v1/:source/:encUrl\nstreamGate → proxyRelay → masq-proxy (Rust)\nresolve seam → resolveStream → fetch · rewrite · pipe\nLIVE (HLS + raw-TS)"]
     SPA["SPA reads playlistchannels\nvia GET /api/playlists/:id/channels"]
 
     PROVISION --> SYNC
     SYNC --> NORMALIZE --> PLAYLIST
     NORMALIZE --> AFTERSYNC
     PLAYLIST --> SPA
-    SPA -.->|"stream request (torn down)"| PROXY
+    SPA -->|"stream request"| PROXY
 ```
 
 # Playlists
@@ -582,10 +608,9 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
   prepends `settings.domain`, so changing the domain in **Settings cascades** to every playlist's URL.
 - **State + schedule.** `state:false` pauses the endpoint (downstream clients get a 404). `interval` + `auto`
   drive the scheduler; a manual **Sync now** is always available.
-- **Streaming is resolve-on-demand (byte-serving rebuild pending).** A channel's stream URL is *derived*
-  (`/api/v1/<source>/<enc-entry>`), never stored. The play-time HLS proxy that resolved the real upstream was
-  torn down in the video-engine teardown, so streams don't serve yet — but every channel still keeps an
-  `origin` source, so a cloned or imported channel will route through the right adapter once playback is rebuilt.
+- **Streaming is resolve-on-demand.** A channel's stream URL is *derived* (`/api/v1/<source>/<enc-entry>`),
+  never stored — the Rust video proxy resolves the real upstream at play time. Every channel keeps its
+  `origin` source, so a cloned or imported channel routes through the right adapter's resolver.
 
 ## What kinds of playlists are possible
 
@@ -595,7 +620,7 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
 | **Clone** | `clone` | Add Playlist → **Clone** — hand-pick channels from any synced source | Independent COPIES in `playlistchannels`; `origin` = the provider source for routing |
 | **URL import** | `url` | Add Playlist → **URL** — fetch a remote `.m3u` / `.m3u8` | Parsed from the upstream; re-syncable via the stored `remoteUrl` |
 | **File upload** | `file` | Add Playlist → **File** — upload a static `.m3u` | Parsed once from the uploaded file |
-| **HDHomeRun** | `hdhomerun` | Add Playlist → **HDHomeRun** — point at a LAN tuner (`deviceUrl`) | Discovered from the device (channel lineup); playback (TS→HLS remux) removed pending the video-engine rebuild |
+| **HDHomeRun** | `hdhomerun` | Add Playlist → **HDHomeRun** — point at a LAN tuner (`deviceUrl`) | Discovered from the device (channel lineup); playback (TS→HLS remux) is dormant pending remux support in the video engine |
 
 Built-in defaults are **Global-endpoint** by default; the custom kinds are **Custom-endpoint** and ride the
 per-playlist export machinery (their own path + guide sibling). All the type tags (`clone`/`file`/`url`/
@@ -710,16 +735,202 @@ Per composed surface:
 5. **Credit** — every contributing source gets `lastXmlAt` + `xmlGeneratedCount++` (or `xmlFailCount++` on
    failure).
 
-# Video Engine
+# Video Proxy Engine
 
-> **Torn down — rebuild pending.** The externalPlayer stream engine that used to live here — the
-> always-on per-channel **ffmpeg** process that served IPTV clients (TiviMate / VLC / Emby / …) on the
-> **`/api/ext/v1`** mount, the loopback-HLS + raw-MPEG-TS outputs, the per-playlist **Video Configuration**,
-> the remux-vs-transcode decision engine, GPU hardware acceleration (NVENC / VAAPI / QSV) with boot-time
-> encoder detection, the B-Roll slate, ffprobe monitoring, and the engine-health → telemetry fork — was
-> **removed** to be rebuilt on a new code base.
->
-> The in-app player's `/api/v1` byte-serving path was removed too; only its inert UI shell remains. Composed
-> per-user `.m3u` files are still written with `/api/ext/v1/<src>/<enc>?token=&pl=` channel URLs (the composer
-> was deliberately left pointing at the old mount), but **those URLs no longer resolve** until the engine is
-> rebuilt. The app still manages playlists / EPG / channels / users and exports M3U / XMLTV; **no video plays yet**.
+> **Scope:** how masqueradarr actually serves video. The old always-on **ffmpeg** engine was replaced by a
+> **remux-free Rust data-plane sidecar** that resolves each stream on demand and pipes it durably to the
+> player. This section covers the two-plane split, the internal seams, the request path, the durability
+> features, the tunable config, and the opt-in public-edge topology.
+
+## Two planes: Node control plane · Rust data plane
+
+Video is split across **two processes** that ship in the same container:
+
+- **Node — the control plane (the brains).** Everything stateful and provider-specific stays in TypeScript:
+  per-source auth (dulo's Supabase session + device fingerprint), scraping (dlhd's rotating-mirror, 3-hop
+  Referer-gated resolve), the SSRF allow-set, the stream-token gate, telemetry authority, and config storage.
+- **Rust — the data plane (the muscle).** A small standalone binary, **`masq-proxy`** (the `proxy/` crate),
+  does the byte work: fetch upstream, follow redirects, rewrite `.m3u8` manifests, and pipe segments — fast,
+  multi-threaded, near-zero-copy. It is **driven per stream by a "grant"** from Node; it never re-derives
+  provider logic.
+
+Node spawns and supervises `masq-proxy` as a child process (auto-restart with backoff). A missing or crashed
+sidecar is **non-fatal** — the app keeps managing playlists / EPG / channels / users and serving M3U / XMLTV
+downloads; only live playback pauses until it's back.
+
+## The internal seams (loopback, shared-secret)
+
+Node and Rust talk over one private loopback channel — `POST /api/internal/*`, guarded by a shared
+`x-masq-secret` (the SPA never calls it; only the Rust engine does). One contract, four jobs:
+
+```mermaid
+graph TD
+    subgraph NodePlane["Node — control plane"]
+      GATE["streamGate<br/>stream-token access ladder"]
+      RELAY["proxyRelay<br/>reverse-proxy + client identity"]
+      SEAM["/api/internal/* · shared secret"]
+      RESOLVE["adapter resolve<br/>dulo auth · dlhd scrape · SourceProxy bag"]
+      TEL["telemetry authority<br/>streamState · ViewSession · WS"]
+      LOGS["log store · proxy category"]
+    end
+    subgraph RustPlane["Rust — data plane · masq-proxy"]
+      ENGINE["serve_stream<br/>fetch · manifest rewrite · segment pipe"]
+      RSL["RSL durability<br/>retry · failover · read-ahead buffer"]
+      TS["tsmux<br/>raw MPEG-TS distribution"]
+    end
+    GATE --> RELAY --> ENGINE
+    ENGINE --> RSL
+    ENGINE --> TS
+    ENGINE -->|"POST /resolve → grant"| SEAM --> RESOLVE
+    ENGINE -->|"POST /telemetry · batched"| SEAM --> TEL
+    ENGINE -->|"POST /log · batched"| SEAM --> LOGS
+    ENGINE -.->|"POST /authorize · EDGE mode only"| SEAM
+```
+
+- **resolve** (`/api/internal/resolve`) — Rust asks Node to resolve a stream; Node runs the adapter logic and
+  returns a per-stream **grant** (`masterUrl`, `upstreamHeaders`, `allowHosts`, segment relabel, the resolved
+  `proxyConfig`, …) that Rust replays for the whole stream.
+- **telemetry** (`/api/internal/telemetry`) — Rust measures the true byte edge and reports batched
+  viewer / byte / phase / close events; Node stays the telemetry authority (Active Streams WS,
+  History / Metrics, persisted `ViewSession`).
+- **log** (`/api/internal/log`) — Rust ships level-gated, request-tagged engine logs into the dedicated
+  **`proxy`** log category — the same "View logs" drawer as everything else.
+- **authorize** (`/api/internal/authorize`) — **edge mode only** (below): the per-request stream-token check
+  when Rust owns the public socket.
+
+The telemetry + log responses both **echo the current log level**, so changing verbosity on the Settings
+screen reaches the sidecar within one flush — no restart.
+
+## How a stream request flows
+
+```mermaid
+graph TD
+    P["Player → /api/ext/v1/&lt;source&gt;/&lt;enc-url&gt; · token · pl"]
+    G["streamGate<br/>valid token? enabled? source allowed?"]
+    R["proxyRelay → 127.0.0.1:8787<br/>inject client identity + secret"]
+    E{"ENTRY or HOP?"}
+    RES["resolve seam → grant<br/>masterUrl · headers · allowHosts · proxyConfig"]
+    F["fetch upstream<br/>retry 502/503/504 · mirror failover"]
+    M{"manifest or segment?"}
+    RW["rewrite child URIs<br/>re-embed token + pl · grow SSRF allow-set"]
+    SEG["relabel + pipe bytes<br/>bounded read-ahead buffer"]
+    C["bytes → player"]
+    X["401 / 403 · plain text"]
+    P --> G
+    G -->|allow| R --> E
+    G -.->|deny| X
+    E -->|ENTRY| RES --> F
+    E -->|HOP| F
+    F --> M
+    M -->|manifest| RW --> C
+    M -->|segment| SEG --> C
+```
+
+1. A player requests `/api/v1/…` (in-app) or `/api/ext/v1/…` (external clients; the mount the composed M3U
+   always emits), carrying the per-user `?token=` and the `?pl=` playlist id.
+2. The **stream-token gate** runs first: valid token? enabled? (for a non-admin) is this source in the user's
+   allow-list? Denials are **plain text** so a media player surfaces them.
+3. On allow, Node **relays** the request to the sidecar and adds the client identity it can see (IP, UA,
+   username) plus the shared secret.
+4. Inside Rust, the **first** request (ENTRY) resolves via the seam to get the grant + master URL; **child**
+   requests (HOP — variant playlists, segments, keys) reuse the cached policy. Manifests are rewritten so
+   every child URL routes back through the proxy with the token re-embedded; segments are relabelled and piped
+   straight through.
+
+## Durability + raw-TS
+
+The Rust engine is built to keep a stream alive on flaky upstreams:
+
+- **Retry** — transient upstream failures (transport errors + `502` / `503` / `504`) are retried with bounded
+  backoff; definitive `4xx` / `5xx` are forwarded verbatim.
+- **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd / dami to re-probe and
+  rotate to a live mirror mid-stream.
+- **Stall detection** — an idle read timeout (`readTimeoutMs`) turns a silent upstream into a clean truncation
+  instead of a hang.
+- **Read-ahead buffer** — a bounded in-memory buffer (`bufferSizeKb`) smooths jitter and fixes the
+  chunked / no-Content-Length byte undercount that used to fake client-side buffering.
+- **Batched telemetry** — events are coalesced and posted off the hot path, so reporting never blocks bytes.
+- **Raw MPEG-TS** — with `outputFormat: 'ts'`, an external-mount stream is served as **one continuous
+  `video/mp2t`** stream (segments concatenated, no remux) for players that prefer a flat TS pipe; fMP4 / AES
+  sources auto-fall back to HLS.
+
+## Tuning knobs — the `proxyconfigs` subsystem
+
+The engine's knobs live in the `proxyconfigs` collection (the `videoconfig` successor), edited in the UI and
+resolved by Node into each grant (**Rust never reads MongoDB**). Two tiers, doc-level fallback:
+
+- **`_id: 'app'`** — the **(Default)** config applied to every playlist. Edited on **Settings → Advanced**.
+- **`_id: 'app_<playlistId>'`** — a **(Custom)** per-playlist override that fully replaces the Default for that
+  playlist. Edited in the **playlist drawer** (`ProxyConfigPanel.vue`, auto-saved).
+
+| Knob | Status | Effect |
+|---|---|---|
+| `headerOverrides` | live | extra upstream headers, merged over the adapter's (operator wins) |
+| `connectTimeoutMs`, `maxRedirects` | live | per-config upstream HTTP client (cached in Rust) |
+| `readTimeoutMs`, `bufferSizeKb` | live | per-stream stall timeout + read-ahead buffer size |
+| `outputFormat` (`hls` \| `ts`) | live | distribution shape (`ts` = continuous MPEG-TS, external mount only) |
+| `segmentCacheTtlSec` | reserved | shipped in the grant, not yet enforced |
+
+## Public edge mode (`MASQ_EDGE`)
+
+By default Node is the **public front door** and Rust is a **loopback-only sidecar** it relays bytes to.
+Setting **`MASQ_EDGE=1`** *inverts* the topology: **Rust binds the public port** and serves streams
+**in-process**, while **reverse-proxying everything else** — the SPA, `/api/*`, the token-free `.m3u` / guide
+downloads, and all four WebSockets — back to Node on a loopback internal port. The public port and `DOMAIN`
+are unchanged, and it's **fully reversible** by clearing the flag (no rebuild).
+
+**Default — `MASQ_EDGE` off (Node is the front door):**
+```mermaid
+graph TD
+    CLIENT["Clients · public :3000"]
+    subgraph Default["MASQ_EDGE off — default"]
+      NODE["Node — public front door<br/>0.0.0.0:3000<br/>SPA · /api/* · WS · gate · relay"]
+      RUST["masq-proxy — loopback sidecar<br/>127.0.0.1:8787<br/>/health · /probe · stream engine"]
+    end
+    CLIENT --> NODE
+    NODE -->|"relay stream bytes"| RUST
+    RUST -->|"seams · loopback"| NODE
+```
+
+**`MASQ_EDGE=1` (Rust is the front door):**
+```mermaid
+graph TD
+    CLIENT["Clients · public :3000"]
+    subgraph Edge["MASQ_EDGE=1 — inverted"]
+      RUST["masq-proxy — public edge<br/>0.0.0.0:3000<br/>serves /api/v1 + /api/ext/v1 in-process · token-gated"]
+      NODE["Node — internal<br/>127.0.0.1:8080<br/>SPA · /api/* · WS · control plane"]
+      LOOP["masq-proxy loopback<br/>127.0.0.1:8787 · /health · /probe · unchanged"]
+    end
+    CLIENT -->|"stream mounts"| RUST
+    CLIENT -->|"SPA · /api/* · .m3u · WebSockets"| RUST
+    RUST -->|"reverse-proxy non-stream + WS splice"| NODE
+    RUST -->|"POST /api/internal/authorize · 30s TTL"| NODE
+```
+
+**What changes under the hood.** In edge mode the token gate can't be Express middleware (Rust owns the
+socket), so it becomes a **per-request check** against a small Rust auth cache backed by
+`POST /api/internal/authorize` — revocation lands within a **30-second TTL** (vs. strictly per-request in the
+default topology). The edge **synthesizes client identity server-side** (forwarded-or-peer IP, real
+User-Agent, gated username) and **ignores inbound `x-masq-*`** headers, so a public client can't spoof them.
+Rust's loopback `:8787` listener (`/health` + `/probe`) is unchanged, so the channel-probe scheduler keeps
+working. Because Rust is now on the critical path for *all* traffic, Node restarts it **unboundedly**.
+
+### When to turn it on (and when not to)
+
+The core idea: **take Node's single-threaded event loop out of the video byte path.** In the default topology
+every streamed byte is handled twice (Rust → Node → client); edge mode removes that hop.
+
+- **Many concurrent or high-bitrate viewers** *(the main reason)* — once you're serving dozens of streams (or
+  a few 4K ones), Node's event loop becomes the throughput ceiling and adds jitter to everything, including
+  the dashboards you monitor from. Rust shovels bytes far better without starving the control plane.
+- **Keep the management UI responsive under streaming load** — Node's loop stays free for the SPA, the live
+  WebSockets, and logs no matter how much video is flowing.
+- **Constrained hardware (Raspberry Pi / small VPS)** — halving the per-byte copies lets the same box serve
+  noticeably more streams.
+- **Lowest-latency, most-durable public path** — the durability engine already lives in Rust; edge mode
+  applies its backpressure straight to the client socket instead of through Node's pipe.
+- **When to leave it off** — a personal setup with a handful of viewers gains nothing, and the default
+  (sidecar) topology is the simpler, more battle-tested path, keeps strictly per-request token revocation, and
+  has a smaller blast radius (Rust is critical-path only for streaming, not everything). Edge mode is build-
+  and unit-verified, but a full runtime end-to-end pass on a live stack is still pending — treat it as an
+  opt-in scale / performance topology, not the default.
