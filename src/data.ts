@@ -147,6 +147,10 @@ export interface ActiveStream {
   viewers: number; peakViewers: number;
   watchers: string[]; // distinct usernames watching (anonymous viewers omitted; never the token)
   viewersByPlayer: { appPlayer: number; externalPlayer: number }; // viewer split: in-app player vs external IPTV clients
+  // The wire format actually being served now — distinct from `container` (the upstream segments' decode format,
+  // MPEG-TS either way) and from the requested proxy outputFormat: 'hls' = segmented HLS (incl. a Raw-TS request
+  // that fell back for an AES/fMP4 upstream), 'ts' = one continuous raw MPEG-TS socket, 'mixed' = both at once.
+  delivery: 'hls' | 'ts' | 'mixed';
   bitrate: number; // Mbps — per-viewer stream bitrate
   bandwidth: number; // Mbps — total egress across viewers
   bytesTotal: number;

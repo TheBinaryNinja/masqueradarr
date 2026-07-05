@@ -19,9 +19,9 @@ import type { RuntimeProxyConfig } from '../proxyconfig/translate.js';
 //    core stays generic (no per-source branch): dulo passes the sentinel through → null; dlhd/dami force
 //    'video/mp2t' on segments → 'video/mp2t'.
 //  · proxyConfig is the resolved (Custom app_<pl> → Default app → env) knob set (proxyconfig/resolve.ts). Rust
-//    applies the LIVE-in-P2 subset (connectTimeoutMs + maxRedirects → its upstream client); the deferred knobs
-//    (read timeout / buffer / segment cache / output format) ride along for P3. headerOverrides are already
-//    folded into upstreamHeaders above, so Rust ignores that field (no double-apply).
+//    applies connectTimeoutMs + maxRedirects (P2 → its upstream client), readTimeoutMs + bufferSizeKb (P3.1/RSL
+//    → per-stream) and outputFormat (hls|ts, P3.2/DST); only segmentCacheTtlSec still rides along unenforced.
+//    headerOverrides are already folded into upstreamHeaders above, so Rust ignores that field (no double-apply).
 
 export interface ResolveGrant {
   ok: true;

@@ -289,12 +289,15 @@ pub async fn serve_stream(
         .to_string();
 
     if is_manifest(&final_url, &fetch_url, &ct) {
-        // Bound the manifest read by the same idle timeout (a manifest is small; a hang here is a stalled
-        // upstream → a transient failure, not a definitive one).
-        let read = resp.text();
-        let text_body = if read_timeout_ms > 0 {
+        // Bound the body read by the same idle timeout (a manifest is small; a hang here is a stalled
+        // upstream → a transient failure, not a definitive one). Read RAW BYTES, not resp.text(): a CDN can
+        // mislabel a BINARY body with a manifest content-type (Pluto serves its AES-128 ts_aes/*.key files as
+        // application/vnd.apple.mpegurl), and resp.text() would lossily UTF-8-mangle those 16 bytes into U+FFFD
+        // before we can tell it is not a manifest.
+        let read = resp.bytes();
+        let raw_body = if read_timeout_ms > 0 {
             match tokio::time::timeout(Duration::from_millis(read_timeout_ms), read).await {
-                Ok(Ok(t)) => t,
+                Ok(Ok(b)) => b,
                 Ok(Err(err)) => {
                     log::warn("proxy", &rid, || format!("read manifest failed: {err}"));
                     return text(502, &format!("read manifest failed: {err}"));
@@ -309,13 +312,27 @@ pub async fn serve_stream(
             }
         } else {
             match read.await {
-                Ok(t) => t,
+                Ok(b) => b,
                 Err(err) => {
                     log::warn("proxy", &rid, || format!("read manifest failed: {err}"));
                     return text(502, &format!("read manifest failed: {err}"));
                 }
             }
         };
+        // is_manifest() trusts the upstream content-type / URL suffix, but a CDN can serve a NON-manifest under
+        // the manifest MIME (Pluto's ts_aes/*.key files are 16 raw bytes labeled application/vnd.apple.mpegurl).
+        // Confirm by CONTENT: a real HLS playlist MUST begin with #EXTM3U (RFC 8216 §4.3.1). If it does not,
+        // this is a mislabeled opaque blob (the AES key) — serve it VERBATIM as octet-stream. Do NOT rewrite it
+        // (there is no m3u8 to rewrite; the rewriter would corrupt the key → no playback) and do NOT apply
+        // relabel_segment (a video MIME — a key is neither video nor a manifest). This is the byte-for-byte
+        // passthrough the working AES channels already get when their CDN labels the key octet-stream.
+        if !sniff_m3u8(&raw_body) {
+            log::info("proxy", &rid, || {
+                format!("mpegurl-labeled body is not a manifest ({} bytes) — serving verbatim as octet-stream", raw_body.len())
+            });
+            return raw(200, "application/octet-stream", raw_body.to_vec());
+        }
+        let text_body = String::from_utf8_lossy(&raw_body).into_owned();
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
@@ -489,6 +506,16 @@ fn is_manifest(final_url: &Url, orig: &str, ct: &str) -> bool {
     }
 }
 
+/// Content sniff: does this body actually begin with the `#EXTM3U` tag that RFC 8216 §4.3.1 requires as the
+/// first line of every Master/Media Playlist? Tolerates a leading UTF-8 BOM and ASCII whitespace. A raw AES-128
+/// key (or any other binary a CDN mislabels as application/vnd.apple.mpegurl) never matches, so the caller can
+/// serve it verbatim instead of lossily "rewriting" it as a playlist.
+fn sniff_m3u8(bytes: &[u8]) -> bool {
+    let b = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes); // optional UTF-8 BOM
+    let start = b.iter().position(|c| !c.is_ascii_whitespace()).unwrap_or(b.len());
+    b[start..].starts_with(b"#EXTM3U")
+}
+
 pub(crate) fn is_private_host(host: &str) -> bool {
     if host.eq_ignore_ascii_case("localhost") {
         return true;
@@ -630,4 +657,29 @@ fn manifest_response(body: String) -> Response {
         .header("cache-control", "no-store")
         .body(Body::from(body))
         .unwrap()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sniff_m3u8_truth_table() {
+        // Real manifests — accepted (a mislabeled content-type must not stop these from rewriting).
+        assert!(sniff_m3u8(b"#EXTM3U\n#EXT-X-VERSION:3\n"));
+        assert!(sniff_m3u8(b"\xEF\xBB\xBF#EXTM3U\n")); // UTF-8 BOM prefix
+        assert!(sniff_m3u8(b"\r\n  #EXTM3U\n")); // leading blank line + indent
+        assert!(sniff_m3u8(b"\xEF\xBB\xBF\n#EXTM3U\n")); // BOM then blank line
+
+        // A 16-byte Pluto AES-128 key mislabeled application/vnd.apple.mpegurl — rejected (the bug).
+        let key: [u8; 16] = [
+            0x8f, 0x2a, 0x00, 0xff, 0x13, 0x37, 0xde, 0xad, 0xbe, 0xef, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+        ];
+        assert!(!sniff_m3u8(&key));
+
+        // Other non-manifest / mislabeled bodies — rejected.
+        assert!(!sniff_m3u8(b"")); // empty body
+        assert!(!sniff_m3u8(&[0x47u8; 188])); // a raw MPEG-TS packet (0x47 sync) mislabeled as mpegurl
+        assert!(!sniff_m3u8(b"#EXTINF:6.0,")); // starts with '#' but not the #EXTM3U tag
+    }
 }

@@ -87,6 +87,14 @@ function externalClientName(ua: string): string {
 function playerLabel(c: StreamClient): string {
   return c.playerType === 'externalPlayer' ? externalClientName(c.userAgent) : 'In-App';
 }
+// EFFECTIVE delivery format the proxy is serving RIGHT NOW — the observable truth behind the HLS/Raw-TS switch,
+// and deliberately NOT the same as the "Container" decode label (which is the upstream segments' format, MPEG-TS
+// either way). 'ts' = one continuous raw MPEG-TS socket (tsmux engaged); 'hls' = segmented HLS, which ALSO covers
+// a Raw-TS request the sidecar fell back on (encrypted / fMP4 / unreachable upstream); 'mixed' = both at once.
+// So: set Raw-TS, still see "HLS" here ⇒ it fell back (e.g. Pluto's AES-encrypted feeds).
+function deliveryLabel(d: ActiveStream['delivery']): string {
+  return d === 'ts' ? 'Raw TS' : d === 'mixed' ? 'Mixed (HLS + TS)' : 'HLS';
+}
 
 // Real rolling bitrate series from the WS ticks — finite samples only, never a fabricated flat/zero
 // series (a zero value-range freezes the liveline chart). LivelineChart shows a placeholder until ≥2
@@ -303,6 +311,12 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   <Pill v-else-if="sel.status === 'bad'" tone="bad"><Icon name="warn" :size="11" />offline</Pill>
                   <Pill v-else tone="warn"><Icon name="warn" :size="11" />{{ sel.phase }}</Pill>
                 </span>
+                <!-- Effective wire format being served now (Raw-TS socket vs segmented HLS) — the observable
+                     side of the outputFormat switch; a Raw-TS request that fell back reads "HLS". -->
+                <Pill :tone="sel.delivery === 'ts' ? 'cyan' : sel.delivery === 'mixed' ? 'warn' : 'system'"
+                  :title="`Wire format served now: ${deliveryLabel(sel.delivery)} — distinct from the Container decode label`">
+                  {{ deliveryLabel(sel.delivery) }}
+                </Pill>
               </div>
               <div class="mono muted" style="font-size: var(--fs-xs); margin-top: 4px;">
                 #{{ chOf(sel).channelNo ?? '—' }} · {{ chOf(sel).group }} · stream-id <span style="color: var(--text-1);">{{ sel.id }}</span>
@@ -339,6 +353,7 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <div class="k">Video</div><div class="v mono">{{ selTech?.video }}</div>
                 <div class="k">Audio</div><div class="v mono">{{ selTech?.audio }}</div>
                 <div class="k">Container</div><div class="v mono">{{ selTech?.container }}</div>
+                <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(sel.delivery) }}</div>
                 <div class="k">Resolution</div><div class="v mono">{{ selTech?.resolution }}<template v-if="selTech?.fps"> @ {{ selTech?.fps }}fps</template></div>
                 <template v-if="selTech?.probed">
                   <div class="k">Pixel format</div><div class="v mono">{{ selTech.pixFmt ?? '—' }}</div>
@@ -515,6 +530,7 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <div class="k">Video</div><div class="v mono">{{ viewTech?.video }}</div>
                 <div class="k">Audio</div><div class="v mono">{{ viewTech?.audio }}</div>
                 <div class="k">Container</div><div class="v mono">{{ viewTech?.container }}</div>
+                <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(viewStream.delivery) }}</div>
                 <div class="k">Resolution</div><div class="v mono">{{ viewTech?.resolution }}<template v-if="viewTech?.fps"> @ {{ viewTech?.fps }}fps</template></div>
                 <template v-if="viewTech?.probed">
                   <div class="k">Pixel format</div><div class="v mono">{{ viewTech.pixFmt ?? '—' }}</div>

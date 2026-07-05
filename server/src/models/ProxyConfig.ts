@@ -21,22 +21,24 @@ import { Schema, model } from 'mongoose';
 //   · maxRedirects       — redirect-follow cap on upstream fetches. LIVE now (Rust client redirect policy).
 //   · headerOverrides    — operator header overrides merged ON TOP of the adapter's upstreamHeaders. LIVE now
 //                          (merged Node-side in the grant, so Rust needs no change).
-//   · readTimeoutMs      — idle/read timeout. Declared + delivered in the grant; ENFORCED in P3 (RSL).
-//   · bufferSizeKb       — bounded upstream→client buffer size. Declared; ENFORCED in P3 (RSL mpsc buffering).
-//   · segmentCacheTtlSec — segment cache TTL. Declared; ENFORCED in P3 (DST).
-//   · outputFormat       — distribution container ('hls' only today). Declared; other formats need P3 DST/RMX.
-// Knobs whose phase hasn't landed are stored + surfaced + shipped in the grant but not yet applied — an
-// explicit `null` default marks the not-yet-wired numeric knobs (the repo convention).
+//   · readTimeoutMs      — idle/read timeout. LIVE (P3.1/RSL — enforced per-stream in the streaming loop).
+//   · bufferSizeKb       — bounded upstream→client buffer size. LIVE (P3.1/RSL — bounded mpsc read-ahead).
+//   · outputFormat       — distribution shape: 'hls' (segmented) | 'ts' (continuous raw MPEG-TS on the ext
+//                          mount). LIVE (P3.2/DST); enc/fMP4/unreachable falls back to HLS, observable as the
+//                          `delivery` field on Active Streams.
+//   · segmentCacheTtlSec — segment cache TTL. RESERVED — the ONE knob still shipped but not yet applied.
+// The reserved knob is stored + surfaced + shipped in the grant but not yet applied — an explicit `null`
+// default marks a not-yet-wired numeric knob (the repo convention).
 
 export interface ProxyConfigDoc {
   _id: string; // 'app' (Default) or 'app_<playlistId>' (Custom per-playlist override)
   connectTimeoutMs: number; // upstream connect-handshake timeout (ms). LIVE in P2.
-  readTimeoutMs: number | null; // idle/read timeout (ms); null = none. Delivered in the grant, enforced in P3.
-  bufferSizeKb: number | null; // bounded upstream→client buffer (KiB); null = unbounded. Enforced in P3.
+  readTimeoutMs: number | null; // idle/read timeout (ms); null = none. LIVE (P3.1/RSL).
+  bufferSizeKb: number | null; // bounded upstream→client buffer (KiB); null = unbounded. LIVE (P3.1/RSL).
   maxRedirects: number; // upstream redirect-follow cap. LIVE in P2.
   headerOverrides: Record<string, string>; // operator upstream-header overrides; merged into the grant. LIVE in P2.
-  outputFormat: string; // distribution container ('hls' today); other formats need P3 DST/RMX.
-  segmentCacheTtlSec: number | null; // segment cache TTL (s); null = no-store (today's behavior). Enforced in P3.
+  outputFormat: string; // distribution shape 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount). LIVE (P3.2/DST); enc/fMP4→HLS.
+  segmentCacheTtlSec: number | null; // segment cache TTL (s); null = no-store (today's behavior). RESERVED (only unapplied knob).
 }
 
 export const PROXY_CONFIG_DEFAULT_ID = 'app'; // the (Default) singleton row id

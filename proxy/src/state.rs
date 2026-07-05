@@ -124,8 +124,9 @@ pub struct Grant {
     #[serde(rename = "allowPrivate")]
     pub allow_private: bool,
     // PXY-2: the resolved (Custom→Default→env) proxy config. Node already merged headerOverrides into
-    // upstreamHeaders, so this struct declares only the two CLIENT-level knobs Rust applies in P2; serde
-    // silently ignores the deferred fields (readTimeoutMs/bufferSizeKb/segmentCacheTtlSec/outputFormat).
+    // upstreamHeaders, so this struct declares the knobs Rust applies: connectTimeoutMs + maxRedirects (P2,
+    // client-level), readTimeoutMs + bufferSizeKb (P3.1/RSL, per-stream) and outputFormat (hls|ts, P3.2/DST).
+    // serde silently ignores only the still-reserved segmentCacheTtlSec.
     #[serde(rename = "proxyConfig", default)]
     pub proxy_config: ProxyConfigWire,
     // (Node's grant also carries `isEntry`; the sidecar decides entry/hop from the path, so serde ignores it.)

@@ -518,6 +518,11 @@ export interface ChannelTelemetry {
   peakViewers: number;
   watchers: string[]; // distinct, sorted usernames among the bound viewers (anonymous viewers omitted)
   viewersByPlayer: { appPlayer: number; externalPlayer: number }; // viewer split by player kind (a channel can be mixed)
+  // The EFFECTIVE wire format being served RIGHT NOW (not the requested outputFormat): 'ts' iff a raw-TS
+  // socket viewer is bound (tsmux engaged), 'hls' for poll viewers — INCLUDING a Raw-TS request the sidecar
+  // couldn't honor (AES/fMP4/unreachable → tsmux fell back to the HLS rewrite), 'mixed' when both are present.
+  // Derived from socketBound, so a fallback is directly observable: request 'ts', still see 'hls' ⇒ it fell back.
+  delivery: 'hls' | 'ts' | 'mixed';
   egressBps: number; // total bytes/sec across all viewers
   bitrateBps: number; // per-viewer stream bitrate (egress / viewers)
   bytesTotal: number;
@@ -545,6 +550,12 @@ export function snapshotRaw(): ChannelTelemetry[] {
       appPlayer: group.filter((c) => c.playerType === 'appPlayer').length,
       externalPlayer: group.filter((c) => c.playerType === 'externalPlayer').length,
     };
+    // Effective delivery: a raw-TS client holds one socket (socketBound); an HLS client polls. A Raw-TS request
+    // the sidecar couldn't honor (AES/fMP4/unreachable → tsmux fell back) serves segmented HLS, so its viewer
+    // polls and reads 'hls' here — which is exactly what surfaces the fallback in the UI.
+    const hasSocket = group.some((c) => c.socketBound);
+    const hasPoll = group.some((c) => !c.socketBound);
+    const delivery: 'hls' | 'ts' | 'mixed' = hasSocket && hasPoll ? 'mixed' : hasSocket ? 'ts' : 'hls';
     out.push({
       source: group[0].source,
       entryUrl: group[0].entryUrl,
@@ -553,6 +564,7 @@ export function snapshotRaw(): ChannelTelemetry[] {
       peakViewers: Math.max(ch?.peakViewers ?? 0, group.length),
       watchers,
       viewersByPlayer,
+      delivery,
       egressBps,
       bitrateBps: egressBps / group.length,
       bytesTotal,

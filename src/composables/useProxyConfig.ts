@@ -11,12 +11,12 @@ import { reactive, ref, watch, nextTick } from 'vue';
 
 export interface ProxyConfigState {
   connectTimeoutMs: number; // LIVE in P2 (Rust upstream client connect timeout)
-  readTimeoutMs: number | null; // reserved — persisted + shipped in the grant, enforced in a later phase
-  bufferSizeKb: number | null; // reserved (P3)
+  readTimeoutMs: number | null; // LIVE (P3.1/RSL — idle/read timeout enforced per-stream)
+  bufferSizeKb: number | null; // LIVE (P3.1/RSL — bounded upstream→client read-ahead buffer)
   maxRedirects: number; // LIVE in P2 (Rust upstream redirect cap)
   headerOverrides: Record<string, string>; // LIVE in P2 (merged into the grant's upstream headers)
-  outputFormat: string; // reserved — only 'hls' today
-  segmentCacheTtlSec: number | null; // reserved (P3)
+  outputFormat: string; // LIVE (P3.2/DST) — 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount); enc/fMP4→HLS
+  segmentCacheTtlSec: number | null; // reserved (the only unapplied knob)
 }
 
 export type ProxyConfigSaveState = 'idle' | 'saving' | 'saved' | 'error';

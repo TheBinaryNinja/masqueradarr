@@ -70,6 +70,10 @@ export interface DisplayStream {
   peakViewers: number;
   watchers: string[]; // distinct usernames watching (anonymous viewers omitted; never carries the token)
   viewersByPlayer: { appPlayer: number; externalPlayer: number }; // viewer split by player kind (in-app vs external IPTV client)
+  // The wire format ACTUALLY being served now (distinct from the requested outputFormat + from the `container`
+  // decode label): 'ts' = one continuous raw MPEG-TS socket (tsmux engaged), 'hls' = segmented HLS (incl. a
+  // Raw-TS request that fell back for an AES/fMP4/unreachable upstream), 'mixed' = both at once. See streamTelemetry.
+  delivery: 'hls' | 'ts' | 'mixed';
   bitrate: number; // Mbps — per-viewer stream bitrate
   bandwidth: number; // Mbps — total egress across all viewers
   bytesTotal: number;
@@ -145,6 +149,7 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       peakViewers: r.peakViewers,
       watchers: r.watchers,
       viewersByPlayer: r.viewersByPlayer,
+      delivery: r.delivery,
       bitrate: mbps(r.bitrateBps),
       bandwidth: mbps(r.egressBps),
       bytesTotal: r.bytesTotal,
