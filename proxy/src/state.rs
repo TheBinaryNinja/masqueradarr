@@ -198,6 +198,10 @@ impl AppState {
             format!("{node_url}/api/internal/telemetry"),
             secret.clone(),
         ));
+        // LOG: install the global structured-logging sink + its own batched flusher (seeds the level from
+        // MASQ_LOG_LEVEL, ships to /api/internal/log, learns live level changes from the flush echo). A
+        // cross-cutting global (like Node's `logger`) so every module logs without threading state.
+        crate::log::init(client.clone(), format!("{node_url}/api/internal/log"), secret.clone());
         Self {
             client,
             proxy_client,
@@ -310,6 +314,10 @@ impl AppState {
         entry_url: &str,
         pl: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), String> {
+        let rid = crate::log::rid(source, entry_url);
+        crate::log::trace("resolve", &rid, || {
+            format!("seam POST /resolve source={source} entry={}", crate::proxy::host_of(entry_url))
+        });
         let body = serde_json::json!({ "source": source, "url": entry_url, "pl": pl });
         let resp = self
             .client
@@ -341,6 +349,16 @@ impl AppState {
                 policy.hosts.write().unwrap().insert(h.to_lowercase());
             }
         }
+        crate::log::info("resolve", &rid, || {
+            format!(
+                "grant: target={} relabel={} outputFormat={} connectTimeout={}ms maxRedirects={}",
+                crate::proxy::host_of(&grant.target),
+                policy.relabel_segment.read().unwrap().as_deref().unwrap_or("passthrough"),
+                policy.output_format.read().unwrap(),
+                policy.connect_timeout_ms.load(Ordering::Relaxed),
+                policy.max_redirects.load(Ordering::Relaxed),
+            )
+        });
         Ok((policy, grant.target))
     }
 
@@ -458,6 +476,10 @@ async fn telemetry_flusher(
             }
         }
         let body = serde_json::json!({ "events": batch });
-        let _ = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await;
+        // The telemetry response echoes the current { logLevel } too — apply it so a level change reaches the
+        // sidecar even when only telemetry (not logs) is flowing (e.g. an active stream at level 1).
+        if let Ok(resp) = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await {
+            crate::log::apply_level_response(resp).await;
+        }
     }
 }

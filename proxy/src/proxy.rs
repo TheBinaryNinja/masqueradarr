@@ -19,6 +19,7 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use url::Url;
 
+use crate::log;
 use crate::manifest::{enc, rewrite_manifest, RewriteResult};
 use crate::state::{AppState, SourcePolicy};
 use crate::stream::{segment_body, TelemetryCtx};
@@ -120,22 +121,49 @@ pub async fn serve_stream(
         "appPlayer"
     };
 
+    // Lineage id for this whole viewing session — derived from (source, entry) so the ENTRY + all its HOPs +
+    // segments share it (a HOP's entry comes from &e=). rid stitches the drawer's per-channel trace together.
+    let entry_for_rid = if is_hop {
+        e_param.clone().unwrap_or_default()
+    } else {
+        decoded.clone()
+    };
+    let rid = log::rid(source, &entry_for_rid);
+    // ▶ the request lands (info milestone). The decoded target + who's asking is level-3 lineage.
+    log::info("proxy", &rid, || {
+        format!("▶ {method} {player} src={source} {}", if is_hop { "hop" } else { "entry" })
+    });
+    log::trace("proxy", &rid, || {
+        format!(
+            "request url={decoded} ip={ip} ua={} token={} pl={}",
+            if ua.is_empty() { "-" } else { ua.as_str() },
+            if token.is_some() { "yes" } else { "no" },
+            pl.as_deref().unwrap_or("-"),
+        )
+    });
+
     // Resolve the policy + the URL to fetch + the stream's entry (for telemetry attribution). fetch_url is `mut`
     // so the RSL ENTRY failover below can swap in a freshly-resolved master when the first target is dead.
     let (policy, mut fetch_url, stream_entry) = if is_hop {
         let policy = match state.get(source) {
-            Some(p) => p,
+            Some(p) => {
+                log::trace("proxy", &rid, || format!("hop → cached policy, fetch {}", host_of(&decoded)));
+                p
+            }
             None => {
                 // Cold hop (sidecar restart / eviction): re-resolve using the propagated entry.
                 let entry = e_param.clone().unwrap_or_default();
                 if entry.is_empty() {
+                    log::error("proxy", &rid, || "cold hop with no propagated entry (&e=) — cannot resolve".to_string());
                     return text(400, "bad request: no cached stream");
                 }
+                log::info("proxy", &rid, || "cold hop (no cached policy) — re-resolving from entry".to_string());
                 match state.resolve_entry(source, &entry, pl.as_deref()).await {
                     Ok((p, _)) => p,
                     Err(err) => {
                         // A cold-hop re-resolve failed (session/mirror gone) — the channel can't produce a
                         // stream, so mark it failed (a resolve failure has no HTTP status → 502 sentinel).
+                        log::error("proxy", &rid, || format!("cold-hop re-resolve failed: {err}"));
                         state.report(serde_json::json!({
                             "kind": "upstream", "ok": false, "status": 502, "source": source, "entryUrl": entry.as_str(),
                         }));
@@ -147,10 +175,14 @@ pub async fn serve_stream(
         (policy, decoded.clone(), e_param.clone().unwrap_or_default())
     } else {
         match state.resolve_entry(source, &decoded, pl.as_deref()).await {
-            Ok((p, target)) => (p, target, decoded.clone()),
+            Ok((p, target)) => {
+                log::info("proxy", &rid, || format!("entry resolved → {}", host_of(&target)));
+                (p, target, decoded.clone())
+            }
             Err(err) => {
                 // The channel could not be resolved (unknown source / dead upstream / expired auth) — mark it
                 // failed (a resolve failure has no HTTP status → 502 sentinel → noteFailed → `failed`).
+                log::error("proxy", &rid, || format!("entry resolve failed: {err}"));
                 state.report(serde_json::json!({
                     "kind": "upstream", "ok": false, "status": 502, "source": source, "entryUrl": decoded.as_str(),
                 }));
@@ -161,6 +193,7 @@ pub async fn serve_stream(
 
     // SSRF gate on direct hops only (the entry's target is trusted resolve output).
     if is_hop && !ssrf_ok(&policy, &fetch_url) {
+        log::warn("proxy", &rid, || format!("SSRF reject: {} not in the source allowlist", host_of(&fetch_url)));
         return text(400, "bad request: upstream host not allowed");
     }
 
@@ -175,7 +208,8 @@ pub async fn serve_stream(
         policy.connect_timeout_ms.load(Ordering::Relaxed),
         policy.max_redirects.load(Ordering::Relaxed),
     );
-    let mut resp = fetch_with_retry(&client, &fetch_url, &build_headers(&policy), read_timeout_ms)
+    let fetch_what = if is_hop { "hop" } else { "entry" };
+    let mut resp = fetch_with_retry(&client, &fetch_url, &build_headers(&policy), read_timeout_ms, &rid, fetch_what)
         .await
         .ok();
 
@@ -188,6 +222,7 @@ pub async fn serve_stream(
     //    fail this request (the player refetches).
     if resp.is_none() {
         if is_hop {
+            log::warn("proxy", &rid, || "hop fetch failed — kicking async policy refresh (client refetches)".to_string());
             if !stream_entry.is_empty() {
                 let (st, src, ent, plc) =
                     (state.clone(), source.to_string(), stream_entry.clone(), pl.clone());
@@ -196,6 +231,7 @@ pub async fn serve_stream(
                 });
             }
         } else {
+            log::warn("proxy", &rid, || "entry fetch failed — forcing a fresh resolve (mirror failover)".to_string());
             state.invalidate_target(source, &stream_entry);
             if let Ok((_p, target2)) = state.resolve_fresh(source, &stream_entry, pl.as_deref()).await {
                 let client2 = state.client_for(
@@ -203,8 +239,9 @@ pub async fn serve_stream(
                     policy.max_redirects.load(Ordering::Relaxed),
                 );
                 if let Ok(r) =
-                    fetch_with_retry(&client2, &target2, &build_headers(&policy), read_timeout_ms).await
+                    fetch_with_retry(&client2, &target2, &build_headers(&policy), read_timeout_ms, &rid, "failover").await
                 {
+                    log::info("proxy", &rid, || format!("failover recovered → {}", host_of(&target2)));
                     fetch_url = target2;
                     resp = Some(r);
                 }
@@ -217,6 +254,7 @@ pub async fn serve_stream(
         None => {
             // Retries (+ entry failover) exhausted → a transport-level failure with no HTTP response → a
             // TRANSIENT upstream failure (status 0 ⇒ noteFailure), then a 502 to the client.
+            log::error("proxy", &rid, || "upstream fetch failed after retries + failover → 502".to_string());
             state.report(serde_json::json!({
                 "kind": "upstream", "ok": false, "status": 0, "source": source, "entryUrl": stream_entry.as_str(),
             }));
@@ -228,6 +266,7 @@ pub async fn serve_stream(
     if !(200..300).contains(&status) {
         // A DEFINITIVE non-2xx response (404 = not live, 403 = gate, 5xx = upstream error). Report it so the
         // phase machine drops straight to `failed` (a real status ⇒ noteFailed), then forward it verbatim.
+        log::warn("proxy", &rid, || format!("upstream {status} (definitive) → forwarding verbatim"));
         state.report(serde_json::json!({
             "kind": "upstream", "ok": false, "status": status, "source": source, "entryUrl": stream_entry.as_str(),
         }));
@@ -256,8 +295,12 @@ pub async fn serve_stream(
         let text_body = if read_timeout_ms > 0 {
             match tokio::time::timeout(Duration::from_millis(read_timeout_ms), read).await {
                 Ok(Ok(t)) => t,
-                Ok(Err(err)) => return text(502, &format!("read manifest failed: {err}")),
+                Ok(Err(err)) => {
+                    log::warn("proxy", &rid, || format!("read manifest failed: {err}"));
+                    return text(502, &format!("read manifest failed: {err}"));
+                }
                 Err(_) => {
+                    log::warn("proxy", &rid, || "read manifest timed out (idle) → transient failure".to_string());
                     state.report(serde_json::json!({
                         "kind": "upstream", "ok": false, "status": 0, "source": source, "entryUrl": stream_entry.as_str(),
                     }));
@@ -267,20 +310,26 @@ pub async fn serve_stream(
         } else {
             match read.await {
                 Ok(t) => t,
-                Err(err) => return text(502, &format!("read manifest failed: {err}")),
+                Err(err) => {
+                    log::warn("proxy", &rid, || format!("read manifest failed: {err}"));
+                    return text(502, &format!("read manifest failed: {err}"));
+                }
             }
         };
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
         // the HLS rewrite below (text_body + final_url are cloned so the fallback still owns them).
+        log::trace("proxy", &rid, || format!("manifest received ({} bytes) from {}", text_body.len(), host_of(final_url.as_str())));
         if !is_hop && mount_path == "/api/ext/v1" && policy.output_format.read().unwrap().as_str() == "ts" {
+            log::info("proxy", &rid, || "outputFormat=ts — handing off to the raw-TS producer".to_string());
             let ts_ctx = crate::tsmux::TsContext {
                 state: state.clone(),
                 policy: policy.clone(),
                 source: source.to_string(),
                 entry: stream_entry.clone(),
                 pl: pl.clone(),
+                rid: rid.clone(),
                 client: state.client_for(
                     policy.connect_timeout_ms.load(Ordering::Relaxed),
                     policy.max_redirects.load(Ordering::Relaxed),
@@ -295,12 +344,14 @@ pub async fn serve_stream(
             {
                 return ts;
             }
+            log::info("proxy", &rid, || "raw-TS not eligible (fMP4/AES/no variant) — falling back to HLS rewrite".to_string());
         }
 
         let prefix = format!("{mount_path}/{source}/h/");
         let suffix = build_child_query(token.as_deref(), pl.as_deref(), &stream_entry);
         let RewriteResult { body, hosts, media } = rewrite_manifest(&text_body, &final_url, &prefix, &suffix);
         // Grow the source's SSRF allowlist with every host referenced in the manifest (dynamic-allow).
+        let grown = hosts.len();
         if !hosts.is_empty() {
             let mut set = policy.hosts.write().unwrap();
             for h in hosts {
@@ -311,6 +362,15 @@ pub async fn serve_stream(
         // Node merges the master + variant polls per channel and humanizes for Active Streams. Only emit when
         // something was learned so a plain media playlist doesn't spam empty events.
         if media.any() {
+            log::trace("proxy", &rid, || {
+                format!(
+                    "decode metadata: res={} codecs={} fps={} container={}",
+                    media.resolution.as_deref().unwrap_or("-"),
+                    media.codecs.as_deref().unwrap_or("-"),
+                    media.frame_rate.as_deref().unwrap_or("-"),
+                    media.container.as_deref().unwrap_or("-"),
+                )
+            });
             state.report(serde_json::json!({
                 "kind": "media", "source": source, "entryUrl": stream_entry.as_str(),
                 "resolution": media.resolution, "codecs": media.codecs,
@@ -319,6 +379,9 @@ pub async fn serve_stream(
         }
         // Telemetry: a served manifest poll is the viewer heartbeat (also carries the manifest byte count) AND
         // a 2xx upstream success that drives the phase machine establishing→live.
+        log::info("proxy", &rid, || {
+            format!("manifest served ({} bytes{})", body.len(), if grown > 0 { format!(", +{grown} host(s) allowed") } else { String::new() })
+        });
         state.report(serde_json::json!({
             "kind": "viewer", "source": source, "entryUrl": stream_entry.as_str(),
             "ip": ip, "ua": ua, "username": username, "playerType": player,
@@ -346,12 +409,15 @@ pub async fn serve_stream(
             }
         });
     if method == Method::HEAD {
+        log::trace("proxy", &rid, || format!("HEAD segment → 200 {out_ct} (no body)"));
         return raw(200, &out_ct, Vec::new());
     }
+    log::trace("proxy", &rid, || format!("streaming segment as {out_ct} from {}", host_of(&fetch_url)));
     let ctx = TelemetryCtx {
         state: state.clone(),
         source: source.to_string(),
         entry: stream_entry.clone(),
+        rid: rid.clone(),
         ip,
         ua,
         username,
@@ -486,6 +552,8 @@ pub(crate) async fn fetch_with_retry(
     url: &str,
     headers: &reqwest::header::HeaderMap,
     read_timeout_ms: u64,
+    rid: &str,
+    what: &str,
 ) -> Result<reqwest::Response, String> {
     let idle = if read_timeout_ms > 0 {
         Some(Duration::from_millis(read_timeout_ms))
@@ -496,8 +564,10 @@ pub(crate) async fn fetch_with_retry(
     for attempt in 0..=MAX_UPSTREAM_RETRIES {
         if attempt > 0 {
             let backoff = RETRY_BACKOFF_MS.get((attempt - 1) as usize).copied().unwrap_or(500);
+            log::warn("proxy", rid, || format!("{what} attempt {attempt} failed ({last_err}) — retry in {backoff}ms"));
             tokio::time::sleep(Duration::from_millis(backoff)).await;
         }
+        log::trace("proxy", rid, || format!("{what} fetch → {}", host_of(url)));
         let send = client.get(url).headers(headers.clone()).send();
         let res = match idle {
             Some(d) => match tokio::time::timeout(d, send).await {
@@ -516,6 +586,7 @@ pub(crate) async fn fetch_with_retry(
                     last_err = format!("upstream {s}");
                     continue;
                 }
+                log::trace("proxy", rid, || format!("{what} → {s}"));
                 return Ok(resp);
             }
             Err(e) => {
@@ -525,6 +596,14 @@ pub(crate) async fn fetch_with_retry(
         }
     }
     Err(last_err)
+}
+
+/// The host of a URL for compact log lines (a full stream URL is long + noisy); `?` if unparseable.
+pub(crate) fn host_of(url: &str) -> String {
+    Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(|h| h.to_string()))
+        .unwrap_or_else(|| "?".to_string())
 }
 
 pub(crate) fn text(code: u16, msg: &str) -> Response {

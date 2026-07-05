@@ -452,6 +452,18 @@ export async function syncLive(
   return { report, live: result.live, count: result.count };
 }
 
+// One-time, idempotent migration: the settings singleton's `dnsLogLevel` field was renamed to `logLevel`
+// (repurposed from DNS-only trace verbosity into the ONE global log level governing the app + the Rust proxy
+// engine). $rename carries the operator's existing value across so an upgraded install keeps its chosen level
+// (rather than silently resetting to the default 2). Matched by `dnsLogLevel: {$exists:true}` so it no-ops on
+// a fresh DB or an already-migrated doc; if both fields somehow exist, $rename keeps the old value (intended).
+async function migrateLogLevelField(): Promise<void> {
+  await Settings.updateOne(
+    { _id: SETTINGS_ID, dnsLogLevel: { $exists: true } },
+    { $rename: { dnsLogLevel: 'logLevel' } },
+  );
+}
+
 /**
  * Run once at startup. Reconcile indexes (repurposed collections), run the idempotent data migrations, and
  * seed the singleton settings doc from env. It NO LONGER registers a shell Playlist row for every source —
@@ -540,6 +552,15 @@ export async function bootInitSources(): Promise<void> {
     await purgeEpgXmlCronjobs();
   } catch (err) {
     logger.warn('seed', `epg-xml cronjob purge failed (continuing): ${(err as Error).message}`);
+  }
+
+  // Rename the settings singleton's legacy `dnsLogLevel` → `logLevel` (idempotent; no-op on a fresh/migrated
+  // DB). Runs BEFORE the settings seed + the post-connect applyDnsFromSettings('mongo') read so the operator's
+  // existing verbosity is preserved under the new field name. Non-fatal.
+  try {
+    await migrateLogLevelField();
+  } catch (err) {
+    logger.warn('seed', `logLevel field migration failed (continuing): ${(err as Error).message}`);
   }
 
   // Seed the singleton settings doc from env defaults (non-fatal) — a later on-demand provision (the Add

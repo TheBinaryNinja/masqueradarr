@@ -23,7 +23,7 @@ let flushing = false;
 // `category`/`level` are already resolved/narrowed by the core (the sink only ever sees the 3 persisted
 // levels). Never throws back into the caller; never calls logger.* (recursion guard).
 const enqueue: LogSink = (level, category, tag, message, meta) => {
-  const entry: LogDoc = {
+  pushEntry({
     ts: Date.now(),
     createdAt: new Date(), // TTL anchor — written together with ts (never read by the app)
     category: category as LogCategory,
@@ -31,12 +31,42 @@ const enqueue: LogSink = (level, category, tag, message, meta) => {
     tag,
     message,
     meta: meta ?? null,
-  };
+  });
+};
+
+// The shared buffer-push: enqueue for batched persistence, cap the ring (drop-oldest), fan out live, and
+// flush early past the high-water mark. Used by BOTH the injected logger sink (enqueue) and the external
+// (Rust) ingest (ingestExternalLog).
+function pushEntry(entry: LogDoc): void {
   buffer.push(entry);
   if (buffer.length > BUFFER_MAX) buffer.splice(0, buffer.length - BUFFER_MAX); // drop oldest
   broadcast(entry);
   if (buffer.length >= HIGH_WATER) void flush();
-};
+}
+
+// Ingest a log line from an EXTERNAL producer — the Rust data plane, via POST /api/internal/log
+// (logs/logIngest.ts). Resolves the category from the tag (categoryForTag → the `proxy` category for the
+// engine tags) and enqueues it into the SAME batched-insert + WebSocket fan-out path the injected logger sink
+// uses — but WITHOUT a console print: the sidecar already printed the line to its inherited stdout, so
+// re-printing here would DUPLICATE it in `docker logs`. This is the one persisted log that did NOT originate
+// from the console logger. Best-effort — never throws back into the ingest route.
+export function ingestExternalLog(
+  level: LogLevel,
+  tag: string,
+  message: string,
+  meta?: Record<string, unknown> | null,
+  ts?: number,
+): void {
+  pushEntry({
+    ts: typeof ts === 'number' && ts > 0 ? ts : Date.now(),
+    createdAt: new Date(),
+    category: categoryForTag(tag),
+    level,
+    tag,
+    message,
+    meta: meta ?? null,
+  });
+}
 
 async function flush(): Promise<void> {
   if (flushing || buffer.length === 0) return;

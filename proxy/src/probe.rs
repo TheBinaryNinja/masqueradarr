@@ -20,8 +20,9 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::log;
 use crate::manifest::extract_media;
-use crate::proxy::{check_secret, text};
+use crate::proxy::{check_secret, host_of, text};
 use crate::state::AppState;
 
 // Node already caps its resolve fan-out and batches per playlist; this bounds the actual upstream fetches so a
@@ -65,6 +66,8 @@ pub async fn probe(State(state): State<AppState>, headers: HeaderMap, Json(req):
     if !check_secret(&headers, &state.secret) {
         return text(403, "forbidden");
     }
+    let n = req.items.len();
+    log::info("probe", "", || format!("probe batch: {n} item(s)"));
     let sem = Arc::new(Semaphore::new(PROBE_CONCURRENCY));
     let mut set: JoinSet<ProbeResult> = JoinSet::new();
     for item in req.items {
@@ -81,6 +84,8 @@ pub async fn probe(State(state): State<AppState>, headers: HeaderMap, Json(req):
             results.push(r); // completion order — Node maps back by `id`, so order is irrelevant
         }
     }
+    let live = results.iter().filter(|r| r.live).count();
+    log::info("probe", "", || format!("probe batch done: {live}/{n} live"));
     Json(ProbeResponse { results }).into_response()
 }
 
@@ -102,11 +107,16 @@ async fn probe_one(state: &AppState, item: ProbeItem) -> ProbeResult {
         }
     }
 
+    log::trace("probe", "", || format!("probe {} → {}", item.id, host_of(&item.target)));
     let resp = match state.client.get(&item.target).headers(hm).timeout(PROBE_TIMEOUT).send().await {
         Ok(r) => r,
-        Err(_) => return dead(item.id), // couldn't connect/resolve → down
+        Err(_) => {
+            log::trace("probe", "", || format!("probe {} DOWN (connect/resolve failed)", item.id));
+            return dead(item.id); // couldn't connect/resolve → down
+        }
     };
     if !resp.status().is_success() {
+        log::trace("probe", "", || format!("probe {} DOWN ({})", item.id, resp.status().as_u16()));
         return dead(item.id); // a non-2xx upstream → down
     }
 

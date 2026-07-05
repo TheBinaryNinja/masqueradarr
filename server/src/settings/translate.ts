@@ -54,7 +54,10 @@ export function envDefaults(): SettingsData {
     // working outbound-fetch resolver is ALWAYS present out of the box; the operator edits it on the
     // Settings screen thereafter (Mongo wins, applied live). Critical for initial setup, so never null here.
     nameservers: DEFAULT_NAMESERVERS,
-    dnsLogLevel: Math.min(3, Math.max(1, Number(process.env.DNS_LOG_LEVEL) || 2)),
+    // GLOBAL log verbosity (was dnsLogLevel). Seeds from LOG_LEVEL (falling back to the legacy DNS_LOG_LEVEL
+    // for back-compat); default 2. NOTE this is the Mongo settings knob — distinct from the infra config.json
+    // `logLevel` STRING (config.ts), which is a different object read from a different source.
+    logLevel: Math.min(3, Math.max(1, Number(process.env.LOG_LEVEL ?? process.env.DNS_LOG_LEVEL) || 2)),
     maxmindAccountId: process.env.MAXMIND_ACCOUNT_ID ?? null,
     maxmindLicenseKey: process.env.MAXMIND_LICENSE_KEY ?? null,
     user: {},
@@ -72,7 +75,7 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     offset: doc.offset ?? '+0000', // derived from timezone; surfaced read-only to the SPA
     darkMode: doc.darkMode,
     nameservers: doc.nameservers ?? null, // not secret — returned verbatim for the Settings UI
-    dnsLogLevel: typeof doc.dnsLogLevel === 'number' ? doc.dnsLogLevel : 2,
+    logLevel: typeof doc.logLevel === 'number' ? doc.logLevel : 2,
     maxmindAccountId: doc.maxmindAccountId ?? null,
     maxmindLicenseKeySet: !!doc.maxmindLicenseKey, // redact the secret → expose only "configured?"
     user: doc.user ?? {},
@@ -137,13 +140,13 @@ export function toExternalPatch(body: unknown): PatchResult {
       }
     }
   }
-  // dnsLogLevel: DNS traceability verbosity — an integer 1..3.
-  if (b.dnsLogLevel !== undefined) {
-    const v = b.dnsLogLevel;
+  // logLevel: the GLOBAL log verbosity (app + Rust proxy engine) — an integer 1..3 (was dnsLogLevel).
+  if (b.logLevel !== undefined) {
+    const v = b.logLevel;
     if (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 3) {
-      return { ok: false, error: 'dnsLogLevel (integer 1, 2 or 3) required' };
+      return { ok: false, error: 'logLevel (integer 1, 2 or 3) required' };
     }
-    $set.dnsLogLevel = v;
+    $set.logLevel = v;
   }
   // MaxMind credentials: optional nullable strings. An empty string clears the value (stored as null) so the
   // SPA can blank a field; the license key is write-only here (never read back — see toRuntimeSettings).

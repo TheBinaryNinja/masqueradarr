@@ -27,6 +27,7 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use url::Url;
 
+use crate::log;
 use crate::proxy::{build_headers, fetch_with_retry, is_private_host};
 use crate::state::{AppState, SourcePolicy};
 
@@ -38,6 +39,7 @@ pub struct TsContext {
     pub source: String,
     pub entry: String,
     pub pl: Option<String>,
+    pub rid: String, // the viewing-session lineage id — shared with the ENTRY that handed off to this producer
     pub client: reqwest::Client,
     pub read_timeout_ms: u64,
     pub ip: String,
@@ -150,7 +152,7 @@ pub async fn try_ts_response(
     // Resolve to the MEDIA playlist to follow (peek the top variant for a master), then guard TS-only.
     let (media_url, media_body) = if is_master(&first_body) {
         let vurl = pick_variant(&first_body, &first_url)?;
-        let resp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms)
+        let resp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant")
             .await
             .ok()?;
         if !resp.status().is_success() {
@@ -181,9 +183,10 @@ pub async fn try_ts_response(
 /// Failover: re-resolve the entry (Node re-runs resolveStream → reprobeMirror) and derive the media playlist
 /// again from the fresh master. `None` ⇒ nothing reachable (the producer ends).
 async fn reresolve_media(ctx: &TsContext) -> Option<(Url, String)> {
+    log::info("tsmux", &ctx.rid, || "media playlist unreachable — re-resolving (mirror failover)".to_string());
     let (_p, target) = ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await.ok()?;
     let turl = Url::parse(&target).ok()?;
-    let resp = fetch_with_retry(&ctx.client, turl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms)
+    let resp = fetch_with_retry(&ctx.client, turl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-reresolve")
         .await
         .ok()?;
     if !resp.status().is_success() {
@@ -193,7 +196,7 @@ async fn reresolve_media(ctx: &TsContext) -> Option<(Url, String)> {
     let body = resp.text().await.ok()?;
     if is_master(&body) {
         let vurl = pick_variant(&body, &furl)?;
-        let vresp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms)
+        let vresp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant")
             .await
             .ok()?;
         if !vresp.status().is_success() {
@@ -213,6 +216,7 @@ async fn ts_producer(
 ) {
     let stream_id = ctx.state.next_stream_id();
     // OPEN: Node mints a socket-viewer connId for this continuous stream (noteSocketViewerOpen).
+    log::info("tsmux", &ctx.rid, || format!("raw-TS session open ({stream_id}) — following {}", crate::proxy::host_of(media_url.as_str())));
     ctx.state.report(serde_json::json!({
         "kind": "open", "streamId": stream_id, "source": ctx.source, "entryUrl": ctx.entry,
         "ip": ctx.ip, "ua": ctx.ua, "username": ctx.username, "playerType": "externalPlayer",
@@ -232,7 +236,7 @@ async fn ts_producer(
     'outer: loop {
         // Refresh the media playlist each cycle (except the first — we already have it from try_ts_response).
         if !first {
-            match fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms)
+            match fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-media")
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
@@ -250,13 +254,19 @@ async fn ts_producer(
                         media_url = u;
                         media_body = b;
                     }
-                    None => break 'outer, // nothing reachable — end the stream
+                    None => {
+                        log::warn("tsmux", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
+                        break 'outer; // nothing reachable — end the stream
+                    }
                 },
             }
         }
         first = false;
 
         let mp = parse_media_playlist(&media_body);
+        log::trace("tsmux", &ctx.rid, || {
+            format!("media poll: seq={} segs={} targetDur={}", mp.media_sequence, mp.segments.len(), mp.target_duration)
+        });
         // Playlist reset (media-sequence rewound) → restart from its head so we don't stall on sequence numbers
         // that will never arrive.
         if prev_media_seq >= 0 && mp.media_sequence < prev_media_seq {
@@ -284,7 +294,8 @@ async fn ts_producer(
                 }
                 ctx.policy.hosts.write().unwrap().insert(h.to_lowercase());
             }
-            match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms)
+            log::trace("tsmux", &ctx.rid, || format!("TS segment seq={seq} → {}", crate::proxy::host_of(seg_url.as_str())));
+            match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-segment")
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
@@ -311,6 +322,7 @@ async fn ts_producer(
                 }
                 _ => {
                     // A segment fetch failed → a gap; report a transient upstream failure and keep going.
+                    log::warn("tsmux", &ctx.rid, || format!("TS segment seq={seq} fetch failed — gap (continuing)"));
                     ctx.state.report(serde_json::json!({
                         "kind": "upstream", "ok": false, "status": 0, "source": ctx.source, "entryUrl": ctx.entry,
                     }));
@@ -327,6 +339,7 @@ async fn ts_producer(
         }
 
         if mp.endlist {
+            log::info("tsmux", &ctx.rid, || "playlist #EXT-X-ENDLIST — raw-TS stream complete".to_string());
             break 'outer; // VOD / finished event
         }
         tokio::time::sleep(poll_interval(mp.target_duration)).await;
@@ -336,6 +349,7 @@ async fn ts_producer(
     if pending_bytes > 0 {
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
+    log::info("tsmux", &ctx.rid, || format!("raw-TS session close ({stream_id})"));
     ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
 }
 

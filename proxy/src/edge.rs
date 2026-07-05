@@ -18,6 +18,7 @@ use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
 use tokio_stream::StreamExt;
 
+use crate::log;
 use crate::proxy::{header_str, parse_query, serve_stream, text, Identity};
 use crate::state::AppState;
 
@@ -47,11 +48,14 @@ pub async fn edge_dispatch(
 ) -> Response<Body> {
     let path = req.uri().path().to_string();
     if let Some(source) = stream_source(&path) {
+        log::trace("edge", "", || format!("edge route: STREAM src={source} path={path}"));
         return edge_stream(state, peer, req, source.to_string()).await;
     }
     if is_websocket_upgrade(req.headers()) {
+        log::trace("edge", "", || format!("edge route: WS-splice → node ({path})"));
         return ws_proxy(&state, req).await;
     }
+    log::trace("edge", "", || format!("edge route: HTTP-proxy → node ({path})"));
     http_proxy(&state, peer, req).await
 }
 
@@ -94,8 +98,14 @@ async fn edge_stream(state: AppState, peer: SocketAddr, req: Request, source: St
     // The per-request stream-token gate (auth cache → Node). Runs on ENTRY and every HOP, so revocation takes
     // effect within the cache TTL. Deny → the exact 401/403 + plain text the sidecar-mode streamGate returns.
     let username = match state.authorize(&token, &source).await {
-        Ok(u) => u,
-        Err((status, msg)) => return text(status, &msg),
+        Ok(u) => {
+            log::trace("edge", "", || format!("stream-token gate ALLOW src={source} user={}", u.as_deref().unwrap_or("-")));
+            u
+        }
+        Err((status, msg)) => {
+            log::warn("edge", "", || format!("stream-token gate DENY {status} src={source} ip={ip}"));
+            return text(status, &msg);
+        }
     };
 
     serve_stream(state, method, &path, &query, Identity { ip, ua, username }).await
@@ -181,7 +191,10 @@ async fn http_proxy(state: &AppState, peer: SocketAddr, req: Request) -> Respons
 
     let resp = match rb.send().await {
         Ok(r) => r,
-        Err(e) => return text(502, &format!("edge: node unreachable: {e}")),
+        Err(e) => {
+            log::warn("edge", "", || format!("reverse-proxy to node failed ({pq}): {e}"));
+            return text(502, &format!("edge: node unreachable: {e}"));
+        }
     };
 
     let mut builder = Response::builder().status(resp.status());

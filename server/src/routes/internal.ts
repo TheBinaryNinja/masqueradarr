@@ -2,6 +2,8 @@ import { Router } from 'express';
 import { checkSecret, PROXY_SECRET_HEADER } from '../proxy/secret.js';
 import { buildGrant } from '../proxy/resolveSeam.js';
 import { ingestTelemetry } from '../proxy/telemetryIngest.js';
+import { ingestProxyLog } from '../proxy/logIngest.js';
+import { getProxyLogLevel } from '../proxy/logLevel.js';
 import { userFromToken } from '../middleware/auth.js';
 import { gateStreamAccess } from '../middleware/streamGate.js';
 
@@ -13,6 +15,11 @@ import { gateStreamAccess } from '../middleware/streamGate.js';
 //   POST /api/internal/resolve    { source, url, pl? }   → the per-stream GRANT (resolveSeam.buildGrant)
 //   POST /api/internal/authorize  { token, source }      → the stream-token gate decision (EDGE-3)
 //   POST /api/internal/telemetry  a viewer/bytes event (or { events:[...] }) → streamTelemetry writers
+//   POST /api/internal/log        an engine log event (or { events:[...] }) → logStore (the `proxy` category)
+//
+// The two batched-flush endpoints (/telemetry + /log) reply { logLevel } — the current global verbosity — so
+// the Rust flushers learn a live logLevel change within one flush cycle (no sidecar restart; see
+// proxy/logLevel.ts + proxy/src/log.rs). Rust ignores the body on failure; it's advisory, best-effort.
 
 export const internalRouter = Router();
 
@@ -71,7 +78,18 @@ internalRouter.post('/authorize', async (req, res, next) => {
 internalRouter.post('/telemetry', (req, res, next) => {
   try {
     ingestTelemetry(req.body);
-    res.status(204).end();
+    res.json({ logLevel: getProxyLogLevel() }); // echo the live level so the sidecar tracks changes
+  } catch (err) {
+    next(err);
+  }
+});
+
+// The Rust proxy-engine log seam (full resolve→serve lineage, gated in Rust by the global logLevel). Persists
+// into the `proxy` log category + fans out on /api/logs-stream (logIngest → logStore.ingestExternalLog).
+internalRouter.post('/log', (req, res, next) => {
+  try {
+    ingestProxyLog(req.body);
+    res.json({ logLevel: getProxyLogLevel() }); // echo the live level so the sidecar tracks changes
   } catch (err) {
     next(err);
   }

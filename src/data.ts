@@ -326,11 +326,12 @@ export const SYSTEM_STATS: Ref<SystemStats | null> = ref(null);
 export const GROUPS = ['News', 'Sport', 'Entertainment', 'Movies', 'Kids', 'Music', 'Documentary', 'Lifestyle'];
 export const EPG_HOURS = Array.from({ length: 25 }, (_, i) => i);
 
-// The 12 fixed log categories — shared verbatim with the server (server/src/logs/categories.ts) and the
+// The 13 fixed log categories — shared verbatim with the server (server/src/logs/categories.ts) and the
 // /api/logs route validator. Drives the Logs drawer's category filter. Keep in lockstep if it ever changes.
+// `proxy` = the Rust video data-plane (masq-proxy) full-lineage engine logs (resolve→fetch→repackage→serve).
 export const LOG_CATEGORIES = [
   'dashboard', 'active', 'playlists', 'epg-sources', 'mapping', 'history',
-  'users', 'import', 'settings', 'api', 'core', 'mongodb',
+  'users', 'import', 'settings', 'api', 'core', 'mongodb', 'proxy',
 ] as const;
 
 // ──────────────────────────────────────────────────────────────────────

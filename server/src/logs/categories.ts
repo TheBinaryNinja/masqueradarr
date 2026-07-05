@@ -8,7 +8,7 @@ import type { LogCategory } from '../models/Log.js';
 
 export const LOG_CATEGORIES: LogCategory[] = [
   'dashboard', 'active', 'playlists', 'epg-sources', 'mapping', 'history',
-  'users', 'import', 'settings', 'api', 'core', 'mongodb',
+  'users', 'import', 'settings', 'api', 'core', 'mongodb', 'proxy',
 ];
 
 export const TAG_CATEGORY: Record<string, LogCategory> = {
@@ -21,8 +21,12 @@ export const TAG_CATEGORY: Record<string, LogCategory> = {
   dami: 'playlists', 'dami:stream': 'playlists',
   local: 'playlists',
   build: 'playlists',
-  stats: 'active', telemetry: 'active', proxy: 'active',
-  stream: 'active', geoip: 'active',
+  stats: 'active', telemetry: 'active', geoip: 'active',
+  // The Rust video DATA PLANE (masq-proxy) + its Node-side supervisor/relay/resolve seam log under the
+  // dedicated `proxy` category — the byte engine that resolves→fetches→repackages→serves a stream. Distinct
+  // from `active` (the viewer/telemetry cores above) so the engine's full-lineage trace is filterable on its
+  // own. The Rust log seam (POST /api/internal/log → logStore.ingestExternalLog) tags every line one of these.
+  proxy: 'proxy', stream: 'proxy', tsmux: 'proxy', edge: 'proxy', probe: 'proxy', resolve: 'proxy',
   epg: 'epg-sources', xmltv: 'epg-sources', gracenote: 'epg-sources', epgpw: 'epg-sources',
   auth: 'users', users: 'users',
   mapping: 'mapping', import: 'import', settings: 'settings', history: 'history', dashboard: 'dashboard',

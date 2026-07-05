@@ -16,6 +16,7 @@
 //! See `.claude/plans/durable-iptv-proxy.md`.
 
 mod edge;
+mod log;
 mod manifest;
 mod probe;
 mod proxy;
@@ -62,7 +63,7 @@ async fn main() {
     let internal_listener = tokio::net::TcpListener::bind(internal_addr)
         .await
         .unwrap_or_else(|e| panic!("masq-proxy: failed to bind {internal_addr}: {e}"));
-    eprintln!("[masq-proxy] internal listening on http://{internal_addr} (node={node_url})");
+    log::info("proxy", "", || format!("internal listener up on http://{internal_addr} (node={node_url}, logLevel={})", log::level()));
     let internal_server =
         axum::serve(internal_listener, internal).with_graceful_shutdown(shutdown_signal());
 
@@ -82,7 +83,7 @@ async fn main() {
         let edge_listener = tokio::net::TcpListener::bind(edge_addr)
             .await
             .unwrap_or_else(|e| panic!("masq-proxy: failed to bind edge {edge_addr}: {e}"));
-        eprintln!("[masq-proxy] PUBLIC EDGE listening on http://{edge_addr} → node {node_url}");
+        log::info("edge", "", || format!("PUBLIC EDGE listener up on http://{edge_addr} → node {node_url}"));
         let edge_server = axum::serve(
             edge_listener,
             edge.into_make_service_with_connect_info::<SocketAddr>(),
@@ -90,17 +91,17 @@ async fn main() {
         .with_graceful_shutdown(shutdown_signal());
         let (ri, re) = tokio::join!(internal_server, edge_server);
         if let Err(e) = ri {
-            eprintln!("[masq-proxy] internal server error: {e}");
+            log::error("proxy", "", || format!("internal server error: {e}"));
         }
         if let Err(e) = re {
-            eprintln!("[masq-proxy] edge server error: {e}");
+            log::error("edge", "", || format!("edge server error: {e}"));
         }
     } else {
         internal_server
             .await
-            .unwrap_or_else(|e| eprintln!("[masq-proxy] server error: {e}"));
+            .unwrap_or_else(|e| log::error("proxy", "", || format!("server error: {e}")));
     }
-    eprintln!("[masq-proxy] shut down cleanly");
+    log::info("proxy", "", || "shut down cleanly".to_string());
 }
 
 async fn health() -> Json<serde_json::Value> {

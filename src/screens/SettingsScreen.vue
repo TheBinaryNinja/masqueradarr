@@ -16,7 +16,7 @@ import { useToast } from '../composables/useToast';
 import {
   displayName, domain, epgPath,
   timezone, darkMode,
-  nameservers, dnsLogLevel,
+  nameservers, logLevel,
   maxmindAccountId, maxmindLicenseKeySet,
   saveMaxmindLicenseKey, clearMaxmindLicenseKey,
   backupLocation,
@@ -368,14 +368,15 @@ async function fireReset() {
         <div class="form-row">
           <div class="field-lbl">Log level</div>
           <div class="select fill">
-            <select v-model.number="dnsLogLevel">
+            <select v-model.number="logLevel">
               <option :value="1">1 — Minimal (lifecycle + issues)</option>
-              <option :value="2">2 — Standard (deduped per-call)</option>
-              <option :value="3">3 — Verbose (every lookup)</option>
+              <option :value="2">2 — Standard (milestones)</option>
+              <option :value="3">3 — Verbose (full stream lineage)</option>
             </select>
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            Detail of the DNS / outbound-fetch trace shown in the View logs drawer (core category).
+            Global log verbosity for the whole app and the streaming proxy engine, shown in the View logs
+            drawer. Level 3 traces a channel end-to-end (resolve → repackage → output) under the proxy category.
           </div>
         </div>
         <div class="form-row">

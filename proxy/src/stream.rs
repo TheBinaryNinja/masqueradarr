@@ -16,6 +16,7 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 
+use crate::log;
 use crate::state::AppState;
 
 /// Telemetry attribution for one segment stream (mirrors the fields the P1 `bytes` event carried).
@@ -23,6 +24,7 @@ pub struct TelemetryCtx {
     pub state: AppState,
     pub source: String,
     pub entry: String,
+    pub rid: String, // the viewing-session lineage id (for the segment's byte/outcome trace lines)
     pub ip: String,
     pub ua: String,
     pub username: Option<String>,
@@ -33,6 +35,11 @@ impl TelemetryCtx {
     /// ACCURATE delivered byte total (drives noteBytes + keeps the channel live), and — if the upstream
     /// errored/stalled mid-body — a transient upstream failure (status 0 ⇒ noteFailure ⇒ an upstream rebuffer).
     fn finish(&self, total: u64, errored: bool) {
+        if errored {
+            log::warn("stream", &self.rid, || format!("segment ended on an upstream stall/error after {total} bytes"));
+        } else {
+            log::trace("stream", &self.rid, || format!("segment done ({total} bytes)"));
+        }
         if total > 0 {
             self.state.report(serde_json::json!({
                 "kind": "bytes", "source": self.source, "entryUrl": self.entry,
