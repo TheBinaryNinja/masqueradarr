@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Playlists — masqueradarr docs</title>
+<meta name="description" content="How playlists work in masqueradarr: the playlist envelope vs its channels, the two channel stores, why your edits survive a re-sync, the playlist kinds, endpoint modes, and how guide data binds.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Playlists — masqueradarr">
+<meta property="og:description" content="The playlist envelope vs playlistchannels, the two channel stores, edits that survive re-sync, kinds, endpoint modes, and EPG binding.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="concepts.html">Concepts</a>
+          <a class="nav-link" href="getting-started.html">Getting started</a>
+          <a class="nav-link" href="playlists.html" aria-current="page">Playlists</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>playlists</b> · 03 <span class="rule"></span> the core data model</div>
+        <h1>Playlists — the <span class="em">heart</span> of masqueradarr</h1>
+        <p class="lede">A playlist is an envelope; its channels live separately. Understand that split — and the two channel stores behind it — and everything else about the catalog falls into place.</p>
+      </header>
+
+      <!-- ENVELOPE ─────────────────────────────────────────────────────── -->
+      <section id="envelope">
+        <div class="sec-tag"><span class="n">01</span> A playlist is an envelope</div>
+        <h2>The row, and the channels inside it</h2>
+        <p class="col">A <strong>Playlist</strong> is a row in the <code>playlists</code> collection — the <em>envelope</em>: name, hosted URL, endpoint mode, schedule, and state. Its <strong>channels live separately</strong> in <code>playlistchannels</code>, queried by the playlist's <code>source</code> (or clone) id. A playlist row with no channels is a valid, paused shell.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● the envelope</span>
+            <h3><code>playlists</code> row</h3>
+            <p>Name · <strong>HOSTED AT</strong> url · endpoint mode (<code>global</code>/<code>custom</code>) · schedule (<code>interval</code>&nbsp;+&nbsp;<code>auto</code>) · <code>state</code>. It carries <em>no</em> channels itself.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● the contents</span>
+            <h3><code>playlistchannels</code></h3>
+            <p>The channel rows — name, number, logo, guide link, live status — keyed to the playlist's <code>source</code> id. This is what the detail view and the published M3U are built from.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">why the split matters</div>
+          <p>Because the envelope and the channels are separate documents, a playlist can exist with <strong>zero channels</strong> (a paused shell provisioned but not yet synced), and the same channel store can be re-projected on every sync <em>without</em> touching the envelope's settings, schedule, or per-user grants.</p>
+        </div>
+      </section>
+
+      <!-- TWO STORES ───────────────────────────────────────────────────── -->
+      <section id="stores">
+        <div class="sec-tag"><span class="n">02</span> Two channel stores</div>
+        <h2>A pristine reference, projected into an editable copy</h2>
+        <p class="col">Every playlist is backed by <strong>two</strong> channel collections — both with a deterministic <code>_id = "&lt;source&gt;:&lt;id&gt;"</code>, both empty until the first <strong>Sync now</strong>.</p>
+        <div class="pair">
+          <div class="fcard">
+            <span class="badge">● sync-only</span>
+            <h3><code>sourcechannels</code></h3>
+            <p>The normalized, <strong>pristine reference</strong> written only by a sync — the source of truth. <strong>Not</strong> surfaced to the UI.</p>
+          </div>
+          <div class="fcard accent">
+            <span class="badge">● editable · UI-facing</span>
+            <h3><code>playlistchannels</code></h3>
+            <p>The editable store, 1:1 with the runtime channel, built <em>from</em> <code>sourcechannels</code> at sync time via <code>toPlaylistChannel</code>. Channel/playlist routes return these docs <strong>verbatim</strong>.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">your edits survive re-syncs — how</div>
+          <p>When you rename a channel, change its number, disable it, or set its guide link, you're editing <code>playlistchannels</code>. A re-sync <strong>merges</strong>: it <code>$set</code>s source-derived fields (so upstream changes flow through), <code>$setOnInsert</code>s the user-editable fields (so your edits are never overwritten), and <strong>prunes</strong> channels that vanished upstream. <strong>Reset</strong> is the escape hatch — it drops the channels and re-syncs from scratch, discarding local edits.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">never fabricated</div>
+          <p>Fields the source has no equivalent for (channel #, <code>tvg_id</code>, <code>epg</code>, <code>stream.res</code>) are stored as explicit <code>null</code> — never invented. Top-level <code>status</code> is the <code>Active</code>/<code>Disabled</code> governor; a <code>Disabled</code> channel is dropped from the published playlist without being deleted.</p>
+        </div>
+      </section>
+
+      <!-- LIFECYCLE #3 ─────────────────────────────────────────────────── -->
+      <section id="lifecycle">
+        <div class="sec-tag"><span class="n">03</span> How a source reaches the UI</div>
+        <h2>Provision → sync → normalize → project → play</h2>
+        <p class="col">The full lifecycle of a built-in source, from an empty shell to a channel you can stream. Nothing is written at boot — the pipeline only runs when you provision and sync.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> source lifecycle <span class="rt">the generic core · never branches per source</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">POST /api/sources/:id/provision</div><div class="act">Provision a shell</div><div class="note"><code>ensureShellRow</code> creates a zero-channel <code>Playlist</code> doc. Nothing is fetched yet.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">Sync now</div><div class="act">Fetch the live catalog</div><div class="note"><code>syncLive</code> → <code>adapter.listChannels()</code> pulls the provider's current channel list.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">adapter.normalize(raw)</div><div class="act">Write the pristine reference</div><div class="note">Raw rows become <code>SourceChannel</code> docs in <code>sourcechannels</code> — the normalized source of truth. <span class="branch">afterSync() also writes epgsources / epgchannels / programs — self-EPG sources only</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">toPlaylistChannel</div><div class="act">Project into the editable store</div><div class="note">Each <code>SourceChannel</code> becomes a <code>PlaylistChannel</code> in <code>playlistchannels</code>. <span class="branch">user edits preserved via $setOnInsert</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">SPA · GET /api/playlists/:id/channels</div><div class="act">Surface in the UI</div><div class="note">The SPA reads <code>playlistchannels</code> verbatim; the channels appear in the detail view, Dashboard counts, and Channel Mapping.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">stream request → /api/v1/:source/:encUrl</div><div class="act">Resolve &amp; play</div><div class="note"><code>streamGate → proxyRelay → masq-proxy (Rust)</code>; the resolve seam calls <code>resolveStream</code> to fetch · rewrite · pipe. <span class="branch ts">LIVE — HLS + raw-TS</span></div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- KINDS ────────────────────────────────────────────────────────── -->
+      <section id="kinds">
+        <div class="sec-tag"><span class="n">04</span> Kinds of playlists</div>
+        <h2>Built-in defaults, and bring-your-own</h2>
+        <p class="col">A playlist with its <code>source</code> set is a <strong>(Default)</strong> source playlist (<code>id === source</code>). Everything else is a <strong>custom playlist</strong> you compose yourself. All the type tags and modes are stored <strong>lowercase</strong>.</p>
+        <div class="panel scroll">
+          <table>
+            <thead>
+              <tr><th>Kind</th><th><code>source</code> tag</th><th>Created via</th><th class="h-accent">Channels</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>(Default) source</td><td><code>&lt;dynamic&gt;</code></td><td>Add Playlist → <strong>Built-In</strong></td><td>Synced from the adapter; <code>id === source</code></td></tr>
+              <tr><td>Clone</td><td><code>clone</code></td><td>Add Playlist → <strong>Clone</strong></td><td>Independent <strong>copies</strong> in <code>playlistchannels</code>; <code>origin</code> = the provider source for routing</td></tr>
+              <tr><td>URL import</td><td><code>url</code></td><td>Add Playlist → <strong>URL</strong></td><td>Parsed from the upstream; re-syncable via the stored <code>remoteUrl</code></td></tr>
+              <tr><td>File upload</td><td><code>file</code></td><td>Add Playlist → <strong>File</strong></td><td>Parsed once from the uploaded <code>.m3u</code></td></tr>
+              <tr><td>HDHomeRun</td><td><code>hdhomerun</code></td><td>Add Playlist → <strong>HDHomeRun</strong></td><td>Discovered from a LAN tuner; <span style="color:var(--text-3)">playback (TS→HLS remux) dormant, pending the video engine</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="aha">
+          <div class="lbl">a clone routes through the real adapter</div>
+          <p>A <strong>clone</strong>'s channels are independent copies keyed to the clone, so editing them never disturbs the originals — but each remembers its <code>origin</code> provider, so a play still resolves through the right adapter's resolver. Streaming is always resolve-on-demand: the stream URL <code>/api/v1/&lt;source&gt;/&lt;enc-entry&gt;</code> is <em>derived</em>, never stored.</p>
+        </div>
+      </section>
+
+      <!-- ON SCREEN ────────────────────────────────────────────────────── -->
+      <section id="on-screen">
+        <div class="sec-tag"><span class="n">05</span> On screen</div>
+        <h2>List view and detail view</h2>
+        <p class="col">The <strong>list view</strong> shows every playlist as a row — name, source/type, status, channel count, schedule chips — built-in and custom side by side. The <strong>detail view</strong> is the channels inside one playlist, where you edit individual channels and run syncs.</p>
+        <div class="shots">
+          <figure class="shot"><img src="../img/screenshots/v2-playlists-01.png" alt="Playlists list view" loading="lazy"><figcaption><span class="dot"></span> List view · every playlist as a row</figcaption></figure>
+          <figure class="shot"><img src="../img/screenshots/v2-playlists-02.png" alt="Playlist detail view" loading="lazy"><figcaption><span class="dot"></span> Detail view · the editable channel store</figcaption></figure>
+        </div>
+      </section>
+
+      <!-- ENDPOINTS ────────────────────────────────────────────────────── -->
+      <section id="endpoints">
+        <div class="sec-tag"><span class="n">06</span> Endpoint modes</div>
+        <h2>Global vs. Custom — where a playlist is served</h2>
+        <p class="col">The <code>endpoint</code> mode decides how a playlist is exposed. Built-in defaults are <strong>Global</strong> by default; the custom kinds are <strong>Custom</strong>.</p>
+        <div class="pair">
+          <div class="tile">
+            <div class="ic">● global endpoint</div>
+            <h3>The consolidated Global M3U</h3>
+            <p>Served through the one Global M3U endpoint — a roll-up of every Active channel across all Global playlists, accessed as a single <code>playlist.m3u</code>.</p>
+          </div>
+          <div class="tile ts">
+            <div class="ic">● custom endpoint</div>
+            <h3>Its own path + guide sibling</h3>
+            <p>Served at its own path, riding the per-playlist export machinery — a dedicated <code>.m3u</code> with a matching XMLTV guide sibling.</p>
+          </div>
+        </div>
+        <ul class="col" style="margin-top:14px;">
+          <li><strong>The URL always prepends <code>settings.domain</code>.</strong> Change the <strong>Domain</strong> in Settings and it <strong>cascades</strong> — every playlist's <code>url</code> ("HOSTED AT") is rewritten automatically.</li>
+          <li><strong>State pauses the endpoint.</strong> <code>state:false</code> makes downstream clients get a 404, without deleting anything.</li>
+          <li><strong>Schedule drives refresh.</strong> <code>interval</code> + <code>auto</code> hand the playlist to the scheduler; a manual <strong>Sync now</strong> is always available.</li>
+        </ul>
+      </section>
+
+      <!-- EPG BINDING ──────────────────────────────────────────────────── -->
+      <section id="epg">
+        <div class="sec-tag"><span class="n">07</span> How guide data binds</div>
+        <h2>Two mechanisms — keep them separate</h2>
+        <p class="col">Guide data reaches a playlist two distinct ways. (The full EPG story — providers, the shared sync path, the compose pipeline — is the <a href="epg.html">EPG &amp; guide data</a> page.)</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● the everyday case</span>
+            <h3>Channel-level linking</h3>
+            <p>EPG attaches through a playlist's <em>channels</em>, not the row. Each channel carries a 2-factor <strong><code>(tvg_id, epg)</code></strong> link — set on the <strong>Channel Mapping</strong> screen (or self-linked by sources that ship their own guide). At compose time the guide is built from exactly the channels that carry a link, so many sources can feed one playlist's guide.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● built-in self-EPG</span>
+            <h3>Playlist-bound (<code>playlistBinding</code>)</h3>
+            <p>Some built-ins carry their own inline guide. Syncing such a playlist runs its <code>afterSync</code> hook, which writes the guide <strong>and</strong> upserts an EPG source flagged <code>playlistBinding:true</code>, then self-links the channels. The <strong>playlist</strong> drives their refresh, so the EPG Sources screen hides their sync/schedule controls — you never add or schedule them by hand.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ACCESS ───────────────────────────────────────────────────────── -->
+      <section id="access">
+        <div class="sec-tag"><span class="n">08</span> Per-user access</div>
+        <h2>Who can use which playlist</h2>
+        <p class="col">Access is a <strong>per-user allow-list</strong>, split to mirror the endpoint modes: <code>allowedPlaylists</code> (Global-endpoint) and <code>allowedCustomPlaylists</code> (Custom-endpoint). You assign membership on the <strong>Playlists screen</strong>, per playlist — not by editing the user. (Full auth &amp; token detail is on the <a href="users.html">Users &amp; access</a> page.)</p>
+        <ul class="col">
+          <li><strong>Admins ⇒ every playlist.</strong> An admin's allow-lists are <em>materialized</em> to hold every playlist id, and a new playlist auto-grants to all admins — so an admin always sees the full catalog.</li>
+          <li><strong>Each user gets a tokenized URL.</strong> A personal <code>.m3u</code> + XMLTV guide link whose <strong>download is token-free</strong> but whose <strong>stream is token-gated</strong> to that user's allowed playlists.</li>
+          <li><strong>Granting is what makes an account work.</strong> A standard user with nothing granted sees an empty Dashboard, gets a channel-less M3U, and can't stream.</li>
+        </ul>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Playlists</span>
+          <span class="ref"><b>schemas.md</b> · §3.2 · sourcechannels → playlistchannels</span>
+          <span class="ref"><b>m3u</b> skill · composition &amp; export</span>
+          <span class="ref">next → <b>Sources &amp; adapters</b> <span style="color:var(--text-3)">(soon)</span></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · playlists</span>
+        <span>next → sources &amp; adapters</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

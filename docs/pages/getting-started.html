@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Getting started — masqueradarr docs</title>
+<meta name="description" content="Get masqueradarr running: the compose stack vs the all-in-one container, the .env file, volume permissions (uid 1000), the MASQ_EDGE topology, and first-run setup from first admin to first playlist.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Getting started — masqueradarr">
+<meta property="og:description" content="Two deployment shapes, the .env, volume permissions, the MASQ_EDGE topology, and first-run setup from first admin to first playlist.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="concepts.html">Concepts</a>
+          <a class="nav-link" href="getting-started.html" aria-current="page">Getting started</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>getting started</b> · 02 <span class="rule"></span> install → first stream</div>
+        <h1>Get masqueradarr <span class="em">running</span></h1>
+        <p class="lede">masqueradarr ships as Docker images. Pick a deployment shape, set a handful of environment variables, then walk the first-run wizard from first admin to first playlist.</p>
+      </header>
+
+      <!-- DEPLOY ───────────────────────────────────────────────────────── -->
+      <section id="deploy">
+        <div class="sec-tag"><span class="n">01</span> Choose a deployment shape</div>
+        <h2>Two ways to run it</h2>
+        <p class="col">Both are official Docker images. Reach for the <strong>compose stack</strong> for a normal deployment; reach for the <strong>all-in-one</strong> for a quick trial or a small home server with nothing external to manage.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● Option A · compose stack</span>
+            <h3>App + MongoDB, two services</h3>
+            <p>The standard image (<code>iflip721/masqueradarr</code>) plus a <code>mongo</code> service, wired by <code>docker-compose.yml</code>. The app self-provisions its config from your <code>.env</code> on every boot — there's no host config file to manage.</p>
+          </div>
+          <div class="fcard warn">
+            <span class="badge">● Option B · all-in-one</span>
+            <h3>App + MongoDB in one container</h3>
+            <p>A second image (the AIO variant of <code>iflip721/masqueradarr</code>) bundles app + <code>mongod</code> + config bootstrap, so the whole stack runs from a single <code>docker run</code> with no external database. One <code>/data</code> volume persists everything.</p>
+          </div>
+        </div>
+
+        <h3>Option A — bring up the compose stack</h3>
+        <div class="code-wrap">
+<pre class="code"><span class="cmt"># 1 · copy the env template and fill it in (see the .env table below)</span>
+cp .env.example .env
+
+<span class="cmt"># 2 · bring the stack up — app + MongoDB</span>
+docker compose up -d
+
+<span class="cmt"># 3 · open the app  →  http://localhost:3000  (or your DOMAIN)</span></pre>
+        </div>
+        <p class="col">At minimum set <code>MONGO_ROOT_USER</code> / <code>MONGO_ROOT_PASS</code>, your <code>DOMAIN</code>, and the host volume paths (<code>COMPOSE_PATH</code>, <code>BACKUPS_PATH</code>, <code>MONGO_DATA_PATH</code>). To publish on a host port other than <code>3000</code>, set <code>MASQUERADARR_PORT</code> and update <code>DOMAIN</code> to match.</p>
+
+        <h3>Option B — run the all-in-one</h3>
+        <div class="code-wrap">
+<pre class="code"><span class="cmt"># one container — app + MongoDB + config bootstrap, no external database</span>
+docker run -d \
+  -p 3000:3000 \
+  -v masqueradarr-data:/data \
+  iflip721/masqueradarr:latest</pre>
+        </div>
+        <div class="note-block">
+          <div class="lbl">all-in-one caveat</div>
+          <p>On amd64 the bundled MongoDB 7.0 needs a CPU with <strong>AVX</strong>. On hosts without it (some older or low-power boxes), use the compose stack with an external Mongo instead. To publish on a different host port, change the left side of the <code>-p</code> mapping — e.g. <code>-p 8080:3000</code> (the container always serves on <code>3000</code> internally).</p>
+        </div>
+      </section>
+
+      <!-- ENV ──────────────────────────────────────────────────────────── -->
+      <section id="env">
+        <div class="sec-tag"><span class="n">02</span> The <code style="font-size:0.8em">.env</code> file</div>
+        <h2>What each variable does</h2>
+        <p class="col">All <em>runtime</em> settings live in MongoDB and are editable on the <strong>Settings</strong> screen. The <code>.env</code> only <strong>bootstraps infrastructure on first boot</strong> — most values are seeded with <code>$setOnInsert</code>, so they apply on the <strong>first provision only</strong>. Change them in the UI afterward; a redeploy won't clobber your UI changes.</p>
+        <div class="panel scroll">
+          <table>
+            <thead>
+              <tr><th>Variable</th><th class="h-accent">Purpose</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>MASQUERADARR_PORT</td><td>Host port mapped to masqueradarr (default <code>3000</code>).</td></tr>
+              <tr><td>MONGO_ROOT_USER<br>MONGO_ROOT_PASS</td><td>MongoDB root credentials; also assemble the app's <code>mongoUri</code>.</td></tr>
+              <tr><td>DOMAIN</td><td>Public base URL written into composed playlist / guide links. <span class="em-accent">Set it correctly up front</span> — changing it later rewrites every playlist's URL.</td></tr>
+              <tr><td>DISPLAY_NAME</td><td>App display name.</td></tr>
+              <tr><td>TZ</td><td>Container timezone (used by the scheduler).</td></tr>
+              <tr><td>COMPOSE_PATH</td><td>Host dir for composed <code>.m3u</code> + XMLTV exports (uid-1000 writable).</td></tr>
+              <tr><td>BACKUPS_PATH</td><td>Host dir for scheduled backups (uid-1000 writable).</td></tr>
+              <tr><td>MONGO_DATA_PATH</td><td>Host dir for persistent MongoDB data.</td></tr>
+              <tr><td>MONGO_HOST_PORT</td><td>Host port mapped to mongod (default <code>27017</code>).</td></tr>
+              <tr><td>MONGO_URI<br>MONGO_HOST</td><td>Optional — point the app at an external / Atlas MongoDB instead of the compose <code>mongo</code> service.</td></tr>
+              <tr><td>DNS_LOG_LEVEL</td><td>Outbound-DNS trace verbosity (<code>1</code>–<code>3</code>); seeds the setting on first boot.</td></tr>
+              <tr><td>MASQ_EDGE</td><td>Optional (default off). <code>1</code> inverts the topology so the Rust proxy owns the public port — see <a href="#topology">the topology section</a>.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- VOLUMES ──────────────────────────────────────────────────────── -->
+      <section id="volumes">
+        <div class="sec-tag"><span class="n">03</span> Volumes &amp; permissions</div>
+        <h2>Host directories must be writable by the container users</h2>
+        <p class="col">The compose stack bind-mounts three host directories so your exports, backups and database survive a rebuild. Create each one <strong>before</strong> composing the stack, and make it writable by the right uid — the app's <code>node</code> user is <strong>uid&nbsp;1000</strong>; <code>mongod</code> runs as <strong>uid&nbsp;999</strong>.</p>
+        <div class="code-wrap">
+<pre class="code"><span class="cmt"># create the host volume dirs and grant the container users write access</span>
+mkdir compose &amp;&amp; chown -R 1000:1000 ./compose &amp;&amp; chmod -R 777 ./compose   <span class="cmt"># node  (uid 1000)</span>
+mkdir backups &amp;&amp; chown -R 1000:1000 ./backups &amp;&amp; chmod -R 777 ./backups   <span class="cmt"># node  (uid 1000)</span>
+mkdir mongo   &amp;&amp; chown -R  999:999  ./mongo   &amp;&amp; chmod -R 777 ./mongo     <span class="cmt"># mongod (uid 999)</span></pre>
+        </div>
+        <div class="aha">
+          <div class="lbl">no host config file</div>
+          <p>You never manage a <code>config.json</code> by hand. The app writes <code>/app/config/config.json</code> inside the container from your <code>.env</code> on <em>every</em> boot (creds URL-encoded into the <code>mongoUri</code>) — it's image-internal and regenerated each start. Point at an external Mongo with <code>MONGO_URI</code> / <code>MONGO_HOST</code> if you'd rather not run the bundled one.</p>
+        </div>
+      </section>
+
+      <!-- TOPOLOGY #7/#8 ───────────────────────────────────────────────── -->
+      <section id="topology">
+        <div class="sec-tag"><span class="n">04</span> Where the video bytes flow · <code style="font-size:0.8em">MASQ_EDGE</code></div>
+        <h2>The default topology — and the opt-in inversion</h2>
+        <p class="col">masqueradarr runs two processes: the <strong>Node</strong> control plane and the <strong>Rust</strong> data-plane (<code>masq-proxy</code>). Which one owns the public socket is a single switch, <code>MASQ_EDGE</code>. <strong>Leave it off unless you have a reason.</strong> Same public port and <code>DOMAIN</code> either way; fully reversible.</p>
+
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> default · MASQ_EDGE off <span class="rt">Node is the front door</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone">
+                <div class="nm-label">clients</div>
+                <div class="nm-card client-c"><div class="t">Clients</div><div class="s">public :3000</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">all traffic</span></div>
+              <div class="nm-zone grow">
+                <div class="nm-label">front door</div>
+                <div class="nm-card node-c"><div class="t">Node — public front door</div><div class="s">0.0.0.0:3000 · SPA · /api/* · WS · gate · relay</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">⇄</span><span class="l">relay bytes · loopback seams</span></div>
+              <div class="nm-zone">
+                <div class="nm-label">sidecar</div>
+                <div class="nm-card rust-c"><div class="t">masq-proxy</div><div class="s">127.0.0.1:8787 · /health · /probe · engine</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel stack">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> inverted · MASQ_EDGE=1 <span class="rt">Rust is the front door</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone">
+                <div class="nm-label">clients</div>
+                <div class="nm-card client-c"><div class="t">Clients</div><div class="s">public :3000</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">all traffic</span></div>
+              <div class="nm-zone grow">
+                <div class="nm-label">public edge</div>
+                <div class="nm-card rust-c"><div class="t">masq-proxy — public edge</div><div class="s">0.0.0.0:3000 · serves streams in-process · token-gated</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">reverse-proxy · authorize (30s TTL)</span></div>
+              <div class="nm-zone">
+                <div class="nm-label">internal</div>
+                <div class="nm-card node-c"><div class="t">Node — internal</div><div class="s">127.0.0.1:8080 · SPA · /api/* · WS · control plane</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="aha">
+          <div class="lbl">which one do I want?</div>
+          <p>The whole idea of edge mode is to <strong>take Node's single-threaded event loop out of the video byte path</strong>. Turn it on for <strong>many concurrent or high-bitrate viewers</strong>, to keep the management UI snappy under streaming load, or on constrained hardware (Pi / small VPS). <strong>Leave it off</strong> for a personal setup with a handful of viewers — the default sidecar path is simpler, more battle-tested, and keeps strictly per-request token revocation. Rust's loopback <code>:8787</code> listener is unchanged in both modes, so the channel-probe scheduler always works.</p>
+        </div>
+      </section>
+
+      <!-- FIRST RUN ────────────────────────────────────────────────────── -->
+      <section id="first-run">
+        <div class="sec-tag"><span class="n">05</span> First run — admin to first playlist</div>
+        <h2>The one-time setup wizard</h2>
+        <p class="col">On first launch there are <strong>no users</strong> — the app reports <code>needsSetup</code> and the SPA walks you through creating the first admin account. On a fresh install the database starts <strong>empty</strong>; built-in sources appear as zero-channel shells and only populate after your first <strong>Sync now</strong>. Here's the order.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> first-run sequence <span class="rt">setup → domain → playlist → users</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">Setup screen</div><div class="act">Create the first admin account</div><div class="note">Pick a username and password on the one-time Setup screen — this becomes the administrator. You're taken to Login; sign in.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">Settings</div><div class="act">Set your Domain</div><div class="note">Set <strong>Domain</strong> to the public address your players reach this server at (e.g. <code>https://tv.example.com</code>). It's woven into every published playlist URL. <span class="branch warn">changing it later rewrites every playlist's URL</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">Playlists → Add playlist</div><div class="act">Add a playlist source</div><div class="note">The Add Playlist modal offers every built-in source plus custom playlists (clone / file / URL / HDHomeRun). A built-in provisions a zero-channel shell row.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Playlist → Sync now</div><div class="act">Populate the channels</div><div class="note">Run <strong>Sync now</strong> to fetch the live catalog. Until you do, the playlist shows zero channels everywhere. For an authenticated source (dulo), capture a login session from Settings first.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">EPG Sources · Channel Mapping</div><div class="act">(Optional) add guide data &amp; link it</div><div class="note">Add EPG Sources (Gracenote / EPG-PW / Jesmann / Custom XMLTV) and sync them, then use Channel Mapping to link channels to the guide so each shows now/next.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">Users</div><div class="act">Create users — then grant them playlists</div><div class="note">Add each viewer with a username, password and role. <strong>Creating a user is not enough:</strong> grant which playlists they may use (Allowed Global Playlist / Allowed Custom Playlists). <span class="branch risk">a user with nothing granted gets an empty M3U and can't stream</span> <span style="color:var(--text-3)">— admins bypass this and see everything.</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">IPTV client</div><div class="act">Connect a player</div><div class="note">Each user gets a personal, tokenized <code>.m3u</code> + XMLTV guide URL from their Dashboard. Paste the M3U into TiviMate / VLC / Plex / Jellyfin — the <strong>download is token-free</strong>, but the <strong>stream is token-gated</strong> to that user.</div></div></div>
+          </div>
+        </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">coming from TVApp2?</div>
+          <p>There is <strong>no in-place upgrade path</strong> — masqueradarr is a new application with a new data model (MongoDB instead of flat files). Stand it up fresh and re-add your sources through the UI.</p>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Getting started · First run · Configuration</span>
+          <span class="ref"><b>.env.example</b> · the annotated template</span>
+          <span class="ref">next → <b>Playlists</b> <span style="color:var(--text-3)">(soon)</span></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · getting started</span>
+        <span>next → playlists</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

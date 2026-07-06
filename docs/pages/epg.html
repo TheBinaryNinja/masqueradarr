@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>EPG & guide data — masqueradarr docs</title>
+<meta name="description" content="How guide data works in masqueradarr: what an EPG source is, the provider kinds, the one shared sync path, playlist-bound self-EPG, Channel Mapping, and the playlist-scoped compose pipeline.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="EPG & guide data — masqueradarr">
+<meta property="og:description" content="Provider kinds, the shared sync path, playlist binding, Channel Mapping, and the compose pipeline.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="sources.html">Sources &amp; adapters</a>
+          <a class="nav-link" href="epg.html" aria-current="page">EPG &amp; guide data</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>epg &amp; guide data</b> · 05 <span class="rule"></span> the guide subsystem</div>
+        <h1>Guide data — <span class="em">what's on</span>, and when</h1>
+        <p class="lede">An EPG source registers one guide provider; a sync writes its channels and programs. Channel Mapping links them to your channels, and a compose weaves the guide into your playlist's <code>.m3u</code> — as its XMLTV sibling.</p>
+      </header>
+
+      <!-- WHAT ─────────────────────────────────────────────────────────── -->
+      <section id="what">
+        <div class="sec-tag"><span class="n">01</span> What an EPG source is</div>
+        <h2>One provider, two collections</h2>
+        <p class="col">An <strong>EPG source</strong> is a row in <code>epgsources</code> registering one guide provider. A sync writes <strong><code>epgchannels</code></strong> (one row per guide channel) and <strong><code>programs</code></strong> (the airings), both keyed by a composite <strong><code>&lt;epg&gt;:&lt;tvg_id&gt;</code></strong> id so multiple sources never collide.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● one shared sync path</span>
+            <h3><code>syncEpgSource.ts</code></h3>
+            <p>Every kind — whether a manual <strong>Sync now</strong> or a scheduler tick — goes through the same path, which maintains each source's <code>syncSuccessCount</code> / <code>syncFailCount</code> and <code>status</code>.</p>
+          </div>
+          <div class="fcard warn">
+            <span class="badge">● a sync is a per-source replace</span>
+            <h3>Swap, don't merge</h3>
+            <p>A source's old channels/programs are swapped for the fresh pull. The streaming-XMLTV path replaces up-front, so a mid-stream failure marks the source <code>error</code> and the next good sync heals it cleanly.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- KINDS ────────────────────────────────────────────────────────── -->
+      <section id="kinds">
+        <div class="sec-tag"><span class="n">02</span> Provider kinds</div>
+        <h2>Four you add, one that's automatic</h2>
+        <p class="col">The <code>source</code> discriminator (stored lowercase) sorts guide providers. National guides are <strong>streamed</strong> so multi-GB XMLTV parses with bounded memory.</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Kind</th><th>Added via</th><th class="h-accent">Notes</th></tr></thead>
+            <tbody>
+              <tr><td>gracenote</td><td>Add EPG Source → <strong>Gracenote</strong></td><td>Provider/lineup grid; provenance fields (headend / lineup / postal / country) let the grid URL be rebuilt + re-synced.</td></tr>
+              <tr><td>epg-pw</td><td>Add EPG Source → <strong>EPG-PW</strong></td><td>epg.pw per-channel XML.</td></tr>
+              <tr><td>jesmann</td><td>Add EPG Source → <strong>Jesmann</strong> (guided picker)</td><td>Large national XMLTV guides, streamed so multi-GB files parse with bounded memory.</td></tr>
+              <tr><td>xml file</td><td>Add EPG Source → <strong>Custom</strong> (upload)</td><td>One-shot uploaded XMLTV document.</td></tr>
+              <tr><td>remote url</td><td>Add EPG Source → <strong>Custom</strong> (URL)</td><td>Re-fetchable remote XMLTV URL (streamed, gzip-aware).</td></tr>
+              <tr><td>playlist-bound</td><td><em>(automatic)</em> — the playlist's <code>afterSync</code></td><td>Playlist-bound self-EPG (<code>playlistBinding:true</code>); not user-added.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- BINDING ──────────────────────────────────────────────────────── -->
+      <section id="binding">
+        <div class="sec-tag"><span class="n">03</span> Standalone vs. playlist-bound</div>
+        <h2>Who drives the refresh cadence</h2>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● standalone</span>
+            <h3>You own the schedule</h3>
+            <p>Gracenote / EPG-PW / Jesmann / Custom XMLTV sync on demand or on a <code>cronjobs</code> schedule, independent of any playlist. Guides go stale fast, so a schedule is recommended.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● playlist-bound</span>
+            <h3>The playlist owns the schedule</h3>
+            <p>Built-in self-EPG sources have <strong>no manual sync of their own</strong>. They're written by the <em>playlist's</em> <code>afterSync</code> hook and re-asserted on every playlist sync. To refresh a bound guide you <strong>sync its playlist</strong> — the EPG Sources screen hides their sync/schedule controls.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">either way, the binding is the same</div>
+          <p>The link between guide data and a playlist's channels is always the channel-level <strong><code>(tvg_id, epg)</code></strong> pair — set via <strong>Channel Mapping</strong> for user-added sources, self-linked for channel-adapter built-ins.</p>
+        </div>
+      </section>
+
+      <!-- MAPPING ──────────────────────────────────────────────────────── -->
+      <section id="mapping">
+        <div class="sec-tag"><span class="n">04</span> Channel Mapping</div>
+        <h2>The two-sided linking workbench</h2>
+        <p class="col">Channel Mapping connects each <strong>playlist channel</strong> to the matching <strong>EPG channel</strong> so your channels display the right schedule. Your channels on one side, guide channels on the other.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));">
+          <div class="tile"><div class="ic">● source filters</div><h3>Apples to apples</h3><p>Narrow each column to a single source so you're comparing like with like. Per-column search and A–Z jump bars help you find a channel fast.</p></div>
+          <div class="tile"><div class="ic">● match scoring</div><h3>Best candidates first</h3><p>An intelligent composite score of names and identifiers surfaces the likely matches — suggestions, not automatic links; you confirm them.</p></div>
+          <div class="tile"><div class="ic">● 2-factor link</div><h3>Guide id + its source</h3><p>Linking saves a persisted two-factor pair immediately. The channel then shows program data in the published guide and its <strong>Unmatched</strong> count on the Dashboard drops.</p></div>
+          <div class="tile"><div class="ic">● many-to-one</div><h3>Shared networks</h3><p>Several playlist channels can point at the same EPG channel — useful when the same network appears in multiple playlists.</p></div>
+        </div>
+        <div class="shots" style="margin-top:16px;">
+          <figure class="shot"><img src="../img/screenshots/v2-epg-sources-01.png" alt="EPG Sources list" loading="lazy"><figcaption><span class="dot"></span> EPG Sources · guide providers</figcaption></figure>
+          <figure class="shot"><img src="../img/screenshots/v2-epg-sources-02.png" alt="EPG Source detail" loading="lazy"><figcaption><span class="dot"></span> Detail · channels &amp; programs</figcaption></figure>
+        </div>
+      </section>
+
+      <!-- COMPOSE #4 ───────────────────────────────────────────────────── -->
+      <section id="compose">
+        <div class="sec-tag"><span class="n">05</span> The compose pipeline</div>
+        <h2>How a guide reaches a downstream client</h2>
+        <p class="col">Guide data only reaches a client at <strong>compose</strong> time, and composition is <strong>playlist-scoped</strong>: a guide is written as a <em>sibling</em> of the M3U by <code>composeGuide()</code>, which runs off the <em>same</em> Active channel set <code>composeM3u()</code> just wrote — so a guide can never drift from its M3U.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> composeM3u → composeGuide → &lt;tv&gt; <span class="rt">per composed surface</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">composeM3u(surface)</div><div class="act">Write the Active channel set</div><div class="note">The Global union, or one Custom playlist — whichever surface is being composed.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">composeGuide(sameChannels, path)</div><div class="act">Run off the exact same channels</div><div class="note">The guide is built from the identical set the M3U just used — the invariant that keeps them in lock-step.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">Select</div><div class="act">Keep Active + linked</div><div class="note">Keep only Active channels that carry a 2-factor <code>(tvg_id, epg)</code> link; index by the composite key <code>&lt;epg&gt;:&lt;tvg_id&gt;</code>.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Channels &amp; programmes</div><div class="act">Emit &lt;channel&gt; and &lt;programme&gt;</div><div class="note">Resolve each key's <code>epgchannels</code> row → one <code>&lt;channel&gt;</code>, <strong>deduped by the bare <code>tvg_id</code></strong> (first-wins). Pull <code>programs</code> → <code>&lt;programme&gt;</code>s, <strong>re-tagged to the bare <code>tvg_id</code></strong> so each airing matches its channel id.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">Merge &amp; advertise</div><div class="act">One &lt;tv&gt; beside the .m3u</div><div class="note">Programme data from every source the channels link to merges into one <code>&lt;tv&gt;</code>, advertised via <code>x-tvg-url</code>. <span class="branch">token-free · NOT per-user</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">✓</div></div><div class="body"><div class="who">Credit</div><div class="act">Update run-stats</div><div class="note">Every contributing source gets <code>lastXmlAt</code> + <code>xmlGeneratedCount++</code> (or <code>xmlFailCount++</code> on failure).</div></div></div>
+          </div>
+        </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">the join that binds guide to lineup</div>
+          <p>Downstream, the player pairs the guide to the M3U by matching each <code>&lt;channel id&gt;</code> to a channel's <code>tvg-id</code>. That's why the compose re-tags everything to the <em>bare</em> <code>tvg_id</code> — a channel linked to an <code>epgchannels</code> row that isn't synced yet is skipped, never orphaned.</p>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · EPG Sources · compose pipeline</span>
+          <span class="ref"><b>xmltv</b> skill · the &lt;tv&gt;/&lt;channel&gt;/&lt;programme&gt; wire format</span>
+          <span class="ref"><b>src/docs</b> · epg-sources · channel-mapping</span>
+          <span class="ref">next → <b>Video proxy engine</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · epg &amp; guide data</span>
+        <span>next → video proxy engine</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

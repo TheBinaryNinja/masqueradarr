@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>What is IPTV & masqueradarr — masqueradarr docs</title>
+<meta name="description" content="Start from zero: what IPTV, M3U, EPG/XMLTV and HLS mean, what an aggregator does, and how TVApp2 became masqueradarr.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="What is IPTV & masqueradarr">
+<meta property="og:description" content="The zero-level glossary, the aggregation idea, and the TVApp2 → masqueradarr evolution.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="concepts.html" aria-current="page">Concepts</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>concepts</b> · 01 <span class="rule"></span> start from zero</div>
+        <h1>What is IPTV — and what is <span class="em">masqueradarr</span>?</h1>
+        <p class="lede">No prior knowledge assumed. We'll define every word first, then show what masqueradarr does with them, and how it grew out of TVApp2.</p>
+      </header>
+
+      <!-- VOCAB ────────────────────────────────────────────────────────── -->
+      <section id="vocab">
+        <div class="sec-tag"><span class="n">01</span> Start from zero — the vocabulary</div>
+        <h2>Seven words that unlock everything else</h2>
+        <p class="col">IPTV has a small vocabulary. Learn these seven and the rest of the docs read easily.</p>
+        <div class="panel" style="padding:6px 20px;">
+          <dl class="glossary">
+            <div class="gloss">
+              <dt>IPTV<span class="abbr">Internet Protocol TV</span></dt>
+              <dd>Live TV channels delivered over the internet instead of over cable, satellite or an antenna. The "channel" is just a video feed reachable at a URL.</dd>
+            </div>
+            <div class="gloss">
+              <dt>Playlist<span class="abbr">M3U / M3U8</span></dt>
+              <dd>A plain-text list of channels — each with a name, logo, group and where its stream lives. The <code>.m3u</code> file <em>is</em> the channel lineup your player loads. masqueradarr produces one for you.</dd>
+            </div>
+            <div class="gloss">
+              <dt>Guide<span class="abbr">EPG / XMLTV</span></dt>
+              <dd>The <strong>E</strong>lectronic <strong>P</strong>rogram <strong>G</strong>uide — the "what's on, and when" grid. <strong>XMLTV</strong> is the standard file format that carries it. It pairs with the playlist by matching channel IDs.</dd>
+            </div>
+            <div class="gloss">
+              <dt>Stream</dt>
+              <dd>The actual moving video for one channel. On the modern web it almost always arrives as a series of short clips the player fetches back-to-back (see HLS).</dd>
+            </div>
+            <div class="gloss">
+              <dt>HLS<span class="abbr">HTTP Live Streaming</span></dt>
+              <dd>The common way live video is delivered: a small playlist of short video segments the player pulls one after another, re-checking for new ones. How masqueradarr serves the bytes — HLS vs. a raw stream — is the <a href="proxy-engine.html">Video Proxy Engine</a> story.</dd>
+            </div>
+            <div class="gloss">
+              <dt>Aggregator</dt>
+              <dd>Software that gathers channels and guides from many <em>separate</em> services and presents them as one combined lineup. That's masqueradarr's core job.</dd>
+            </div>
+            <div class="gloss">
+              <dt>Single, trusted identity</dt>
+              <dd>Instead of juggling many logins and URLs across providers, your media apps talk to <em>one</em> endpoint (masqueradarr) with <em>one</em> credential. It fans out to the real sources behind the scenes — that's the "masquerade".</dd>
+            </div>
+          </dl>
+        </div>
+        <div class="aha">
+          <div class="lbl">the mental model</div>
+          <p>A playlist (<code>.m3u</code>) is <em>which channels</em>. A guide (XMLTV) is <em>what's on them</em>. A stream is <em>the video itself</em>. masqueradarr's job is to collect all three from many providers and hand your apps <strong>one</strong> of each.</p>
+        </div>
+      </section>
+
+      <!-- WHAT IT DOES ─────────────────────────────────────────────────── -->
+      <section id="does">
+        <div class="sec-tag"><span class="n">02</span> What masqueradarr actually does</div>
+        <h2>Many scattered sources in, one clean lineup out</h2>
+        <p class="col">The problem masqueradarr solves: IPTV channels are scattered across dozens of services, each with its own format, its own login, its own quirks. Pointing every media app at every provider is a mess. masqueradarr sits in the middle and does the collecting.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the aggregation pipeline <span class="rt">providers → one catalog → your client</span></div>
+          <div class="scroll">
+            <div class="cfgflow">
+              <div class="stage"><div class="t">Pull</div><div class="v">providers</div><small>M3U + EPG from ~17 sources &amp; your imports</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">Normalize</div><div class="v">one schema</div><small>dedupe · unify · store in MongoDB</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">Catalog</div><div class="v">channels + guide</div><small>editable; your edits survive re-sync</small></div>
+              <div class="arr">→</div>
+              <div class="stage warn"><div class="t">Compose</div><div class="v">.m3u + XMLTV</div><small>per-user, tokenized export</small></div>
+              <div class="arr">→</div>
+              <div class="stage ts"><div class="t">Play</div><div class="v">your client</div><small>in-app player · TiviMate · Plex · …</small></div>
+            </div>
+          </div>
+        </div>
+        <p class="col" style="margin-top:16px;">Crucially, masqueradarr does <strong>not</strong> write dead stream URLs to disk. It stores an opaque pointer for each channel and <strong>resolves the real stream at the moment you press play</strong>. That single design choice is what lets it serve sources that need a login, an expiring token, or a rotating mirror — things static-file tools simply can't do.</p>
+      </section>
+
+      <!-- EVOLUTION ────────────────────────────────────────────────────── -->
+      <section id="evolution">
+        <div class="sec-tag"><span class="n">03</span> From TVApp2 to masqueradarr</div>
+        <h2>The same promise, rebuilt from the ground up</h2>
+        <p class="col">masqueradarr is the direct successor to <a href="https://github.com/TheBinaryNinja/tvapp2" target="_blank" rel="noopener">TVApp2</a>, which is now deprecated. It is not a fork or a patch — it's a ground-up re-architecture of the same idea, carrying the project into the <code>*arr</code> self-hosted media family (Sonarr, Radarr, …) it's named for.</p>
+        <div class="pair">
+          <div class="fcard">
+            <span class="badge">● where it started · TVApp2</span>
+            <h3>A static-file regenerator</h3>
+            <p>One Docker container that, on a schedule, scraped a handful of providers and regenerated flat <code>.m3u</code> and <code>.xml</code> files for Jellyfin / Plex / Emby to ingest. It did one thing well: keep static playlists fresh.</p>
+            <p>But streams were <strong>static URLs baked into files</strong> — so anything behind a login, device check, expiring token or rotating mirror couldn't be served. No database, no real UI, no per-user access, no live view of who's watching.</p>
+          </div>
+          <div class="fcard accent">
+            <span class="badge">● where it's going · masqueradarr</span>
+            <h3>A live delivery platform</h3>
+            <p>Keeps the original promise — <em>aggregate scattered IPTV into one playlist + guide</em> — and rebuilds everything under it to lift those ceilings.</p>
+            <p>Static files become a <strong>resolve-on-demand engine</strong>; flat config becomes <strong>MongoDB + a Vue 3 SPA</strong>; bespoke scrapers become a <strong>source-agnostic adapter framework</strong>; and blind scheduling becomes <strong>live observability</strong>.</p>
+          </div>
+        </div>
+        <h3 style="margin-top:22px;">What got lifted</h3>
+        <div class="col">
+          <ul>
+            <li><strong>Static files → a live, resolve-on-demand engine.</strong> Streams resolve at play time through an HLS proxy — the thing that makes authenticated and rotating sources possible.</li>
+            <li><strong>Flat config → MongoDB + a real management SPA.</strong> State lives in MongoDB; the front end is a full Vue 3 single-page app.</li>
+            <li><strong>Bespoke scrapers → a source-agnostic adapter framework.</strong> Adding a provider is one adapter file plus one registry line; the generic core never branches per source.</li>
+            <li><strong>File server → an API + a live video proxy.</strong> An in-app player and M3U / XMLTV export, with playback served by a rebuilt, durable Rust engine (<code>masq-proxy</code>).</li>
+            <li><strong>Env-var toggles → users, roles &amp; per-user access.</strong> Real scrypt authentication, session vs. stream tokens, and per-user tokenized playlist access.</li>
+            <li><strong>Blind scheduling → live observability.</strong> WebSocket-pushed viewer / bandwidth / buffering telemetry, live system stats, and MongoDB-backed logs.</li>
+          </ul>
+        </div>
+        <div class="note-block" style="margin-top:8px;">
+          <div class="lbl">coming from TVApp2?</div>
+          <p>There is <strong>no in-place upgrade path</strong>. masqueradarr is a new application with a new data model (MongoDB instead of flat files) — stand it up fresh and re-add your sources through the UI.</p>
+        </div>
+      </section>
+
+      <!-- AT A GLANCE ──────────────────────────────────────────────────── -->
+      <section id="at-a-glance">
+        <div class="sec-tag"><span class="n">04</span> At a glance</div>
+        <h2>TVApp2 vs. masqueradarr</h2>
+        <p class="col">The full before/after, feature by feature.</p>
+        <div class="panel scroll">
+          <table>
+            <thead>
+              <tr><th></th><th>TVApp2 <span style="color:var(--text-3)">(deprecated)</span></th><th class="h-accent">masqueradarr</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Role</td><td>Static M3U/XMLTV regenerator</td><td><span class="em-accent">Live IPTV aggregator + delivery platform</span></td></tr>
+              <tr><td>Streams</td><td>Static URLs written to files</td><td>Resolve-on-demand via HLS proxy</td></tr>
+              <tr><td>State</td><td>Flat files, no DB</td><td>MongoDB (Mongoose 8)</td></tr>
+              <tr><td>Frontend</td><td>Links to generated files</td><td>Vue 3 + Vite management SPA</td></tr>
+              <tr><td>Backend</td><td>Node.js scripts</td><td>Express 4 API (ESM, TypeScript)</td></tr>
+              <tr><td>Sources</td><td>Hard-coded scrapers</td><td>Pluggable adapters + URL / HDHomeRun / file imports</td></tr>
+              <tr><td>Guide data</td><td>One bundled XMLTV grabber</td><td>Gracenote, EPG-PW, Jesmann, Custom XMLTV + self-EPG</td></tr>
+              <tr><td>Auth</td><td>None</td><td>scrypt users, roles, per-user access lists</td></tr>
+              <tr><td>Auth'd sources</td><td>Not possible</td><td>Supported (streamed-login session capture)</td></tr>
+              <tr><td>External clients</td><td>Pass-through only</td><td>M3U / XMLTV export + live Rust HLS / raw-TS proxy</td></tr>
+              <tr><td>Video engine</td><td>None (static URLs)</td><td>Remux-free Rust data-plane proxy (retry / failover / raw-TS)</td></tr>
+              <tr><td>Observability</td><td>Logs</td><td>Live WS telemetry, history / metrics, system stats, app logs</td></tr>
+              <tr><td>Backup</td><td>None</td><td>Full-system gzip backup / restore + scheduled backups</td></tr>
+              <tr><td>Base image</td><td>Alpine + s6-overlay</td><td>Debian bookworm (glibc) + tini</td></tr>
+              <tr><td>Config</td><td>Environment variables</td><td>DB-backed settings + minimal <code>.env</code> bootstrap</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- SHAPE / #1 RECAP ─────────────────────────────────────────────── -->
+      <section id="shape">
+        <div class="sec-tag"><span class="n">05</span> The shape of it</div>
+        <h2>How the pieces fit together</h2>
+        <p class="col">Everything above lives in <strong>one container that runs two processes</strong>. Your apps talk to the Node <strong>control plane</strong>; a Rust <strong>data-plane</strong> sidecar moves the actual stream bytes. Keep this picture in mind — the rest of the docs zoom into each box.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> primary architecture <span class="rt">clients · container · upstream</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone">
+                <div class="nm-label">clients</div>
+                <div class="nm-card client-c"><div class="t">Browser</div><div class="s">Vue 3 management SPA</div></div>
+                <div class="nm-card client-c"><div class="t">IPTV clients</div><div class="s">TiviMate · VLC · Plex · Jellyfin</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">/api/* · WS · .m3u · bytes</span></div>
+              <div class="nm-zone grow">
+                <div class="nm-label">masqueradarr container</div>
+                <div class="nm-group">
+                  <div class="nm-glabel">one image · two processes</div>
+                  <div class="nm-card node-c"><div class="t">Express API — Node</div><div class="s">control plane · the brains</div><span class="tag">gate + relay ↓</span></div>
+                  <div class="nm-card rust-c"><div class="t">masq-proxy — Rust</div><div class="s">data plane · the muscle</div><span class="tag">internal seams ↑ loopback</span></div>
+                  <div class="nm-card data-c"><div class="t">MongoDB</div><div class="s">all the state</div></div>
+                </div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">resolve · fetch · rewrite · pipe</span></div>
+              <div class="nm-zone">
+                <div class="nm-label">upstream</div>
+                <div class="nm-card up-c"><div class="t">Upstream IPTV sources</div><div class="s">dulo · DaddyLive · Pluto · Roku · …</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">honest scope</div>
+          <p>The rename and re-architecture are effectively complete — codebase, brand, runtime and Docker images are all masqueradarr. Playback is <strong>live</strong> over the Rust engine (HLS + raw-TS); the few remaining <strong>remux-dependent</strong> paths (e.g. HDHomeRun TS→HLS) are still pending a rebuild.</p>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README.md</b> · What is masqueradarr · Evolution · At a glance</span>
+          <span class="ref"><b>Primary Architecture</b> · the two-plane container</span>
+          <span class="ref">next → <b>Getting started</b> <span style="color:var(--text-3)">(soon)</span></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · concepts</span>
+        <span>next → getting started</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

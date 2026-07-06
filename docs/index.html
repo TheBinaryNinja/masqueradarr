@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>masqueradarr — documentation</title>
+<meta name="description" content="masqueradarr is a self-hosted IPTV aggregator — it pulls M3U playlists and EPG/XMLTV guide data from many services, normalizes them into one catalog, and serves them behind a single, trusted identity.">
+<link rel="icon" type="image/png" sizes="32x32" href="icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="icons/favicon-16.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon-180.png">
+<meta property="og:type" content="website">
+<meta property="og:title" content="masqueradarr — documentation">
+<meta property="og:description" content="Aggregating scattered IPTV sources behind a single, trusted identity. Zero-to-hero documentation for the self-hosted IPTV aggregator.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="assets/masq-docs.css">
+<link rel="stylesheet" href="assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="index.html">Home</a>
+          <a class="nav-link" href="pages/concepts.html">Concepts</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>masqueradarr</b> · documentation <span class="rule"></span> zero → hero</div>
+        <div class="hero">
+          <div>
+            <h1>Self-hosted IPTV, <span class="em">aggregated</span>.</h1>
+            <p class="lede"><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
+            <p style="margin-top:14px; max-width:56ch;">masqueradarr is a self-hosted IPTV aggregator. It pulls channel playlists (M3U) and guide data (EPG/XMLTV) from a range of online IPTV services, normalizes them into one catalog, and serves them back as a single, unified, standards-compliant playlist&nbsp;+&nbsp;guide — behind one trusted identity that your media apps and IPTV clients can talk to.</p>
+            <div class="cta">
+              <a class="btn primary" href="pages/concepts.html">Start from zero →</a>
+              <a class="btn ghost" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">Browse the repo ↗</a>
+            </div>
+          </div>
+          <div class="hero-art">
+            <img src="img/masqueradarr.png" alt="masqueradarr">
+          </div>
+        </div>
+      </header>
+
+      <!-- WHAT IT DOES ────────────────────────────────────────────────── -->
+      <section id="what">
+        <div class="sec-tag"><span class="n">◊</span> What it does</div>
+        <h2>Four jobs, one container</h2>
+        <p class="col">masqueradarr is the ground-up successor to <a href="https://github.com/TheBinaryNinja/tvapp2" target="_blank" rel="noopener">TVApp2</a>. Where the original kept static <code>.m3u</code> files fresh, masqueradarr runs a live, resolve-on-demand engine — and wraps it in a real management app.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-top:10px;">
+          <div class="tile">
+            <div class="ic">● aggregate &amp; normalize</div>
+            <h3>Many providers → one catalog</h3>
+            <p>Pulls M3U playlists and EPG/XMLTV guides from ~17 provider adapters plus your own URL / file / HDHomeRun imports, and normalizes them into a single, deduplicated channel catalog.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● resolve on demand</div>
+            <h3>No dead URLs on disk</h3>
+            <p>Every stream is resolved at play time, which is what makes authenticated, token-gated and rotating-mirror sources possible — captured logins, per-play signed URLs, live mirror failover.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● deliver anywhere</div>
+            <h3>One endpoint for every client</h3>
+            <p>An in-app player plus per-user, tokenized <code>.m3u</code> + XMLTV export for TiviMate, VLC, Plex, Jellyfin and Emby — bytes served by a durable Rust proxy engine.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● own the whole stack</div>
+            <h3>Users, telemetry, schedule</h3>
+            <p>scrypt users with roles and per-user access lists, live viewer/bandwidth telemetry, MongoDB-backed logs, a cron scheduler, and full-system backup / restore.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- ARCHITECTURE #1 ─────────────────────────────────────────────── -->
+      <section id="architecture">
+        <div class="sec-tag"><span class="n">◊</span> The shape of it</div>
+        <h2>One picture: clients, the container, the upstreams</h2>
+        <p class="col">Two processes ship in the same container. Your browser and IPTV clients talk to the Express <strong>control plane</strong> (Node), which owns MongoDB and drives a Rust <strong>data-plane</strong> sidecar (<code>masq-proxy</code>) that actually moves the stream bytes.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> primary architecture <span class="rt">control plane · data plane</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone">
+                <div class="nm-label">clients</div>
+                <div class="nm-card client-c"><div class="t">Browser</div><div class="s">Vue 3 management SPA</div></div>
+                <div class="nm-card client-c"><div class="t">IPTV clients</div><div class="s">TiviMate · VLC · Plex · Jellyfin</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">/api/* · WS · .m3u · bytes</span></div>
+              <div class="nm-zone grow">
+                <div class="nm-label">masqueradarr container</div>
+                <div class="nm-group">
+                  <div class="nm-glabel">one image · two processes</div>
+                  <div class="nm-card node-c"><div class="t">Express API — Node</div><div class="s">control plane · auth · resolve · telemetry</div><span class="tag">gate + relay ↓</span></div>
+                  <div class="nm-card rust-c"><div class="t">masq-proxy — Rust</div><div class="s">data-plane sidecar · fetch · rewrite · pipe</div><span class="tag">internal seams ↑ loopback</span></div>
+                  <div class="nm-card data-c"><div class="t">MongoDB</div><div class="s">state · playlists · users · logs</div></div>
+                </div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">resolve · fetch · rewrite · pipe</span></div>
+              <div class="nm-zone">
+                <div class="nm-label">upstream</div>
+                <div class="nm-card up-c"><div class="t">Upstream IPTV sources</div><div class="s">dulo · DaddyLive · Pluto · Roku · …</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">read it as</div>
+          <p>Node is the <strong>brains</strong> (stateful, provider-specific: logins, scraping, the token gate, telemetry). Rust is the <strong>muscle</strong> (byte work, driven per-stream by a "grant" from Node). The same diagram, explained from never-heard-of-IPTV, opens the <a href="pages/concepts.html">Concepts</a> page.</p>
+        </div>
+      </section>
+
+      <!-- SCREENSHOTS ─────────────────────────────────────────────────── -->
+      <section id="screens">
+        <div class="sec-tag"><span class="n">◊</span> The app</div>
+        <h2>A real management SPA</h2>
+        <p class="col">Full screens for Dashboard, Active Streams, History / Metrics, Playlists, EPG Sources, Channel Mapping, Users and Settings — with an editable channel store where your edits survive a re-sync.</p>
+        <div class="shots">
+          <figure class="shot wide"><img src="img/screenshots/v2-dashboard.png" alt="Dashboard screen" loading="lazy"><figcaption><span class="dot"></span> Dashboard · live system stats</figcaption></figure>
+          <figure class="shot"><img src="img/screenshots/v2-playlists-01.png" alt="Playlists screen" loading="lazy"><figcaption><span class="dot"></span> Playlists</figcaption></figure>
+          <figure class="shot"><img src="img/screenshots/v2-active-streams.png" alt="Active Streams screen" loading="lazy"><figcaption><span class="dot"></span> Active Streams</figcaption></figure>
+          <figure class="shot"><img src="img/screenshots/v2-epg-sources-01.png" alt="EPG Sources screen" loading="lazy"><figcaption><span class="dot"></span> EPG Sources</figcaption></figure>
+          <figure class="shot"><img src="img/screenshots/v2-history-metrics.png" alt="History and Metrics screen" loading="lazy"><figcaption><span class="dot"></span> History / Metrics</figcaption></figure>
+          <figure class="shot"><img src="img/screenshots/v2-settings-01.png" alt="Settings screen" loading="lazy"><figcaption><span class="dot"></span> Settings</figcaption></figure>
+        </div>
+      </section>
+
+      <!-- TOPIC MAP ────────────────────────────────────────────────────── -->
+      <section id="topics">
+        <div class="sec-tag"><span class="n">◊</span> Where to go next</div>
+        <h2>Read it in order — or dive in</h2>
+        <p class="col">The docs are built to take you from "I've never heard of IPTV" all the way to the Rust data-plane. Cards marked <em>soon</em> are being written next.</p>
+        <div class="cards">
+          <a class="card" href="pages/concepts.html">
+            <div class="c-ix"><span class="n">01</span> concept</div>
+            <h3>What is IPTV &amp; masqueradarr</h3>
+            <p>The zero-level glossary, the aggregation idea, and the TVApp2 → masqueradarr evolution.</p>
+            <div class="go">Read →</div>
+          </a>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">02</span> setup <span class="soon-tag">soon</span></div>
+            <h3>Getting started</h3>
+            <p>Docker Option A / B, the <code>.env</code>, first admin, first playlist.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">03</span> concept <span class="soon-tag">soon</span></div>
+            <h3>Playlists</h3>
+            <p>The playlist envelope, the two channel stores, edits that survive re-sync.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">04</span> concept <span class="soon-tag">soon</span></div>
+            <h3>Sources &amp; adapters</h3>
+            <p>The <code>SourceAdapter</code> contract, the source-agnostic core, the adapter families.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">05</span> concept <span class="soon-tag">soon</span></div>
+            <h3>EPG &amp; guide data</h3>
+            <p>Provider kinds, the shared sync path, and the compose pipeline.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">06</span> deep dive <span class="soon-tag">soon</span></div>
+            <h3>Video proxy engine</h3>
+            <p>The two planes, the seams, durability, HLS vs raw TS, and edge mode.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">07</span> operate <span class="soon-tag">soon</span></div>
+            <h3>Users &amp; access</h3>
+            <p>scrypt auth, roles, per-user access lists, tokenized M3U / XMLTV.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">08</span> operate <span class="soon-tag">soon</span></div>
+            <h3>Operations</h3>
+            <p>Active Streams, metrics, logs, the scheduler, backup / restore.</p>
+            <div class="go">Coming soon</div>
+          </span>
+          <span class="card soon">
+            <div class="c-ix"><span class="n">09</span> reference <span class="soon-tag">soon</span></div>
+            <h3>Architecture</h3>
+            <p>Two-package build, REST + 4 WebSockets, boot sequence, the two images.</p>
+            <div class="go">Coming soon</div>
+          </span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · documentation</span>
+        <span>one playlist · one guide · one identity</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="assets/nav.js"></script>
+<script src="assets/masq-docs.js"></script>
+</body>
+</html>

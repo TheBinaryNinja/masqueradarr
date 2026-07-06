@@ -1,0 +1,173 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   masqueradarr docs — bespoke diagram component library
+   Pure CSS/SVG (no mermaid.js). Ported from .claude/artifacts/hls-ts.html and
+   extended with .nodemap / .taxonomy / .planes. Every converted Mermaid uses
+   this shared visual vocabulary. All animations degrade under reduced motion.
+   Depends on the tokens in masq-docs.css.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ── signal-flow lane (.lane / .node / .wire / .pkt) ───────────────────────
+   Animated packet flow: player ← proxy ← upstream. Accent = default, .ts = green. */
+.flow { padding: 6px 8px 14px; }
+.lane { display: grid; grid-template-columns: auto 1fr auto 1fr auto; align-items: center; gap: 0; padding: 22px 14px 8px; }
+.lane + .lane { border-top: 1px dashed var(--hairline); }
+.node {
+  font-family: var(--mono); font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+  color: var(--text-1); background: var(--bg-2); border: 1px solid var(--hairline-strong);
+  padding: 9px 12px; border-radius: var(--radius-s); text-align: center; white-space: nowrap; min-width: 72px; position: relative;
+}
+.node small { display: block; font-size: 9px; letter-spacing: 0.04em; color: var(--text-3); margin-top: 2px; text-transform: none; }
+.wire { position: relative; height: 34px; margin: 0 -1px; }
+.wire::before { content: ""; position: absolute; left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%); border-radius: 2px; background: repeating-linear-gradient(90deg, var(--accent-line) 0 7px, transparent 7px 13px); }
+.ts .wire::before { background: var(--ts-line); }
+.pkt { position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%, -50%); will-change: left; background: var(--accent); box-shadow: 0 0 9px var(--accent); }
+.ts .pkt { background: var(--ts); box-shadow: 0 0 8px var(--ts); }
+
+@keyframes accPkt { 0% { left: 100%; opacity: 0; } 6% { opacity: 1; } 38% { left: 4%; opacity: 1; } 44% { left: 0%; opacity: 0; } 100% { left: 0%; opacity: 0; } }
+.lane:not(.ts) .pkt { animation: accPkt 3s cubic-bezier(.5,0,.5,1) infinite; }
+.lane:not(.ts) .pkt:nth-child(1) { animation-delay: 0s; }
+.lane:not(.ts) .pkt:nth-child(2) { animation-delay: .16s; }
+.lane:not(.ts) .pkt:nth-child(3) { animation-delay: .32s; }
+
+@keyframes tsPkt { 0% { left: 100%; } 100% { left: 0%; } }
+.ts .pkt { animation: tsPkt 2.4s linear infinite; }
+.ts .pkt:nth-child(1) { animation-delay: 0s; }
+.ts .pkt:nth-child(2) { animation-delay: -.3s; }
+.ts .pkt:nth-child(3) { animation-delay: -.6s; }
+.ts .pkt:nth-child(4) { animation-delay: -.9s; }
+.ts .pkt:nth-child(5) { animation-delay: -1.2s; }
+.ts .pkt:nth-child(6) { animation-delay: -1.5s; }
+.ts .pkt:nth-child(7) { animation-delay: -1.8s; }
+.ts .pkt:nth-child(8) { animation-delay: -2.1s; }
+
+.lane-meta { grid-column: 1 / -1; display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 4px; }
+.lane-meta .tag { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; color: var(--accent-hi); background: var(--accent-soft); }
+.ts .lane-meta .tag { color: var(--ts-hi); background: var(--ts-soft); }
+.lane-meta .desc { font-size: 13.5px; color: var(--text-2); }
+@media (max-width: 640px) { .lane-meta .desc { display: none; } }
+
+/* ── vertical numbered sequence (.seq / .step / .rail / .marker) ──────────── */
+.seq { padding: 4px 4px 8px; }
+.step { display: grid; grid-template-columns: 34px 1fr; gap: 0; }
+.step .rail { position: relative; }
+.step .rail::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; transform: translateX(-50%); background: var(--hairline-strong); }
+.step:first-child .rail::before { top: 18px; }
+.step:last-child .rail::before { bottom: calc(100% - 18px); }
+.step .marker { position: relative; z-index: 1; width: 20px; height: 20px; margin: 8px auto 0; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 10px; font-weight: 600; background: var(--accent-soft); color: var(--accent-hi); border: 1px solid var(--accent-line); }
+.seq.ts .marker { background: var(--ts-soft); color: var(--ts-hi); border-color: var(--ts-line); }
+.step .body { padding: 6px 4px 16px 12px; }
+.step .who { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); }
+.step .act { color: var(--text-0); font-size: 14.5px; font-weight: 560; margin-top: 1px; }
+.step .note { color: var(--text-2); font-size: 13px; margin-top: 3px; }
+.step .note code { font-size: 0.86em; white-space: normal; }
+.step .branch { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-hi); background: var(--accent-soft); border: 1px solid var(--accent-line); padding: 2px 8px; border-radius: 999px; margin: 6px 6px 0 0; }
+.step .branch.ts { color: var(--ts-hi); background: var(--ts-soft); border-color: var(--ts-line); }
+.step .branch.warn { color: var(--cfg); background: var(--cfg-soft); border-color: var(--cfg-line); }
+.step .branch.risk { color: var(--risk); background: var(--risk-soft); border-color: var(--risk-line); }
+.loopflag { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--cfg); background: var(--cfg-soft); padding: 2px 8px; border-radius: 999px; margin-top: 6px; }
+
+/* ── horizontal stage flow (.cfgflow / .stage / .arr) ──────────────────────
+   config/grant/compose journeys. Wraps to vertical on narrow via .scroll parent. */
+.cfgflow { display: flex; align-items: stretch; gap: 0; padding: 18px 16px; min-width: 520px; }
+.cfgflow .stage { flex: 1; min-width: 118px; padding: 12px 12px; border-radius: var(--radius-s); background: var(--bg-2); border: 1px solid var(--hairline); text-align: center; }
+.cfgflow .stage .t { font-family: var(--mono); font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--accent-hi); }
+.cfgflow .stage.warn .t { color: var(--cfg); }
+.cfgflow .stage.ts .t { color: var(--ts-hi); }
+.cfgflow .stage .v { font-family: var(--mono); font-size: 12px; color: var(--text-0); margin-top: 5px; word-break: break-word; }
+.cfgflow .stage small { display: block; font-size: 11px; color: var(--text-3); margin-top: 4px; }
+.cfgflow .arr { flex: 0 0 26px; display: grid; place-items: center; color: var(--text-3); font-family: var(--mono); }
+
+/* ── MPEG-TS packet strip (.packets / .tspk / .seg-break) ──────────────────── */
+.packets { display: flex; gap: 3px; padding: 16px; flex-wrap: nowrap; }
+.tspk { flex: 0 0 auto; width: 46px; height: 40px; border-radius: 4px; background: var(--ts-soft); border: 1px solid var(--ts-line); position: relative; display: flex; align-items: flex-end; justify-content: center; }
+.tspk .sync { position: absolute; left: 0; top: 0; bottom: 0; width: 6px; background: var(--ts); border-radius: 4px 0 0 4px; opacity: 0.8; }
+.tspk .lbl { font-family: var(--mono); font-size: 8.5px; color: var(--ts-hi); padding-bottom: 4px; letter-spacing: 0.04em; }
+.seg-break { flex: 0 0 auto; width: 1px; align-self: stretch; margin: 6px 5px; border-left: 1px dashed var(--text-3); position: relative; }
+.seg-break span { position: absolute; top: -2px; left: 50%; transform: translateX(-50%); font-family: var(--mono); font-size: 8px; color: var(--text-3); white-space: nowrap; letter-spacing: 0.1em; }
+
+/* ═══ NEW · .nodemap — labeled box-and-connector architecture graph ═════════
+   Zones (columns) joined by arrows; stacks vertically on narrow.
+   Card families are color-coded: .node-c (accent), .rust-c (green),
+   .data-c (muted), .up-c (amber), .client-c (neutral). */
+.nodemap { display: flex; align-items: center; justify-content: center; gap: 6px; padding: 24px 16px; }
+.nm-zone { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 10px; align-self: stretch; }
+.nm-zone.grow { flex: 1.5 1 0; }
+.nm-label { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); text-align: center; }
+.nm-group { border: 1px dashed var(--accent-line); background: var(--accent-soft); border-radius: var(--radius-m); padding: 12px; display: flex; flex-direction: column; gap: 9px; height: 100%; }
+.nm-group > .nm-glabel { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent-hi); text-align: center; margin: -2px 0 2px; }
+.nm-card {
+  border: 1px solid var(--hairline-strong); background: var(--bg-1); border-radius: var(--radius-s);
+  padding: 11px 12px; position: relative; overflow: hidden;
+}
+.nm-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--text-3); }
+.nm-card.node-c::before { background: var(--accent); }
+.nm-card.rust-c::before { background: var(--ts); }
+.nm-card.data-c::before { background: var(--text-3); }
+.nm-card.up-c::before { background: var(--cfg); }
+.nm-card.client-c::before { background: var(--accent); }
+.nm-card .t { color: var(--text-0); font-weight: 600; font-size: 13.5px; letter-spacing: -0.01em; }
+.nm-card .s { color: var(--text-2); font-size: 12px; margin-top: 2px; }
+.nm-card .tag { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); margin-top: 6px; display: inline-block; }
+.nm-card.node-c .tag { color: var(--accent-hi); }
+.nm-card.rust-c .tag { color: var(--ts-hi); }
+.nm-arrow { flex: 0 0 auto; align-self: center; display: flex; flex-direction: column; align-items: center; gap: 3px; color: var(--text-3); padding: 0 2px; }
+.nm-arrow .g { font-family: var(--mono); font-size: 18px; line-height: 1; }
+.nm-arrow .l { font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); writing-mode: vertical-rl; text-orientation: mixed; max-height: 92px; }
+@media (max-width: 780px) {
+  .nodemap { flex-direction: column; align-items: stretch; }
+  .nm-arrow { flex-direction: row; }
+  .nm-arrow .g { transform: rotate(90deg); }
+  .nm-arrow .l { writing-mode: horizontal-tb; max-height: none; }
+}
+
+/* ═══ NEW · .taxonomy — branching family tree → color-coded leaf cards ══════
+   registry → families → adapter cards. Family color via .fam-* modifiers. */
+.taxonomy { display: flex; flex-direction: column; gap: 4px; padding: 14px 14px 18px; }
+.tx-root { align-self: flex-start; font-family: var(--mono); font-size: 12px; color: var(--text-0); background: var(--bg-2); border: 1px solid var(--hairline-strong); border-radius: var(--radius-s); padding: 8px 12px; margin-bottom: 8px; }
+.tx-root b { color: var(--accent-hi); }
+.tx-branch { border-left: 2px solid var(--fam, var(--hairline-strong)); padding: 8px 0 8px 16px; margin-left: 8px; }
+.tx-branch-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.tx-branch-head .name { font-weight: 600; color: var(--text-0); font-size: 15px; letter-spacing: -0.01em; }
+.tx-branch-head .meta { font-family: var(--mono); font-size: 11px; color: var(--text-3); }
+.tx-branch-head .chip { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; color: var(--fam, var(--text-2)); background: var(--fam-soft, var(--bg-2)); border: 1px solid var(--fam-line, var(--hairline)); }
+.tx-leaves { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+.tx-leaf { border: 1px solid var(--hairline); background: var(--bg-1); border-radius: var(--radius-s); padding: 11px 12px; position: relative; overflow: hidden; }
+.tx-leaf::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--fam, var(--text-3)); }
+.tx-leaf .id { font-family: var(--mono); font-size: 12px; color: var(--text-0); font-weight: 500; }
+.tx-leaf .nm { font-size: 12px; color: var(--text-2); margin-top: 1px; }
+.tx-leaf .d { font-size: 11.5px; color: var(--text-3); margin-top: 6px; line-height: 1.4; }
+/* family palette — echoes the Mermaid classDef intent */
+.fam-synthetic { --fam: var(--text-2); --fam-soft: var(--bg-2); --fam-line: var(--hairline-strong); }
+.fam-auth { --fam: var(--risk); --fam-soft: var(--risk-soft); --fam-line: var(--risk-line); }
+.fam-scrape { --fam: var(--ts-hi); --fam-soft: var(--ts-soft); --fam-line: var(--ts-line); }
+.fam-sentinel { --fam: var(--accent-hi); --fam-soft: var(--accent-soft); --fam-line: var(--accent-line); }
+.fam-macro { --fam: var(--cfg); --fam-soft: var(--cfg-soft); --fam-line: var(--cfg-line); }
+.fam-identity { --fam: var(--text-3); --fam-soft: var(--bg-2); --fam-line: var(--hairline); }
+
+/* ═══ NEW · .planes — control-plane / data-plane split panel ════════════════
+   Node plane ↔ Rust plane, with a seam-contract list between/below. */
+.planes { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+@media (max-width: 720px) { .planes { grid-template-columns: 1fr; } }
+.plane { border: 1px solid var(--hairline); border-radius: var(--radius-m); background: var(--bg-1); overflow: hidden; }
+.plane .p-head { display: flex; align-items: center; gap: 9px; padding: 11px 14px; border-bottom: 1px solid var(--hairline); font-family: var(--mono); font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase; }
+.plane .p-head .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.plane.node-p .p-head { color: var(--accent-hi); } .plane.node-p .p-head .dot { background: var(--accent); }
+.plane.rust-p .p-head { color: var(--ts-hi); } .plane.rust-p .p-head .dot { background: var(--ts); }
+.plane .p-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.plane-item { border-left: 2px solid var(--hairline-strong); padding: 3px 0 3px 11px; }
+.plane.node-p .plane-item { border-left-color: var(--accent-line); }
+.plane.rust-p .plane-item { border-left-color: var(--ts-line); }
+.plane-item .t { color: var(--text-0); font-weight: 560; font-size: 13.5px; }
+.plane-item .s { color: var(--text-2); font-size: 12px; margin-top: 1px; }
+.seam-list { grid-column: 1 / -1; display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; margin-top: 2px; }
+.seam-row { border: 1px solid var(--hairline); background: var(--bg-2); border-radius: var(--radius-s); padding: 10px 12px; }
+.seam-row .path { font-family: var(--mono); font-size: 11.5px; color: var(--accent-hi); }
+.seam-row .d { font-size: 12px; color: var(--text-2); margin-top: 3px; }
+
+/* ── reduced motion — freeze packet animations at a legible resting state ─── */
+@media (prefers-reduced-motion: reduce) {
+  .pkt { animation: none !important; }
+  .lane:not(.ts) .pkt:nth-child(1) { left: 30%; } .lane:not(.ts) .pkt:nth-child(2) { left: 24%; } .lane:not(.ts) .pkt:nth-child(3) { left: 18%; }
+  .ts .pkt:nth-child(1){left:6%}.ts .pkt:nth-child(2){left:19%}.ts .pkt:nth-child(3){left:32%}.ts .pkt:nth-child(4){left:45%}
+  .ts .pkt:nth-child(5){left:58%}.ts .pkt:nth-child(6){left:71%}.ts .pkt:nth-child(7){left:84%}.ts .pkt:nth-child(8){left:96%}
+}

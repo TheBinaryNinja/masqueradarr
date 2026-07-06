@@ -1,0 +1,307 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Video proxy engine — masqueradarr docs</title>
+<meta name="description" content="How masqueradarr serves video: the two-plane split (Node control plane, Rust data plane), the internal seams, the request flow, durability, HLS vs raw TS, the tuning knobs, and the opt-in public edge topology.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Video proxy engine — masqueradarr">
+<meta property="og:description" content="Two planes, the seams, the request flow, durability, HLS vs raw TS, tuning knobs, and edge mode.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="epg.html">EPG &amp; guide data</a>
+          <a class="nav-link" href="proxy-engine.html" aria-current="page">Video proxy engine</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>video proxy engine</b> · 06 <span class="rule"></span> how bytes actually move</div>
+        <h1>The <span class="em">remux-free</span> Rust data plane</h1>
+        <p class="lede">The old always-on ffmpeg engine is gone, replaced by a durable Rust sidecar (<code>masq-proxy</code>) that resolves each stream on demand and pipes it — with retry, mirror failover and read-ahead buffering — to the player. Node stays the brains; Rust moves the muscle.</p>
+      </header>
+
+      <!-- TWO PLANES #5 ────────────────────────────────────────────────── -->
+      <section id="two-planes">
+        <div class="sec-tag"><span class="n">01</span> Two planes</div>
+        <h2>Node control plane · Rust data plane</h2>
+        <p class="col">Video is split across two processes that ship in the same container. Everything stateful and provider-specific stays in TypeScript; the byte work is a small standalone Rust binary driven per-stream by a "grant".</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the split <span class="rt">the brains · the muscle</span></div>
+          <div class="planes">
+            <div class="plane node-p">
+              <div class="p-head"><span class="dot"></span> Node — control plane · the brains</div>
+              <div class="p-body">
+                <div class="plane-item"><div class="t">Per-source auth &amp; scraping</div><div class="s">dulo's Supabase session + device fingerprint; dlhd's rotating-mirror 3-hop resolve</div></div>
+                <div class="plane-item"><div class="t">The SSRF allow-set + stream-token gate</div><div class="s">who's allowed to reach what</div></div>
+                <div class="plane-item"><div class="t">Telemetry authority + config storage</div><div class="s"><code>streamState</code> · <code>ViewSession</code> · the WS; <code>proxyconfigs</code></div></div>
+              </div>
+            </div>
+            <div class="plane rust-p">
+              <div class="p-head"><span class="dot"></span> Rust — data plane · masq-proxy</div>
+              <div class="p-body">
+                <div class="plane-item"><div class="t">Fetch upstream · follow redirects</div><div class="s">fast, multi-threaded, near-zero-copy</div></div>
+                <div class="plane-item"><div class="t">Rewrite <code>.m3u8</code> manifests</div><div class="s">every child URL routes back through the proxy</div></div>
+                <div class="plane-item"><div class="t">Pipe segments</div><div class="s">counted, buffered, stall-guarded — never re-derives provider logic</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">crash-tolerant by design</div>
+          <p>Node spawns and supervises <code>masq-proxy</code> as a child (auto-restart with backoff). A missing or crashed sidecar is <strong>non-fatal</strong> — the app keeps managing playlists / EPG / channels / users and serving M3U / XMLTV downloads; only live playback pauses until it's back.</p>
+        </div>
+      </section>
+
+      <!-- SEAMS ────────────────────────────────────────────────────────── -->
+      <section id="seams">
+        <div class="sec-tag"><span class="n">02</span> The internal seams</div>
+        <h2>One private loopback channel, four jobs</h2>
+        <p class="col">Node and Rust talk over one loopback channel — <code>POST /api/internal/*</code>, guarded by a shared <code>x-masq-secret</code> (the SPA never calls it; only the Rust engine does).</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> /api/internal/* · shared-secret seams</div>
+          <div class="planes" style="padding-bottom:6px;">
+            <div class="seam-list" style="grid-column:1/-1;">
+              <div class="seam-row"><div class="path">resolve → grant</div><div class="d">Rust asks Node to resolve a stream; Node runs the adapter and returns a per-stream grant (<code>masterUrl</code>, <code>upstreamHeaders</code>, <code>allowHosts</code>, relabel, resolved <code>proxyConfig</code>) that Rust replays for the whole stream.</div></div>
+              <div class="seam-row"><div class="path">telemetry · batched</div><div class="d">Rust measures the true byte edge and reports batched viewer / byte / phase / close events; Node stays the telemetry authority.</div></div>
+              <div class="seam-row"><div class="path">log · batched</div><div class="d">Rust ships level-gated, request-tagged engine logs into the dedicated <code>proxy</code> log category — the same "View logs" drawer.</div></div>
+              <div class="seam-row"><div class="path">authorize · edge only</div><div class="d">The per-request stream-token check when Rust owns the public socket (edge mode, below).</div></div>
+            </div>
+          </div>
+        </div>
+        <p class="col" style="margin-top:14px;">The telemetry + log responses both <strong>echo the current log level</strong>, so changing verbosity on the Settings screen reaches the sidecar within one flush — no restart.</p>
+      </section>
+
+      <!-- REQUEST FLOW #6 ──────────────────────────────────────────────── -->
+      <section id="request-flow">
+        <div class="sec-tag"><span class="n">03</span> How a stream request flows</div>
+        <h2>Gate → relay → resolve → fetch → bytes</h2>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> a single stream request <span class="rt">player → gate → rust → upstream</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">Player → /api/(ext/)v1/&lt;source&gt;/&lt;enc-url&gt;</div><div class="act">Request a channel</div><div class="note">Carries the per-user <code>?token=</code> and the <code>?pl=</code> playlist id. <code>/api/v1</code> = in-app; <code>/api/ext/v1</code> = external clients (the mount the composed M3U emits).</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">streamGate</div><div class="act">Check access first</div><div class="note">Valid token? enabled? (for a non-admin) is this source in the user's allow-list? <span class="branch risk">denials are plain text so a media player surfaces them</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">proxyRelay → 127.0.0.1:8787</div><div class="act">Relay to the sidecar</div><div class="note">On allow, Node relays to Rust and injects the client identity it can see (IP, UA, username) plus the shared secret.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Rust · ENTRY or HOP?</div><div class="act">Resolve once, reuse after</div><div class="note"><span class="branch">ENTRY → resolve seam → grant + masterUrl</span> <span class="branch ts">HOP → reuse cached policy</span> The first request resolves; child requests (variant playlists, segments, keys) replay the grant.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">fetch upstream</div><div class="act">Fetch with durability</div><div class="note">Retry <code>502</code>/<code>503</code>/<code>504</code> with bounded backoff; a dead master forces a fresh resolve → mirror failover.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">manifest or segment?</div><div class="act">Rewrite or pipe</div><div class="note"><span class="branch">manifest → rewrite child URIs, re-embed token + pl, grow the SSRF allow-set</span> <span class="branch ts">segment → relabel + pipe through a bounded read-ahead buffer</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">→ Player</div><div class="act">Bytes out</div><div class="note">Nothing upstream is ever exposed to the player directly.</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- HLS vs TS ─────────────────────────────────────────────────────── -->
+      <section id="hls-ts">
+        <div class="sec-tag"><span class="n">04</span> HLS vs. raw TS</div>
+        <h2>Same video, different packaging</h2>
+        <p class="col">The engine can hand a stream to a player two ways. Same bytes underneath — different <em>packaging</em>. HLS is the universal default; raw TS is an opt-in for players that want one continuous pipe.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● HLS · the default</span>
+            <h3>A list of short clips</h3>
+            <p class="one">The server hands the player a <strong>menu</strong> of tiny clips; the player fetches them one at a time, re-checking the menu every few seconds. The player drives timing and can adapt quality.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● Raw TS · opt-in</span>
+            <h3>One continuous pour</h3>
+            <p class="one">The server opens <strong>one never-ending <code>video/mp2t</code> pipe</strong> and pours the video down it — segments welded by <code>#EXT-X-MEDIA-SEQUENCE</code>, no remux. The player just receives. Like tuning to a channel.</p>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> signal flow · player ← proxy ← cdn</div>
+          <div class="flow">
+            <div class="lane">
+              <div class="node">Player<small>your app / TV</small></div>
+              <div class="wire"><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span></div>
+              <div class="node">Proxy<small>masqueradarr</small></div>
+              <div class="wire"><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span></div>
+              <div class="node">CDN<small>source</small></div>
+              <div class="lane-meta"><span class="tag">HLS</span><span class="desc">Chunks arrive in bursts — pull a clip, pause, ask again. Many small requests.</span></div>
+            </div>
+            <div class="lane ts">
+              <div class="node">Player<small>your app / TV</small></div>
+              <div class="wire"><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span></div>
+              <div class="node">Proxy<small>masqueradarr</small></div>
+              <div class="wire"><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span><span class="pkt"></span></div>
+              <div class="node">CDN<small>source</small></div>
+              <div class="lane-meta"><span class="tag">Raw TS</span><span class="desc">One unbroken flow — the proxy follows the source and keeps pushing bytes. One request, ever.</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> mpeg-ts · self-framing packets welded across a segment boundary</div>
+          <div class="scroll">
+            <div class="packets">
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="seg-break"><span>seg 42 │ seg 43</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="seg-break"><span>seg 43 │ seg 44</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+              <div class="tspk"><span class="sync"></span><span class="lbl">188B</span></div>
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">why no ffmpeg is needed</div>
+          <p>MPEG-TS is a river of self-describing <strong>188-byte packets</strong> — you can glue two chunks end-to-end and it still plays. That's the property that lets masqueradarr build the raw-TS stream by <strong>pure concatenation</strong>: no re-encoding, no <code>ffmpeg</code>. fMP4 (<code>#EXT-X-MAP</code>) and AES-encrypted sources can't be welded, so they auto-fall-back to HLS.</p>
+        </div>
+        <div class="panel scroll" style="margin-top:16px;">
+          <table>
+            <thead><tr><th></th><th class="h-accent">● HLS</th><th class="h-ts">● Raw TS</th></tr></thead>
+            <tbody>
+              <tr><td>Shape</td><td>A playlist + many short segments</td><td>One continuous <code>video/mp2t</code> stream</td></tr>
+              <tr><td>Who drives timing</td><td><span class="em-accent">The player</span> pulls each clip</td><td><span class="em-ts">The server</span> pushes the stream</td></tr>
+              <tr><td>Requests after start</td><td>One per segment, forever</td><td>Exactly zero — one open socket</td></tr>
+              <tr><td>Adaptive bitrate</td><td>Yes — player picks a quality</td><td>No — server fixes the top variant</td></tr>
+              <tr><td>Which mount</td><td><code>/api/v1</code> <b>and</b> <code>/api/ext/v1</code></td><td><code>/api/ext/v1</code> only</td></tr>
+              <tr><td>Telemetry model</td><td>Poll-recency (each poll = heartbeat)</td><td>Socket (open · sbytes · close)</td></tr>
+              <tr><td>Upstream limits</td><td>Handles fMP4 &amp; AES too</td><td>Pure MPEG-TS only <span style="color:var(--text-3)">(else falls back to HLS)</span></td></tr>
+              <tr><td>Best for</td><td>Browsers, the in-app player, modern apps</td><td>Set-top / legacy clients that want one URL</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- DURABILITY ───────────────────────────────────────────────────── -->
+      <section id="durability">
+        <div class="sec-tag"><span class="n">05</span> Durability</div>
+        <h2>Keeping a stream alive on flaky upstreams</h2>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+          <div class="tile"><div class="ic">● retry</div><h3>Transient failures</h3><p>Transport errors and <code>502</code>/<code>503</code>/<code>504</code> retry with bounded backoff; definitive <code>4xx</code>/<code>5xx</code> are forwarded verbatim.</p></div>
+          <div class="tile"><div class="ic">● mirror failover</div><h3>Rotate mid-stream</h3><p>A dead resolved master forces a <strong>fresh resolve</strong>, driving dlhd / dami to re-probe and rotate to a live mirror without dropping the viewer.</p></div>
+          <div class="tile"><div class="ic">● stall detection</div><h3>Clean truncation</h3><p>An idle read timeout (<code>readTimeoutMs</code>) turns a silent upstream into a clean end instead of a hang.</p></div>
+          <div class="tile"><div class="ic">● read-ahead buffer</div><h3>Smooth jitter</h3><p>A bounded in-memory buffer (<code>bufferSizeKb</code>) smooths jitter and fixes the chunked / no-Content-Length byte undercount that used to fake buffering.</p></div>
+          <div class="tile"><div class="ic">● batched telemetry</div><h3>Off the hot path</h3><p>Events are coalesced and posted off the byte path, so reporting never blocks the stream.</p></div>
+          <div class="tile"><div class="ic">● raw MPEG-TS</div><h3>Flat TS pipe</h3><p>With <code>outputFormat: 'ts'</code>, the external mount serves one continuous <code>video/mp2t</code> (no remux); fMP4 / AES auto-fall back to HLS.</p></div>
+        </div>
+      </section>
+
+      <!-- TUNING ───────────────────────────────────────────────────────── -->
+      <section id="tuning">
+        <div class="sec-tag"><span class="n">06</span> Tuning knobs · <code style="font-size:0.8em">proxyconfigs</code></div>
+        <h2>Two tiers, doc-level fallback</h2>
+        <p class="col">The engine's knobs live in the <code>proxyconfigs</code> collection, edited in the UI and resolved by Node into each grant — <strong>Rust never reads MongoDB</strong>. A per-install <strong>(Default)</strong> (<code>_id:'app'</code>, Settings → Advanced) and an optional per-playlist <strong>(Custom)</strong> (<code>_id:'app_&lt;playlistId&gt;'</code>, the playlist drawer) that fully replaces the Default for that playlist.</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Knob</th><th>Status</th><th class="h-accent">Effect</th></tr></thead>
+            <tbody>
+              <tr><td>headerOverrides</td><td><span class="em-ts">live</span></td><td>Extra upstream headers, merged over the adapter's (operator wins).</td></tr>
+              <tr><td>connectTimeoutMs, maxRedirects</td><td><span class="em-ts">live</span></td><td>Per-config upstream HTTP client (cached in Rust).</td></tr>
+              <tr><td>readTimeoutMs, bufferSizeKb</td><td><span class="em-ts">live</span></td><td>Per-stream stall timeout + read-ahead buffer size.</td></tr>
+              <tr><td>outputFormat (<code>hls</code> | <code>ts</code>)</td><td><span class="em-ts">live</span></td><td>Distribution shape (<code>ts</code> = continuous MPEG-TS, external mount only).</td></tr>
+              <tr><td>segmentCacheTtlSec</td><td style="color:var(--text-3)">reserved</td><td>Shipped in the grant, not yet enforced.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- EDGE #7/#8 ───────────────────────────────────────────────────── -->
+      <section id="edge">
+        <div class="sec-tag"><span class="n">07</span> Public edge mode · <code style="font-size:0.8em">MASQ_EDGE</code></div>
+        <h2>Take Node's event loop out of the byte path</h2>
+        <p class="col">By default Node is the public front door and Rust a loopback sidecar. <code>MASQ_EDGE=1</code> inverts the topology: Rust binds the public port and serves streams in-process, reverse-proxying everything else (SPA, <code>/api/*</code>, downloads, WebSockets) back to Node on a loopback port. Same public port and <code>DOMAIN</code>; fully reversible.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> default · MASQ_EDGE off <span class="rt">Node is the front door</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone"><div class="nm-label">clients</div><div class="nm-card client-c"><div class="t">Clients</div><div class="s">public :3000</div></div></div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">all traffic</span></div>
+              <div class="nm-zone grow"><div class="nm-label">front door</div><div class="nm-card node-c"><div class="t">Node — public front door</div><div class="s">0.0.0.0:3000 · SPA · /api/* · WS · gate · relay</div></div></div>
+              <div class="nm-arrow"><span class="g">⇄</span><span class="l">relay bytes · seams</span></div>
+              <div class="nm-zone"><div class="nm-label">sidecar</div><div class="nm-card rust-c"><div class="t">masq-proxy</div><div class="s">127.0.0.1:8787 · engine</div></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="panel stack">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> inverted · MASQ_EDGE=1 <span class="rt">Rust is the front door</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone"><div class="nm-label">clients</div><div class="nm-card client-c"><div class="t">Clients</div><div class="s">public :3000</div></div></div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">all traffic</span></div>
+              <div class="nm-zone grow"><div class="nm-label">public edge</div><div class="nm-card rust-c"><div class="t">masq-proxy — public edge</div><div class="s">0.0.0.0:3000 · streams in-process · token-gated</div></div></div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">reverse-proxy · authorize (30s TTL)</span></div>
+              <div class="nm-zone"><div class="nm-label">internal</div><div class="nm-card node-c"><div class="t">Node — internal</div><div class="s">127.0.0.1:8080 · control plane</div></div></div>
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">when to turn it on</div>
+          <p>Flip it for <strong>many concurrent or high-bitrate viewers</strong> (the main reason), to keep the management UI snappy under streaming load, or on constrained hardware (Pi / small VPS). <strong>Leave it off</strong> for a personal setup — the default sidecar path is simpler, keeps strictly per-request token revocation, and has a smaller blast radius. In edge mode the token gate becomes a per-request check against a Rust auth cache (revocation within a 30-second TTL), and the edge synthesizes client identity server-side, ignoring inbound <code>x-masq-*</code>.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">honest scope</div>
+          <p>Playback is <strong>live</strong> over the Rust engine (HLS + raw-TS). The part still pending is <strong>remux / transcode</strong> (e.g. HDHomeRun TS→HLS) — there is no <code>ffmpeg</code>, which is exactly why fMP4/AES fall back to HLS and HDHomeRun playback is dormant. The <code>?fmt=ts</code> per-request override and the HDHomeRun-tuner / Xtream-panel consumers are on the roadmap; <code>segmentCacheTtlSec</code> ships in the grant but isn't enforced yet. Edge mode is build- and unit-verified; a full live-stack E2E pass is still pending — treat it as an opt-in scale topology.</p>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Video Proxy Engine</span>
+          <span class="ref"><b>proxy/</b> crate · <code>masq-proxy</code> · tsmux.rs · proxy.rs</span>
+          <span class="ref"><b>.claude/artifacts</b> · HLS vs Raw TS explainer</span>
+          <span class="ref">next → <b>Users &amp; access</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · video proxy engine</span>
+        <span>same video · different packaging</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

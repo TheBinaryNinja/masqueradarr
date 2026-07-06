@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Architecture — masqueradarr docs</title>
+<meta name="description" content="The masqueradarr architecture: two independently-built npm packages, the primary container topology, the boot sequence, the REST + 4 WebSocket surface, the two Docker images, MASQ_EDGE, and the roadmap.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Architecture — masqueradarr">
+<meta property="og:description" content="Two-package build, the container topology, the boot sequence, REST + 4 WebSockets, the two Docker images, MASQ_EDGE, and the roadmap.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="operations.html">Operations</a>
+          <a class="nav-link" href="architecture.html" aria-current="page">Architecture</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>architecture</b> · 09 <span class="rule"></span> under the hood</div>
+        <h1>Two packages, <span class="em">one image</span></h1>
+        <p class="lede">A reference for how masqueradarr is built: the two-package layout, the container topology, the load-bearing boot order, the REST + WebSocket surface, the two Docker images, and what's still on the roadmap.</p>
+      </header>
+
+      <!-- TWO PACKAGES ─────────────────────────────────────────────────── -->
+      <section id="two-packages">
+        <div class="sec-tag"><span class="n">01</span> Two packages, not a workspace</div>
+        <h2>Built and versioned independently</h2>
+        <p class="col">masqueradarr is <strong>two separate npm packages</strong> — <em>not</em> a workspace, and they never import across the boundary. The Docker image stitches them together.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● / (root)</span>
+            <h3>Vue 3 + Vite SPA</h3>
+            <p>The management front end (<code>hls.js</code>, <code>vue-router</code>, <code>mitt</code>). TypeScript <code>strict: false</code>; imports carry <strong>no</strong> <code>.js</code> extension. Built with <code>vue-tsc -b &amp;&amp; vite build</code> → <code>/dist</code>.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● server/</span>
+            <h3>Express 4 + Mongoose 8 API</h3>
+            <p>ESM (<code>type: module</code>), TypeScript <code>strict: true</code>; every relative import carries an explicit <strong><code>.js</code></strong> extension even from <code>.ts</code> source. Serves the built SPA, the <code>/api/*</code> REST surface, and the WebSockets.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">development</div>
+          <p>Two dev servers side by side: the SPA on <code>:5173</code> (Vite, proxies <code>/api</code> → <code>:3000</code>) and the API on <code>:3000</code> (<code>tsx watch</code>, needs a reachable MongoDB). There is <strong>no test runner and no linter</strong> — correctness is verified by <code>npm run build</code> (type-check) in each package and by running the app.</p>
+        </div>
+      </section>
+
+      <!-- PRIMARY #1 ───────────────────────────────────────────────────── -->
+      <section id="primary">
+        <div class="sec-tag"><span class="n">02</span> Primary architecture</div>
+        <h2>Clients, the container, the upstreams</h2>
+        <p class="col">The SPA and IPTV clients talk to the Express <strong>control plane</strong>, which owns MongoDB and drives the Rust <strong>data-plane</strong> sidecar for stream bytes.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the container topology <span class="rt">control plane · data plane</span></div>
+          <div class="scroll">
+            <div class="nodemap">
+              <div class="nm-zone">
+                <div class="nm-label">clients</div>
+                <div class="nm-card client-c"><div class="t">Browser</div><div class="s">Vue 3 SPA</div></div>
+                <div class="nm-card client-c"><div class="t">IPTV clients</div><div class="s">TiviMate · VLC · Plex · Jellyfin</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">/api/* · WS · .m3u · bytes</span></div>
+              <div class="nm-zone grow">
+                <div class="nm-label">masqueradarr container</div>
+                <div class="nm-group">
+                  <div class="nm-glabel">one image · two processes</div>
+                  <div class="nm-card node-c"><div class="t">Express API — Node</div><div class="s">control plane</div><span class="tag">gate + relay ↓</span></div>
+                  <div class="nm-card rust-c"><div class="t">masq-proxy — Rust</div><div class="s">data-plane sidecar</div><span class="tag">internal seams ↑ loopback</span></div>
+                  <div class="nm-card data-c"><div class="t">MongoDB</div><div class="s">all the state</div></div>
+                </div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">resolve · fetch · rewrite · pipe</span></div>
+              <div class="nm-zone">
+                <div class="nm-label">upstream</div>
+                <div class="nm-card up-c"><div class="t">Upstream IPTV sources</div><div class="s">dulo · DaddyLive · Pluto · …</div></div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col">
+          <ul>
+            <li><strong>Sources adapter framework</strong> — a source-agnostic core (sync → normalize → dedupe → resolve) with ~17 adapters plus proxy-only <code>direct</code> / <code>hdhomerun</code> sources. See <a href="sources.html">Sources</a>.</li>
+            <li><strong>Channel model</strong> — a pristine <code>sourcechannels</code> reference projected into an editable <code>playlistchannels</code>; edits survive re-syncs. See <a href="playlists.html">Playlists</a>.</li>
+            <li><strong>EPG + scheduler</strong> — multiple ingesters behind one sync path, driven by a <code>croner</code> scheduler over <code>cronjobs</code>. See <a href="epg.html">EPG</a>.</li>
+            <li><strong>Video proxy engine</strong> — the remux-free Rust data plane. See <a href="proxy-engine.html">Video proxy engine</a>.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- BOOT ─────────────────────────────────────────────────────────── -->
+      <section id="boot">
+        <div class="sec-tag"><span class="n">03</span> Boot sequence</div>
+        <h2>The mount order is load-bearing</h2>
+        <p class="col"><code>server/src/index.ts</code> wires the app in a specific order. Mongo is the one <strong>fatal</strong> dependency; every subsystem after it must not crash boot.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> index.ts · boot &amp; mount order</div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">config → mongo</div><div class="act">Load config, connect MongoDB</div><div class="note"><span class="branch risk">fatal on failure</span> A single no-retry connect; nothing runs without the DB.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">startLogStore · bootInitSources · startScheduler · telemetry / statsHub</div><div class="act">Start the subsystems</div><div class="note"><span class="branch ts">all non-fatal — must not crash boot</span> Logging sink, index/migration reconcile, the scheduler, and the telemetry + stats hubs.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">app.use('/api', authenticate)</div><div class="act">Global auth — never blocks</div><div class="note">Populates <code>req.user</code> from a session or stream token; it identifies, it doesn't gate.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">/api/auth · /api/users · admin gates</div><div class="act">Mount auth, then guard</div><div class="note"><code>requireAdmin</code> on the <code>adminOnlyRoutes</code> prefixes + <code>PUT /api/settings</code>.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">/api/* resource routers · sourcesRouter</div><div class="act">Mount the REST surface</div><div class="note">Each router is a thin Express layer over one Mongoose model; <code>sourcesRouter</code> mounts at root (paths span <code>/api/sources</code>).</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">SPA static + catch-all · error middleware</div><div class="act">Serve the app, catch errors</div><div class="note">Catch-all <code>/^\/(?!api\/).*/</code> serves the SPA for non-<code>/api</code> routes; a 4-arg middleware is the only place a 500 (<code>{ error: 'internal_error' }</code>) is produced.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">listen · server.on('upgrade')</div><div class="act">Listen, then dispatch WebSockets</div><div class="note">Upgrades are routed by pathname to the four WebSockets (below).</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- REST + WS ────────────────────────────────────────────────────── -->
+      <section id="websockets">
+        <div class="sec-tag"><span class="n">04</span> REST + 4 WebSockets</div>
+        <h2>The request surface</h2>
+        <p class="col">Every <code>routes/*.ts</code> is a thin router over one model. Handlers are <code>async (req,res,next)</code> wrapped in <code>try/catch(next)</code>; reads use <code>.lean()</code> + <code>{ _id: 0 }</code>; error bodies are <code>{ error: '&lt;snake_case&gt;' }</code>. Live data is <strong>pushed over WebSockets</strong>, not polled.</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>WebSocket</th><th class="h-accent">Carries</th></tr></thead>
+            <tbody>
+              <tr><td>/api/dulo/login-stream</td><td>The server-streamed Chromium dulo login capture</td></tr>
+              <tr><td>/api/stream-stats</td><td>Viewer / bandwidth / buffering telemetry (Active Streams + History / Metrics)</td></tr>
+              <tr><td>/api/logs-stream</td><td>The live "View logs" drawer feed</td></tr>
+              <tr><td>/api/system-stats</td><td>Live CPU / memory push (Dashboard)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- IMAGES ───────────────────────────────────────────────────────── -->
+      <section id="images">
+        <div class="sec-tag"><span class="n">05</span> Two Docker images</div>
+        <h2>One release publishes two products</h2>
+        <p class="col">Both are 3-stage builds (SPA → server → runtime) on <strong>Debian bookworm (glibc)</strong> under <code>tini</code>. They share the base and the apt Chromium; the one intentional divergence is the config bootstrap / supervisor.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● app.Dockerfile</span>
+            <h3>The standard image</h3>
+            <p>App only, for the compose stack — pairs with an external <code>mongo</code> service. The container self-provisions its <code>config.json</code> from <code>.env</code> on boot (<code>docker/app-entrypoint.sh</code>). No host config mount.</p>
+          </div>
+          <div class="fcard warn">
+            <span class="badge">● aio.Dockerfile</span>
+            <h3>The all-in-one image</h3>
+            <p>App + <code>mongod</code> 7.0 + config bootstrap in one container. A root supervisor (<code>aio-entrypoint.sh</code>) writes config, starts mongod (<code>--auth</code>, loopback-only), waits for it, then starts node. One <code>/data</code> volume persists everything.</p>
+          </div>
+        </div>
+        <p class="col" style="margin-top:14px;">Multi-arch build &amp; push (amd64 + arm64) is the <code>/docker-build-all &lt;tag&gt;</code> skill — it publishes both images in one release. The runtime layout (<code>/app/dist</code>, <code>/app/public</code>, <code>/app/compose</code>, <code>/app/config</code>, <code>/app/seed-data</code>) is load-bearing and stays in sync with <code>server/src/paths.ts</code>.</p>
+      </section>
+
+      <!-- EDGE ─────────────────────────────────────────────────────────── -->
+      <section id="edge">
+        <div class="sec-tag"><span class="n">06</span> MASQ_EDGE topology</div>
+        <h2>An opt-in inversion of the public socket</h2>
+        <p class="col">By default Node owns the public port and Rust is a loopback sidecar. <code>MASQ_EDGE=1</code> inverts it — Rust binds the public port, serves streams in-process (token-gated via <code>POST /api/internal/authorize</code>, 30-second revocation TTL), and reverse-proxies the SPA, <code>/api/*</code>, downloads and all four WebSockets back to Node on a loopback port. Same public port and <code>DOMAIN</code>; reversible by clearing the flag. The topology diagrams and the "when to turn it on" guidance are on the <a href="proxy-engine.html#edge">Video proxy engine</a> page.</p>
+      </section>
+
+      <!-- ROADMAP ──────────────────────────────────────────────────────── -->
+      <section id="roadmap">
+        <div class="sec-tag"><span class="n">07</span> Roadmap</div>
+        <h2>What's live, and what's next</h2>
+        <p class="col">The rename and re-architecture are effectively complete — codebase, brand, runtime and images are all masqueradarr, and playback is live over the Rust engine (HLS + raw-TS). What's still pending is remux-shaped:</p>
+        <div class="pair">
+          <div class="fcard ts">
+            <span class="badge">● live today</span>
+            <h3>Working now</h3>
+            <ul>
+              <li>Resolve-on-demand catalog + ~17 adapters</li>
+              <li>Rust HLS + raw-TS proxy (retry, failover, buffer)</li>
+              <li>Users, roles, tokenized M3U / XMLTV export</li>
+              <li>Live telemetry, logs, scheduler, backup / restore</li>
+            </ul>
+          </div>
+          <div class="fcard warn">
+            <span class="badge">● on the roadmap</span>
+            <h3>Designed / pending</h3>
+            <ul>
+              <li>Remux / transcode (HDHomeRun TS→HLS) — no <code>ffmpeg</code> yet</li>
+              <li>In-app player byte playback (derivation + UI in place)</li>
+              <li>HDHomeRun-tuner &amp; Xtream-panel emulation</li>
+              <li><code>?fmt=ts</code> per-request override; <code>segmentCacheTtlSec</code></li>
+            </ul>
+          </div>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Primary Architecture · Public edge · Development</span>
+          <span class="ref"><b>CLAUDE.md</b> · boot sequence · Docker contract</span>
+          <span class="ref"><b>restapi</b> / <b>styles-backend</b> skills</span>
+          <span class="ref">back to → <b>Home</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · architecture</span>
+        <span>two packages · one image</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Sources & adapters — masqueradarr docs</title>
+<meta name="description" content="The SourceAdapter contract, the source-agnostic core, the adapter families (synthetic, authenticated, scrape, API-sentinel, macro-fill, identity), custom playlists, and the Local Now deep-dive.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Sources & adapters — masqueradarr">
+<meta property="og:description" content="The SourceAdapter contract, the source-agnostic core, the adapter taxonomy, custom playlists, and Local Now.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="playlists.html">Playlists</a>
+          <a class="nav-link" href="sources.html" aria-current="page">Sources &amp; adapters</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>sources &amp; adapters</b> · 04 <span class="rule"></span> the pluggable core</div>
+        <h1>One adapter file, <span class="em">zero</span> core branches</h1>
+        <p class="lede">Every provider — ~17 of them, plus your own imports — plugs into the same source-agnostic core through one contract. The generic pipeline never branches per source; every difference lives in the adapter object.</p>
+      </header>
+
+      <!-- CONTRACT ─────────────────────────────────────────────────────── -->
+      <section id="contract">
+        <div class="sec-tag"><span class="n">01</span> The <code style="font-size:0.8em">SourceAdapter</code> contract</div>
+        <h2>Adding a provider is one file plus one line</h2>
+        <p class="col">Every adapter implements the <code>SourceAdapter</code> contract (<code>server/src/sources/types.ts</code>) and is registered in <code>server/src/sources/registry.ts</code>. The generic core (<code>buildSource</code>) runs the same pipeline for all of them — <strong>the whole point is that it never branches per source.</strong></p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the generic sync pipeline <span class="rt">listChannels → normalize → dedupe → docs</span></div>
+          <div class="scroll">
+            <div class="cfgflow">
+              <div class="stage"><div class="t">listChannels</div><div class="v">raw catalog</div><small>the provider's current channels</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">normalize</div><div class="v">one schema</div><small>into sourcechannels</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">dedupe</div><div class="v">by id</div><small>deterministic _id</small></div>
+              <div class="arr">→</div>
+              <div class="stage ts"><div class="t">project</div><div class="v">playlistchannels</div><small>the editable store</small></div>
+            </div>
+          </div>
+        </div>
+        <p class="col" style="margin-top:16px;">The adapter supplies the per-source hooks the core calls at the right moments:</p>
+        <div class="col">
+          <ul>
+            <li><strong><code>listChannels</code> / <code>normalize</code></strong> — populate the catalog on sync (the two above).</li>
+            <li><strong><code>resolveStream</code> / <code>proxy</code></strong> — turn a stored sentinel into a real, playable upstream <strong>at play time</strong>. These are <span class="k-ts"><code>live</code></span> — the Rust data-plane calls them per stream through the resolve seam.</li>
+            <li><strong><code>afterSync</code></strong> — optional; write self-EPG (<code>epgsources</code>/<code>epgchannels</code>/<code>programs</code>) off the same listing the sync already fetched.</li>
+          </ul>
+        </div>
+        <div class="aha">
+          <div class="lbl">the rule</div>
+          <p>Boot init, the manifest, and the SPA all <strong>iterate the registry</strong>. To add a source: write <code>adapters/&lt;id&gt;.ts</code>, add one line to <code>registry.ts</code>, and commit an offline <code>seed-data/sources/&lt;id&gt;.snapshot.json</code>. <strong>Never add a per-source <code>if</code> in the core.</strong></p>
+        </div>
+      </section>
+
+      <!-- TAXONOMY #2 ──────────────────────────────────────────────────── -->
+      <section id="families">
+        <div class="sec-tag"><span class="n">02</span> The adapter taxonomy</div>
+        <h2>Six families, one registry</h2>
+        <p class="col">Adapters differ mainly in <em>how a stored entry becomes a playable URL</em>. That resolution strategy sorts them into families — from proxy-only synthetics, to a single authenticated source, to the anonymous scrape / API / macro / identity groups.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> registry.ts → families → adapters <span class="rt">color = resolution strategy</span></div>
+          <div class="scroll">
+            <div class="taxonomy">
+              <div class="tx-root">registry.ts · <b>SOURCES: SourceAdapter[]</b></div>
+
+              <div class="tx-branch fam-synthetic">
+                <div class="tx-branch-head"><span class="name">Synthetic · proxy-only</span><span class="chip">synthetic: true</span><span class="meta">no catalog · no shell row · manifest omits</span></div>
+                <div class="tx-leaves">
+                  <div class="tx-leaf"><div class="id">direct</div><div class="nm">Imported</div><div class="d">Passthrough for user-imported M3U URLs; identity resolve, any https allowed. Channels carry <code>origin:'direct'</code>.</div></div>
+                  <div class="tx-leaf"><div class="id">hdhomerun</div><div class="nm">HDHomeRun</div><div class="d">Local OTA/cable tuner; catalog import is live, playback dormant (needs TS→HLS remux).</div></div>
+                  <div class="tx-leaf"><div class="id">local</div><div class="nm">Local Now</div><div class="d"><code>localnow://id?slug</code> sentinel → rotating CDN master; dynamic SSRF allow.</div></div>
+                </div>
+              </div>
+
+              <div class="tx-branch fam-auth">
+                <div class="tx-branch-head"><span class="name">Authenticated</span><span class="chip">requiresAuth: true</span><span class="meta">the only per-source auth surface</span></div>
+                <div class="tx-leaves">
+                  <div class="tx-leaf"><div class="id">dulo</div><div class="nm">dulo.tv</div><div class="d">Supabase session + device fingerprint, captured via a headful Chromium. <code>dulo://channel/id</code> → fresh <code>playbackUrl</code> per play. EPG: Gracenote crosswalk.</div></div>
+                </div>
+              </div>
+
+              <div class="tx-branch fam-scrape">
+                <div class="tx-branch-head"><span class="name">Scrape-based</span><span class="chip">html / mirror</span><span class="meta">catalog from a rotating mirror · multi-hop resolve</span></div>
+                <div class="tx-leaves">
+                  <div class="tx-leaf"><div class="id">dlhd</div><div class="nm">DaddyLive</div><div class="d">Scraped rotating-mirror HTML directory; <code>watch.php?id</code> → 3-hop Referer-gated scrape. Segments disguised as image/pdf. EPG: crosswalk + self-EPG.</div></div>
+                  <div class="tx-leaf"><div class="id">dami</div><div class="nm">Dami.TV</div><div class="d">dlhd-derived — reuses dlhd's resolve + mirror; own ~878-channel catalog with logos + ISO country grouping.</div></div>
+                </div>
+              </div>
+
+              <div class="tx-branch fam-sentinel">
+                <div class="tx-branch-head"><span class="name">API sentinel</span><span class="chip">opaque sentinel</span><span class="meta">catalog from JSON API · resolve = API call per play</span></div>
+                <div class="tx-leaves">
+                  <div class="tx-leaf"><div class="id">tubi</div><div class="nm">Tubi.TV</div><div class="d"><code>tubi://channel/id</code> → Tubi API per play; inline self-EPG on catalog rows.</div></div>
+                  <div class="tx-leaf"><div class="id">xumo</div><div class="nm">Xumo Play</div><div class="d"><code>broadcast.json</code> → 3-hop API resolve; paginated market guide.</div></div>
+                  <div class="tx-leaf"><div class="id">stirr</div><div class="nm">STIRR</div><div class="d"><code>/playable</code> → 1-hop POST; two-tier per-channel guide.</div></div>
+                  <div class="tx-leaf"><div class="id">tcl</div><div class="nm">TCL TV+</div><div class="d"><code>format-stream-url</code> → 1-hop POST; category schedule + batched detail.</div></div>
+                  <div class="tx-leaf"><div class="id">pluto</div><div class="nm">Pluto TV</div><div class="d"><code>pluto://region/id</code> → cached region boot + URL construct; per-region timelines. Gracenote crosswalk wired.</div></div>
+                  <div class="tx-leaf"><div class="id">roku</div><div class="nm">The Roku Channel</div><div class="d"><code>roku://id</code> → cached session boot + playId resolve; content-proxy fanout guide.</div></div>
+                </div>
+              </div>
+
+              <div class="tx-branch fam-macro">
+                <div class="tx-branch-head"><span class="name">Macro-fill</span><span class="chip">__MACRO__ slots</span><span class="meta">stored HLS URL with slots · fill per play</span></div>
+                <div class="tx-leaves">
+                  <div class="tx-leaf"><div class="id">samsung</div><div class="nm">Samsung TV Plus</div><div class="d">jmp2.uk redirect → CDN master; self-EPG. Gracenote crosswalk wired.</div></div>
+                  <div class="tx-leaf"><div class="id">lg</div><div class="nm">LG Channels</div><div class="d">HLS URL with <code>{MACRO}</code> slots → expand per play; inline program self-EPG.</div></div>
+                  <div class="tx-leaf"><div class="id">whale</div><div class="nm">Whale TV+</div><div class="d">macro fill per play; separate <code>/epg</code> fetch (Vidaa shape).</div></div>
+                  <div class="tx-leaf"><div class="id">distro</div><div class="nm">Distro TV</div><div class="d"><code>__MACRO__</code> VAST slots → fill per play; tvg_id-keyed self-EPG.</div></div>
+                  <div class="tx-leaf"><div class="id">freelivesports</div><div class="nm">FreeLiveSports</div><div class="d">device/cb/ref macro slots → fill per play; inline program self-EPG.</div></div>
+                </div>
+              </div>
+
+              <div class="tx-branch fam-identity">
+                <div class="tx-branch-head"><span class="name">Identity / direct</span><span class="chip">real HLS master</span><span class="meta">catalog carries the master · pre-allow host only</span></div>
+                <div class="tx-leaves">
+                  <div class="tx-leaf"><div class="id">vizio</div><div class="nm">Vizio WatchFree+</div><div class="d"><code>channelUrls[0]</code> IS the real master; identity resolve + pre-allow host. Separate airings schedule.</div></div>
+                  <div class="tx-leaf"><div class="id">vidaa</div><div class="nm">Vidaa Free TV</div><div class="d">macros already expanded at catalog time; identity resolve. Self-EPG via uid. Gracenote crosswalk wired.</div></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- KEY PROPERTIES TABLE ─────────────────────────────────────────── -->
+      <section id="table">
+        <div class="sec-tag"><span class="n">03</span> Key properties, at a glance</div>
+        <h2>The resolve / EPG matrix</h2>
+        <p class="col">The same 19 adapters, sorted by how they resolve a stream and where their guide data comes from.</p>
+        <div class="panel scroll">
+          <table>
+            <thead>
+              <tr><th>Adapter</th><th>Auth</th><th class="h-accent">Resolve strategy</th><th>Self-EPG</th><th>Gracenote xwalk</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>direct</td><td>—</td><td>Identity (passthrough)</td><td>—</td><td>—</td></tr>
+              <tr><td>hdhomerun</td><td>—</td><td>Catalog import (playback dormant)</td><td>—</td><td>—</td></tr>
+              <tr><td>local</td><td>—</td><td>Sentinel → rotating CDN</td><td>—</td><td>—</td></tr>
+              <tr><td>dulo</td><td><span class="em-accent">session</span></td><td><code>dulo://</code> → playbackUrl</td><td>—</td><td>yes</td></tr>
+              <tr><td>dlhd</td><td>—</td><td><code>watch.php</code> → 3-hop scrape</td><td>yes</td><td>yes</td></tr>
+              <tr><td>dami</td><td>—</td><td>dlhd resolveStream (shared)</td><td>yes</td><td>yes</td></tr>
+              <tr><td>tubi</td><td>—</td><td><code>tubi://</code> → Tubi API</td><td>yes (inline)</td><td>—</td></tr>
+              <tr><td>xumo</td><td>—</td><td>broadcast.json → 3-hop API</td><td>yes</td><td>—</td></tr>
+              <tr><td>stirr</td><td>—</td><td><code>/playable</code> → 1-hop POST</td><td>yes</td><td>—</td></tr>
+              <tr><td>tcl</td><td>—</td><td><code>format-stream-url</code> → POST</td><td>yes</td><td>—</td></tr>
+              <tr><td>pluto</td><td>—</td><td><code>pluto://</code> → region boot</td><td>yes</td><td>yes (wired)</td></tr>
+              <tr><td>roku</td><td>—</td><td><code>roku://</code> → session + playId</td><td>yes</td><td>—</td></tr>
+              <tr><td>samsung</td><td>—</td><td>jmp2.uk redirect</td><td>yes</td><td>yes (wired)</td></tr>
+              <tr><td>lg</td><td>—</td><td><code>{MACRO}</code> fill per play</td><td>yes</td><td>—</td></tr>
+              <tr><td>whale</td><td>—</td><td>macro fill per play</td><td>yes</td><td>—</td></tr>
+              <tr><td>distro</td><td>—</td><td><code>__MACRO__</code> fill per play</td><td>yes</td><td>—</td></tr>
+              <tr><td>freelivesports</td><td>—</td><td>macro fill per play</td><td>yes</td><td>—</td></tr>
+              <tr><td>vizio</td><td>—</td><td>Identity (direct master)</td><td>yes (airings)</td><td>—</td></tr>
+              <tr><td>vidaa</td><td>—</td><td>Identity (macros pre-expanded)</td><td>yes</td><td>yes (wired)</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- CUSTOM ───────────────────────────────────────────────────────── -->
+      <section id="custom">
+        <div class="sec-tag"><span class="n">04</span> Custom playlists</div>
+        <h2>Bring your own channels</h2>
+        <p class="col">Beyond the built-in adapters, you can compose your own playlists. Every custom playlist rides the same per-user, token-gated <code>.m3u</code> + XMLTV export machinery as the built-ins.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));">
+          <div class="tile"><div class="ic">● clone</div><h3>Curate from any source</h3><p>Hand-pick channels from any synced source into a curated playlist. The channels are independent copies (edits don't disturb the originals) but streams still route through the real adapter.</p></div>
+          <div class="tile"><div class="ic">● url import</div><h3>A remote M3U</h3><p>Pull in any remote <code>.m3u</code> / <code>.m3u8</code> URL. Re-syncable via the stored <code>remoteUrl</code>.</p></div>
+          <div class="tile"><div class="ic">● file upload</div><h3>A static M3U file</h3><p>Upload a static <code>.m3u</code>; parsed once from the uploaded file (no sync).</p></div>
+          <div class="tile"><div class="ic">● hdhomerun</div><h3>A LAN tuner</h3><p>Point at a LAN HDHomeRun tuner (<code>deviceUrl</code>); its channel lineup is imported. Playback (TS→HLS remux) is dormant pending the video engine.</p></div>
+        </div>
+      </section>
+
+      <!-- LOCAL NOW ────────────────────────────────────────────────────── -->
+      <section id="local-now">
+        <div class="sec-tag"><span class="n">05</span> Local Now — a deep dive</div>
+        <h2>A fully-managed, market-scoped custom playlist</h2>
+        <p class="col"><a href="https://localnow.com" target="_blank" rel="noopener">Local Now</a> is a US FAST service that delivers a <strong>market-specific</strong> lineup — local broadcast stations, regional news, and national FAST networks — curated by geographic TV market. masqueradarr integrates it as a re-syncable custom playlist with a bundled EPG guide.</p>
+        <div class="note-block">
+          <div class="lbl">US-only</div>
+          <p>Local Now is geo-gated to US IP addresses. Adding one from a non-US IP returns a clear error — there's no built-in VPN workaround; route the server through a US network to use it.</p>
+        </div>
+        <h3>Picking a market</h3>
+        <p class="col">Each playlist is scoped to a city/market, chosen two ways: a <strong>city search</strong> typeahead (<code>GET /api/import/local/cities?q=</code>), or <strong>auto-detect</strong> ("use my detected market", read from Local Now's homepage geo signal, falling back to New York). Every choice resolves to two stored identifiers:</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Field</th><th class="h-accent">What it is</th><th>Example</th></tr></thead>
+            <tbody>
+              <tr><td>marketDma</td><td>A numeric Designated Market Area code — the Nielsen/TV-industry ID for a regional TV market.</td><td><code>501</code> (New York)</td></tr>
+              <tr><td>marketSlug</td><td>A comma-joined list of Local Now market slugs — a primary city slug plus any associated PBS station slugs.</td><td><code>nyNewYorkCity,pbs-wnet,…</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <h3>What you get</h3>
+        <div class="col">
+          <ul>
+            <li><strong>Immediate sync</strong> — creates a custom playlist row (<code>source:'local'</code>, <code>endpoint:'custom'</code>) and syncs the market's lineup at once; subscription-locked channels are pruned, the rest deduped by id.</li>
+            <li><strong>Self-linked EPG</strong> — each playlist owns a playlist-bound EPG source (<code>playlistBinding:true</code>, id = playlist id). Channels are self-linked at sync — <strong>no manual Channel Mapping needed</strong> — and the guide renders immediately. Guide data is inline <code>program[]</code> from the same catalog fetch.</li>
+            <li><strong>Hourly refresh</strong> — the playlist's own hourly cronjob drives all refreshes; the EPG Sources screen hides its manual controls.</li>
+            <li><strong>Many markets, fully independent</strong> — add one playlist per market; each gets its own channels, EPG source, and hourly schedule. Cascade-delete removes a market's playlist, EPG, guide, and cronjob together.</li>
+          </ul>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Pluggable sources · Channel Adapter Architecture · Local Now</span>
+          <span class="ref"><b>restapi-sources</b> skill · the adapter contract</span>
+          <span class="ref"><b>.claude/docs/*-datasource.md</b> · per-source detail</span>
+          <span class="ref">next → <b>EPG &amp; guide data</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · sources &amp; adapters</span>
+        <span>next → epg &amp; guide data</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

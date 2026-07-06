@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Users & access — masqueradarr docs</title>
+<meta name="description" content="Users, roles and access in masqueradarr: scrypt authentication, admin/user roles, per-user access lists, the session-token vs stream-token split, tokenized M3U/XMLTV, and connecting IPTV clients.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Users & access — masqueradarr">
+<meta property="og:description" content="scrypt auth, roles, per-user access lists, session vs stream tokens, tokenized M3U/XMLTV, and connecting clients.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="proxy-engine.html">Video proxy engine</a>
+          <a class="nav-link" href="users.html" aria-current="page">Users &amp; access</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>users &amp; access</b> · 07 <span class="rule"></span> auth &amp; entitlements</div>
+        <h1>One identity, <span class="em">two tokens</span></h1>
+        <p class="lede">masqueradarr has real authentication — scrypt users, two roles, and a per-user access list. The trick that makes tokenized playlists work is a deliberate split between a session token and a stream token.</p>
+      </header>
+
+      <!-- AUTH ─────────────────────────────────────────────────────────── -->
+      <section id="auth">
+        <div class="sec-tag"><span class="n">01</span> Authentication</div>
+        <h2>scrypt, and a first-admin wizard</h2>
+        <p class="col">On first launch there are <strong>no users</strong> — the app reports <code>needsSetup</code> and the SPA walks you through creating the first admin. Passwords are hashed with <strong>scrypt</strong>; masqueradarr never stores a plaintext password (and for authenticated <em>sources</em> like dulo, your provider password goes straight to the provider — only session tokens are kept).</p>
+        <div class="shots">
+          <figure class="shot wide"><img src="../img/screenshots/v2-login.png" alt="Login screen" loading="lazy"><figcaption><span class="dot"></span> Login · the one-time setup creates the first admin</figcaption></figure>
+        </div>
+      </section>
+
+      <!-- ROLES ────────────────────────────────────────────────────────── -->
+      <section id="roles">
+        <div class="sec-tag"><span class="n">02</span> Roles &amp; access lists</div>
+        <h2>A role, and a per-user allow-list on top</h2>
+        <p class="col">What an account can <em>do</em> is governed by two layers working together.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● role</span>
+            <h3>admin vs. user</h3>
+            <p>An <strong>admin</strong> sees and manages everything (all screens). A <strong>user</strong> is restricted to their Dashboard and only ever sees their own assigned channels. The role decides which screens and nav items appear at login.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● per-user access list</span>
+            <h3>allowedPlaylists · allowedCustomPlaylists</h3>
+            <p>Even within the user role, each account is granted specific playlists — split to mirror the endpoint modes (Global vs Custom). Two users can have completely different line-ups. You assign this on the <strong>Playlists</strong> screen, per playlist.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">admins ⇒ every playlist</div>
+          <p>An admin's allow-lists are <em>materialized</em> to hold every playlist id (a real invariant, not just a role bypass), and creating a new playlist auto-grants it to all admins — so an admin always sees the full catalog without any manual grant.</p>
+        </div>
+      </section>
+
+      <!-- TOKENS ───────────────────────────────────────────────────────── -->
+      <section id="tokens">
+        <div class="sec-tag"><span class="n">03</span> Two kinds of token</div>
+        <h2>Session token vs. stream token</h2>
+        <p class="col">The split is what lets a playlist <strong>download without a login</strong> yet <strong>stream only for its owner</strong>.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● session token</span>
+            <h3>Signing in &amp; the API</h3>
+            <p>Issued at login; carried by the SPA to authenticate <code>/api/*</code> calls. It identifies <em>who is using the management app</em> and expires like a normal session.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● stream token</span>
+            <h3>Gating playback</h3>
+            <p>A durable, per-user token baked into that user's integration URLs. The playlist <code>.m3u</code> + XMLTV guide <strong>download is token-free</strong>, but every <strong>stream request is token-gated</strong> to that user's allowed playlists.</p>
+          </div>
+        </div>
+        <ul class="col" style="margin-top:14px;">
+          <li><strong>The stream gate runs on every play.</strong> Valid token? account enabled? (for a non-admin) is this source in the user's allow-list? Denials come back as plain text so a media player surfaces them.</li>
+          <li><strong>Regenerate invalidates instantly.</strong> If a user shares their links by accident, <strong>Regenerate</strong> (on their Dashboard, or by an admin on the Users screen) rotates the stream token — old URLs stop working immediately; they copy the new ones.</li>
+          <li><strong>Granting is what makes an account work.</strong> A standard user with nothing granted sees an empty Dashboard, gets a channel-less M3U, and can't stream anything.</li>
+        </ul>
+      </section>
+
+      <!-- CONNECT ──────────────────────────────────────────────────────── -->
+      <section id="connect">
+        <div class="sec-tag"><span class="n">04</span> Connecting a client</div>
+        <h2>One URL into any IPTV player</h2>
+        <p class="col">Each user gets a personal, tokenized <code>.m3u</code> + XMLTV guide URL on their Dashboard. Copy the M3U into any player; it loads the channel list automatically, and the guide is advertised alongside via <code>x-tvg-url</code>.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(220px,1fr));">
+          <div class="tile"><div class="ic">● TiviMate</div><h3>Playlist + EPG</h3><p>Add a playlist → M3U URL, paste the tokenized <code>.m3u</code>. TiviMate picks up the guide automatically from the advertised <code>x-tvg-url</code>.</p></div>
+          <div class="tile"><div class="ic">● VLC</div><h3>Open network stream</h3><p>Open the <code>.m3u</code> URL directly — a quick way to sanity-check a channel plays.</p></div>
+          <div class="tile"><div class="ic">● Plex / Jellyfin / Emby</div><h3>Live TV &amp; DVR</h3><p>Point the Live TV / tuner integration at the M3U URL and the XMLTV guide URL. <span style="color:var(--text-3)">(HDHomeRun-tuner emulation is on the roadmap.)</span></p></div>
+        </div>
+        <div class="aha">
+          <div class="lbl">the in-app preview</div>
+          <p>A standard user doesn't need an external app to check a channel — the Dashboard has a built-in <strong>preview player</strong> beside the channel list. <span style="color:var(--text-3)">(In-app byte playback is being rebuilt on the new engine; the derivation and UI are in place.)</span></p>
+        </div>
+      </section>
+
+      <!-- ONBOARD ──────────────────────────────────────────────────────── -->
+      <section id="onboard">
+        <div class="sec-tag"><span class="n">05</span> Onboarding a viewer</div>
+        <h2>From new account to working URL</h2>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> add → grant → share</div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">Users → Add user</div><div class="act">Create the account</div><div class="note">Set a username, password, and the <strong>user</strong> role (or <strong>admin</strong> for another manager).</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">Playlists screen</div><div class="act">Grant allowed playlists</div><div class="note">Pick which playlists this user receives. <span class="branch risk">this is the step that turns a new account into a working one</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">The user's Dashboard</div><div class="act">They copy their own URL</div><div class="note">After signing in, the user's Dashboard shows exactly those playlists' channels and their personal integration URLs — they paste the M3U into their player.</div></div></div>
+          </div>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Users &amp; access control</span>
+          <span class="ref"><b>users</b> skill · User/Session models · scrypt · token split</span>
+          <span class="ref"><b>src/docs/users.md</b> · the Users screen</span>
+          <span class="ref">next → <b>Operations</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · users &amp; access</span>
+        <span>token-free download · token-gated stream</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>
