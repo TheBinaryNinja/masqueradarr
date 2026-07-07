@@ -367,6 +367,18 @@ pub async fn serve_stream(
         let prefix = format!("{mount_path}/{source}/h/");
         let suffix = build_child_query(token.as_deref(), pl.as_deref(), &stream_entry);
         let RewriteResult { body, hosts, media } = rewrite_manifest(&text_body, &final_url, &prefix, &suffix);
+        // SIR: STREAM-INF Redux — opt-in, ext-mount-only reorder of the rewritten MASTER so the first
+        // #EXT-X-STREAM-INF lands within a strict player's manifest probe window (e.g. VLC's ~8 KiB peek). A pure
+        // post-transform layered OVER rewrite_manifest (unchanged) — a no-op (borrowed) when the flag is off or
+        // the body is a media playlist, so the served bytes are byte-identical to today when off. Ext-mount only:
+        // the in-app player is hls.js (immune, full-string parse) and its /api/v1 path carries no ?pl. Runs BEFORE
+        // the telemetry body.len() below so the reported manifest size reflects what is actually served. hosts +
+        // media are unaffected (Redux adds/removes no URIs), so the SSRF-grow + DEC report below are untouched.
+        let body = if mount_path == "/api/ext/v1" && policy.stream_inf_redux.load(Ordering::Relaxed) {
+            crate::manifest::redux_master(&body).into_owned()
+        } else {
+            body
+        };
         // Grow the source's SSRF allowlist with every host referenced in the manifest (dynamic-allow).
         let grown = hosts.len();
         if !hosts.is_empty() {

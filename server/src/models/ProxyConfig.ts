@@ -26,6 +26,9 @@ import { Schema, model } from 'mongoose';
 //   · outputFormat       — distribution shape: 'hls' (segmented) | 'ts' (continuous raw MPEG-TS on the ext
 //                          mount). LIVE (P3.2/DST); enc/fMP4/unreachable falls back to HLS, observable as the
 //                          `delivery` field on Active Streams.
+//   · streamInfRedux     — SIR: opt-in, non-destructive reorder of the HLS MASTER (ext mount only) so the first
+//                          #EXT-X-STREAM-INF lands within a strict player's manifest probe window (e.g. VLC's
+//                          ~8 KiB peek). LIVE; off = today's byte-identical output. See proxy/src/manifest.rs.
 //   · segmentCacheTtlSec — segment cache TTL. RESERVED — the ONE knob still shipped but not yet applied.
 // The reserved knob is stored + surfaced + shipped in the grant but not yet applied — an explicit `null`
 // default marks a not-yet-wired numeric knob (the repo convention).
@@ -38,6 +41,7 @@ export interface ProxyConfigDoc {
   maxRedirects: number; // upstream redirect-follow cap. LIVE in P2.
   headerOverrides: Record<string, string>; // operator upstream-header overrides; merged into the grant. LIVE in P2.
   outputFormat: string; // distribution shape 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount). LIVE (P3.2/DST); enc/fMP4→HLS.
+  streamInfRedux: boolean; // SIR: opt-in HLS master reorder (ext mount) so the first #EXT-X-STREAM-INF fits a strict player's manifest probe window. LIVE; off = today's output.
   segmentCacheTtlSec: number | null; // segment cache TTL (s); null = no-store (today's behavior). RESERVED (only unapplied knob).
 }
 
@@ -53,6 +57,7 @@ const ProxyConfigSchema = new Schema<ProxyConfigDoc>(
     maxRedirects: { type: Number, required: true, default: 10 },
     headerOverrides: { type: Schema.Types.Mixed, default: {} },
     outputFormat: { type: String, required: true, default: 'hls' },
+    streamInfRedux: { type: Boolean, required: true, default: false },
     segmentCacheTtlSec: { type: Number, default: null },
   },
   { versionKey: false },

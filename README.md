@@ -24,6 +24,9 @@
 </div>
 
 # What is `masqueradarr`
+
+### **DISCORD** is the fastest way to find out exactly what is happening with this project. Tons of updates happening from community input.
+
 <div style="display:flex; justify-content:left; align-items:justify; gap:15px;">
     <a href="https://discord.gg/baD3HGpkcD">
       <img src="https://img.shields.io/badge/masqueradarr-join_discord-3F48AD?style=for-the-badge&logo=discord&logoSize=auto&link=https%3A%2F%2Fdiscord.gg%2FUEx4fEVwg4308EA8&labelColor=black" alt="Static Badge">
@@ -31,10 +34,9 @@
     <a>
       <img alt="Discord" src="https://img.shields.io/discord/1519879505886576690?style=for-the-badge&logo=discord&logoSize=auto&color=3F48AD&labelColor=black">
     </a>
-    
 </div>
 
-### [GitHub pages: masqueradarr](https://thebinaryninja.github.io/masqueradarr/)
+### [GitHub pages: masqueradarr](https://thebinaryninja.github.io/masqueradarr/) : Guides : Explanations : Documentation
 
 **masqueradarr** is a self-hosted IPTV aggregator. It pulls channel playlists (M3U) and guide
 data (EPG/XMLTV) from a range of online IPTV services, normalizes them into one catalog, and
