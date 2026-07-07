@@ -58,12 +58,28 @@ RUN npm run build                       # tsc -p .  -> /server/dist
 # Debian bookworm base → glibc, matching the runtime stage so the binary loads (a musl/Alpine build would
 # not run on the glibc runtime — the same base constraint as the Node stages). This is the durable video
 # DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts); the control plane
-# (resolve/policy/auth) stays in Node. `COPY proxy/ ./` pulls the whole crate (Cargo.toml + src, and
-# Cargo.lock when committed); cargo generates a lock if absent. Produces /proxy/target/release/masq-proxy.
-FROM rust:1-bookworm AS proxy-build
+# (resolve/policy/auth) stays in Node. Produces /proxy/target/release/masq-proxy.
+#
+# cargo-chef split: the dependency graph (axum/tokio/hyper/reqwest/…) compiles in its OWN layer
+# (`cargo chef cook`) that busts only when Cargo.toml/Cargo.lock change — NOT on every .rs edit. In CI,
+# `cache-to: type=gha,mode=max` (docker-publish.yml) exports that layer, so later publishes restore the
+# compiled deps instead of rebuilding the whole tree; only the final `cargo build` (this 9-file crate)
+# reruns. cargo-chef is installed from crates.io onto the same trusted rust:1-bookworm base — no
+# third-party base image, so the supply chain is unchanged. (Cargo.lock is committed; --locked-free cook
+# still respects it since it's in the recipe.)
+FROM rust:1-bookworm AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /proxy
+
+FROM chef AS planner
 COPY proxy/ ./
-RUN cargo build --release
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS proxy-build
+COPY --from=planner /proxy/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json   # deps only — the gha-cached layer
+COPY proxy/ ./
+RUN cargo build --release                                 # only the masq-proxy crate recompiles
 
 # ---- Stage 3: runtime -------------------------------------------------------
 # Debian (bookworm) base — glibc, matching the AIO image (bookworm because its copied-in mongod is glibc-only);

@@ -1,6 +1,12 @@
 # Multi-arch (linux/amd64 + linux/arm64) Docker build & push for masqueradarr's two images,
 # porting the manual `/docker-build-all` skill into GitHub Actions.
 #
+# Build strategy: each arch is built NATIVELY on its own runner (amd64 on ubuntu-latest, arm64 on
+# ubuntu-24.04-arm — no QEMU emulation) and pushed BY DIGEST; a `merge` job then stitches the two
+# per-arch manifests into one multi-arch manifest list per image and applies the real tags. BuildKit
+# layers are cached in the GitHub Actions cache (type=gha), scoped per image+arch, so the Rust
+# dependency compile and npm installs are restored across runs instead of rebuilt from scratch.
+#
 #   app image    : docker/app.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr
 #   all-in-one   : docker/aio.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr-aio
 #
@@ -80,28 +86,20 @@ jobs:
 
   build:
     needs: prepare
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.runner }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - image: app-stack
-            repo: masqueradarr
-            dockerfile: docker/app.Dockerfile
-          - image: aio
-            repo: masqueradarr-aio
-            dockerfile: docker/aio.Dockerfile
-    outputs:
-      digest_app: ${{ steps.expose.outputs.digest_app }}
-      digest_aio: ${{ steps.expose.outputs.digest_aio }}
+          - { image: app-stack, repo: masqueradarr,     dockerfile: docker/app.Dockerfile, arch: amd64, runner: ubuntu-latest }
+          - { image: app-stack, repo: masqueradarr,     dockerfile: docker/app.Dockerfile, arch: arm64, runner: ubuntu-24.04-arm }
+          - { image: aio,       repo: masqueradarr-aio, dockerfile: docker/aio.Dockerfile, arch: amd64, runner: ubuntu-latest }
+          - { image: aio,       repo: masqueradarr-aio, dockerfile: docker/aio.Dockerfile, arch: arm64, runner: ubuntu-24.04-arm }
     steps:
       - uses: actions/checkout@v4
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3   # binfmt for the arm64 leg under emulation
-
       - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3 # docker-container driver (multi-platform)
+        uses: docker/setup-buildx-action@v3
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -109,50 +107,126 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Compose tag list
+      # Native per-arch build (no QEMU). push-by-digest publishes an untagged, arch-specific manifest;
+      # the merge job below assembles the tagged multi-arch list. The gha cache is scoped per image+arch
+      # so the four legs don't clobber each other's layer cache — the Rust `cargo chef cook` layer and
+      # the `npm ci` layers persist across dispatches.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+          provenance: false
+          cache-from: type=gha,scope=${{ matrix.image }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.image }}-${{ matrix.arch }}
+          outputs: type=image,name=${{ secrets.DOCKERHUB_USERNAME }}/${{ matrix.repo }},push-by-digest=true,name-canonical=true,push=true
+
+      # Emit an empty file NAMED for the pushed digest; the merge job globs these into the manifest list.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Stitch the per-arch digests into one multi-arch manifest list per image and apply the real tags
+  # (:version + optional rolling :dev/:latest). This is where the actual published, tagged images appear.
+  merge:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: app-stack, repo: masqueradarr }
+          - { image: aio,       repo: masqueradarr-aio }
+    steps:
+      - name: Download per-arch digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image }}-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compose tag args
         id: tags
         run: |
           ns="${{ secrets.DOCKERHUB_USERNAME }}"
           repo="${{ matrix.repo }}"
           version="${{ needs.prepare.outputs.version }}"
           rolling="${{ needs.prepare.outputs.rolling }}"
-          {
-            echo "list<<__TAGS__"
-            echo "$ns/$repo:$version"
-            [ -n "$rolling" ] && echo "$ns/$repo:$rolling"
-            echo "__TAGS__"
-          } >> "$GITHUB_OUTPUT"
+          args="-t $ns/$repo:$version"
+          [ -n "$rolling" ] && args="$args -t $ns/$repo:$rolling"
+          echo "args=$args" >> "$GITHUB_OUTPUT"
 
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: ${{ matrix.dockerfile }}
-          platforms: linux/amd64,linux/arm64
-          push: true
-          tags: ${{ steps.tags.outputs.list }}
-          build-args: |
-            APP_VERSION=${{ needs.prepare.outputs.version }}
-          provenance: false   # plain multi-arch manifest list, matching the skill's output
-
-      - name: Expose digest
-        id: expose
+      - name: Create & push manifest list
+        working-directory: /tmp/digests
         run: |
-          if [ "${{ matrix.image }}" = "app-stack" ]; then
-            echo "digest_app=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
-          else
-            echo "digest_aio=${{ steps.build.outputs.digest }}" >> "$GITHUB_OUTPUT"
-          fi
+          # word-splitting is intentional: tag args + one source ref per per-arch digest file.
+          # shellcheck disable=SC2046,SC2086
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          repo="${{ matrix.repo }}"
+          docker buildx imagetools create ${{ steps.tags.outputs.args }} \
+            $(printf "$ns/$repo@sha256:%s " *)
+
+      # Record the manifest-LIST digest for the release notes as a deterministic per-image artifact
+      # (avoids the unstable matrix-job-outputs pattern the old build job relied on).
+      - name: Export manifest digest
+        run: |
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          repo="${{ matrix.repo }}"
+          version="${{ needs.prepare.outputs.version }}"
+          mkdir -p /tmp/out
+          docker buildx imagetools inspect "$ns/$repo:$version" --format '{{.Manifest.Digest}}' > /tmp/out/digest.txt
+
+      - name: Upload manifest digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest-digest-${{ matrix.image }}
+          path: /tmp/out/digest.txt
+          if-no-files-found: error
+          retention-days: 1
 
   release:
-    needs: [prepare, build]
+    needs: [prepare, merge]
     if: needs.prepare.outputs.is_release == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
+
+      - name: Download manifest digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: manifest-digest-*
+
+      - name: Read manifest digests
+        id: digests
+        run: |
+          echo "app=$(cat /tmp/digests/manifest-digest-app-stack/digest.txt)" >> "$GITHUB_OUTPUT"
+          echo "aio=$(cat /tmp/digests/manifest-digest-aio/digest.txt)" >> "$GITHUB_OUTPUT"
 
       - name: Build deploy bundle
         run: |
@@ -181,12 +255,12 @@ jobs:
             echo "### \`$ns/masqueradarr\` (app + external Mongo)"
             echo "- DockerHub : [masqueradarr compose](https://hub.docker.com/r/$ns/masqueradarr)"
             echo "- tags: $tagline"
-            echo "- digest: \`${{ needs.build.outputs.digest_app }}\`"
+            echo "- digest: \`${{ steps.digests.outputs.app }}\`"
             echo
             echo "### \`$ns/masqueradarr-aio\` (all-in-one)"
             echo "- DockerHub : [masqueradarr aio](https://hub.docker.com/r/$ns/masqueradarr-aio)"
             echo "- tags: $tagline"
-            echo "- digest: \`${{ needs.build.outputs.digest_aio }}\`"
+            echo "- digest: \`${{ steps.digests.outputs.aio }}\`"
             echo
             echo "**Deploy (compose stack):** download \`docker-compose.yml\` + \`.env.example\` below,"
             echo "rename \`.env.example\` to \`.env\`, set \`MONGO_ROOT_USER\`/\`MONGO_ROOT_PASS\`, then \`docker compose up -d\`."
