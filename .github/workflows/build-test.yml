@@ -52,3 +52,28 @@ jobs:
       - name: Build (type-check + compile)
         working-directory: ${{ matrix.dir }}
         run: npm run build
+
+  # Rust proxy gate — the npm matrix above never touches proxy/, and there's no local Rust toolchain,
+  # so without this a broken crate isn't caught until a manual multi-arch publish. Debug `cargo build`
+  # (not --release) keeps it fast: it only needs to compile + lint, mirroring "the build IS the test".
+  rust:
+    name: Rust proxy (build + clippy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: proxy
+
+      - name: Build (compile check)
+        working-directory: proxy
+        run: cargo build --locked
+
+      - name: Clippy (lint, warnings = errors)
+        working-directory: proxy
+        run: cargo clippy --locked -- -D warnings

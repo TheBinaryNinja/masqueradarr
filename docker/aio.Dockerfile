@@ -67,11 +67,22 @@ RUN npm run build                       # tsc -p .  -> /server/dist
 # ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) — MIRRORS docker/app.Dockerfile ----
 # Debian bookworm base → glibc, matching the runtime stage (and this image's copied-in mongod). The durable
 # video DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts). Produces
-# /proxy/target/release/masq-proxy. See app.Dockerfile for the full rationale (keep the two in sync).
-FROM rust:1-bookworm AS proxy-build
+# /proxy/target/release/masq-proxy. cargo-chef splits the dependency compile into its own gha-cacheable
+# layer (busts only on Cargo.toml/Cargo.lock change). See app.Dockerfile for the full rationale (keep the
+# two in sync).
+FROM rust:1-bookworm AS chef
+RUN cargo install cargo-chef --locked
 WORKDIR /proxy
+
+FROM chef AS planner
 COPY proxy/ ./
-RUN cargo build --release
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS proxy-build
+COPY --from=planner /proxy/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json   # deps only — the gha-cached layer
+COPY proxy/ ./
+RUN cargo build --release                                 # only the masq-proxy crate recompiles
 
 # ---- Stage 3: runtime (app + mongod + config-init supervisor) ----
 # Debian (bookworm) base — same as app.Dockerfile (both are glibc). This image additionally MUST stay glibc
