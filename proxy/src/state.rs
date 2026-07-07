@@ -95,6 +95,10 @@ pub struct SourcePolicy {
     /// P3.2/DST: the distribution output format for this source's streams — "hls" (per-segment passthrough) or
     /// "ts" (continuous raw-TS, honored only on the /api/ext/v1 mount). RwLock<String> so a re-resolve can flip it.
     pub output_format: RwLock<String>,
+    /// SIR: STREAM-INF Redux — opt-in, non-destructive master-playlist reorder (proxy.rs applies it only on the
+    /// /api/ext/v1 mount) so the first #EXT-X-STREAM-INF lands within a strict player's manifest probe window
+    /// (e.g. VLC's ~8 KiB peek). AtomicBool so a re-resolve can flip it; false = today's byte-identical output.
+    pub stream_inf_redux: AtomicBool,
 }
 
 impl SourcePolicy {
@@ -109,6 +113,7 @@ impl SourcePolicy {
             read_timeout_ms: AtomicU64::new(0),
             buffer_size_kb: AtomicU64::new(0),
             output_format: RwLock::new("hls".to_string()),
+            stream_inf_redux: AtomicBool::new(false),
         }
     }
 }
@@ -150,6 +155,10 @@ pub struct ProxyConfigWire {
     pub buffer_size_kb: Option<u64>,
     #[serde(rename = "outputFormat", default = "default_output_format")]
     pub output_format: String,
+    // SIR: STREAM-INF Redux flag. serde `default` → false for a grant from an older Node or an absent key, so
+    // the data plane degrades to today's byte-identical HLS master output.
+    #[serde(rename = "streamInfRedux", default)]
+    pub stream_inf_redux: bool,
 }
 
 fn default_connect_ms() -> u64 {
@@ -170,6 +179,7 @@ impl Default for ProxyConfigWire {
             read_timeout_ms: None,
             buffer_size_kb: None,
             output_format: default_output_format(),
+            stream_inf_redux: false,
         }
     }
 }
@@ -345,6 +355,8 @@ impl AppState {
         policy.read_timeout_ms.store(grant.proxy_config.read_timeout_ms.unwrap_or(0), Ordering::Relaxed);
         policy.buffer_size_kb.store(grant.proxy_config.buffer_size_kb.unwrap_or(0), Ordering::Relaxed);
         *policy.output_format.write().unwrap() = grant.proxy_config.output_format.clone();
+        // SIR: the opt-in master-reorder flag (proxy.rs gates it to the /api/ext/v1 mount).
+        policy.stream_inf_redux.store(grant.proxy_config.stream_inf_redux, Ordering::Relaxed);
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write().unwrap().insert(h.to_lowercase());
@@ -352,10 +364,11 @@ impl AppState {
         }
         crate::log::info("resolve", &rid, || {
             format!(
-                "grant: target={} relabel={} outputFormat={} connectTimeout={}ms maxRedirects={}",
+                "grant: target={} relabel={} outputFormat={} streamInfRedux={} connectTimeout={}ms maxRedirects={}",
                 crate::proxy::host_of(&grant.target),
                 policy.relabel_segment.read().unwrap().as_deref().unwrap_or("passthrough"),
                 policy.output_format.read().unwrap(),
+                policy.stream_inf_redux.load(Ordering::Relaxed),
                 policy.connect_timeout_ms.load(Ordering::Relaxed),
                 policy.max_redirects.load(Ordering::Relaxed),
             )

@@ -49,6 +49,7 @@ export function envDefaults(): ProxyConfigData {
     maxRedirects: envInt(process.env.PROXY_MAX_REDIRECTS, 10, 0, 50),
     headerOverrides: {},
     outputFormat: 'hls',
+    streamInfRedux: false,
     segmentCacheTtlSec: null,
   };
 }
@@ -64,6 +65,7 @@ export function toRuntimeProxyConfig(doc: ProxyConfigDoc): RuntimeProxyConfig {
     maxRedirects: typeof doc.maxRedirects === 'number' ? doc.maxRedirects : d.maxRedirects,
     headerOverrides: sanitizeHeaderMap(doc.headerOverrides),
     outputFormat: OUTPUT_FORMATS.includes(doc.outputFormat as (typeof OUTPUT_FORMATS)[number]) ? doc.outputFormat : 'hls',
+    streamInfRedux: typeof doc.streamInfRedux === 'boolean' ? doc.streamInfRedux : false,
     segmentCacheTtlSec: typeof doc.segmentCacheTtlSec === 'number' ? doc.segmentCacheTtlSec : null,
   };
 }
@@ -144,6 +146,14 @@ export function toExternalPatch(body: unknown): PatchResult {
       return { ok: false, error: `outputFormat (one of: ${OUTPUT_FORMATS.join(', ')}) required` };
     }
     $set.outputFormat = v;
+  }
+
+  // streamInfRedux: SIR opt-in flag — a plain boolean (mirrors the outputFormat gate above).
+  if (b.streamInfRedux !== undefined) {
+    if (typeof b.streamInfRedux !== 'boolean') {
+      return { ok: false, error: 'streamInfRedux (boolean) required' };
+    }
+    $set.streamInfRedux = b.streamInfRedux;
   }
 
   // headerOverrides: an object of header-name -> string value. An empty object clears all overrides. Reject a

@@ -11,6 +11,7 @@
 //! except for its URIs — unknown tags, comments, and ordering pass through untouched.
 
 use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
+use std::borrow::Cow;
 use url::Url;
 
 /// Decode metadata declared IN the manifest — parsed WITHOUT ffprobe (the video-engine teardown removed it).
@@ -168,6 +169,105 @@ pub fn rewrite_manifest(body: &str, base: &Url, prefix: &str, suffix: &str) -> R
     }
 }
 
+/// STREAM-INF Redux (SIR) — an OPT-IN, non-destructive reorder of an already-rewritten MASTER playlist so the
+/// first `#EXT-X-STREAM-INF` lands within the small window a strict player peeks to sniff content-type (VLC's
+/// fixed ~8 KiB probe; ffmpeg's `hls_probe` `strstr`s for the same literal). Because `rewrite_manifest` only
+/// ever LENGTHENS URIs and never reorders, a master whose `#EXT-X-MEDIA` rendition block precedes the variants
+/// can push the first STREAM-INF past that window, and the client fails to recognize the response as HLS.
+///
+/// This hoists the STREAM-INF variant blocks ABOVE the `#EXT-X-MEDIA`/session block WITHOUT dropping any variant
+/// or rendition. Reordering is spec-legal (RFC 8216: only `#EXTM3U` is position-pinned; variant↔rendition
+/// association is by GROUP-ID, position-independent) and every current player (ffmpeg/hls.js/VLC) associates
+/// renditions after a full parse. proxy.rs applies it ONLY on the external-player mount when the
+/// (Default)/(Custom) proxy-config `streamInfRedux` flag is on — a pure post-transform layered OVER
+/// `rewrite_manifest` (which is unchanged), so the delivery path is byte-identical when the flag is off. A
+/// non-master (no STREAM-INF) is returned borrowed/unchanged — the common media-playlist poll never allocates.
+pub fn redux_master(body: &str) -> Cow<'_, str> {
+    // Fast path: not a master (media playlist / non-HLS / I-frame-only) → byte-identical, no allocation. Uses
+    // the same `#EXT-X-STREAM-INF:` (with colon) detection as extract_media, so #EXT-X-I-FRAME-STREAM-INF alone
+    // is NOT treated as a master (there is nothing to hoist, and probes key on the regular literal).
+    if !body.split('\n').any(|l| l.trim().starts_with("#EXT-X-STREAM-INF:")) {
+        return Cow::Borrowed(body);
+    }
+
+    let preserve_trailing_newline = body.ends_with('\n');
+
+    // Four ordered buckets; within-bucket input order is preserved (so default-variant selection is unchanged).
+    let mut lead: Vec<&str> = Vec::new(); // #EXTM3U + declarations that must stay near the top
+    let mut variants: Vec<String> = Vec::new(); // #EXT-X-STREAM-INF + its URI line (kept together as one unit)
+    let mut iframes: Vec<&str> = Vec::new(); // #EXT-X-I-FRAME-STREAM-INF (self-contained line; URI is an attr)
+    let mut tail: Vec<&str> = Vec::new(); // #EXT-X-MEDIA / session tags / unknown #EXT-X-* / comments / stray URIs
+
+    // rewrite_manifest already normalized to LF; strip a trailing \r defensively so direct/test callers are safe.
+    let lines: Vec<&str> = body.split('\n').map(|l| l.strip_suffix('\r').unwrap_or(l)).collect();
+
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            i += 1; // drop pure-blank lines (the only lines removed)
+            continue;
+        }
+        if trimmed.starts_with("#EXT-X-STREAM-INF:") {
+            // Pair with the next NON-BLANK, NON-`#` line (the variant URI — matches tsmux::pick_variant).
+            let mut j = i + 1;
+            while j < lines.len() && lines[j].trim().is_empty() {
+                j += 1;
+            }
+            if j < lines.len() && !lines[j].trim().starts_with('#') {
+                variants.push(format!("{}\n{}", line, lines[j]));
+                i = j + 1;
+            } else {
+                // Unpaired (next non-blank is a tag, or EOF) — emit the STREAM-INF alone; never swallow a `#` line.
+                variants.push(line.to_string());
+                i += 1;
+            }
+            continue;
+        }
+        if trimmed.starts_with("#EXT-X-I-FRAME-STREAM-INF") {
+            iframes.push(line); // single line — do NOT consume the next line
+            i += 1;
+            continue;
+        }
+        if trimmed.starts_with("#EXTM3U")
+            || trimmed.starts_with("#EXT-X-VERSION")
+            || trimmed.starts_with("#EXT-X-INDEPENDENT-SEGMENTS")
+            || trimmed.starts_with("#EXT-X-DEFINE") // variables must be defined BEFORE first use
+            || trimmed.starts_with("#EXT-X-START")
+        {
+            lead.push(line);
+            i += 1;
+            continue;
+        }
+        // Renditions, session tags, unknown #EXT-X-*, bare comments, stray bare URIs → tail (preserved, never
+        // pushed into the probe window). This is the SAFE default: nothing is dropped except blank lines.
+        tail.push(line);
+        i += 1;
+    }
+
+    // #EXTM3U must be absolute line 1 (RFC 8216 §4.3.1.1). If present out of place, force it to the front.
+    if let Some(pos) = lead.iter().position(|l| l.trim().starts_with("#EXTM3U")) {
+        if pos != 0 {
+            let m = lead.remove(pos);
+            lead.insert(0, m);
+        }
+    }
+
+    // Re-emit: lead → variants → iframes → tail.
+    let mut out: Vec<String> = Vec::with_capacity(lead.len() + variants.len() + iframes.len() + tail.len());
+    out.extend(lead.into_iter().map(str::to_string));
+    out.append(&mut variants);
+    out.extend(iframes.into_iter().map(str::to_string));
+    out.extend(tail.into_iter().map(str::to_string));
+
+    let mut joined = out.join("\n");
+    if preserve_trailing_newline {
+        joined.push('\n');
+    }
+    Cow::Owned(joined)
+}
+
 /// Find an attribute value by (case-sensitive) key, treating an empty value as absent.
 fn attr<'a>(attrs: &'a [(String, String)], key: &str) -> Option<&'a str> {
     attrs
@@ -297,5 +397,178 @@ mod tests {
         assert_eq!(r.media.container.as_deref(), Some("fmp4"));
         // The init-segment URI is still rewritten through the proxy (else the player fetches it direct).
         assert!(r.body.contains("URI=\"/p/https%3A%2F%2Fcdn.example.com%2Flive%2Finit.mp4\""));
+    }
+
+    // ── STREAM-INF Redux (redux_master) ─────────────────────────────────────────────────────────────
+
+    #[test]
+    fn redux_not_a_master_passthrough() {
+        // A media playlist (no STREAM-INF) is returned byte-identical AND borrowed (no alloc on the hot path).
+        let m = "#EXTM3U\n#EXT-X-TARGETDURATION:6\n#EXTINF:6.0,\nseg1.ts\n";
+        let r = redux_master(m);
+        assert!(matches!(r, Cow::Borrowed(_)));
+        assert_eq!(r, m);
+    }
+
+    #[test]
+    fn redux_hoists_stream_inf_before_media() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a\",NAME=\"en\",URI=\"a.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO=\"a\"\n\
+                 v.m3u8\n";
+        let out = redux_master(m).into_owned();
+        let si = out.find("#EXT-X-STREAM-INF").unwrap();
+        let med = out.find("#EXT-X-MEDIA").unwrap();
+        assert!(si < med, "STREAM-INF must precede MEDIA after redux:\n{out}");
+    }
+
+    #[test]
+    fn redux_first_stream_inf_within_peek_window() {
+        // Regression for the real bug shape: many long rendition lines BEFORE the variants push the first
+        // STREAM-INF past VLC's 8192-byte probe window. After redux it must sit near the top.
+        let mut m = String::from("#EXTM3U\n#EXT-X-VERSION:6\n#EXT-X-INDEPENDENT-SEGMENTS\n");
+        let long = "x".repeat(360);
+        for i in 0..30 {
+            m.push_str(&format!(
+                "#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"g{i}\",NAME=\"n{i}\",URI=\"/api/ext/v1/s/h/{long}\"\n"
+            ));
+        }
+        m.push_str("#EXT-X-STREAM-INF:BANDWIDTH=6000000,AUDIO=\"g0\"\nv0.m3u8\n");
+        m.push_str("#EXT-X-STREAM-INF:BANDWIDTH=3000000,AUDIO=\"g0\"\nv1.m3u8\n");
+        // Pre-condition: the bug reproduces (first STREAM-INF is past the window before redux).
+        assert!(m.find("#EXT-X-STREAM-INF").unwrap() > 8192);
+        let out = redux_master(&m).into_owned();
+        assert!(out.find("#EXT-X-STREAM-INF").unwrap() < 1024);
+    }
+
+    #[test]
+    fn redux_pairs_stream_inf_with_correct_uri() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000\nhigh.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000\nlow.m3u8\n";
+        let out = redux_master(m).into_owned();
+        // Each STREAM-INF is immediately followed by ITS OWN URI (no swap).
+        assert!(out.contains("BANDWIDTH=6000000\nhigh.m3u8"));
+        assert!(out.contains("BANDWIDTH=3000000\nlow.m3u8"));
+    }
+
+    #[test]
+    fn redux_preserves_within_group_order() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000\nhigh.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000\nlow.m3u8\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,NAME=\"first\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,NAME=\"second\"\n";
+        let out = redux_master(m).into_owned();
+        assert!(out.find("high.m3u8").unwrap() < out.find("low.m3u8").unwrap());
+        assert!(out.find("NAME=\"first\"").unwrap() < out.find("NAME=\"second\"").unwrap());
+    }
+
+    #[test]
+    fn redux_iframe_is_single_line_and_after_regular() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,URI=\"iframe.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000\nv.m3u8\n";
+        let out = redux_master(m).into_owned();
+        // Regular STREAM-INF comes before the I-frame variant (probes strstr the literal #EXT-X-STREAM-INF:).
+        assert!(out.find("#EXT-X-STREAM-INF:").unwrap() < out.find("#EXT-X-I-FRAME-STREAM-INF").unwrap());
+        // The I-frame line did not swallow the following line (its URI is an attribute).
+        assert!(out.contains("#EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=100,URI=\"iframe.m3u8\""));
+    }
+
+    #[test]
+    fn redux_is_non_destructive() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,NAME=\"en\"\n\
+                 #EXT-X-MEDIA:TYPE=SUBTITLES,NAME=\"sub\"\n\
+                 #EXT-X-SESSION-DATA:DATA-ID=\"x\"\n\
+                 #EXT-X-SESSION-KEY:METHOD=AES-128,URI=\"k\"\n\
+                 #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI=\"if.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000\nv.m3u8\n";
+        let out = redux_master(m).into_owned();
+        let count = |hay: &str, needle: &str| hay.matches(needle).count();
+        // #EXT-X-I-FRAME-STREAM-INF: does NOT contain the substring #EXT-X-STREAM-INF: — count is exact.
+        assert_eq!(count(&out, "#EXT-X-STREAM-INF:"), 1);
+        assert_eq!(count(&out, "#EXT-X-I-FRAME-STREAM-INF"), 1);
+        assert_eq!(count(&out, "#EXT-X-MEDIA"), 2);
+        assert_eq!(count(&out, "#EXT-X-SESSION-DATA"), 1);
+        assert_eq!(count(&out, "#EXT-X-SESSION-KEY"), 1);
+        assert!(out.contains("v.m3u8"));
+    }
+
+    #[test]
+    fn redux_drops_blank_lines_keeps_comments() {
+        let m = "#EXTM3U\n\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n\n# operator note\n";
+        let out = redux_master(m).into_owned();
+        assert!(!out.contains("\n\n"), "blank lines should be dropped:\n{out:?}");
+        assert!(out.contains("# operator note"), "bare comments must be preserved (routed to tail)");
+    }
+
+    #[test]
+    fn redux_extm3u_stays_first_line() {
+        // #EXTM3U not first in the input (unusual) is forced back to line 1.
+        let m = "#EXT-X-VERSION:6\n#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n";
+        let out = redux_master(m).into_owned();
+        assert!(out.starts_with("#EXTM3U\n"), "output must start with #EXTM3U:\n{out}");
+    }
+
+    #[test]
+    fn redux_hoists_define_before_variants() {
+        // #EXT-X-DEFINE declares variables that must precede any use → it belongs in the lead.
+        let m = "#EXTM3U\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n\
+                 #EXT-X-DEFINE:NAME=\"host\",VALUE=\"cdn\"\n";
+        let out = redux_master(m).into_owned();
+        assert!(out.find("#EXT-X-DEFINE").unwrap() < out.find("#EXT-X-STREAM-INF").unwrap());
+    }
+
+    #[test]
+    fn redux_unknown_tag_goes_to_tail() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n\
+                 #EXT-X-FUTURE-TAG:whatever\n";
+        let out = redux_master(m).into_owned();
+        // Preserved, and positioned AFTER the first STREAM-INF (never pushed into the probe window).
+        assert!(out.contains("#EXT-X-FUTURE-TAG:whatever"));
+        assert!(out.find("#EXT-X-STREAM-INF").unwrap() < out.find("#EXT-X-FUTURE-TAG").unwrap());
+    }
+
+    #[test]
+    fn redux_handles_crlf() {
+        let m = "#EXTM3U\r\n#EXT-X-MEDIA:TYPE=AUDIO,NAME=\"en\"\r\n#EXT-X-STREAM-INF:BANDWIDTH=1\r\nv.m3u8\r\n";
+        let out = redux_master(m).into_owned();
+        assert!(out.find("#EXT-X-STREAM-INF").unwrap() < out.find("#EXT-X-MEDIA").unwrap());
+        assert!(!out.contains('\r'), "\\r must be stripped from classified lines");
+    }
+
+    #[test]
+    fn redux_stream_inf_without_uri_at_eof_no_panic() {
+        let m = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\n";
+        let out = redux_master(m).into_owned();
+        assert!(out.contains("#EXT-X-STREAM-INF:BANDWIDTH=1"));
+    }
+
+    #[test]
+    fn redux_is_idempotent() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,NAME=\"en\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000\nhigh.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000\nlow.m3u8\n\
+                 #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=1,URI=\"if.m3u8\"\n";
+        let once = redux_master(m).into_owned();
+        let twice = redux_master(&once).into_owned();
+        assert_eq!(once, twice);
+    }
+
+    #[test]
+    fn redux_already_ordered_master_stays_valid() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=1\nv.m3u8\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,NAME=\"en\"\n";
+        let out = redux_master(m).into_owned();
+        assert!(out.starts_with("#EXTM3U\n"));
+        assert!(out.find("#EXT-X-STREAM-INF").unwrap() < out.find("#EXT-X-MEDIA").unwrap());
+        assert!(out.contains("v.m3u8"));
+        assert!(out.contains("#EXT-X-MEDIA"));
     }
 }

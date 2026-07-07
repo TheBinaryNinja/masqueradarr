@@ -16,6 +16,7 @@ export interface ProxyConfigState {
   maxRedirects: number; // LIVE in P2 (Rust upstream redirect cap)
   headerOverrides: Record<string, string>; // LIVE in P2 (merged into the grant's upstream headers)
   outputFormat: string; // LIVE (P3.2/DST) — 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount); enc/fMP4→HLS
+  streamInfRedux: boolean; // LIVE (SIR) — opt-in HLS master reorder (ext mount) so the first #EXT-X-STREAM-INF fits a strict player's probe window
   segmentCacheTtlSec: number | null; // reserved (the only unapplied knob)
 }
 
@@ -31,6 +32,7 @@ export function proxyConfigDefaults(): ProxyConfigState {
     maxRedirects: 10,
     headerOverrides: {},
     outputFormat: 'hls',
+    streamInfRedux: false,
     segmentCacheTtlSec: null,
   };
 }
@@ -49,6 +51,7 @@ function normalize(raw: unknown): ProxyConfigState {
         ? { ...(s.headerOverrides as Record<string, string>) }
         : {},
     outputFormat: typeof s.outputFormat === 'string' ? s.outputFormat : d.outputFormat,
+    streamInfRedux: typeof s.streamInfRedux === 'boolean' ? s.streamInfRedux : false,
     segmentCacheTtlSec: typeof s.segmentCacheTtlSec === 'number' ? s.segmentCacheTtlSec : null,
   };
 }

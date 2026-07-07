@@ -12,6 +12,7 @@ import { ref, onMounted, watch } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Segmented from './Segmented.vue';
+import Toggle from './Toggle.vue';
 import { useProxyConfig } from '../composables/useProxyConfig';
 
 const props = defineProps<{ configId: string; title?: string; flat?: boolean }>();
@@ -137,17 +138,32 @@ watch(
         </div>
       </div>
 
-      <div class="form-row" style="margin-top: 14px;">
-        <div class="field-lbl">Output format</div>
-        <Segmented
-          :value="state.outputFormat"
-          @change="(v) => (state.outputFormat = v)"
-          :options="[{ value: 'hls', label: 'HLS' }, { value: 'ts', label: 'Raw TS' }]"
-        />
-        <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-          How streams reach third-party players (the in-app player is always HLS). <b>HLS</b> rewrites the
-          playlist per segment; <b>Raw TS</b> serves one continuous MPEG-TS stream for clients that prefer it
-          (pure-TS sources only — encrypted / fMP4 upstreams fall back to HLS automatically).
+      <!-- Output format shares a 2-col row with STREAM-INF Redux (it shrinks to the left half). -->
+      <div class="form-grid-2" style="margin-top: 14px;">
+        <div class="form-row">
+          <div class="field-lbl">Output format</div>
+          <Segmented
+            :value="state.outputFormat"
+            @change="(v) => (state.outputFormat = v)"
+            :options="[{ value: 'hls', label: 'HLS' }, { value: 'ts', label: 'Raw TS' }]"
+          />
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            How streams reach third-party players (the in-app player is always HLS). <b>HLS</b> rewrites the
+            playlist per segment; <b>Raw TS</b> serves one continuous MPEG-TS stream for clients that prefer it
+            (pure-TS sources only — encrypted / fMP4 upstreams fall back to HLS automatically).
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field-lbl">STREAM-INF Redux</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle :on="state.streamInfRedux" @change="(v) => (state.streamInfRedux = v)" />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.streamInfRedux ? 'On' : 'Off' }}</span>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Reorders the HLS master so the first <span class="mono">#EXT-X-STREAM-INF</span> lands in the first
+            few KB, letting strict third-party players (e.g. VLC's 8&nbsp;KB probe) detect it as HLS.
+            External-player mount only; keeps every variant &amp; rendition. No effect on the in-app player or Raw TS.
+          </div>
         </div>
       </div>
 
