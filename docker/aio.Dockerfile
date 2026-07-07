@@ -15,10 +15,10 @@
 #   docker build -f docker/aio.Dockerfile -t iflip721/masqueradarr:latest .
 #
 # !! The spa-build / server-build stages and the APP HALF of the runtime stage MIRROR
-#    docker/app.Dockerfile. KEEP THE TWO IN SYNC whenever either changes. Both images now share the
-#    node:22-bookworm-slim glibc base (app.Dockerfile moved off Alpine so the externalPlayer engine can do
-#    GPU hwaccel — NVENC needs glibc), so the runtime BASE is no longer a divergence. The only intentional
-#    divergence left is the all-in-one delta: mongod + gosu + the /data redirect + the supervisor entrypoint,
+#    docker/app.Dockerfile. KEEP THE TWO IN SYNC whenever either changes. Both images share the
+#    node:22-bookworm-slim glibc base (required by this image's copied-in mongod, which is glibc-only), so the
+#    runtime BASE is not a divergence. The only intentional divergence left is the all-in-one delta: mongod +
+#    gosu + the /data redirect + the supervisor entrypoint,
 #    and no `USER node` line because the entrypoint starts as root to chown the data volume.
 #
 # All-in-one specifics:
@@ -64,6 +64,15 @@ COPY server/tsconfig.json ./
 COPY server/src/ ./src/
 RUN npm run build                       # tsc -p .  -> /server/dist
 
+# ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) — MIRRORS docker/app.Dockerfile ----
+# Debian bookworm base → glibc, matching the runtime stage (and this image's copied-in mongod). The durable
+# video DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts). Produces
+# /proxy/target/release/masq-proxy. See app.Dockerfile for the full rationale (keep the two in sync).
+FROM rust:1-bookworm AS proxy-build
+WORKDIR /proxy
+COPY proxy/ ./
+RUN cargo build --release
+
 # ---- Stage 3: runtime (app + mongod + config-init supervisor) ----
 # Debian (bookworm) base — same as app.Dockerfile (both are glibc). This image additionally MUST stay glibc
 # regardless of the app image: the mongod binary copied in from the official mongo image (the `mongo` stage) is
@@ -77,50 +86,20 @@ ENV NODE_ENV=production \
     MASQUERADARR_CONFIG=/data/config.json \
     BACKUPS_DIR=/data/backups \
     CHROMIUM_PATH=/usr/bin/chromium \
-    NVIDIA_DRIVER_CAPABILITIES=compute,video,utility \
     DISPLAY=:99
 WORKDIR /app
 ARG TARGETARCH
 
-# App runtime deps: tini (PID 1, forwards SIGTERM to graceful shutdown), ffmpeg (a baseline — the B-Roll slate
-# encoder AND the externalPlayer engine — externalEngine.ts/externalTsEngine.ts — that remuxes/transcodes client
-# streams; the actual engine binary is the jellyfin-ffmpeg overlay below), ca-certificates, xvfb (virtual X
-# server for the dulo streamed-login browser, which runs HEADFUL — aio-entrypoint.sh starts Xvfb on DISPLAY=:99
-# before node), and chromium + fonts-liberation (the distro browser puppeteer-core drives for the dulo login,
-# executablePath=CHROMIUM_PATH=/usr/bin/chromium). app.Dockerfile installs the same browser the same way (apt on
-# bookworm) — the two images now share the base. libva2 + va-driver-all + vainfo give a VAAPI baseline + the
-# vainfo diagnostic; intel-gpu-tools + radeontop are the LIVE GPU monitors for the Dashboard "GPU Performance"
-# card (stats/gpu.ts — intel_gpu_top + AMD radeontop fallback; AMD primary is sysfs, NVIDIA uses the
-# toolkit-injected nvidia-smi). (MIRROR app.Dockerfile's VAAPI additions.) intel-gpu-tools is x86-only and has
-# NO arm64 Debian package, so it installs ONLY when TARGETARCH=amd64 (else the arm64 build fails to locate it);
-# on arm64 stats/gpu.ts just falls back off intel_gpu_top.
-# vlc = the SECONDARY externalPlayer engine (cvlc, headless; WS7 — MIRROR app.Dockerfile). ffmpeg stays the
-# recommended default; VLC's health is coarser. Large package (Qt/X deps) — baked in by choice so the engine
-# works out-of-the-box; the code degrades VLC→direct-relay gracefully if it were ever absent.
+# App runtime deps (MIRROR app.Dockerfile): tini (PID 1, forwards SIGTERM to graceful shutdown), ca-certificates,
+# xvfb (virtual X server for the dulo streamed-login browser, which runs HEADFUL — aio-entrypoint.sh starts Xvfb
+# on DISPLAY=:99 before node), and chromium + fonts-liberation (the distro browser puppeteer-core drives for the
+# dulo login, executablePath=CHROMIUM_PATH=/usr/bin/chromium). (Video-engine teardown: ffmpeg/ffprobe + the
+# jellyfin-ffmpeg overlay + all GPU-hwaccel deps — NVIDIA_DRIVER_CAPABILITIES, libva2/va-driver-all/vainfo,
+# intel-gpu-tools, radeontop — were removed. No video is served until a new playback engine is rebuilt.)
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini ffmpeg vlc ca-certificates xvfb chromium fonts-liberation \
-      libva2 va-driver-all vainfo radeontop \
- && if [ "${TARGETARCH}" = "amd64" ]; then \
-      apt-get install -y --no-install-recommends intel-gpu-tools; \
-    fi \
+ && apt-get install -y --no-install-recommends tini ca-certificates xvfb chromium fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
-
-# jellyfin-ffmpeg = the multi-vendor ffmpeg/ffprobe overlay (MIRROR app.Dockerfile) that bundles its OWN GPU
-# runtime (VAAPI, Intel QSV via iHD/oneVPL, NVIDIA NVENC/NVDEC) — this is what unlocks NVENC, which the apt
-# ffmpeg lacks. Fetched per target arch + pinned for reproducible builds; symlinked into /usr/local/bin (ahead
-# of /usr/bin on PATH) so the engine, B-Roll, and probe pick it up by bare name. For NVIDIA run the nvidia
-# container runtime + pass the GPU; boot detection (videoconfig/hwDetect.ts) lists what's usable.
-ARG JELLYFIN_FFMPEG_VERSION=7.1.4-3
-RUN apt-get update && apt-get install -y --no-install-recommends curl \
- && curl -fsSL -o /tmp/jellyfin-ffmpeg.deb \
-      "https://github.com/jellyfin/jellyfin-ffmpeg/releases/download/v${JELLYFIN_FFMPEG_VERSION}/jellyfin-ffmpeg7_${JELLYFIN_FFMPEG_VERSION}-bookworm_${TARGETARCH}.deb" \
- && apt-get install -y --no-install-recommends /tmp/jellyfin-ffmpeg.deb \
- && ln -sf /usr/lib/jellyfin-ffmpeg/ffmpeg  /usr/local/bin/ffmpeg \
- && ln -sf /usr/lib/jellyfin-ffmpeg/ffprobe /usr/local/bin/ffprobe \
- && apt-get purge -y --auto-remove curl \
- && rm -f /tmp/jellyfin-ffmpeg.deb \
- && rm -rf /var/lib/apt/lists/*
 
 # Prod-only server deps (MIRROR app.Dockerfile): express, mongoose, ws, puppeteer-core. puppeteer-core ships no
 # browser binary — the dulo login uses the distro `chromium` installed above — so nothing to download here.
@@ -142,6 +121,11 @@ COPY --from=mongo /usr/bin/mongod /usr/bin/mongod
 COPY --from=server-build /server/dist  ./dist
 COPY --from=spa-build    /spa/dist     ./public
 COPY server/seed-data                  ./seed-data
+
+# Rust video-proxy sidecar — spawned + supervised by node on loopback (server/src/proxy/sidecar.ts). MIRRORS
+# app.Dockerfile. The aio entrypoint gosu-drops node to uid 1000; the child inherits that uid and execs this
+# root-owned 0755 binary. node forwards shutdown to the child; the supervisor stops node first, then mongod.
+COPY --from=proxy-build /proxy/target/release/masq-proxy /usr/local/bin/masq-proxy
 
 # /app/compose is non-overridable (server/src/paths.ts resolves it relative to the compiled module),
 # so redirect it into the single /data volume. The app's boot mkdirSync + every export write then land

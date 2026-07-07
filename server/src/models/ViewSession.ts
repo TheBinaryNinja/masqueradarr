@@ -15,6 +15,7 @@ export interface BufferEventDoc {
   at: number; // ms epoch the buffering interval began
   phase: 'buffer' | 'failed';
   ms: number; // interval duration
+  side: 'upstream' | 'client'; // which edge it was observed on (upstream phase-derived vs client rate-inferred)
 }
 
 export interface ViewSessionDoc {
@@ -46,6 +47,9 @@ const BufferEventSchema = new Schema<BufferEventDoc>(
     at: { type: Number, required: true },
     phase: { type: String, required: true },
     ms: { type: Number, required: true },
+    // Additive + forward-only: rows written before the two-sided split have no `side`; a lean read returns it
+    // absent and the SPA treats a missing `side` as 'upstream'. New writes always set it.
+    side: { type: String, default: 'upstream' },
   },
   { _id: false },
 );

@@ -18,11 +18,14 @@ export const timezone = ref('America/New_York');
 export const offset = ref('+0000');
 export const darkMode = ref(true);
 export const epgPath = ref('/_global/epg/playlist.xml');
-// Outbound-fetch DNS: comma-separated resolver IP(s) (blank => OS resolver) + a 1|2|3 trace-verbosity level.
-// Both persist like any other field; the server re-applies them to the live undici dispatcher on save
-// (server/src/dns.ts via settings/applyDns.ts) and surfaces DNS traces in the View logs drawer (core category).
+// Outbound-fetch DNS: comma-separated resolver IP(s) (blank => OS resolver). Persists like any other field;
+// the server re-applies it to the live undici dispatcher on save (server/src/dns.ts via settings/applyDns.ts).
 export const nameservers = ref('');
-export const dnsLogLevel = ref(2);
+// logLevel — the GLOBAL 1|2|3 log verbosity (was dnsLogLevel), governing the whole app AND the Rust proxy
+// engine. On save the server re-applies DNS trace verbosity AND pushes the level to the sidecar (picked up
+// live, no restart); all of it — DNS traces + the engine's full resolve→serve lineage — shows in the View
+// logs drawer (the `proxy` category holds the engine lineage).
+export const logLevel = ref(2);
 // MaxMind GeoIP credentials (Settings screen → viewer geolocation on the Active Streams + History screens).
 // accountId round-trips like any other field; the license KEY is write-only — the API never returns it
 // (it's a secret behind a public GET), so we only hydrate a "configured?" boolean and PUT a new key on Save.
@@ -63,7 +66,7 @@ export async function loadSettings(): Promise<void> {
       offset: string;
       darkMode: boolean;
       nameservers: string | null;
-      dnsLogLevel: number;
+      logLevel: number;
       maxmindAccountId: string | null;
       maxmindLicenseKeySet: boolean;
       backupLocation: string;
@@ -74,7 +77,7 @@ export async function loadSettings(): Promise<void> {
     if (typeof s.offset === 'string') offset.value = s.offset;
     if (typeof s.darkMode === 'boolean') darkMode.value = s.darkMode;
     if (s.nameservers !== undefined) nameservers.value = s.nameservers ?? '';
-    if (typeof s.dnsLogLevel === 'number') dnsLogLevel.value = s.dnsLogLevel;
+    if (typeof s.logLevel === 'number') logLevel.value = s.logLevel;
     if (s.maxmindAccountId !== undefined) maxmindAccountId.value = s.maxmindAccountId ?? '';
     if (typeof s.maxmindLicenseKeySet === 'boolean') maxmindLicenseKeySet.value = s.maxmindLicenseKeySet;
     if (typeof s.backupLocation === 'string') backupLocation.value = s.backupLocation;
@@ -112,7 +115,7 @@ watch(domain, (v) => persist({ domain: v }));
 watch(timezone, (v) => persist({ timezone: v }));
 watch(darkMode, (v) => persist({ darkMode: v }));
 watch(nameservers, (v) => persist({ nameservers: v.trim() === '' ? null : v.trim() }));
-watch(dnsLogLevel, (v) => persist({ dnsLogLevel: v }));
+watch(logLevel, (v) => persist({ logLevel: v }));
 watch(maxmindAccountId, (v) => persist({ maxmindAccountId: v.trim() === '' ? null : v.trim() }));
 watch(backupLocation, (v) => persist({ backupLocation: v.trim() || '/backups' }));
 

@@ -95,8 +95,8 @@ function durLabel(ms: number) {
 // ── System Performance banner — live host/container metrics ────────────
 // Live frame over the /api/system-stats WebSocket (ref-counted singleton, admin-only — operator data). The
 // CPU% rolling series feeds the LivelineChart; the other four metrics are numeric tiles updated each tick.
-const { subscribe: subscribeSys, release: releaseSys, cpuSeries, gpuSeries, cpuTimes, gpuTimes } = useSystemStats();
-// LivelineChart inputs. cpuSeries/gpuSeries (+ their lockstep cpuTimes/gpuTimes arrival stamps) are refs
+const { subscribe: subscribeSys, release: releaseSys, cpuSeries, cpuTimes } = useSystemStats();
+// LivelineChart inputs. cpuSeries (+ its lockstep cpuTimes arrival stamps) are refs
 // mutated IN PLACE; hand the chart finite-only samples paired with their stamps — filtered as PAIRS so
 // series and times stay index-aligned. The finite filter guards liveline's freeze-prone tick math (skill
 // §7.3); the stable per-sample stamps let a full window glide instead of snapping each tick — the jitter
@@ -109,7 +109,6 @@ function zipFinite(vals: number[], times: number[]): { series: number[]; times: 
   return { series, times: ts };
 }
 const cpuChart = computed(() => zipFinite(cpuSeries.value, cpuTimes.value));
-const gpuChart = computed(() => zipFinite(gpuSeries.value, gpuTimes.value));
 // Where CPU/Memory were measured: cgroup limits ('container') vs the whole machine ('host').
 const sysScope = computed(() => {
   const sc = SYSTEM_STATS.value?.scope;
@@ -125,26 +124,6 @@ function fmtBytes(n: number | null | undefined) {
 }
 function fmtRate(n: number | null | undefined, unit: string) { return n == null ? 'n/a' : `${n.toFixed(1)} ${unit}`; }
 
-// GPU Performance card — visible only while SYSTEM_STATS.gpu is non-null (server-gated: a videoconfig has HW
-// accel enabled). gpuSeries feeds its liveline; the tiles read the same live frame. Unavailable metrics → '—'.
-const gpu = computed(() => SYSTEM_STATS.value?.gpu ?? null);
-const gpuActive = computed(() => gpu.value != null);
-const gpuVendorLabel = computed(() => {
-  const v = gpu.value?.vendor;
-  return v === 'nvidia' ? 'NVIDIA' : v === 'amd' ? 'AMD' : v === 'intel' ? 'Intel' : 'GPU';
-});
-const gpuCaption = computed(() => gpu.value?.name || gpuVendorLabel.value);
-// The encode API behind the enabled encoder (e.g. 'h264_nvenc' → 'NVENC') — short enough for the tile value.
-const gpuApi = computed(() => {
-  const e = gpu.value?.encoder || '';
-  if (e.includes('nvenc')) return 'NVENC';
-  if (e.includes('qsv')) return 'QSV';
-  if (e.includes('vaapi')) return 'VAAPI';
-  if (e.includes('amf')) return 'AMF';
-  if (e.includes('videotoolbox')) return 'VideoToolbox';
-  return '—';
-});
-function fmtTemp(n: number | null | undefined) { return n == null ? '—' : `${Math.round(n)}°C`; }
 
 // DB Health card — live MongoDB metrics from the same WS frame (mongo.health is null until the second
 // serverStatus sample lets the server take a delta, so the rate values show '—' for the first ~5s).
@@ -230,9 +209,7 @@ onBeforeUnmount(() => {
       <span>MK-SYS / DASH</span>
     </div>
 
-    <!-- System Performance + GPU Performance share one row. The grid only activates when gpuActive (some
-         videoconfig has HW accel on); otherwise this wrapper is a plain block and System Performance is full-width. -->
-    <div :style="gpuActive ? 'display: grid; grid-template-columns: minmax(0, 2.6fr) minmax(0, 1fr); gap: 18px; align-items: stretch;' : ''">
+    <div>
     <div class="card flush sys-flush">
       <div class="card-hd">
         <Icon name="activity" :size="15" style="color: var(--accent);" />
@@ -308,44 +285,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- GPU Performance — mirrors System Performance (liveline + 16px spacer + tiles); rendered only while
-         gpuActive (a videoconfig has HW accel enabled). Unavailable per-vendor metrics render as '—'. -->
-    <div v-if="gpuActive" class="card flush sys-flush">
-      <div class="card-hd">
-        <Icon name="activity" :size="15" style="color: var(--accent);" />
-        <h2>GPU Performance</h2>
-        <span class="spacer" />
-        <span class="mq-cap">{{ gpuCaption }}</span>
-      </div>
-      <div style="padding: 12px var(--pad-card) 0;">
-        <LivelineChart :series="gpuChart.series" :times="gpuChart.times" :target="80" />
-      </div>
-      <div style="height: 32px;" />
-      <!-- Bottom row: GPU metric tiles in a nested .card flush so they keep a carded surface while the
-           chart above blends into the page (.sys-flush on the outer card) — mirrors System Performance. -->
-      <div class="card flush">
-      <div class="stats" style="grid-template-columns: repeat(3, 1fr); margin: 0;">
-        <div class="stat">
-          <div class="lbl">Memory</div>
-          <div class="val">{{ fmtPct(gpu?.memUsedPct) }}</div>
-          <div class="delta">
-            <template v-if="gpu?.memTotalBytes != null">{{ fmtBytes(gpu?.memUsedBytes) }} / {{ fmtBytes(gpu?.memTotalBytes) }}</template>
-            <template v-else>shared memory</template>
-          </div>
-        </div>
-        <div class="stat">
-          <div class="lbl">Temperature</div>
-          <div class="val">{{ fmtTemp(gpu?.temperatureC) }}</div>
-          <div class="delta">{{ gpuVendorLabel }}</div>
-        </div>
-        <div class="stat">
-          <div class="lbl">Encoder</div>
-          <div class="val" style="font-size: 20px;">{{ gpuApi }}</div>
-          <div class="delta">{{ gpu?.source || 'no live source' }}</div>
-        </div>
-      </div>
-      </div>
-    </div>
     </div>
 
     <!-- spec-sheet overline above the six stat tiles -->

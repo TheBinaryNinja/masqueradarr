@@ -21,14 +21,10 @@ export function channelToExtinf(ch: PlaylistChannelDoc, domain: string, token?: 
   // §5 inclusion governor — only Active channels (callers already filter; this is defensive).
   if (ch.status !== 'Active') return null;
 
-  // §4 URL line — DERIVED, never stored. This M3U is consumed by EXTERNAL IPTV clients (TiviMate/Kodi/VLC/…),
-  // so it targets the externalPlayer mount /api/ext/v1 (not the in-app /api/v1 that src/data.ts
-  // appPlayerProxyPath() builds client-side): with the engine enabled those sessions route through the
-  // server-side ffmpeg/VLC engine for transcode + health capture; with it off /api/ext is a direct relay.
-  // The URL is FORMAT-NEUTRAL (the encoded entry never ends in .m3u8): the loopback-HLS path serves it as
-  // application/vnd.apple.mpegurl and the raw-TS path (videoconfig.output==='ts') as video/mp2t — the served
-  // content-type, decided by the runtime global, distinguishes the two, so one URL works for both and never
-  // advertises .m3u8 for a TS body (the ExoPlayer OOM guardrail).
+  // §4 URL line — DERIVED, never stored. This M3U is consumed by EXTERNAL IPTV clients (TiviMate/Kodi/VLC/…).
+  // It targets the externalPlayer mount /api/ext/v1, which was REMOVED in the video-engine teardown — so these
+  // exported URLs do NOT resolve until a new playback engine is rebuilt (a deliberate "leave dead until rebuild"
+  // choice; the derivation is kept intact so the export files still generate with stable, rebuild-ready URLs).
   // For dulo, streamEntryUrl is the `dulo://channel/<id>` sentinel; the proxy mints the real playbackUrl
   // per play, so the m3u references the proxy path, never a resolved (expiring) upstream.
   // The proxy source is the channel's PROVIDER: for a clone copy that's `origin` (the real adapter, e.g.

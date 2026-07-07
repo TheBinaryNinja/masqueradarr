@@ -342,8 +342,6 @@ async function create() {
                 <code class="bs-v">{{ builtinEntry.builtinMeta.clonePlaylist }}</code>
                 <span class="bs-k">Sync Schedules</span>
                 <code class="bs-v">{{ builtinEntry.builtinMeta.syncSchedules }}</code>
-                <span class="bs-k">Video Engine Customization</span>
-                <code class="bs-v">{{ builtinEntry.builtinMeta.videoEngineCustomization }}</code>
               </div>
               <div class="bs-head">Playlist EPG</div>
               <div class="bs-kv">

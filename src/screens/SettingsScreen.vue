@@ -6,18 +6,17 @@ import Toggle from '../components/Toggle.vue';
 import SettingsRow from '../components/SettingsRow.vue';
 import EndpointField from '../components/EndpointField.vue';
 import DuloAuthPanel from '../components/DuloAuthPanel.vue';
-import VideoConfigPanel from '../components/VideoConfigPanel.vue';
-import EncoderDiagramPanel from '../components/EncoderDiagramPanel.vue';
+import ProxyConfigPanel from '../components/ProxyConfigPanel.vue';
 import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
-import { PROBE_STATUS, type CronFrequency } from '../data';
+import { type CronFrequency } from '../data';
 import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
 import {
   displayName, domain, epgPath,
   timezone, darkMode,
-  nameservers, dnsLogLevel,
+  nameservers, logLevel,
   maxmindAccountId, maxmindLicenseKeySet,
   saveMaxmindLicenseKey, clearMaxmindLicenseKey,
   backupLocation,
@@ -25,14 +24,9 @@ import {
 
 const toast = useToast();
 
-// Settings is split into two tabs: General (General + Data cards) and Advanced (Geolocation, Channel
-// Probing, Dulo.tv Authentication, Video Configuration).
+// Settings is split into two tabs: General (General + Data cards) and Advanced (Geolocation,
+// Dulo.tv Authentication).
 const activeTab = ref<'general' | 'advanced'>('general');
-
-// Encoder Diagram split-pane (Advanced tab only) — opened from the Video Configuration card header button.
-// When open, the settings column shares the row with the diagram panel; leaving Advanced closes it.
-const diagramOpen = ref(false);
-watch(activeTab, (t) => { if (t !== 'advanced') diagramOpen.value = false; });
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
 // the region prefix for the <optgroup>s. Falls back to a small common set on the rare runtime without the API.
@@ -103,87 +97,6 @@ async function clearLicenseKey() {
   keySaveState.value = ok ? 'saved' : 'error';
   if (ok) licenseKeyInput.value = '';
   setTimeout(() => (keySaveState.value = 'idle'), 2200);
-}
-
-// ── Channel probing ────────────────────────────────────────────────────────
-// The recurring ffprobe sweep schedule is a single cronjob row (targetType:'probe-all', targetId:'app')
-// managed via /api/cronjobs — the SAME FrequencyBuilder the playlists use, but with the modes restricted to
-// hourly/daily/weekly so the once-per-hour minimum is structural. "Run probe now" fires POST /api/probe/run.
-const PROBE_MODES = [
-  { value: 'hourly', label: 'Hourly', icon: 'refresh' },
-  { value: 'daily', label: 'Daily', icon: 'sync' },
-  { value: 'weekly', label: 'Weekly', icon: 'sync' },
-];
-const probeAuto = ref(false);
-const probeFreq = reactive<CronFrequency>({ mode: 'hourly', every: 1, atHour: null, atMinute: 0, daysOfWeek: null });
-const probeRawCron = ref('0 * * * *');
-const probeSaving = ref(false);
-const probeSaveState = ref<'idle' | 'saved' | 'error'>('idle');
-const probeStarting = ref(false);
-
-onMounted(async () => {
-  // Hydrate from the persisted probe-all cronjob, if one exists (else the hourly defaults stand).
-  try {
-    const res = await fetch('/api/cronjobs/app?targetType=probe-all');
-    if (res.ok) {
-      const job = await res.json();
-      probeAuto.value = !!job.enabled;
-      if (job.frequency && typeof job.frequency === 'object') Object.assign(probeFreq, job.frequency);
-      if (typeof job.cron === 'string' && job.cron) probeRawCron.value = job.cron;
-    }
-  } catch {
-    /* no schedule yet — defaults stand */
-  }
-});
-
-async function saveProbeSchedule() {
-  probeSaving.value = true;
-  probeSaveState.value = 'idle';
-  try {
-    const path = '/api/cronjobs/app?targetType=probe-all';
-    if (probeAuto.value) {
-      const res = await fetch(path, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetType: 'probe-all',
-          cron: buildCron(probeFreq, probeRawCron.value),
-          frequency: { ...probeFreq },
-          timezone: timezone.value || null,
-          enabled: true,
-        }),
-      });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    } else {
-      // Manual → unschedule (idempotent; a 404 just means there was nothing to remove).
-      const res = await fetch(path, { method: 'DELETE' });
-      if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
-    }
-    probeSaveState.value = 'saved';
-  } catch {
-    probeSaveState.value = 'error';
-  } finally {
-    probeSaving.value = false;
-    setTimeout(() => (probeSaveState.value = 'idle'), 2200);
-  }
-}
-
-async function runProbeNow() {
-  probeStarting.value = true;
-  try {
-    const res = await fetch('/api/probe/run', { method: 'POST' });
-    if (res.status === 202) {
-      toast.lowerRight({ tone: 'good', icon: 'refresh', title: 'Probe started', text: 'Sweeping every Active channel — watch the sidebar for progress.' });
-    } else if (res.status === 409) {
-      toast.lowerRight({ tone: 'warn', icon: 'refresh', title: 'Probe already running', text: 'A sweep is in progress — let it finish first.' });
-    } else {
-      throw new Error(`HTTP ${res.status}`);
-    }
-  } catch {
-    toast.lowerRight({ tone: 'bad', icon: 'warn', title: 'Could not start probe', text: 'Please try again.' });
-  } finally {
-    probeStarting.value = false;
-  }
 }
 
 // ── Data card ──────────────────────────────────────────────────────────────
@@ -300,6 +213,106 @@ async function saveBackupSchedule() {
   }
 }
 
+// Scheduled channel probe (PRB) — cronjob targetType:'channel-probe', targetId:'app'. Modes are limited to
+// hourly/daily/weekly (a probe resolves + checks EVERY channel upstream, so there's a once-per-hour floor —
+// no minutes/custom). Mirrors the backup-schedule pattern; adds a "Run now" one-off (POST /api/probe/run).
+const PROBE_MODES = [
+  { value: 'hourly', label: 'Hourly', icon: 'refresh' },
+  { value: 'daily', label: 'Daily', icon: 'sync' },
+  { value: 'weekly', label: 'Weekly', icon: 'sync' },
+];
+const probeAuto = ref(false);
+const probeFreq = reactive<CronFrequency>({ mode: 'hourly', every: 6, atHour: null, atMinute: 0, daysOfWeek: null });
+const probeRawCron = ref('0 */6 * * *');
+const probeSaving = ref(false);
+const probeSaveState = ref<'idle' | 'saved' | 'error'>('idle');
+const probeRunning = ref(false);
+
+onMounted(async () => {
+  // Hydrate the probe schedule from its cronjob, if one exists (else the every-6-hours defaults stand).
+  try {
+    const res = await fetch('/api/cronjobs/app?targetType=channel-probe');
+    if (res.ok) {
+      const job = await res.json();
+      probeAuto.value = !!job.enabled;
+      if (job.frequency && typeof job.frequency === 'object') Object.assign(probeFreq, job.frequency);
+      if (typeof job.cron === 'string' && job.cron) probeRawCron.value = job.cron;
+    }
+  } catch {
+    /* no schedule yet — defaults stand */
+  }
+  // Reflect an already-running sweep (kicked elsewhere) in the button state.
+  try {
+    const res = await fetch('/api/probe/status');
+    if (res.ok) probeRunning.value = !!(await res.json()).running;
+  } catch {
+    /* ignore */
+  }
+});
+
+async function saveProbeSchedule() {
+  probeSaving.value = true;
+  probeSaveState.value = 'idle';
+  try {
+    const path = '/api/cronjobs/app?targetType=channel-probe';
+    if (probeAuto.value) {
+      const res = await fetch('/api/cronjobs/app', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          targetType: 'channel-probe',
+          cron: buildCron(probeFreq, probeRawCron.value),
+          frequency: { ...probeFreq },
+          timezone: timezone.value || null,
+          enabled: true,
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } else {
+      // Manual → unschedule (idempotent; a 404 just means there was nothing to remove).
+      const res = await fetch(path, { method: 'DELETE' });
+      if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
+    }
+    probeSaveState.value = 'saved';
+  } catch {
+    probeSaveState.value = 'error';
+  } finally {
+    probeSaving.value = false;
+    setTimeout(() => (probeSaveState.value = 'idle'), 2200);
+  }
+}
+
+// Fire an immediate sweep, then poll status so the button clears when it finishes (no progress WS in P1.3).
+async function runProbeNow() {
+  probeRunning.value = true;
+  try {
+    const res = await fetch('/api/probe/run', { method: 'POST' });
+    if (res.status === 202 || res.ok) {
+      toast.lowerRight({ tone: 'good', icon: 'check', title: 'Probe started', text: 'Checking every active channel…' });
+    } else if (res.status === 409) {
+      toast.lowerRight({ tone: 'warn', icon: 'warn', title: 'Probe already running', text: 'A sweep is in progress.' });
+    } else {
+      throw new Error(`HTTP ${res.status}`);
+    }
+  } catch {
+    toast.lowerRight({ tone: 'bad', icon: 'warn', title: 'Could not start probe', text: 'Please try again.' });
+    probeRunning.value = false;
+    return;
+  }
+  const poll = async () => {
+    try {
+      const res = await fetch('/api/probe/status');
+      if (!res.ok) return void (probeRunning.value = false);
+      const s = await res.json();
+      probeRunning.value = !!s.running;
+      if (s.running) setTimeout(poll, 3000);
+    } catch {
+      probeRunning.value = false;
+    }
+  };
+  setTimeout(poll, 3000);
+}
+
 // Danger zone — wipe the entire workspace, then reload into the fresh state.
 const resetting = ref(false);
 const resetConfirm = ref(false);
@@ -318,8 +331,8 @@ async function fireReset() {
 </script>
 
 <template>
-  <div :class="diagramOpen ? 'settings-split' : ''">
-    <div class="col settings-col" :style="diagramOpen ? undefined : { maxWidth: '760px' }">
+  <div>
+    <div class="col settings-col" :style="{ maxWidth: '760px' }">
     <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
       { value: 'general', label: 'General' },
       { value: 'advanced', label: 'Advanced' },
@@ -355,14 +368,15 @@ async function fireReset() {
         <div class="form-row">
           <div class="field-lbl">Log level</div>
           <div class="select fill">
-            <select v-model.number="dnsLogLevel">
+            <select v-model.number="logLevel">
               <option :value="1">1 — Minimal (lifecycle + issues)</option>
-              <option :value="2">2 — Standard (deduped per-call)</option>
-              <option :value="3">3 — Verbose (every lookup)</option>
+              <option :value="2">2 — Standard (milestones)</option>
+              <option :value="3">3 — Verbose (full stream lineage)</option>
             </select>
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            Detail of the DNS / outbound-fetch trace shown in the View logs drawer (core category).
+            Global log verbosity for the whole app and the streaming proxy engine, shown in the View logs
+            drawer. Level 3 traces a channel end-to-end (resolve → repackage → output) under the proxy category.
           </div>
         </div>
         <div class="form-row">
@@ -436,31 +450,46 @@ async function fireReset() {
       </div>
     </div>
 
-    <div class="card" v-if="activeTab === 'advanced'">
-      <h3 class="section-title">Channel Probing</h3>
-      <div class="muted" style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
-        Run ffprobe across every Active channel — one playlist at a time — to refresh each channel's
-        Live/Down status, resolution pill, and video details. Minimum frequency is once per hour.
-      </div>
-      <FrequencyBuilder :freq="probeFreq" v-model:auto="probeAuto" v-model:rawCron="probeRawCron"
-                        :modes="PROBE_MODES" label="Probe schedule" icon="refresh"
-                        manualHint="Probes run only when triggered manually. Switch to Automatic to run them on a schedule." />
-      <div class="row" style="gap: 8px; margin-top: 14px; align-items: center;">
-        <Btn variant="primary" icon="check" :disabled="probeSaving" @click="saveProbeSchedule">
-          {{ probeSaving ? 'Saving…' : 'Save schedule' }}
-        </Btn>
-        <Btn variant="ghost" icon="refresh" :disabled="probeStarting || PROBE_STATUS?.running" @click="runProbeNow">
-          {{ PROBE_STATUS?.running ? 'Probe running…' : 'Run probe now' }}
-        </Btn>
-        <span v-if="probeSaveState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
-        <span v-else-if="probeSaveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
-      </div>
-    </div>
-
     <DuloAuthPanel v-if="activeTab === 'advanced'" />
 
-    <VideoConfigPanel v-if="activeTab === 'advanced'"
-                      :diagram-open="diagramOpen" @toggle-diagram="diagramOpen = !diagramOpen" />
+    <div class="card" v-if="activeTab === 'advanced'">
+      <h3 class="section-title">Channel Probe Scheduler</h3>
+      <div class="muted" style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
+        Periodically check every active channel and refresh its status + resolution, so the Channels and Active
+        Streams screens stay accurate even for channels nobody is watching. Each channel is resolved and probed
+        through the video engine, so this runs at most once per hour.
+      </div>
+      <SettingsRow label="Automatic probe" hint="Sweep all channels on a schedule.">
+        <template #right>
+          <Toggle :on="probeAuto" @change="(v) => { probeAuto = v; saveProbeSchedule(); }" />
+        </template>
+      </SettingsRow>
+
+      <template v-if="probeAuto">
+        <FrequencyBuilder :freq="probeFreq" :auto="probeAuto" v-model:rawCron="probeRawCron"
+                          :modes="PROBE_MODES" hideMode label="Schedule" icon="refresh" manualHint="" />
+        <div class="row" style="gap: 8px; margin-top: 14px; align-items: center;">
+          <Btn variant="primary" icon="check" :disabled="probeSaving" @click="saveProbeSchedule">
+            {{ probeSaving ? 'Saving…' : 'Save schedule' }}
+          </Btn>
+          <span v-if="probeSaveState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
+          <span v-else-if="probeSaveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
+        </div>
+      </template>
+
+      <div class="divider" />
+      <SettingsRow label="Run a probe now" hint="Immediately check every active channel once.">
+        <template #right>
+          <Btn variant="ghost" icon="refresh" :disabled="probeRunning" @click="runProbeNow">
+            {{ probeRunning ? 'Running…' : 'Run now' }}
+          </Btn>
+        </template>
+      </SettingsRow>
+    </div>
+
+    <!-- Durable video engine — the (Default) proxy config applied to every playlist (per-playlist Custom
+         overrides live in the playlist editor drawer). Auto-saves on change. [UICFG] -->
+    <ProxyConfigPanel v-if="activeTab === 'advanced'" config-id="app" title="Video proxy engine" />
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">Data</h3>
@@ -550,6 +579,5 @@ async function fireReset() {
       <RestoreBackupModal v-if="restoreModalOpen" @close="restoreModalOpen = false" @restored="onRestored" />
     </div>
     </div>
-    <EncoderDiagramPanel v-if="diagramOpen && activeTab === 'advanced'" @close="diagramOpen = false" />
   </div>
 </template>

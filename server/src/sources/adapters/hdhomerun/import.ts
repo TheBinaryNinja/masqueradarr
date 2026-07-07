@@ -13,7 +13,6 @@ import { composeM3u } from '../../../m3u/compose.js';
 import { logoColorFor, initialsFor } from '../../toPlaylistChannel.js';
 import { logger } from '../../core/logger.js';
 import { fetchDiscover, fetchLineup, type HdhrLineupEntry } from './lineup.js';
-import { registerDevice } from './remux.js';
 
 export const HDHR_SOURCE = 'hdhomerun'; // Playlist.source TYPE TAG (channels keyed by the playlist id, like 'clone'/'import')
 export const HDHR_ORIGIN = 'hdhomerun'; // PlaylistChannel.origin → routes the stream through the hdhomerun remux adapter
@@ -111,7 +110,6 @@ export async function syncHdhrPlaylist(id: string): Promise<{ channels: number; 
   if (!base) throw new Error('missing_device_url');
 
   const disc = await fetchDiscover(base);
-  registerDevice(base, disc.tunerCount); // keep the remux per-device tuner cap current
   const lineup = await fetchLineup(base);
   await upsertHdhrChannels(lineup, id);
 

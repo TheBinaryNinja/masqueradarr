@@ -1,5 +1,4 @@
 import { Schema, model } from 'mongoose';
-import type { StreamProbe } from './StreamSession.js';
 
 // PlaylistChannel — the editable, UI-facing channel store. One doc per channel, seeded FROM the pristine
 // SourceChannel reference at provisioning/sync time via sources/toPlaylistChannel.ts, then editable by the
@@ -39,7 +38,8 @@ export interface PlaylistChannelDoc {
     isPlayable: boolean;
     res: string | null;
     status: string | null; // realtime: 'live'|'establishing'|'buffer'|'failed'|null
-    probe: StreamProbe | null; // ffprobe-derived technical details — latest snapshot; null until first probed
+    probe: unknown; // VESTIGIAL: was the ffprobe technical-details snapshot; always null after the video-engine
+    //                teardown (nothing writes it). Kept as a nullable slot to repurpose when playback is rebuilt.
   };
 }
 

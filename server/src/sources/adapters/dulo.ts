@@ -115,7 +115,6 @@ const duloAdapter: SourceAdapter = {
     globalPlaylist: true,
     clonePlaylist: true,
     syncSchedules: true,
-    videoEngineCustomization: true,
     playlistBoundEpg: false,
     epgSyncSchedules: false,
   },

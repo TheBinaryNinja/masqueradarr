@@ -14,15 +14,13 @@ import { customPlaylistsRouter } from './routes/customPlaylists.js';
 import { importRouter } from './routes/import.js';
 import { programsRouter } from './routes/programs.js';
 import { epgChannelsRouter } from './routes/epgChannels.js';
-import { streamSessionsRouter } from './routes/streamSessions.js';
 import { viewSessionsRouter } from './routes/viewSessions.js';
 import { settingsRouter } from './routes/settings.js';
-import { videoConfigRouter } from './routes/videoConfig.js';
-import { brollRouter } from './routes/broll.js';
+import { proxyConfigsRouter } from './routes/proxyConfigs.js';
 import { cronjobsRouter } from './routes/cronjobs.js';
-import { probeRouter } from './routes/probe.js';
 import { backupRouter } from './routes/backup.js';
 import { systemRouter } from './routes/system.js';
+import { probeRouter } from './routes/probe.js';
 import { sourcesRouter } from './routes/sources.js';
 import { bootInitSources } from './sources/seed.js';
 import { authRouter } from './routes/auth.js';
@@ -36,12 +34,14 @@ import { startStreamTelemetry, stopStreamTelemetry } from './sources/core/stream
 import { startStatsHub, closeAllStats, attachStats } from './stats/statsHub.js';
 import { startSystemStatsHub, closeAllSystemStats, attachSystemStats } from './stats/systemStatsHub.js';
 import { systemStatsRouter } from './routes/systemStats.js';
-import { startProbeHub, closeAllProbe, attachProbe } from './sources/probeHub.js';
 import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
-import { applyHwDetection } from './videoconfig/hwDetect.js';
 import { logger } from './sources/core/logger.js';
+import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
+import { internalRouter } from './routes/internal.js';
+import { streamGate } from './middleware/streamGate.js';
+import { proxyRelay } from './proxy/relay.js';
 
 // Same-origin gate for the dulo login-stream WebSocket. Compares HOSTNAMES (ignoring port) so the Vite dev
 // proxy (localhost:5173 → localhost:3000) and the co-served prod SPA both pass, while a cross-site page is
@@ -92,15 +92,6 @@ async function main() {
     logger.error('startup', `dns settings apply error (continuing): ${(err as Error).message}`);
   }
 
-  // Detect host hardware-encoder capability (ffmpeg -encoders + device nodes) → videoconfig.hwAccel.detected,
-  // so the Settings → Video Configuration card only offers encoders that can actually run here (WS6). Non-fatal:
-  // software transcode + the loopback/raw-TS engines work regardless of GPU presence.
-  try {
-    await applyHwDetection();
-  } catch (err) {
-    logger.error('startup', `hw detection error (continuing): ${(err as Error).message}`);
-  }
-
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler
   // failure must not prevent the API from serving.
   try {
@@ -113,11 +104,14 @@ async function main() {
   try {
     startStreamTelemetry();
     startStatsHub();
-    startProbeHub();
     startSystemStatsHub();
   } catch (err) {
     logger.error('startup', `stream telemetry init error (continuing): ${(err as Error).message}`);
   }
+
+  // NB: the Rust proxy sidecar is spawned AFTER app.listen() (see below), not here — in EDGE mode Rust binds
+  // the PUBLIC port and reverse-proxies back to this Node process on a loopback internal port, so Node's
+  // listener must be up first or the edge would 502 during the boot window.
 
   const app = express();
   // The proxy attributes viewers/bandwidth by client ip — read the real client IP from X-Forwarded-For
@@ -162,10 +156,6 @@ async function main() {
 
   // Protect admin-only endpoints (GET settings is allowed for standard users, PUT is admin-only)
   app.put('/api/settings', requireAdmin);
-  // videoconfig mirrors settings: GET is open (no secrets — drives the externalPlayer engine), PUT/DELETE are
-  // admin-only. DELETE removes a per-playlist Custom config ('app_<playlistId>'); the global 'app' is undeletable.
-  app.put('/api/video-config/:id', requireAdmin);
-  app.delete('/api/video-config/:id', requireAdmin);
 
   const adminOnlyRoutes = [
     '/api/epg-sources',
@@ -176,14 +166,13 @@ async function main() {
     '/api/epg-programs',
     '/api/epg-channels',
     '/api/logs',
-    '/api/stream-sessions',
     '/api/view-sessions',
     '/api/cronjobs',
-    '/api/probe',
-    '/api/broll',
     '/api/system-stats',
     '/api/backup',
     '/api/system',
+    '/api/probe',
+    '/api/proxy-configs', // durable video-engine knobs — headerOverrides can hold an upstream secret, so ALL methods are admin-only
     '/api/sources'
   ];
   for (const routePath of adminOnlyRoutes) {
@@ -199,19 +188,26 @@ async function main() {
   app.use('/api/epg-programs', programsRouter);
   app.use('/api/epg-channels', epgChannelsRouter);
   app.use('/api/logs', logsRouter);
-  app.use('/api/stream-sessions', streamSessionsRouter);
   app.use('/api/view-sessions', viewSessionsRouter);
   app.use('/api/settings', settingsRouter);
-  app.use('/api/video-config', videoConfigRouter);
+  app.use('/api/proxy-configs', proxyConfigsRouter); // durable video-engine knobs: Default (app) + per-playlist Custom (app_<pl>) [CFG]
   app.use('/api/cronjobs', cronjobsRouter);
-  app.use('/api/probe', probeRouter); // manual trigger + status for the scheduled ffprobe sweep
-  app.use('/api/broll', brollRouter); // dev/preview aid for the B-Roll renderer (see routes/broll.ts)
   app.use('/api/system-stats', systemStatsRouter); // latest system-performance snapshot (live feed is the WS)
   app.use('/api/backup', backupRouter); // full-system backup generate/list/restore (Settings → Data)
   app.use('/api/system', systemRouter); // index rebuild + workspace reset (Settings → Data)
+  app.use('/api/probe', probeRouter); // manual channel-probe run + status (Settings → Advanced; PRB)
 
-  // Generic source API (manifest, stream proxy, status, sync/reset) — mounted at root since its
-  // paths span /api/sources and /api/v1.
+  // ── Durable video engine (P1): internal control channel + the stream-proxy relay ───────────────
+  // internalRouter = the loopback+shared-secret seam the Rust sidecar calls (resolve grant + telemetry).
+  // The /api/v1 (appPlayer) + /api/ext/v1 (externalPlayer) stream mounts run the rebuilt stream-token gate
+  // (users.md §5, plain-text errors) and then reverse-proxy the bytes to the loopback sidecar. Both sit
+  // AFTER the global `authenticate` (req.user populated) and are intentionally NOT in adminOnlyRoutes —
+  // streaming is reachable by any user with a valid streamToken, scoped by the gate.
+  app.use('/api/internal', internalRouter);
+  app.use(['/api/v1', '/api/ext/v1'], streamGate, proxyRelay);
+
+  // Generic source API (manifest, status, sync/reset, provisioning, dulo auth) — mounted at root since its
+  // paths span /api/sources.
   app.use(sourcesRouter);
 
   // composeDir holds the m3u exports (decoupled from the SPA's publicDir). Files are PER-USER ONLY
@@ -254,23 +250,47 @@ async function main() {
     res.status(500).json({ error: 'internal_error' });
   });
 
-  const server = app.listen(config.port, () => {
-    logger.info('api', `listening on :${config.port}`);
-  });
+  // EDGE-3: in edge mode Node listens on a loopback INTERNAL port (default 8080), while config.port stays the
+  // PUBLIC port that Rust binds — so the listen port is independent of config.json and toggling MASQ_EDGE works
+  // even against an already-written config (esp. the AIO image, whose config-init leaves an existing file alone).
+  // In sidecar mode Node is the public front door on config.port (unchanged).
+  const nodePort = EDGE ? Number(process.env.MASQ_EDGE_NODE_PORT) || 8080 : config.port;
+
+  const onListening = () => {
+    logger.info(
+      'api',
+      EDGE
+        ? `listening on 127.0.0.1:${nodePort} (internal; Rust owns the public edge on :${config.port})`
+        : `listening on :${nodePort}`,
+    );
+    // Durable video data plane: spawn + supervise the Rust proxy sidecar (server/src/proxy/sidecar.ts → repo
+    // `proxy/` crate). Spawned HERE — after the HTTP server is listening — so that in EDGE mode Rust (which
+    // binds the public port and reverse-proxies to this now-ready internal listener) never races an unready
+    // Node. nodePort is handed to the sidecar as its Node callback URL. Non-fatal — a missing/failed sidecar
+    // disables streaming (sidecar mode) but must not crash the API.
+    try {
+      startProxySidecar(nodePort);
+    } catch (err) {
+      logger.error('startup', `proxy sidecar start error (continuing): ${(err as Error).message}`);
+    }
+  };
+  // EDGE mode: bind loopback only — Rust is the public front door and proxies here. Sidecar mode: Node is the
+  // public front door, so bind all interfaces (today's behavior).
+  const server = EDGE
+    ? app.listen(nodePort, '127.0.0.1', onListening)
+    : app.listen(nodePort, onListening);
 
   // dulo streamed-login WebSocket (sources/adapters/dulo/loginBrowser.ts). Mounted on the raw http.Server's
   // 'upgrade' event — Express has no native WS. The browser launches lazily on connect, so this adds zero
   // boot cost; it spans only /api/dulo/login-stream and never touches the SPA static / catch-all.
-  // Five WS endpoints share the one upgrade handler, dispatched by pathname (Express has no native WS):
+  // Four WS endpoints share the one upgrade handler, dispatched by pathname (Express has no native WS):
   //   /api/dulo/login-stream → the dulo streamed-login browser
   //   /api/stream-stats       → the live Active Streams / metrics push (stats/statsHub.ts)
   //   /api/logs-stream        → the live application-log tail (logs/logStore.ts)
-  //   /api/probe-progress     → the scheduled ffprobe sweep's live counter (sources/probeHub.ts)
   //   /api/system-stats       → the live system-performance push (stats/systemStatsHub.ts)
   const wss = new WebSocketServer({ noServer: true });
   const wssStats = new WebSocketServer({ noServer: true });
   const wssLogs = new WebSocketServer({ noServer: true });
-  const wssProbe = new WebSocketServer({ noServer: true });
   const wssSystem = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
     let pathname = '';
@@ -289,8 +309,6 @@ async function main() {
       wssStats.handleUpgrade(req, socket, head, (ws) => attachStats(ws));
     } else if (pathname === '/api/logs-stream') {
       wssLogs.handleUpgrade(req, socket, head, (ws) => attachLogs(ws));
-    } else if (pathname === '/api/probe-progress') {
-      wssProbe.handleUpgrade(req, socket, head, (ws) => attachProbe(ws));
     } else if (pathname === '/api/system-stats') {
       wssSystem.handleUpgrade(req, socket, head, (ws) => attachSystemStats(ws));
     } else {
@@ -300,17 +318,16 @@ async function main() {
 
   const shutdown = async (signal: string) => {
     logger.info('shutdown', `received ${signal}`);
+    await stopProxySidecar(); // stop the data plane first — halts byte-serving + drains in-flight streams
     await duloLoginBrowser.closeAll();
     closeAllStats();
     closeAllSystemStats();
-    closeAllProbe();
     closeAllLogs();
     stopStreamTelemetry();
     await stopLogStore(); // detach the sink + flush the final batch (incl. the shutdown line) before disconnect
     wss.close();
     wssStats.close();
     wssLogs.close();
-    wssProbe.close();
     wssSystem.close();
     server.close();
     await disconnect();

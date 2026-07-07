@@ -1,6 +1,6 @@
 // Live system-performance hub — samples host/container runtime metrics on a fixed tick, caches the latest
 // frame, and fans it out over the /api/system-stats WebSocket. Mirrors stats/statsHub.ts (the WS scaffolding
-// + 2.5s cadence) and sources/probeHub.ts (a tiny DB-free state hub), and is the server side of the Dashboard
+// + 2.5s cadence), and is the server side of the Dashboard
 // "System Performance" banner (src/composables/useSystemStats.ts).
 //
 // Scope: CPU% and Memory% are CONTAINER-AWARE — read from cgroup (v2 first, then v1), falling back to Node
@@ -14,8 +14,6 @@ import { readFile } from 'node:fs/promises';
 import mongoose from 'mongoose';
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { VideoConfig } from '../models/VideoConfig.js';
-import { resolveGpuTarget, sampleGpu, type GpuStats } from './gpu.js';
 
 const TICK_MS = 2500; // matches statsHub BROADCAST_MS + LivelineChart SAMPLE_MS (60 samples × 2.5s window)
 const CG = '/sys/fs/cgroup';
@@ -44,9 +42,6 @@ export interface SystemStats {
       scanAndOrderPerSec: number | null; // metrics.operation.scanAndOrder delta / sec
     } | null;
   };
-  // Live GPU telemetry — null unless one or more videoconfigs has HW accel enabled (drives the Dashboard
-  // "GPU Performance" card's visibility). Sampled in stats/gpu.ts; numeric fields degrade to null per-vendor.
-  gpu: GpuStats | null;
 }
 
 // ── delta state (raw counters from the previous tick) ─────────────────────────────────────────────────
@@ -354,45 +349,18 @@ async function computeMongo(): Promise<SystemStats['mongo']> {
   }
 }
 
-// ── GPU (videoconfig-gated; spawns nvidia-smi/intel_gpu_top → throttled like mongo) ─────────────────────
-let gpuTick = 0;
-let cachedGpu: GpuStats | null | undefined; // undefined = not yet sampled (distinct from "no HW accel" null)
-let gpuWarned = false;
-
-async function computeGpu(): Promise<GpuStats | null> {
-  gpuTick++;
-  // Refresh on every other tick (~5s) and reuse in between — videoconfig toggles are rare and the per-vendor
-  // probes (nvidia-smi / intel_gpu_top) shouldn't run every 2.5s.
-  if (cachedGpu !== undefined && gpuTick % 2 !== 0) return cachedGpu;
-  try {
-    // Which HW encoders are enabled across all videoconfigs ('app' Default + 'app_<id>' Custom)?
-    const enabled = await VideoConfig.find({ 'hwAccel.enabled': true }, { 'hwAccel.encoder': 1, _id: 0 }).lean();
-    const encoders = enabled.map((c) => c.hwAccel?.encoder ?? 'none');
-    const target = encoders.length ? await resolveGpuTarget(encoders) : null;
-    cachedGpu = target ? await sampleGpu(target) : null;
-  } catch (err) {
-    if (!gpuWarned) {
-      logger.warn('stats', `gpu sampling unavailable (degrading): ${(err as Error).message}`);
-      gpuWarned = true;
-    }
-    cachedGpu = null;
-  }
-  return cachedGpu;
-}
-
 // ── the tick ──────────────────────────────────────────────────────────────────────────────────────────
 async function tick(): Promise<void> {
   mongoTick++;
   try {
-    const [cpu, memory, diskIo, network, mongo, gpu] = await Promise.all([
+    const [cpu, memory, diskIo, network, mongo] = await Promise.all([
       computeCpu(),
       computeMemory(),
       computeDiskIo(),
       computeNetwork(),
       computeMongo(),
-      computeGpu(),
     ]);
-    latest = { ts: Date.now(), scope, cpu, memory, diskIo, network, mongo, gpu };
+    latest = { ts: Date.now(), scope, cpu, memory, diskIo, network, mongo };
     if (sockets.size) broadcast({ type: 'system-stats', stats: latest });
   } catch (err) {
     logger.error('stats', `system-stats tick failed: ${(err as Error).message}`);

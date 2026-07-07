@@ -8,16 +8,12 @@ import SearchInput from '../components/SearchInput.vue';
 import Segmented from '../components/Segmented.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
 import LivelineChart from '../components/LivelineChart.vue';
-import { ACTIVE_STREAMS, CHANNELS, EPG_PROGRAMS, SYSTEM_STATS, fetchProgramsFor, flagEmoji, type ActiveStream, type Program, type StreamClient, type EngineSnapshot } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, EPG_PROGRAMS, fetchProgramsFor, flagEmoji, type ActiveStream, type Program, type StreamClient } from '../data';
 import { useStreamStats } from '../composables/useStreamStats';
-import { useSystemStats } from '../composables/useSystemStats';
-import ActiveStreamDiagram from '../components/ActiveStreamDiagram.vue';
 
 // Live snapshot over the /api/stream-stats WebSocket (updates ACTIVE_STREAMS in place). Only show streams
 // whose channelId resolves to a real channel in the global list.
 const { subscribe, release, bitrateSeries } = useStreamStats();
-// GPU frame for the diagram's GPU node (admin-only feed; same audience as this screen). gpuSeries → mini liveline.
-const { subscribe: subscribeSys, release: releaseSys } = useSystemStats();
 const liveStreams = computed(() => ACTIVE_STREAMS.value.filter((s) => CHANNELS.value.some((c) => c.id === s.channelId)));
 
 const selId = ref<string | null>(null);
@@ -91,6 +87,14 @@ function externalClientName(ua: string): string {
 function playerLabel(c: StreamClient): string {
   return c.playerType === 'externalPlayer' ? externalClientName(c.userAgent) : 'In-App';
 }
+// EFFECTIVE delivery format the proxy is serving RIGHT NOW — the observable truth behind the HLS/Raw-TS switch,
+// and deliberately NOT the same as the "Container" decode label (which is the upstream segments' format, MPEG-TS
+// either way). 'ts' = one continuous raw MPEG-TS socket (tsmux engaged); 'hls' = segmented HLS, which ALSO covers
+// a Raw-TS request the sidecar fell back on (encrypted / fMP4 / unreachable upstream); 'mixed' = both at once.
+// So: set Raw-TS, still see "HLS" here ⇒ it fell back (e.g. Pluto's AES-encrypted feeds).
+function deliveryLabel(d: ActiveStream['delivery']): string {
+  return d === 'ts' ? 'Raw TS' : d === 'mixed' ? 'Mixed (HLS + TS)' : 'HLS';
+}
 
 // Real rolling bitrate series from the WS ticks — finite samples only, never a fabricated flat/zero
 // series (a zero value-range freezes the liveline chart). LivelineChart shows a placeholder until ≥2
@@ -153,26 +157,11 @@ async function loadClients(id: string | undefined) {
 }
 watch([() => sel.value?.id, ACTIVE_STREAMS], () => loadClients(sel.value?.id), { immediate: true });
 
-// Per-channel external-player engine snapshot — drives the "Video Engine Service" diagram. Same monotonic-token
-// pattern as loadClients; refreshes on selection + each WS tick. Empty ⇒ no transcode engine (passthrough/relay).
-const engine = ref<EngineSnapshot[]>([]);
-let engineReq = 0;
-async function loadEngine(id: string | undefined) {
-  const my = ++engineReq;
-  if (!id) { engine.value = []; return; }
-  try {
-    const res = await fetch(`/api/active-streams/${encodeURIComponent(id)}/engine`);
-    if (my !== engineReq) return; // superseded by a newer selection
-    if (res.ok) engine.value = ((await res.json()) as { engines: EngineSnapshot[] }).engines;
-  } catch { /* best-effort */ }
-}
-watch([() => sel.value?.id, ACTIVE_STREAMS], () => loadEngine(sel.value?.id), { immediate: true });
-
 function onView() { if (!sel.value) return; viewing.value = sel.value.id; playing.value = sel.value.status !== 'bad'; muted.value = false; }
 function close() { viewing.value = null; }
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape' && viewing.value) close(); }
-onMounted(() => { subscribe(); subscribeSys(); window.addEventListener('keydown', onKey); });
-onBeforeUnmount(() => { release(); releaseSys(); window.removeEventListener('keydown', onKey); });
+onMounted(() => { subscribe(); window.addEventListener('keydown', onKey); });
+onBeforeUnmount(() => { release(); window.removeEventListener('keydown', onKey); });
 
 // Programs are stored epoch-ms — format an absolute epoch-ms time as local HH:MM.
 function formatTime(ms: number) { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -322,6 +311,12 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   <Pill v-else-if="sel.status === 'bad'" tone="bad"><Icon name="warn" :size="11" />offline</Pill>
                   <Pill v-else tone="warn"><Icon name="warn" :size="11" />{{ sel.phase }}</Pill>
                 </span>
+                <!-- Effective wire format being served now (Raw-TS socket vs segmented HLS) — the observable
+                     side of the outputFormat switch; a Raw-TS request that fell back reads "HLS". -->
+                <Pill :tone="sel.delivery === 'ts' ? 'cyan' : sel.delivery === 'mixed' ? 'warn' : 'system'"
+                  :title="`Wire format served now: ${deliveryLabel(sel.delivery)} — distinct from the Container decode label`">
+                  {{ deliveryLabel(sel.delivery) }}
+                </Pill>
               </div>
               <div class="mono muted" style="font-size: var(--fs-xs); margin-top: 4px;">
                 #{{ chOf(sel).channelNo ?? '—' }} · {{ chOf(sel).group }} · stream-id <span style="color: var(--text-1);">{{ sel.id }}</span>
@@ -358,6 +353,7 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <div class="k">Video</div><div class="v mono">{{ selTech?.video }}</div>
                 <div class="k">Audio</div><div class="v mono">{{ selTech?.audio }}</div>
                 <div class="k">Container</div><div class="v mono">{{ selTech?.container }}</div>
+                <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(sel.delivery) }}</div>
                 <div class="k">Resolution</div><div class="v mono">{{ selTech?.resolution }}<template v-if="selTech?.fps"> @ {{ selTech?.fps }}fps</template></div>
                 <template v-if="selTech?.probed">
                   <div class="k">Pixel format</div><div class="v mono">{{ selTech.pixFmt ?? '—' }}</div>
@@ -424,24 +420,6 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
             </div>
           </div>
             </div>
-            <aside class="stream-detail-engine">
-              <div class="asd-railhd">
-                <Icon name="topology" :size="15" />
-                <h2>Video Engine Service</h2>
-                <span class="spacer" />
-                <span class="asd-cap">ENGINE // DECODE</span>
-              </div>
-              <ActiveStreamDiagram
-                v-if="engine.length"
-                :channel="chOf(sel)" :stream="sel" :engines="engine"
-                :clients="clients" :gpu="SYSTEM_STATS.gpu"
-              />
-              <div v-else class="asd-note">
-                <Icon name="tv" :size="22" />
-                <div class="asd-note-t">Served directly to the in-app player</div>
-                <div class="muted">HLS passthrough — no transcode engine for this stream.</div>
-              </div>
-            </aside>
           </div>
         </div>
       </div>
@@ -552,6 +530,7 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <div class="k">Video</div><div class="v mono">{{ viewTech?.video }}</div>
                 <div class="k">Audio</div><div class="v mono">{{ viewTech?.audio }}</div>
                 <div class="k">Container</div><div class="v mono">{{ viewTech?.container }}</div>
+                <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(viewStream.delivery) }}</div>
                 <div class="k">Resolution</div><div class="v mono">{{ viewTech?.resolution }}<template v-if="viewTech?.fps"> @ {{ viewTech?.fps }}fps</template></div>
                 <template v-if="viewTech?.probed">
                   <div class="k">Pixel format</div><div class="v mono">{{ viewTech.pixFmt ?? '—' }}</div>

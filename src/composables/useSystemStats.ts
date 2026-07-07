@@ -14,17 +14,12 @@ const RECONNECT_MS = 3000;
 // LivelineChart's deep watch fires per sample (same contract as useStreamStats' reactive bitrate series).
 export const cpuSeries = ref<number[]>([]);
 
-// Rolling GPU utilization% samples — same in-place contract as cpuSeries, drives the GPU Performance card's
-// liveline. Populated only while gpu.utilizationPct is reported; cleared when HW accel is off (gpu === null).
-export const gpuSeries = ref<number[]>([]);
-
-// Parallel per-sample arrival timestamps (epoch ms), kept LOCKSTEP with cpuSeries/gpuSeries (one stamp
-// pushed/shifted with each value). The LivelineChart anchors each point to its stable arrival time so the
-// 150s window scrolls smoothly against liveline's own clock; without them the bridge would re-derive every
-// point's time from a fresh Date.now() each render, snapping the whole line one sample-width per tick
-// (the liveline §7.1 "re-anchor" jitter — most visible on a full window, e.g. on Dashboard re-entry).
+// Parallel per-sample arrival timestamps (epoch ms), kept LOCKSTEP with cpuSeries (one stamp pushed/shifted
+// with each value). The LivelineChart anchors each point to its stable arrival time so the 150s window
+// scrolls smoothly against liveline's own clock; without them the bridge would re-derive every point's time
+// from a fresh Date.now() each render, snapping the whole line one sample-width per tick (the liveline §7.1
+// "re-anchor" jitter — most visible on a full window, e.g. on Dashboard re-entry).
 export const cpuTimes = ref<number[]>([]);
-export const gpuTimes = ref<number[]>([]);
 
 let ws: WebSocket | null = null;
 let refCount = 0;
@@ -37,14 +32,6 @@ function ingest(s: SystemStats): void {
     cpuSeries.value.push(s.cpu.usagePct); // skip the first-tick null (CPU needs a delta)
     cpuTimes.value.push(now);
     if (cpuSeries.value.length > SERIES_MAX) { cpuSeries.value.shift(); cpuTimes.value.shift(); }
-  }
-  if (s.gpu == null) {
-    if (gpuSeries.value.length) gpuSeries.value.length = 0; // HW accel off → drop the stale GPU series
-    if (gpuTimes.value.length) gpuTimes.value.length = 0;
-  } else if (s.gpu.utilizationPct != null) {
-    gpuSeries.value.push(s.gpu.utilizationPct);
-    gpuTimes.value.push(now);
-    if (gpuSeries.value.length > SERIES_MAX) { gpuSeries.value.shift(); gpuTimes.value.shift(); }
   }
 }
 
@@ -106,5 +93,5 @@ export function useSystemStats() {
     refCount = Math.max(0, refCount - 1);
     if (refCount === 0) disconnect();
   }
-  return { subscribe, release, cpuSeries, gpuSeries, cpuTimes, gpuTimes };
+  return { subscribe, release, cpuSeries, cpuTimes };
 }

@@ -14,10 +14,14 @@
 // CONFIG SOURCE: there is no NAMESERVER env any more. The IMPORT-TIME bootstrap (before Mongo connects)
 // applies the hardcoded DEFAULT_NAMESERVERS so the very first outbound fetch already has a working
 // resolver; the authoritative runtime value then lives in the `settings` singleton (nameservers +
-// dnsLogLevel). settings/applyDns.ts reads that doc and calls applyDnsSettings() after connect ('mongo')
+// logLevel). settings/applyDns.ts reads that doc and calls applyDnsSettings() after connect ('mongo')
 // and on every Settings PUT ('update'), so the dispatcher is re-installed live without a restart. Mongo is
 // kept OUT of this module (it imports first, before connect) — the Settings read is done by applyDns.ts.
 // (DEFAULT_NAMESERVERS comes from settings/translate.ts, which is side-effect-free: node:net + a type.)
+//
+// LOG LEVEL: the `logLevel` this module consumes is the ONE GLOBAL verbosity (formerly `dnsLogLevel`, now
+// repurposed as the master knob governing the whole app AND the Rust proxy engine). dns.ts is just one
+// CONSUMER of it — the DNS trace lines below are gated by the same level the Rust engine's lineage logs are.
 
 import { isIP } from 'node:net';
 import { Resolver } from 'node:dns';
@@ -164,6 +168,7 @@ export function applyDnsSettings(rawServers: string | null, logLevel: number, so
 // which on first provision is this same DEFAULT_NAMESERVERS written into the singleton by envDefaults()).
 applyDnsSettings(
   DEFAULT_NAMESERVERS,
-  Math.min(3, Math.max(1, Number(process.env.DNS_LOG_LEVEL) || 2)),
+  // Global log level from env (LOG_LEVEL, legacy DNS_LOG_LEVEL fallback) until the Mongo value takes over.
+  Math.min(3, Math.max(1, Number(process.env.LOG_LEVEL ?? process.env.DNS_LOG_LEVEL) || 2)),
   'env',
 );

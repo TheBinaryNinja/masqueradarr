@@ -18,7 +18,7 @@ import { Schema, model } from 'mongoose';
 export type LogLevel = 'info' | 'warn' | 'error';
 export type LogCategory =
   | 'dashboard' | 'active' | 'playlists' | 'epg-sources' | 'mapping' | 'history'
-  | 'users' | 'import' | 'settings' | 'api' | 'core' | 'mongodb';
+  | 'users' | 'import' | 'settings' | 'api' | 'core' | 'mongodb' | 'proxy';
 
 export interface LogDoc {
   ts: number; // epoch ms — the UI/sort/filter field (mirrors ViewSession.startedAt)

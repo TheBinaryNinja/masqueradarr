@@ -66,9 +66,11 @@ settingsRouter.put('/', async (req, res, next) => {
       await cascadePlaylistUrls($set.domain);
     }
 
-    // Re-apply the outbound-fetch DNS dispatcher when the nameserver(s) or trace level changed.
+    // Re-apply the outbound-fetch DNS dispatcher when the nameserver(s) or global log level changed. A
+    // logLevel change ALSO re-pushes the proxy-engine verbosity (applyDnsFromSettings → setProxyLogLevel),
+    // from where the Rust sidecar picks it up on its next flush — a live level change with no restart.
     // Best-effort — a re-apply hiccup must NOT fail the write (same contract as the domain cascade).
-    if ('nameservers' in $set || 'dnsLogLevel' in $set) {
+    if ('nameservers' in $set || 'logLevel' in $set) {
       try {
         await applyDnsFromSettings('update');
       } catch (err) {

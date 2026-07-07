@@ -75,62 +75,17 @@ function onResolution(res: string) {
   if (res !== props.ch.stream.res) putChannel({ stream: { res } });
 }
 
-// Live stream status — the server decides the B-Roll phase (establishing/buffer/failed) for the
-// channel and the proxy serves the matching slate; we poll it here to drive the status pill so the
-// drawer reflects what's actually playing instead of a hardcoded "stream live". See
-// GET /api/sources/:id/channel-status (restapi-sources.md).
-type Phase = 'live' | 'establishing' | 'buffer' | 'failed';
-const phase = ref<Phase | null>(null);
-const retry = ref(0);
-let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-// ffprobe-derived technical details. Seeded from the persisted snapshot (instant), then refreshed live from
-// GET /api/sources/:id/stream-details while the channel is live (the server probes ~every 10s — see
-// streamProbe.ts). See restapi-sources.md → "ffprobe stream monitoring".
+// Persisted per-channel technical snapshot. The deep ffprobe probe + its live poll (the removed
+// GET /api/sources/:id/{channel-status,stream-details}) were torn down with the video engine; the scheduled
+// channel probe (Settings → Advanced) now refreshes stream.status/stream.res on the doc, and the live decode
+// metadata (codec/res/…) is surfaced on Active Streams. Seeded from the doc; null → the tech rows show '—'.
 const details = ref<StreamProbe | null>(props.ch.stream.probe ?? null);
 
-async function pollDetails() {
-  const { streamEntryUrl } = props.ch;
-  const source = props.ch.origin || props.ch.source; // proxy source (mirror appPlayerProxyPath): imports route via 'direct'
-  if (!source || !streamEntryUrl) return;
-  try {
-    const res = await fetch(
-      `/api/sources/${source}/stream-details?channelId=${encodeURIComponent(streamEntryUrl)}`,
-    );
-    if (!res.ok) return;
-    const p = (await res.json()) as StreamProbe | null;
-    if (p) details.value = p; // keep the last good probe if the server hasn't probed yet (null)
-  } catch {
-    // best-effort
-  }
-}
-
-async function pollStatus() {
-  const { streamEntryUrl } = props.ch;
-  const source = props.ch.origin || props.ch.source; // proxy source (mirror appPlayerProxyPath): imports route via 'direct'
-  if (!source || !streamEntryUrl) return;
-  try {
-    const res = await fetch(
-      `/api/sources/${source}/channel-status?channelId=${encodeURIComponent(streamEntryUrl)}`,
-    );
-    if (!res.ok) return;
-    const s = (await res.json()) as { phase: Phase; retry: number };
-    phase.value = s.phase;
-    retry.value = s.retry ?? 0;
-    // Persist the realtime phase onto the doc when it changes (drawer open).
-    if (s.phase !== props.ch.stream.status) putChannel({ stream: { status: s.phase } });
-    // Refresh technical details once the channel is live (cheap in-memory read; server-side TTL'd).
-    if (s.phase === 'live') pollDetails();
-  } catch {
-    // best-effort — leave the last known phase
-  }
-}
-
-// Status chip driven by the PERSISTENT document field `ch.stream.status` (kept live by pollStatus, which
-// PUTs the polled phase onto the doc). The chip reads the stored value so it stays in sync with what's
-// persisted while still updating live.
+// Status chip: prefer the LIVE phase from telemetry (the rebuilt data plane drives it accurately while a
+// viewer — including this drawer's embedded player — is watching), falling back to the PERSISTED status the
+// channel probe keeps fresh. No polling: the phase rides the shared /api/stream-stats WS (liveStream below).
 const statusChip = computed(() => {
-  switch (props.ch.stream.status) {
+  switch (liveStream.value?.phase ?? props.ch.stream.status) {
     case 'live':
       return { tone: 'good', dot: 'good', pulse: false, label: 'Stream Live' };
     case 'establishing':
@@ -186,25 +141,19 @@ const bitrateTarget = computed(() => liveStream.value?.bitrate || 1);
 watch(
   () => props.ch.id,
   () => {
-    phase.value = null;
-    retry.value = 0;
     details.value = props.ch.stream.probe ?? null;
     displayName.value = props.ch.tvg_name;
     channelNo.value = props.ch.channelNo ?? '';
     group.value = props.ch.group ?? '';
     tvgId.value = props.ch.tvg_id ?? '';
     streamUrl.value = props.ch.streamEntryUrl ?? '';
-    pollStatus();
   },
 );
 
 onMounted(() => {
   subscribe();
-  pollStatus();
-  pollTimer = setInterval(pollStatus, 2000);
 });
 onBeforeUnmount(() => {
-  if (pollTimer) clearInterval(pollTimer);
   release();
 });
 </script>

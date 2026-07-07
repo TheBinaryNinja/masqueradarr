@@ -1977,31 +1977,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .logs-btn-ico .dot { position: absolute; top: -1px; right: -1px; }
 
-/* Scheduled ffprobe-sweep live indicator (sidebar, above View logs) */
-.probe-status {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding: 9px 12px;
-  border-radius: var(--radius-s);
-  background: var(--bg-1);
-  border: 1px solid var(--hairline);
-}
-.probe-status-head {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: var(--fs-sm);
-  color: var(--text-1);
-}
-.probe-status-body {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-.probe-status-body .pill { max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.probe-status-body .mono { font-size: 11px; color: var(--text-3); }
 
 /* Realtime logs bottom drawer */
 .logs-drawer-wrap { position: fixed; inset: 0; z-index: 88; pointer-events: none; }
@@ -2136,6 +2111,22 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-radius: 3px 3px 0 0;
   min-height: 2px;
 }
+/* Two-sided stacked buffer bar: upstream (bottom) + client (top) segments fill a height-animated stack. */
+.buf-bar-stack {
+  width: 100%;
+  min-height: 2px;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  border-radius: 3px 3px 0 0;
+  overflow: hidden;
+}
+.buf-seg { width: 100%; }
+.buf-seg-upstream { background: oklch(0.66 0.12 220); }  /* cyan — upstream (stream-side) */
+.buf-seg-client { background: oklch(0.74 0.15 65); }     /* amber — client (viewer-side) */
+.buf-legend { display: inline-flex; align-items: center; gap: 4px; }
+.buf-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
+.buf-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
 
 /* Buffering timeline */
 .buf-timeline {
@@ -2164,6 +2155,9 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: 0 0 8px oklch(0.7 0.18 25 / 0.6);
   cursor: default;
 }
+/* Timeline event colored by side: upstream stays red (stream outage); client is amber (viewer-side). */
+.buf-event--upstream { background: var(--bad); box-shadow: 0 0 8px oklch(0.7 0.18 25 / 0.6); }
+.buf-event--client { background: oklch(0.74 0.15 65); box-shadow: 0 0 8px oklch(0.74 0.15 65 / 0.55); }
 
 .logs-scroll-btn {
   position: absolute;
@@ -2516,13 +2510,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   min-height: 0;
 }
 
-/* ── Stream detail → "Video Engine Service" rail + per-stream architecture diagram ─────────────────────── */
-/* The detail panel splits below its (full-width) header: existing content on the left, the diagram rail right. */
-/* The split fills the detail panel height; both columns stretch to equal height (no dead space at the bottom). */
+/* ── Stream detail layout ─────────────────────────────────────────────────────────────────────────────── */
+/* The detail content column. The per-stream "Video Engine Service" diagram rail was removed in the
+   video-engine teardown, so the split is now a single full-width column. */
 .stream-detail-body { height: 100%; min-height: 0; box-sizing: border-box; }
 .stream-detail-split {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) clamp(400px, 46%, 600px);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
   align-items: stretch;
   flex: 1;
@@ -2531,92 +2525,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .stream-detail-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; }
 /* The Connected sessions card sizes to its content (header + the capped, self-scrolling sessions table);
    it must NOT absorb leftover height — the panel does not scroll, the sessions table is the only scroller. */
-.stream-detail-engine {
-  background: none;
-  border: none;
-  border-radius: var(--radius-m);
-  padding: 10px;
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  min-height: 0;
-}
-.asd-railhd { display: flex; align-items: center; gap: 8px; color: var(--text-1); }
-.asd-railhd h2 { font-size: 13px; font-weight: 600; margin: 0; }
-.asd-railhd .ico { color: var(--accent); }
-
-/* The diagram surface — flattened to blend into the app (no panel fill/border/dot-grid); the node cards
-   are the instruments. overflow:auto is kept as an internal safety valve so a large diagram never forces
-   the (non-scrolling) detail panel to grow. */
-.asd-canvas {
-  flex: 1;
-  min-height: 360px;
-  border: none;
-  border-radius: var(--radius-m);
-  overflow: auto;
-  background: none;
-}
-.asd-stage { position: relative; }
-
-/* Diagram node cards reuse .enc-node/.enc-row/.enc-args; these add the icon header + realtime strip. */
-.asd-card { gap: 5px; padding: 9px 11px; }
-.asd-hd { display: flex; align-items: center; gap: 7px; font-size: var(--fs-sm); font-weight: 600; color: var(--text-0); }
-.asd-hd .ico { color: var(--hue, var(--accent)); }
-
-/* Video Engine card: a borderless table of two label→value pairs per row (left = config
-   Mode/Output/Preset/HW, right = live FPS/BitRate/DropFrames/Speed). The table only enforces column
-   alignment — no visible borders; labels left-aligned, values right-aligned/justified in their column. */
-.asd-engtbl { width: 100%; border-collapse: collapse; font-size: 11px; table-layout: fixed; }
-.asd-engtbl td { padding: 1px 0; line-height: 1.45; border: none; vertical-align: baseline; }
-.asd-engtbl .asd-k { color: var(--text-2); white-space: nowrap; width: 1%; padding-right: 8px; }
-.asd-engtbl .asd-v {
-  color: var(--text-0); font-weight: 600; text-align: right;
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-}
-/* Gap between the left pair's value column and the right pair's label column. */
-.asd-engtbl td.asd-k + td.asd-v { padding-right: 14px; }
-.asd-engtbl tr td:last-child { padding-right: 0; }
-
-/* Engine realtime strip: live state chip + speed/fps/bitrate + uptime. */
-.asd-rt { display: flex; align-items: center; gap: 8px; margin-top: 1px; }
-.asd-rt-m { font-size: 10px; color: var(--text-1); font-variant-numeric: tabular-nums; }
-.asd-state {
-  font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; font-weight: 700;
-  padding: 1px 6px; border-radius: 999px;
-  background: color-mix(in oklab, var(--accent) 18%, transparent); color: var(--accent-hi);
-}
-.asd-state.live { background: color-mix(in oklab, var(--good) 20%, transparent); color: var(--good); }
-.asd-state.buffer { background: color-mix(in oklab, var(--warn) 22%, transparent); color: var(--warn); }
-.asd-state.failed { background: color-mix(in oklab, var(--bad) 22%, transparent); color: var(--bad); }
-
-/* Dashed connector variant (the playlist reference loop). Color comes from the inline stroke
-   (the Playlist card accent); this class only carries the dash pattern + opacity. */
-.asd-dash { stroke-dasharray: 5 5; opacity: 0.55; }
-
-/* Bidirectional connector arrowheads. Each marker's <path> sets its own fill (a design token matching
-   the connector's stroke) inline, so DON'T set fill here — a CSS fill would override that per-marker
-   color. Markers ignore the parent path's opacity, so give them their own to match the 0.5 connector. */
-.enc-svg .asd-arrow path { opacity: 0.7; }
-
-/* Passthrough note — shown when the selected stream has no transcode engine (in-app / relay). */
-.asd-note {
-  flex: 1;
-  border: 1px dashed var(--hairline-strong);
-  border-radius: var(--radius-m);
-  padding: 28px 18px;
-  text-align: center;
-  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px;
-  color: var(--text-2);
-}
-.asd-note .ico { color: var(--text-3); }
-.asd-note-t { font-weight: 600; color: var(--text-1); font-size: var(--fs-sm); }
-
-/* Narrow viewports: stack the diagram rail below the detail content, full-width. */
-@media (max-width: 1100px) {
-  .stream-detail-split { grid-template-columns: 1fr; }
-  .stream-detail-engine { position: static; }
-}
-
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -2804,80 +2712,3 @@ svg.ico.epg-glow { filter: drop-shadow(0 0 6px oklch(0.78 0.16 150 / 0.55)); }
 .divider { height: 1px; background: var(--hairline); margin: 8px 0; }
 .spacer { flex: 1; }
 
-/* ── Encoder Diagram (Settings → Advanced → Video Configuration) ──────────────────────────────── */
-/* Split-pane: the Advanced settings stay live on the left; the diagram fills the space to the right. */
-.settings-split { display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
-.settings-split > .settings-col { flex: 0 0 clamp(520px, 38%, 760px); max-width: 760px; min-width: 0; }
-.settings-split > .enc-diagram { flex: 1 1 360px; min-width: 320px; }
-
-/* The diagram panel pins to the top of the scroll area; its canvas scrolls internally. */
-.enc-diagram {
-  position: sticky;
-  top: var(--topbar-h);       /* pin under the overlay topbar (pin position unchanged from before) */
-  display: flex;
-  flex-direction: column;
-  max-height: calc(100vh - 132px);
-  padding: 14px;
-  overflow: hidden;
-}
-.enc-hd { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
-.enc-canvas {
-  flex: 1;
-  overflow: auto;
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-m);
-  /* faint technical dot-grid */
-  background:
-    radial-gradient(circle at 1px 1px, var(--hairline) 1px, transparent 0) 0 0 / 22px 22px,
-    var(--bg-0);
-}
-.enc-state { padding: 48px; text-align: center; font-size: var(--fs-sm); }
-.enc-stage { position: relative; }
-.enc-svg { position: absolute; inset: 0; pointer-events: none; overflow: visible; }
-.enc-conn { fill: none; stroke-width: 2; opacity: 0.5; }
-
-/* Nodes are absolutely positioned over the connector layer; --hue carries the per-config color + glow. */
-.enc-node {
-  position: absolute;
-  box-sizing: border-box;
-  background: var(--bg-1);
-  border: 1px solid var(--hairline);
-  border-radius: var(--radius-m);
-  padding: 10px 12px;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.enc-node-config {
-  border-color: color-mix(in oklab, var(--hue) 45%, var(--hairline));
-  box-shadow: 0 0 22px color-mix(in oklab, var(--hue) 22%, transparent),
-              inset 0 0 0 1px color-mix(in oklab, var(--hue) 14%, transparent);
-}
-.enc-node-pl {
-  border-left: 3px solid var(--hue);
-  box-shadow: 0 0 16px color-mix(in oklab, var(--hue) 12%, transparent);
-}
-.enc-node-hd { display: flex; align-items: center; gap: 8px; }
-.enc-kind { font-size: var(--fs-sm); font-weight: 700; letter-spacing: -0.01em; }
-.enc-badge {
-  font-size: 9px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-3);
-  border: 1px solid var(--hairline); border-radius: 4px; padding: 1px 5px;
-}
-.enc-pl-name { font-size: var(--fs-sm); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.enc-id { font-size: 10px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.enc-rows { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
-.enc-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-size: 11px; }
-.enc-row > span { color: var(--text-2); }
-.enc-row > b { color: var(--text-0); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 62%; }
-.enc-args {
-  margin-top: auto; font-size: 10px; color: var(--text-2);
-  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-  border-top: 1px solid var(--hairline); padding-top: 6px;
-}
-
-/* Narrow viewports: let the diagram wrap under the settings instead of squeezing both. */
-@media (max-width: 1100px) {
-  .settings-split > .settings-col { flex-basis: 100%; }
-  .enc-diagram { position: static; max-height: 70vh; }
-}

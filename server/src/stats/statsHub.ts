@@ -2,22 +2,25 @@
 //
 // Two responsibilities, both keeping streamTelemetry source-agnostic and DB-free:
 //   1. Builds the DISPLAY snapshot — resolves each active channel's telemetry to a real channelId
-//      (PlaylistChannel), attaches the live phase (streamState) + ffprobe quality (streamProbe), and formats
-//      bytes/sec into Mbps + a human uptime. Served by GET /api/active-streams AND pushed over the WS.
+//      (PlaylistChannel), attaches the live phase (streamState), and formats bytes/sec into Mbps + a human
+//      uptime. Served by GET /api/active-streams AND pushed over the WS. The codec/audio/container/resolution/
+//      fps fields are the MANIFEST-DECLARED decode metadata (the ffprobe-free successor to the removed probe):
+//      the Rust data plane parses each proxied manifest (#EXT-X-STREAM-INF + container hint), streamTelemetry
+//      stores it per channel, and this layer humanizes it (avc1→H.264, mp4a→AAC, fmp4→fMP4, 1920x1080→1080p).
+//      `probe` stays null — the deep ffprobe technical snapshot is not rebuilt.
 //   2. WebSocket fan-out on /api/stream-stats — pushes the active-streams snapshot every BROADCAST_MS (only
 //      while ≥1 client is connected) plus one-shot buffer-event frames, and persists a ViewSession row when
 //      the telemetry core reports a closed viewer session.
 //
-// Mirrors routes/sources.ts → makePersistProbe: the core invokes injected sinks; the DB access lives here.
+// The core invokes injected sinks; the DB access (ViewSession persistence) lives here.
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, onSessionClose, onBufferEvent, type ClosedSession } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo } from '../sources/core/streamTelemetry.js';
+import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
-import { probeFor } from '../sources/core/streamProbe.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { ViewSession } from '../models/ViewSession.js';
-import type { StreamProbe } from '../models/StreamSession.js';
 import { resolveGeo } from '../geoip/geoip.js';
 
 const BROADCAST_MS = 2500;
@@ -67,6 +70,10 @@ export interface DisplayStream {
   peakViewers: number;
   watchers: string[]; // distinct usernames watching (anonymous viewers omitted; never carries the token)
   viewersByPlayer: { appPlayer: number; externalPlayer: number }; // viewer split by player kind (in-app vs external IPTV client)
+  // The wire format ACTUALLY being served now (distinct from the requested outputFormat + from the `container`
+  // decode label): 'ts' = one continuous raw MPEG-TS socket (tsmux engaged), 'hls' = segmented HLS (incl. a
+  // Raw-TS request that fell back for an AES/fMP4/unreachable upstream), 'mixed' = both at once. See streamTelemetry.
+  delivery: 'hls' | 'ts' | 'mixed';
   bitrate: number; // Mbps — per-viewer stream bitrate
   bandwidth: number; // Mbps — total egress across all viewers
   bytesTotal: number;
@@ -75,7 +82,7 @@ export interface DisplayStream {
   container: string | null;
   resolution: string | null;
   fps: number | null;
-  probe: (StreamProbe & { probedAt: string }) | null;
+  probe: null; // was the ffprobe technical snapshot — always null after the video-engine teardown
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -107,10 +114,15 @@ function humanUptime(ms: number): string {
   return `${h}h ${min % 60}m`;
 }
 
-function resolutionLabel(probe: (StreamProbe & { probedAt: string }) | null): string | null {
-  if (!probe) return null;
-  if (probe.video.height) return `${probe.video.height}p`;
-  return probe.video.resolution;
+/** Humanize a channel's merged manifest decode metadata into the DisplayStream decode fields. */
+function decodeFields(m: MediaInfo | null): Pick<DisplayStream, 'codec' | 'audio' | 'container' | 'resolution' | 'fps'> {
+  return {
+    codec: humanVideoCodec(m?.codecs ?? null),
+    audio: humanAudioCodec(m?.codecs ?? null),
+    container: humanContainer(m?.container ?? null),
+    resolution: humanResolution(m?.resolution ?? null),
+    fps: parseFps(m?.frameRate ?? null),
+  };
 }
 
 /** Build the live Active Streams snapshot (resolved + quality-annotated). Served by REST and the WS. */
@@ -124,7 +136,7 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
     if (!channelId) continue; // a channel with no PlaylistChannel row (shouldn't happen for a real play)
     activeKeys.add(r.channelKey);
     const { phase, status } = displayPhase(r.channelKey, phaseFor(r.channelKey).phase, now);
-    const probe = probeFor(r.channelKey);
+    const decode = decodeFields(mediaFor(r.channelKey));
     out.push({
       id: channelId,
       channelId,
@@ -137,15 +149,18 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       peakViewers: r.peakViewers,
       watchers: r.watchers,
       viewersByPlayer: r.viewersByPlayer,
+      delivery: r.delivery,
       bitrate: mbps(r.bitrateBps),
       bandwidth: mbps(r.egressBps),
       bytesTotal: r.bytesTotal,
-      codec: probe?.video.codec ?? null,
-      audio: probe?.audio.codec ?? null,
-      container: probe?.container ?? null,
-      resolution: resolutionLabel(probe),
-      fps: probe?.video.fps ?? null,
-      probe,
+      // Manifest-declared decode metadata (humanized). Null until the channel's first manifest declares it —
+      // e.g. a media-playlist-only upstream that carries no #EXT-X-STREAM-INF has null codec/resolution/fps.
+      codec: decode.codec,
+      audio: decode.audio,
+      container: decode.container,
+      resolution: decode.resolution,
+      fps: decode.fps,
+      probe: null, // the deep ffprobe technical snapshot is not rebuilt (video-engine teardown)
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
@@ -160,7 +175,6 @@ async function persistSession(s: ClosedSession): Promise<void> {
   try {
     const channelId = await resolveChannelId(s.source, s.entryUrl);
     if (!channelId) return;
-    const probe = probeFor(s.channelKey);
     // bytes*8 / ms  =  bits per millisecond  =  kbps.
     const avgBitrate = s.durationMs > 0 ? Math.round((s.bytesTotal * 8) / s.durationMs) : 0;
     const rebufRatio = s.durationMs > 0 ? s.rebufferMs / s.durationMs : 0;
@@ -186,8 +200,8 @@ async function persistSession(s: ClosedSession): Promise<void> {
       durationMs: s.durationMs,
       bytesTotal: s.bytesTotal,
       avgBitrate,
-      resolution: resolutionLabel(probe),
-      codec: probe?.video.codec ?? null,
+      resolution: null,
+      codec: null,
       bufferCount: s.bufferCount,
       rebufferMs: s.rebufferMs,
       bufferEvents: s.bufferEvents,
@@ -250,10 +264,10 @@ let timer: ReturnType<typeof setInterval> | null = null;
 export function startStatsHub(): void {
   if (timer) return;
   onSessionClose((s) => void persistSession(s));
-  onBufferEvent((channelKey, source, entryUrl, phase, at) => {
+  onBufferEvent((channelKey, source, entryUrl, phase, at, side) => {
     void (async () => {
       const channelId = await resolveChannelId(source, entryUrl);
-      broadcast({ type: 'buffer-event', channelId, channelKey, phase, at });
+      broadcast({ type: 'buffer-event', channelId, channelKey, phase, at, side });
     })();
   });
   timer = setInterval(() => {

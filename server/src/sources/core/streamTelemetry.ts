@@ -35,16 +35,26 @@ const RATE_WINDOW_MS = 15_000;
 // Dispatcharr 60s client TTL. `lastSeen` is refreshed on every byte write, so a steadily-streaming socket
 // never hits it.
 const SOCKET_IDLE_MS = 60_000;
+// Client-side buffering inference (BUF): a viewer whose SMOOTHED download rate (currentRate) sustains below
+// this fraction of the channel's DECLARED bitrate can't keep up → a client-experienced rebuffer. Conservative
+// (a live HLS client pulls ≈ the bitrate; a real shortfall drops well under) with a debounce to ignore a
+// single slow segment. Skipped entirely when the channel declares no bandwidth (media-playlist-only upstream).
+const CLIENT_SHORTFALL_RATIO = 0.85;
+const CLIENT_BUFFER_MIN_MS = 6_000; // shortfall must persist at least this long before it counts as buffering
 
 export interface BufferEvent {
   at: number; // ms epoch when the buffering interval began
   phase: 'buffer' | 'failed';
   ms: number; // duration of the interval (filled in when it clears; 0 while open)
+  // Which edge the interval was observed on: 'upstream' = phase-derived (the Rust data plane's upstream
+  // outcome, streamState); 'client' = Node edge-inferred (this viewer's download rate fell below the declared
+  // bitrate). Both count toward bufferCount/rebufferMs/QoE; History renders them as two series.
+  side: 'upstream' | 'client';
 }
 
 // Which player produced a stream session: the in-app slide-out HLS player (appPlayer, the /api/v1 mount) or a
 // third-party IPTV client app — TiviMate/Kodi/VLC/… (externalPlayer, the /api/ext mount routed through the
-// configurable ffmpeg/VLC engine). The proxy derives it from the request mount and threads it here so Active
+// configurable ffmpeg engine). The proxy derives it from the request mount and threads it here so Active
 // Streams / History can classify every viewer + session.
 export type PlayerType = 'appPlayer' | 'externalPlayer';
 
@@ -66,6 +76,10 @@ interface ClientConn {
   bufferEvents: BufferEvent[];
   bufferCount: number;
   rebufferMs: number;
+  // Open-interval pointers so a two-sided close fills the RIGHT event (not a fragile "last with ms 0"):
+  upstreamOpen: BufferEvent | null; // the client's currently-open UPSTREAM interval (set while its channel buffers)
+  clientOpen: BufferEvent | null; // the client's currently-open CLIENT-side interval (its own rate shortfall)
+  clientShortfallSince: number | null; // when the current sustained-shortfall streak began (client-side debounce)
   // True for a raw-TS socket-bound client (externalTsEngine.ts): its lifetime is bound to the held-open HTTP
   // socket, not to poll recency. tick() exempts it from the 30s recency sweep — it is reaped on socket-close
   // (noteSocketViewerClose) with a 60s no-byte backstop (SOCKET_IDLE_MS). Undefined ⇒ a normal HLS poll client.
@@ -106,7 +120,14 @@ export interface ClosedSession {
 }
 
 type SessionCloseCb = (s: ClosedSession) => void;
-type BufferEventCb = (channelKey: string, source: string, entryUrl: string, phase: 'buffer' | 'failed', at: number) => void;
+type BufferEventCb = (
+  channelKey: string,
+  source: string,
+  entryUrl: string,
+  phase: 'buffer' | 'failed',
+  at: number,
+  side: 'upstream' | 'client',
+) => void;
 
 const sessionCloseCbs: SessionCloseCb[] = [];
 const bufferEventCbs: BufferEventCb[] = [];
@@ -181,6 +202,9 @@ export function noteViewer(
       bufferEvents: [],
       bufferCount: 0,
       rebufferMs: 0,
+      upstreamOpen: null,
+      clientOpen: null,
+      clientShortfallSince: null,
     };
     clients.set(key, c);
   } else {
@@ -216,6 +240,45 @@ export function noteBytes(ip: string, ua: string, bytes: number, username?: stri
   c.bytes += bytes;
   c.segments += 1;
   c.lastSeen = Date.now();
+}
+
+// ── Manifest-declared decode metadata (DEC) ────────────────────────────────────────────────────────────
+// The Rust data plane parses each proxied manifest for its declared decode metadata (master
+// #EXT-X-STREAM-INF resolution/codecs/frame-rate; media-playlist container hint) — the ffprobe-free
+// successor to the removed streamProbe monitor. A master poll and a variant/media poll are SEPARATE fetches,
+// each carrying only what it declares, so we MERGE per channel (non-null overwrite): the master fills
+// resolution/codecs/frame-rate, the variant fills the container. statsHub reads + humanizes this for the
+// Active Streams "Technical // Decode" card. Bounded by distinct channels + in-memory like streamState.states
+// (no sweep; resets on restart).
+
+export interface MediaInfo {
+  resolution: string | null; // raw "1920x1080" (humanized to "1080p" by statsHub)
+  codecs: string | null; // raw HLS CODECS list e.g. "avc1.640028,mp4a.40.2" (split + humanized by statsHub)
+  frameRate: string | null; // raw "60" / "29.970"
+  container: string | null; // 'fmp4' | 'ts'
+  bandwidth: number | null; // declared BANDWIDTH (bits/sec) — the client-side buffering reference (BUF)
+}
+
+const mediaByChannel = new Map<string, MediaInfo>(); // channelKey → merged decode metadata
+
+/** Merge manifest-declared decode metadata for a channel (only the non-null fields of this poll overwrite). */
+export function noteMedia(source: string, entryUrl: string, m: MediaInfo): void {
+  const key = streamKey(source, entryUrl);
+  const cur = mediaByChannel.get(key);
+  if (!cur) {
+    mediaByChannel.set(key, { ...m });
+    return;
+  }
+  if (m.resolution !== null) cur.resolution = m.resolution;
+  if (m.codecs !== null) cur.codecs = m.codecs;
+  if (m.frameRate !== null) cur.frameRate = m.frameRate;
+  if (m.container !== null) cur.container = m.container;
+  if (m.bandwidth !== null) cur.bandwidth = m.bandwidth;
+}
+
+/** The merged decode metadata for a channel (null until its first manifest declares anything). */
+export function mediaFor(channelKey: string): MediaInfo | null {
+  return mediaByChannel.get(channelKey) ?? null;
 }
 
 // ── Socket-liveness hooks (the raw-TS fork) ───────────────────────────────────────────────────────────
@@ -264,6 +327,9 @@ export function noteSocketViewerOpen(
     bufferEvents: [],
     bufferCount: 0,
     rebufferMs: 0,
+    upstreamOpen: null,
+    clientOpen: null,
+    clientShortfallSince: null,
     socketBound: true,
   });
   // Mirror noteViewer: ensure the channel aggregate exists so phase/peak tracking covers TS-only channels.
@@ -293,7 +359,18 @@ export function noteSocketViewerClose(connId: number): void {
 // ── Tick: rolling rates, buffering-event detection, stale sweep ───────────────────────────────────────
 
 function closeSession(c: ClientConn, endedAt: number): void {
-  // Finalise any still-open buffering interval against this client.
+  // Finalise any still-open buffering interval against this client (a client swept mid-buffer still records the
+  // partial duration) — fill each open event's ms + fold it into rebufferMs before the session is snapshotted.
+  if (c.upstreamOpen) {
+    c.upstreamOpen.ms = Math.max(0, endedAt - c.upstreamOpen.at);
+    c.rebufferMs += c.upstreamOpen.ms;
+    c.upstreamOpen = null;
+  }
+  if (c.clientOpen) {
+    c.clientOpen.ms = Math.max(0, endedAt - c.clientOpen.at);
+    c.rebufferMs += c.clientOpen.ms;
+    c.clientOpen = null;
+  }
   const durationMs = Math.max(0, endedAt - c.connectedAt);
   const s: ClosedSession = {
     source: c.source,
@@ -341,8 +418,10 @@ export function tick(): void {
     c.currentRate = dt > 0 ? Math.max(0, (c.bytes - oldest.bytes) / dt) : 0;
   }
 
-  // 2. Observe each active channel's phase; a live→buffer/failed transition opens a buffering interval
-  //    (attributed to every bound client); a return to live closes it and adds the duration to rebufferMs.
+  // 2. UPSTREAM buffering (side:'upstream') — phase-derived. A channel's live→buffer/failed transition opens an
+  //    interval on every currently-bound client (tracked by c.upstreamOpen so the close fills the right event);
+  //    a return to live closes it and folds the duration into rebufferMs. Observe-only in P1 — it becomes
+  //    "corrected" once P3/RSL adds upstream retry/failover.
   for (const [channelKey, ch] of channels) {
     const bound = clientsOnChannel(channelKey);
     if (bound.length === 0 && ch.bufferingSince === null) {
@@ -356,11 +435,13 @@ export function tick(): void {
       ch.bufferingSince = now;
       for (const c of bound) {
         c.bufferCount += 1;
-        c.bufferEvents.push({ at: now, phase, ms: 0 });
+        const ev: BufferEvent = { at: now, phase, ms: 0, side: 'upstream' };
+        c.bufferEvents.push(ev);
+        c.upstreamOpen = ev;
       }
       for (const cb of bufferEventCbs) {
         try {
-          cb(channelKey, ch.source, ch.entryUrl, phase, now);
+          cb(channelKey, ch.source, ch.entryUrl, phase, now, 'upstream');
         } catch {
           /* ignore */
         }
@@ -368,13 +449,51 @@ export function tick(): void {
     } else if (!buffering && ch.bufferingSince !== null) {
       const dur = now - ch.bufferingSince;
       for (const c of bound) {
-        c.rebufferMs += dur;
-        const last = c.bufferEvents[c.bufferEvents.length - 1];
-        if (last && last.ms === 0) last.ms = dur;
+        if (c.upstreamOpen) {
+          c.upstreamOpen.ms = dur;
+          c.rebufferMs += dur;
+          c.upstreamOpen = null;
+        }
       }
       ch.bufferingSince = null;
     }
     ch.lastPhase = phase;
+  }
+
+  // 2b. CLIENT-side buffering (side:'client') — Node edge-inference, per client: a viewer whose smoothed
+  //     download rate stays below CLIENT_SHORTFALL_RATIO of its channel's DECLARED bitrate for at least
+  //     CLIENT_BUFFER_MIN_MS can't keep up. Skipped when the channel declares no bandwidth (media-playlist-only
+  //     upstream) or the client's rate window hasn't warmed (< RATE_WINDOW_MS after connect).
+  for (const c of clients.values()) {
+    const declared = mediaByChannel.get(c.channelKey)?.bandwidth ?? null; // bits/sec
+    const warmed = now - c.connectedAt >= RATE_WINDOW_MS;
+    const shortfall =
+      declared !== null && declared > 0 && warmed && c.currentRate * 8 < declared * CLIENT_SHORTFALL_RATIO;
+    if (shortfall) {
+      if (c.clientShortfallSince === null) c.clientShortfallSince = now;
+      // Open once the shortfall has persisted past the debounce (dates the interval to when it began).
+      if (c.clientOpen === null && now - c.clientShortfallSince >= CLIENT_BUFFER_MIN_MS) {
+        c.bufferCount += 1;
+        const ev: BufferEvent = { at: c.clientShortfallSince, phase: 'buffer', ms: 0, side: 'client' };
+        c.bufferEvents.push(ev);
+        c.clientOpen = ev;
+        for (const cb of bufferEventCbs) {
+          try {
+            cb(c.channelKey, c.source, c.entryUrl, 'buffer', c.clientShortfallSince, 'client');
+          } catch {
+            /* ignore */
+          }
+        }
+      }
+    } else {
+      // Recovered — close any open client interval and reset the shortfall streak.
+      if (c.clientOpen) {
+        c.clientOpen.ms = now - c.clientOpen.at;
+        c.rebufferMs += c.clientOpen.ms;
+        c.clientOpen = null;
+      }
+      c.clientShortfallSince = null;
+    }
   }
 
   // 3. Sweep stale clients → close their session. HLS poll clients go stale past the 30s recency TTL; raw-TS
@@ -399,6 +518,11 @@ export interface ChannelTelemetry {
   peakViewers: number;
   watchers: string[]; // distinct, sorted usernames among the bound viewers (anonymous viewers omitted)
   viewersByPlayer: { appPlayer: number; externalPlayer: number }; // viewer split by player kind (a channel can be mixed)
+  // The EFFECTIVE wire format being served RIGHT NOW (not the requested outputFormat): 'ts' iff a raw-TS
+  // socket viewer is bound (tsmux engaged), 'hls' for poll viewers — INCLUDING a Raw-TS request the sidecar
+  // couldn't honor (AES/fMP4/unreachable → tsmux fell back to the HLS rewrite), 'mixed' when both are present.
+  // Derived from socketBound, so a fallback is directly observable: request 'ts', still see 'hls' ⇒ it fell back.
+  delivery: 'hls' | 'ts' | 'mixed';
   egressBps: number; // total bytes/sec across all viewers
   bitrateBps: number; // per-viewer stream bitrate (egress / viewers)
   bytesTotal: number;
@@ -426,6 +550,12 @@ export function snapshotRaw(): ChannelTelemetry[] {
       appPlayer: group.filter((c) => c.playerType === 'appPlayer').length,
       externalPlayer: group.filter((c) => c.playerType === 'externalPlayer').length,
     };
+    // Effective delivery: a raw-TS client holds one socket (socketBound); an HLS client polls. A Raw-TS request
+    // the sidecar couldn't honor (AES/fMP4/unreachable → tsmux fell back) serves segmented HLS, so its viewer
+    // polls and reads 'hls' here — which is exactly what surfaces the fallback in the UI.
+    const hasSocket = group.some((c) => c.socketBound);
+    const hasPoll = group.some((c) => !c.socketBound);
+    const delivery: 'hls' | 'ts' | 'mixed' = hasSocket && hasPoll ? 'mixed' : hasSocket ? 'ts' : 'hls';
     out.push({
       source: group[0].source,
       entryUrl: group[0].entryUrl,
@@ -434,6 +564,7 @@ export function snapshotRaw(): ChannelTelemetry[] {
       peakViewers: Math.max(ch?.peakViewers ?? 0, group.length),
       watchers,
       viewersByPlayer,
+      delivery,
       egressBps,
       bitrateBps: egressBps / group.length,
       bytesTotal,

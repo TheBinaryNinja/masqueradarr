@@ -1,6 +1,6 @@
 // System maintenance resource (admin-only; mounted at /api/system) — the Settings → Data danger-zone /
 // maintenance actions: rebuild MongoDB indexes across every collection, and reset the workspace (wipe the
-// content collections, keep users/settings/videoconfigs). Thin handlers per restapi.md conventions.
+// content collections, keep users/settings). Thin handlers per restapi.md conventions.
 
 import { Router } from 'express';
 import type { Model } from 'mongoose';
@@ -13,6 +13,7 @@ import { EpgChannel } from '../models/EpgChannel.js';
 import { Program } from '../models/Program.js';
 import { Cronjob } from '../models/Cronjob.js';
 import { PlaylistAuth } from '../models/PlaylistAuth.js';
+import { ProxyConfig } from '../models/ProxyConfig.js';
 import { bootInitSources } from '../sources/seed.js';
 import { removeAllCronjobs } from '../scheduler/index.js';
 import { logger } from '../sources/core/logger.js';
@@ -41,9 +42,10 @@ systemRouter.post('/rebuild-indexes', async (_req, res, next) => {
   }
 });
 
-// The content collections wiped by a workspace reset. KEEPS users, settings, videoconfigs (and sessions —
-// so the admin performing the reset stays logged in). Order is not significant (each is an independent drop).
-const RESET_COLLECTIONS: { name: string; model: Model<any> }[] = [
+// The content collections wiped by a workspace reset. KEEPS users, settings, and the (Default) proxy config
+// (and sessions — so the admin performing the reset stays logged in). An optional `filter` narrows the wipe;
+// order is not significant (each is an independent drop).
+const RESET_COLLECTIONS: { name: string; model: Model<any>; filter?: Record<string, unknown> }[] = [
   { name: 'playlists', model: Playlist },
   { name: 'epgsources', model: EpgSource },
   { name: 'playlistchannels', model: PlaylistChannel },
@@ -52,16 +54,18 @@ const RESET_COLLECTIONS: { name: string; model: Model<any> }[] = [
   { name: 'programs', model: Program },
   { name: 'cronjobs', model: Cronjob },
   { name: 'playlistauths', model: PlaylistAuth },
+  // Per-playlist Custom proxy overrides only (their playlists are gone) — KEEP the Default (app) config, like settings.
+  { name: 'proxyconfigs', model: ProxyConfig, filter: { _id: { $ne: 'app' } } },
 ];
 
 // Danger zone: permanently delete all playlists, EPG data, mappings, schedules and auth — back to an empty
-// workspace. Keeps users + settings + video configs. Drops in-memory cron instances then re-runs the
+// workspace. Keeps users + settings. Drops in-memory cron instances then re-runs the
 // idempotent boot init (reconciles indexes, re-seeds the settings singleton).
 systemRouter.post('/reset-workspace', async (_req, res, next) => {
   try {
     const cleared: Record<string, number> = {};
-    for (const { name, model } of RESET_COLLECTIONS) {
-      const result = await model.deleteMany({});
+    for (const { name, model, filter } of RESET_COLLECTIONS) {
+      const result = await model.deleteMany(filter ?? {});
       cleared[name] = result.deletedCount ?? 0;
     }
     removeAllCronjobs();

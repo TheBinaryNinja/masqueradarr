@@ -15,8 +15,12 @@ import { Schema, model } from 'mongoose';
 //                    hardcoded DEFAULT_NAMESERVERS ('8.8.8.8,8.8.4.4' — Google public DNS; the NAMESERVER
 //                    env was dropped); thereafter Mongo is authoritative. Read + re-applied live by dns.ts
 //                    (settings/applyDns.ts) after connect and on every change. null/blank = OS resolver.
-//   - dnsLogLevel  — 1|2|3 verbosity for the DNS/outbound-fetch traceability dns.ts emits to the logs
-//                    (1 = lifecycle + issues only; 2 = + per-host resolution deduped; 3 = every lookup).
+//   - logLevel     — the GLOBAL 1|2|3 log verbosity for the whole app AND the Rust proxy engine (formerly
+//                    `dnsLogLevel`, repurposed into the one master knob): 1 = lifecycle + issues only;
+//                    2 = + milestones (incl. per-host DNS resolution, deduped); 3 = full per-stage/hop/segment
+//                    lineage (every DNS lookup + the Rust data plane's whole resolve→fetch→repackage→serve
+//                    path). Read + re-applied live by dns.ts (settings/applyDns.ts) and pushed to the Rust
+//                    sidecar (settings/applyDns.ts → proxy/logLevel.ts, echoed back on the internal seam).
 //   - maxmind*     — MaxMind GeoLite2 web-service credentials (account id + license key) used by
 //                    geoip/geoip.ts to resolve viewer IPs → geolocation on the Active Streams + History
 //                    screens. The license key is a SECRET: never returned by the API (the GET /api/settings
@@ -38,7 +42,7 @@ export interface SettingsDoc {
   offset: string; // DST-aware UTC offset ('±HHMM') derived from `timezone` on save; stamped onto programs + emitted in the guide
   darkMode: boolean;
   nameservers: string | null; // comma-separated outbound-fetch resolver IP(s); null/blank = OS resolver (DEFAULT_NAMESERVERS 8.8.8.8,8.8.4.4 seeds first boot)
-  dnsLogLevel: number; // 1|2|3 DNS traceability verbosity (default 2)
+  logLevel: number; // GLOBAL 1|2|3 log verbosity — app + Rust proxy engine (default 2; formerly dnsLogLevel)
   maxmindAccountId: string | null; // MaxMind GeoLite2 web-service account id (null = geo disabled)
   maxmindLicenseKey: string | null; // MaxMind GeoLite2 license key — SECRET, redacted by translate.ts on read
   user: Record<string, unknown>; // placeholder for per-user settings; opaque object for now
@@ -56,7 +60,7 @@ const SettingsSchema = new Schema<SettingsDoc>(
     offset: { type: String, required: true, default: '+0000' },
     darkMode: { type: Boolean, required: true, default: true },
     nameservers: { type: String, default: null },
-    dnsLogLevel: { type: Number, required: true, default: 2 },
+    logLevel: { type: Number, required: true, default: 2 },
     maxmindAccountId: { type: String, default: null },
     maxmindLicenseKey: { type: String, default: null },
     user: { type: Schema.Types.Mixed, default: {} },

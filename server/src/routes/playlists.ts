@@ -4,6 +4,7 @@ import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { SourceChannel } from '../models/SourceChannel.js';
 import { EpgSource, type EpgSourceDoc } from '../models/EpgSource.js';
 import { PlaylistAuth } from '../models/PlaylistAuth.js';
+import { ProxyConfig } from '../models/ProxyConfig.js';
 import { User } from '../models/User.js';
 import { Cronjob, cronjobId } from '../models/Cronjob.js';
 import { removeCronjob } from '../scheduler/index.js';
@@ -15,9 +16,6 @@ import { cascadeDeleteCustomPlaylist } from './customPlaylists.js';
 import { cascadeDeleteEpgSource } from './epgSources.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { logger } from '../sources/core/logger.js';
-import { VideoConfig } from '../models/VideoConfig.js';
-import { ensureVideoConfig } from '../videoconfig/provision.js';
-import { invalidateVideoConfig, invalidatePlaylistConfig } from '../videoconfig/runtime.js';
 
 export const playlistsRouter = Router();
 
@@ -203,19 +201,10 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
       }
       $set.auto = body.auto;
     }
-    // Per-playlist externalPlayer video config selector: 'default' (use the global 'app' config) or
-    // 'app_<thisPlaylistId>' (a Custom config). Restricted to those two shapes so a client can't aim a playlist
-    // at an arbitrary videoconfig doc; the Custom doc's create/delete lifecycle is handled below (server-owned).
-    if (body.videoconfig !== undefined) {
-      if (body.videoconfig !== 'default' && body.videoconfig !== `app_${req.params.id}`) {
-        return res.status(400).json({ error: "videoconfig ('default' | 'app_<playlistId>') required" });
-      }
-      $set.videoconfig = body.videoconfig;
-    }
     if (!Object.keys($set).length) {
       return res
         .status(400)
-        .json({ error: 'no editable fields provided (name, state, endpoint, url, interval, auto, videoconfig)' });
+        .json({ error: 'no editable fields provided (name, state, endpoint, url, interval, auto)' });
     }
 
     // Canonicalize the persisted `url` against the effective endpoint (defense-in-depth — the filename and
@@ -273,22 +262,6 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
       } catch (err) {
         logger.warn('m3u', `reconcile after playlist edit failed: ${(err as Error).message}`);
       }
-    }
-
-    // Per-playlist videoconfig lifecycle (server-authoritative; idempotent on the NEW value, so it self-heals):
-    //   • Custom ('app_<id>') → ensure the config doc exists (seeded as a copy of the global Default).
-    //   • Default ('default') → delete any Custom doc.
-    // Then drop the resolver caches so the change takes effect on the next stream (not just within the 5s TTL).
-    if (typeof $set.videoconfig === 'string') {
-      const customId = `app_${doc.id}`;
-      try {
-        if ($set.videoconfig === customId) await ensureVideoConfig(customId);
-        else await VideoConfig.deleteOne({ _id: customId });
-      } catch (err) {
-        logger.warn('settings', `videoconfig lifecycle for ${doc.id} failed: ${(err as Error).message}`);
-      }
-      invalidateVideoConfig(customId);
-      invalidatePlaylistConfig(doc.id);
     }
 
     res.json({ ...doc, channels: await channelCountFor(doc) });
@@ -406,7 +379,7 @@ async function cascadeDeleteBuiltinPlaylist(p: {
   if (bound) await cascadeDeleteEpgSource(bound.id);
 
   // 3. Drop the built-in playlist + every artifact it owns. The channel stores (editable + pristine), its
-  //    per-playlist Custom videoconfig (+ resolver caches), its sync/compose cronjobs, its auth session row,
+  //    sync/compose cronjobs, its auth session row,
   //    and its id from every user's access lists. A built-in is hosted Global OR Custom (the endpoint can be
   //    switched), so its id may live in allowedPlaylists (Global) OR allowedCustomPlaylists (Custom) — pull
   //    from BOTH (a built-in id can only be in one; pulling both is harmless and prevents a stale grant from
@@ -414,15 +387,13 @@ async function cascadeDeleteBuiltinPlaylist(p: {
   await Playlist.deleteOne({ id: p.id });
   await PlaylistChannel.deleteMany({ source: src });
   await SourceChannel.deleteMany({ source: src });
-  await VideoConfig.deleteOne({ _id: `app_${p.id}` });
-  invalidateVideoConfig(`app_${p.id}`);
-  invalidatePlaylistConfig(p.id);
   for (const targetType of ['playlist', 'playlist-m3u'] as const) {
     const jobId = cronjobId(targetType, p.id);
     await Cronjob.deleteOne({ _id: jobId });
     removeCronjob(jobId);
   }
   await PlaylistAuth.deleteOne({ _id: src });
+  await ProxyConfig.deleteOne({ _id: `app_${p.id}` }); // its Custom proxy override (if any) — same stale-reuse guard as the access lists
   await User.updateMany({}, { $pull: { allowedPlaylists: p.id, allowedCustomPlaylists: p.id } });
 
   // 4. Rebuild/prune the exports this playlist contributed to (best-effort — a compose hiccup must never fail

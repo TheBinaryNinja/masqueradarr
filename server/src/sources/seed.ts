@@ -13,7 +13,6 @@
 import { Playlist } from '../models/Playlist.js';
 import { PlaylistAuth } from '../models/PlaylistAuth.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
-import { StreamSession } from '../models/StreamSession.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { SourceChannel, type SourceChannelDoc } from '../models/SourceChannel.js';
 import { EpgSource } from '../models/EpgSource.js';
@@ -22,6 +21,7 @@ import { getSource } from './registry.js';
 import { buildSource } from './core/buildSource.js';
 import { logger } from './core/logger.js';
 import { seedSettings } from './seedSettings.js';
+import { seedProxyConfig } from '../proxyconfig/seed.js';
 import { envDefaults } from '../settings/translate.js';
 import { toPlaylistChannelDoc } from './toPlaylistChannel.js';
 import type { SourceAdapter } from './types.js';
@@ -452,6 +452,18 @@ export async function syncLive(
   return { report, live: result.live, count: result.count };
 }
 
+// One-time, idempotent migration: the settings singleton's `dnsLogLevel` field was renamed to `logLevel`
+// (repurposed from DNS-only trace verbosity into the ONE global log level governing the app + the Rust proxy
+// engine). $rename carries the operator's existing value across so an upgraded install keeps its chosen level
+// (rather than silently resetting to the default 2). Matched by `dnsLogLevel: {$exists:true}` so it no-ops on
+// a fresh DB or an already-migrated doc; if both fields somehow exist, $rename keeps the old value (intended).
+async function migrateLogLevelField(): Promise<void> {
+  await Settings.updateOne(
+    { _id: SETTINGS_ID, dnsLogLevel: { $exists: true } },
+    { $rename: { dnsLogLevel: 'logLevel' } },
+  );
+}
+
 /**
  * Run once at startup. Reconcile indexes (repurposed collections), run the idempotent data migrations, and
  * seed the singleton settings doc from env. It NO LONGER registers a shell Playlist row for every source —
@@ -484,17 +496,13 @@ export async function bootInitSources(): Promise<void> {
     logger.warn('seed', `playlistauths index reconcile failed (continuing): ${(err as Error).message}`);
   }
 
-  // `streamsessions` is now 1:1 with the streaming channel: one row per channel, UPSERTED under a
-  // deterministic `_id` = PlaylistChannel._id (StreamSessionDoc). Reconcile to that shape: (1) drop legacy
-  // append-only rows that still carry an auto ObjectId `_id` so they can't linger as duplicates of the new
-  // deterministic rows (raw driver query so Mongoose doesn't cast `_id` to String; idempotent — no ObjectId
-  // `_id`s remain after the first run); (2) syncIndexes() drops the stale `order`/{channelId,capturedAt}
-  // indexes and builds {capturedAt:-1}. Idempotent + non-fatal.
+  // Video-engine teardown cleanup: drop any stale `probe-all` cronjobs left from the removed ffprobe sweep
+  // (its Settings UI is gone, so a lingering schedule would otherwise error on every tick with no way to
+  // delete it). Idempotent + non-fatal. Runs before startScheduler() so a stale job never gets registered.
   try {
-    await StreamSession.collection.deleteMany({ _id: { $type: 'objectId' } });
-    await StreamSession.syncIndexes();
+    await Cronjob.deleteMany({ targetType: 'probe-all' });
   } catch (err) {
-    logger.warn('seed', `streamsessions reconcile failed (continuing): ${(err as Error).message}`);
+    logger.warn('seed', `probe-all cronjob cleanup failed (continuing): ${(err as Error).message}`);
   }
 
   // One-time source-type/endpoint casing normalization (idempotent; non-fatal). Rewrites any persistent
@@ -546,12 +554,29 @@ export async function bootInitSources(): Promise<void> {
     logger.warn('seed', `epg-xml cronjob purge failed (continuing): ${(err as Error).message}`);
   }
 
+  // Rename the settings singleton's legacy `dnsLogLevel` → `logLevel` (idempotent; no-op on a fresh/migrated
+  // DB). Runs BEFORE the settings seed + the post-connect applyDnsFromSettings('mongo') read so the operator's
+  // existing verbosity is preserved under the new field name. Non-fatal.
+  try {
+    await migrateLogLevelField();
+  } catch (err) {
+    logger.warn('seed', `logLevel field migration failed (continuing): ${(err as Error).message}`);
+  }
+
   // Seed the singleton settings doc from env defaults (non-fatal) — a later on-demand provision (the Add
   // Playlist "Built-In" option → ensureShellRow) reads the provisioned `domain` for the playlist `url`.
   try {
     await seedSettings();
   } catch (err) {
     logger.warn('seed', `settings seed failed (continuing): ${(err as Error).message}`);
+  }
+
+  // Seed the (Default) proxy-config singleton (app) from env defaults (non-fatal) — the durable video engine's
+  // knob set. Per-playlist Custom rows (app_<playlistId>) are created on demand, not seeded here. [CFG]
+  try {
+    await seedProxyConfig();
+  } catch (err) {
+    logger.warn('seed', `proxy config seed failed (continuing): ${(err as Error).message}`);
   }
 
   // NOTE: built-in source playlists are NO LONGER auto-registered here. They are provisioned ON DEMAND when

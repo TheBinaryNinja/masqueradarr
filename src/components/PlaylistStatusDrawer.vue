@@ -5,10 +5,11 @@ import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import Toggle from './Toggle.vue';
 import FrequencyBuilder from './FrequencyBuilder.vue';
-import VideoConfigPanel from './VideoConfigPanel.vue';
+import ProxyConfigPanel from './ProxyConfigPanel.vue';
 import { type Channel, type Playlist, type CronFrequency, type CronJob, CRON_JOBS, reloadCronjobs } from '../data';
 import { domain, timezone } from '../composables/useSettings';
 import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/useSchedule';
+import { customConfigExists, createCustomFromDefault, deleteCustomConfig } from '../composables/useProxyConfig';
 
 const props = defineProps<{ playlist: Playlist; channels: Channel[] }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'updated', patch: Partial<Playlist>): void }>();
@@ -18,6 +19,31 @@ const baseDomain = computed(() => domain.value.replace(/\/$/, ''));
 // A "clone" (user-composed custom playlist, source==='clone') is custom-endpoint only and has no sync/compose
 // schedule (interval 'none'): the global endpoint option and the schedule builders are hidden for it.
 const isClone = computed(() => props.playlist.source === 'clone');
+
+// ── Per-playlist (Custom) proxy config (CFG/UICFG) ─────────────────────────────────────────────────────
+// The video engine applies the (Default) config to every playlist unless this playlist has its own override,
+// keyed app_<playlist.id> — which === the ?pl the composed M3U stamps for its channels (m3u/serialize.ts).
+// Toggling ON seeds the override as a copy of the current Default; toggling OFF deletes it (reverts to Default).
+const proxyConfigId = computed(() => `app_${props.playlist.id}`);
+const customProxy = ref(false);
+const proxyBusy = ref(false);
+
+async function setCustomProxy(on: boolean): Promise<void> {
+  if (proxyBusy.value) return;
+  proxyBusy.value = true;
+  try {
+    const ok = on
+      ? await createCustomFromDefault(proxyConfigId.value)
+      : await deleteCustomConfig(proxyConfigId.value);
+    if (ok) customProxy.value = on;
+  } finally {
+    proxyBusy.value = false;
+  }
+}
+
+onMounted(async () => {
+  customProxy.value = await customConfigExists(proxyConfigId.value);
+});
 
 // ── Automatic cron pickers (the shared FrequencyBuilder, same as the EPG ScheduleEditorDrawer) ──────────
 // Two independent jobs for the (Default) source playlist's source id (id === source), distinguished by
@@ -254,19 +280,6 @@ function setMode(m: 'global' | 'custom') {
   save({ endpoint: m, url: hostedUrl.value });
 }
 
-// ── Per-playlist Video Configuration (externalPlayer engine) ───────────────────────────────────────────
-// Default = use the global 'app' config from Settings; Custom = a per-playlist 'app_<id>' config edited inline
-// below (the embedded bare VideoConfigPanel). The SERVER owns the 'app_<id>' doc lifecycle (create on Custom /
-// delete on Default) on the playlist PUT, so the field is all the client persists. External IPTV clients only.
-const customConfigId = computed(() => `app_${props.playlist.id}`);
-const videoConfigMode = ref<'default' | 'custom'>(
-  props.playlist.videoconfig && props.playlist.videoconfig !== 'default' ? 'custom' : 'default',
-);
-function setVideoConfigMode(m: 'default' | 'custom') {
-  videoConfigMode.value = m;
-  save({ videoconfig: m === 'custom' ? customConfigId.value : 'default' });
-}
-
 let pathTimer: ReturnType<typeof setTimeout> | null = null;
 function onCustomPath(v: string) {
   customPath.value = v;
@@ -379,36 +392,19 @@ function onCustomPath(v: string) {
 
         <div class="divider" />
 
-        <!-- ④ Per-playlist Video Configuration (externalPlayer engine): Default (global app config) vs Custom. -->
+        <!-- ④ Video proxy engine (Custom per-playlist override) -->
         <div class="form-row">
-          <div class="field-lbl">Video Configuration | Playlist</div>
-          <div style="display: grid; gap: 8px;">
-            <label class="row" style="gap: 10px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer;"
-                   :style="videoConfigMode === 'default' ? 'border-color: var(--accent); background: var(--accent-soft);' : ''">
-              <input type="radio" name="videoconfig-mode" :checked="videoConfigMode === 'default'" @change="setVideoConfigMode('default')" />
-              <div style="flex: 1;">
-                <div style="font-weight: 500; font-size: var(--fs-sm);">Default</div>
-                <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
-                  Uses the app-wide Default video configuration set on the Settings screen (applies to every
-                  playlist set to Default). Governs how this playlist's channels are served to <b>external</b>
-                  IPTV clients only — the in-app player is unaffected.
-                </div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <div style="flex: 1;">
+              <div class="field-lbl" style="margin: 0;">Video proxy engine</div>
+              <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
+                {{ customProxy ? 'Custom engine settings for this playlist.' : 'Using the default engine settings.' }}
               </div>
-            </label>
-            <label class="row" style="gap: 10px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer; align-items: flex-start;"
-                   :style="videoConfigMode === 'custom' ? 'border-color: var(--accent); background: var(--accent-soft);' : ''">
-              <input type="radio" name="videoconfig-mode" :checked="videoConfigMode === 'custom'" @change="setVideoConfigMode('custom')" style="margin-top: 4px;" />
-              <div style="flex: 1;">
-                <div style="font-weight: 500; font-size: var(--fs-sm);">Custom</div>
-                <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
-                  A configuration just for this playlist (seeded from the current Default). For HDHomeRun playlists
-                  the engine does not apply, so a custom config is inert there.
-                </div>
-              </div>
-            </label>
+            </div>
+            <Toggle :on="customProxy" @change="setCustomProxy" />
           </div>
-          <div v-if="videoConfigMode === 'custom'" style="margin-top: 12px;">
-            <VideoConfigPanel :config-id="customConfigId" bare />
+          <div v-if="customProxy" style="margin-top: 12px; padding: 12px; border: 1px solid var(--hairline); border-radius: 8px;">
+            <ProxyConfigPanel :config-id="proxyConfigId" flat />
           </div>
         </div>
 

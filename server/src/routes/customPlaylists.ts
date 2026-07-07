@@ -10,12 +10,11 @@ import { logger } from '../sources/core/logger.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
 import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from './import.js';
-import { VideoConfig } from '../models/VideoConfig.js';
-import { invalidateVideoConfig, invalidatePlaylistConfig } from '../videoconfig/runtime.js';
 import { EpgSource } from '../models/EpgSource.js';
 import { EpgChannel } from '../models/EpgChannel.js';
 import { Program } from '../models/Program.js';
 import { Cronjob, cronjobId } from '../models/Cronjob.js';
+import { ProxyConfig } from '../models/ProxyConfig.js';
 import { removeCronjob } from '../scheduler/index.js';
 
 // "Clone" playlists — the user-composed custom playlists. A clone is a Playlist row with the literal
@@ -276,14 +275,11 @@ export async function cascadeDeleteCustomPlaylist(id: string, url: string): Prom
   const jobId = cronjobId('playlist', id);
   removeCronjob(jobId);
   await Cronjob.deleteOne({ _id: jobId });
+  await ProxyConfig.deleteOne({ _id: `app_${id}` }); // its Custom proxy override (if any) — keyed by the clone/playlist id (=== ?pl)
   await pruneCustomFile(url).catch((err) =>
     logger.warn('m3u', `prune after playlist delete failed: ${(err as Error).message}`),
   );
   await User.updateMany({}, { $pull: { allowedCustomPlaylists: id } });
-  // Drop any per-playlist Custom videoconfig doc (orphan cleanup) + its resolver caches.
-  await VideoConfig.deleteOne({ _id: `app_${id}` });
-  invalidateVideoConfig(`app_${id}`);
-  invalidatePlaylistConfig(id);
   logger.info('playlists', `deleted playlist ${id}`);
 }
 
