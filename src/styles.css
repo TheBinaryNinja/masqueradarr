@@ -893,17 +893,25 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 /* Playlist-detail sticky header: pin the toolbar (search/filter/view-switch) AND the table column
    headers to the top of the .screen scroll area while the channel rows scroll underneath. Scoped to
    .pl-detail-sticky so the shared .toolbar / .tbl thead classes stay un-sticky on other screens.
-   --pl-toolbar-h is the toolbar's fixed height (12px pad + 28px controls + 12px pad + 1px border) and
-   is the top offset the thead stacks below — keep it in sync if the toolbar padding/controls change. */
-.pl-detail-sticky { --pl-toolbar-h: 53px; }
+
+   Offsets: position:sticky is resolved against .screen's CONTENT box, so .screen's padding-top
+   (calc(var(--topbar-h) + var(--pad-x))) is ADDED to every `top` below. To land the toolbar flush under
+   the overlay topbar (at var(--topbar-h) from the viewport) we need top = var(--topbar-h) - padding-top
+   = -var(--pad-x); the thead then stacks var(--pl-toolbar-h) lower, i.e. var(--pl-toolbar-h) - var(--pad-x).
+   (A plain top:var(--topbar-h) double-counts the topbar and floats the block ~72px too low.)
+
+   --pl-toolbar-h is the toolbar's rendered height (12px pad + 34px tallest control + 12px pad + 1px
+   border = 59px). The toolbar is flex-nowrap with fixed-height controls (.input / .select select / .btn
+   are all 34px), so it's constant across densities — keep it in sync if the toolbar padding/controls change. */
+.pl-detail-sticky { --pl-toolbar-h: 59px; }
 .pl-detail-sticky .toolbar {
   position: sticky;
-  top: var(--topbar-h);            /* pin just under the overlay topbar */
+  top: calc(-1 * var(--pad-x));    /* flush under the overlay topbar (offsets .screen padding-top — see note) */
   z-index: 3;
   background: var(--bg-1);
 }
 .pl-detail-sticky .tbl thead th {
-  top: calc(var(--topbar-h) + var(--pl-toolbar-h));   /* stack below the sticky toolbar */
+  top: calc(var(--pl-toolbar-h) - var(--pad-x));   /* stack flush below the sticky toolbar */
   z-index: 2;
 }
 
