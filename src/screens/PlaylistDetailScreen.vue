@@ -555,6 +555,11 @@ async function doAppend() {
       </div>
       <div class="row" style="gap: 10px;">
         <template v-if="playlistSource && !isCustom">
+          <!-- Individual sync of THIS global playlist (syncNow → POST /api/sources/:source/sync), alongside the
+               cohort-wide Sync Global. -->
+          <Btn variant="ghost" icon="refresh" :disabled="syncing" @click="openOpModal('sync', { kind: 'custom', id: playlist.id, name: playlist.name }, () => syncNow())">
+            {{ syncing ? 'Syncing…' : 'Sync' }}
+          </Btn>
           <Btn variant="ghost" icon="refresh" :disabled="syncingGlobal" @click="openOpModal('sync', { kind: 'global' }, () => onSyncGlobal())">
             {{ syncingGlobal ? 'Syncing…' : 'Sync Global' }}
           </Btn>

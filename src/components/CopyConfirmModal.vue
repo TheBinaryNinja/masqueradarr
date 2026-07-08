@@ -22,6 +22,12 @@ const emit = defineEmits<{
 </script>
 
 <template>
+    <!-- Teleported to <body> so this overlay escapes the .modal (backdrop-filter + overflow:hidden) it may be
+         nested inside — e.g. the per-playlist "Get access" modal. Nested there, that ancestor becomes the
+         containing block for this position:fixed overlay (clipping it) and traps its z-index in a lower
+         stacking context; at <body> the fixed positioning + z-index:120 resolve against the viewport/root, so
+         it centers full-screen ABOVE the modal. Scoped styles + [data-theme] (on <html>) still apply. -->
+    <Teleport to="body">
     <div
         class="modal-bg copy-modal-bg"
         role="dialog"
@@ -75,6 +81,7 @@ const emit = defineEmits<{
             </div>
         </div>
     </div>
+    </Teleport>
 </template>
 
 <style scoped>

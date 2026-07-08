@@ -3,7 +3,7 @@ import { ref, computed, onMounted } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import AccessUrlTable, { type AccessUserRows } from './AccessUrlTable.vue';
-import { PLAYLISTS, reloadPlaylists } from '../data';
+import { PLAYLISTS, reloadPlaylists, type Playlist } from '../data';
 import { useToast } from '../composables/useToast';
 import {
     globalMemberIds,
@@ -13,20 +13,25 @@ import {
 } from '../composables/useUserAccess';
 import { USERS, ensureUsers, type User } from '../composables/useUsers';
 
-// ── "Get access" modal ──────────────────────────────────────────────────────────────────────────────────
-// Surfaces every user's personalized published URLs (M3U + EPG/Guide per playlist) ALL AT ONCE so an operator
-// can hand a user their links without opening the Users screen. Each user's rows come from the shared pure
-// buildPublishedGroups() (same derivation the Users screen uses), so the URLs match exactly. Admins are
-// unfiltered — they're synthesized as full access (every Global member + every custom) so their URLs are
-// available too. Reads the shared USERS singleton, so it reflects assignments made in the Assign-access modal
-// or the Users screen live.
+// ── Per-playlist "Get access" modal ─────────────────────────────────────────────────────────────────────
+// Scoped to ONE playlist (opened from that row's waffle menu): the published URLs (M3U + EPG/Guide) for THIS
+// playlist, one row per user who has access to it. URLs come from the shared pure buildPublishedGroups()
+// (the same derivation the Users screen / Dashboard use), filtered to the single group that matches this
+// playlist:
+//   • Global playlist → the Global union group (kind:'Global'). Every global playlist shares the SAME URL
+//     pair, so opening this from any global row lists the same URLs + everyone who holds global access.
+//   • Custom playlist → that playlist's own group (key `custom-<id>`).
+// Admins are synthesized as full access so their URLs appear too. Reads the shared USERS singleton, so it
+// reflects assignments made in the Assign-access modal or the Users screen live.
 
+const props = defineProps<{ playlist: Playlist }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 const { banner } = useToast();
 
 const loading = ref(false);
 const search = ref('');
-const onlyWithAccess = ref(true);
+
+const isGlobal = computed(() => props.playlist.endpoint === 'global');
 
 // Expand an admin to full access; a normal user maps 1:1 to its stored allow-lists.
 function toPublishedUser(u: User): PublishedUrlUser {
@@ -46,26 +51,22 @@ function toPublishedUser(u: User): PublishedUrlUser {
     };
 }
 
-// One AccessUserRows per user (computed inside the reactive scope so domain/PLAYLISTS changes track).
-const allRows = computed<AccessUserRows[]>(() =>
-    USERS.value.map((u) => ({
-        id: u._id,
-        username: u.username,
-        role: u.role,
-        groups: buildPublishedGroups(toPublishedUser(u)),
-    })),
-);
-
+// One AccessUserRows per user who has access to THIS playlist, carrying only the matching group so the table
+// shows a single URL pair per user. Users without the group (no access) are skipped.
 const rows = computed<AccessUserRows[]>(() => {
     const q = search.value.trim().toLowerCase();
-    return allRows.value.filter((r) => {
-        if (onlyWithAccess.value && r.groups.length === 0) return false;
-        if (q && !r.username.toLowerCase().includes(q)) return false;
-        return true;
-    });
+    const out: AccessUserRows[] = [];
+    for (const u of USERS.value) {
+        const groups = buildPublishedGroups(toPublishedUser(u));
+        const g = isGlobal.value
+            ? groups.find((x) => x.kind === 'Global')
+            : groups.find((x) => x.key === `custom-${props.playlist.id}`);
+        if (!g) continue; // no access to this playlist
+        if (q && !u.username.toLowerCase().includes(q)) continue;
+        out.push({ id: u._id, username: u.username, role: u.role, groups: [g] });
+    }
+    return out;
 });
-
-const withAccessCount = computed(() => allRows.value.filter((r) => r.groups.length > 0).length);
 
 onMounted(async () => {
     loading.value = true;
@@ -84,8 +85,8 @@ onMounted(async () => {
     <div class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="get-access-title" @click="emit('close')">
         <div class="modal get-modal" @click.stop>
             <div class="modal-hd">
-                <Icon name="link" :size="18" />
-                <h2 id="get-access-title">Get access</h2>
+                <Icon :name="isGlobal ? 'globe' : 'link'" :size="18" />
+                <h2 id="get-access-title">Get access · {{ isGlobal ? 'Global' : playlist.name }}</h2>
                 <span class="spacer" />
                 <Btn variant="ghost" size="sm" icon="x" @click="emit('close')" />
             </div>
@@ -96,19 +97,23 @@ onMounted(async () => {
                         <Icon name="search" :size="14" />
                         <input v-model="search" type="text" placeholder="Filter users…" />
                     </div>
-                    <label class="toggle-line">
-                        <input v-model="onlyWithAccess" type="checkbox" />
-                        <span class="muted font-xs">Only users with access</span>
-                    </label>
+                    <span class="muted font-xs get-hint">
+                        <template v-if="isGlobal">Shared <b>Global</b> URLs — the same across every global playlist.</template>
+                        <template v-else>Published URLs for <b>{{ playlist.name }}</b>.</template>
+                    </span>
                     <span class="spacer" />
-                    <span class="muted font-xs">{{ withAccessCount }} of {{ allRows.length }} users have access</span>
+                    <span class="muted font-xs">{{ rows.length }} user{{ rows.length === 1 ? '' : 's' }} with access</span>
                 </div>
 
                 <div v-if="loading" class="muted get-empty">Loading users…</div>
                 <div v-else-if="rows.length === 0" class="muted get-empty">
-                    No users to show. Assign access first, or clear the filter.
+                    No users have access to this playlist yet. Assign access first.
                 </div>
                 <AccessUrlTable v-else :rows="rows" />
+            </div>
+
+            <div class="modal-ft">
+                <Btn variant="primary" icon="check" @click="emit('close')">Done</Btn>
             </div>
         </div>
     </div>
@@ -116,31 +121,36 @@ onMounted(async () => {
 
 <style scoped>
 .get-modal {
-    width: min(1080px, 94vw);
+    width: min(920px, 94vw);
 }
+/* Header/search/footer sit OUTSIDE the scroll region; only the URL table scrolls (bounded below). */
 .get-body {
     gap: 12px;
-    max-height: 78vh;
+    max-height: 76vh;
+    min-height: 0;
 }
 .get-tools {
     display: flex;
     align-items: center;
     gap: 14px;
     flex-wrap: wrap;
+    flex: none;
 }
 .search-input {
     width: 260px;
     max-width: 100%;
 }
-.toggle-line {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    cursor: pointer;
+.get-hint {
+    min-width: 0;
 }
 .get-empty {
     padding: 28px;
     text-align: center;
+}
+/* Bound the table's OWN scroll container (where its sticky <thead> is anchored) so the sticky header keeps
+   working and the modal header/footer stay in view. */
+.get-body :deep(.access-wrap) {
+    max-height: 60vh;
 }
 .font-xs {
     font-size: 10.5px;

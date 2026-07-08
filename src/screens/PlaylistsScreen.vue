@@ -173,6 +173,10 @@ function toggleMenu(id: string): void {
 function rowMenuItems(p: Playlist): RowActionItem[] {
   const items: RowActionItem[] = [];
   if (p.source && !isCustom(p)) {
+    // Individual sync of THIS global playlist (syncRow's else branch → POST /api/sources/:source/sync, since a
+    // global playlist has id === source), shown ALONGSIDE the cohort-wide Sync Global. Distinct 'sync-one' key
+    // so its :key never collides with the 'sync' (Sync Global) item.
+    items.push({ key: 'sync-one', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
     items.push({ key: 'sync', icon: 'refresh', label: syncingGlobal.value ? 'Syncing…' : 'Sync Global', disabled: syncingGlobal.value, run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); } });
     items.push({ key: 'compose', icon: 'file', label: composingGlobal.value ? 'Composing…' : 'Compose Global', disabled: composingGlobal.value, run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); } });
   } else if (p.source === 'clone') {
@@ -185,15 +189,22 @@ function rowMenuItems(p: Playlist): RowActionItem[] {
     }
     items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
   }
+  // Admin-only per-playlist access surfaces, scoped to THIS playlist. `run` only sets a screen-level ref — the
+  // modals are rendered by the screen (the menu unmounts on select). A global row's Assign/Get shows the shared
+  // Global-union access/URLs; a custom row shows its own.
+  if (isAdmin.value) {
+    items.push({ key: 'assign', icon: 'lock', label: 'Assign access', run: () => { assignAccessPlaylist.value = p; } });
+    items.push({ key: 'getaccess', icon: 'link', label: 'Get access', run: () => { getAccessPlaylist.value = p; } });
+  }
   items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { void editRow(p); } });
   return items;
 }
 
-// Admin-only access surfaces — a Users × playlists assignment matrix ("Assign access") and a unified
-// published-URL view across every user ("Get access"). Both reuse the shared USERS singleton, so changes
-// here and on the Users screen stay in lockstep. Non-admins never see the buttons.
-const assignOpen = ref(false);
-const getOpen = ref(false);
+// Admin-only per-playlist access surfaces, opened from a row's waffle menu and scoped to THAT playlist
+// (null = closed). Owned/rendered by the screen — NOT the menu, which unmounts on select. Both reuse the
+// shared USERS singleton, so changes here and on the Users screen stay in lockstep.
+const assignAccessPlaylist = ref<Playlist | null>(null);
+const getAccessPlaylist = ref<Playlist | null>(null);
 
 // Merge a persisted edit (drawer PUT) back into the matching list row — no full refetch needed.
 function onPlaylistUpdated(patch: Partial<Playlist>): void {
@@ -210,8 +221,6 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
       <div class="toolbar">
         <SearchInput :value="''" @change="() => {}" placeholder="Search playlists" />
         <span class="spacer" />
-        <Btn v-if="isAdmin" variant="ghost" icon="lock" @click="assignOpen = true">Assign access</Btn>
-        <Btn v-if="isAdmin" variant="ghost" icon="link" @click="getOpen = true">Get access</Btn>
         <Btn variant="primary" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
       </div>
       <template v-for="g in groupedPlaylists" :key="g.key">
@@ -246,8 +255,8 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
       @close="statusOpen = false"
     />
 
-    <AssignAccessModal v-if="assignOpen" @close="assignOpen = false" />
-    <GetAccessModal v-if="getOpen" @close="getOpen = false" />
+    <AssignAccessModal v-if="assignAccessPlaylist" :playlist="assignAccessPlaylist" @close="assignAccessPlaylist = null" />
+    <GetAccessModal v-if="getAccessPlaylist" :playlist="getAccessPlaylist" @close="getAccessPlaylist = null" />
 
     <PlaylistOpModal
       v-if="opOpen && opScope && opRun"
