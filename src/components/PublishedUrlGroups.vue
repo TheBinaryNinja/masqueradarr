@@ -13,12 +13,17 @@ import type { PublishedGroup } from '../composables/usePublishedUrls';
 //
 //   layout='stack' — the admin vertical layout EXACTLY (cards stacked top-to-bottom). Default.
 //   layout='grid'  — a responsive horizontal grid of cards (the Dashboard layout).
+//   showUrls=false — header-only cards (name + kind badge, no URL rows/copy); used by the Users > Edit
+//                    "Playlist Access" list. Default true (the Dashboard shows the URLs).
 withDefaults(
     defineProps<{
         groups: PublishedGroup[];
         layout?: 'stack' | 'grid';
+        // false → header-only cards (name + kind badge, no URL rows / copy). The Users > Edit "Playlist Access"
+        // list uses this to show assignment only; the Dashboard keeps the default (URLs shown).
+        showUrls?: boolean;
     }>(),
-    { layout: 'stack' },
+    { layout: 'stack', showUrls: true },
 );
 
 const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } = useCopyConfirm();
@@ -26,13 +31,13 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
 
 <template>
     <div :class="['url-groups', layout]">
-        <div v-for="group in groups" :key="group.key" class="url-card">
+        <div v-for="group in groups" :key="group.key" class="url-card" :class="{ 'header-only': !showUrls }">
             <div class="url-card-hdr">
                 <Icon name="list" :size="13" />
                 <span class="url-card-name">{{ group.name }}</span>
                 <Pill :tone="group.kind === 'Global' ? 'cyan' : 'default'">{{ group.kind }}</Pill>
             </div>
-            <div class="url-field">
+            <div v-if="showUrls" class="url-field">
                 <span class="url-field-label">M3U</span>
                 <div class="url-row">
                     <div class="input mono url-input">
@@ -45,7 +50,7 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
                 </div>
                 <span class="muted font-xs">{{ group.m3u.hint }}</span>
             </div>
-            <div class="url-field">
+            <div v-if="showUrls" class="url-field">
                 <span class="url-field-label">EPG / Guide</span>
                 <div class="url-row">
                     <div class="input mono url-input">
@@ -121,6 +126,15 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     padding-bottom: 10px;
     border-bottom: 1px solid var(--hairline);
     color: var(--text-2);
+}
+/* header-only (Users > Edit "Playlist Access"): a bare playlist card — no URL rows — so drop the header's
+   divider + bottom padding that exist only to separate it from the fields below. */
+.url-card.header-only {
+    gap: 0;
+}
+.url-card.header-only .url-card-hdr {
+    padding-bottom: 0;
+    border-bottom: 0;
 }
 .url-card-name {
     font-weight: 600;

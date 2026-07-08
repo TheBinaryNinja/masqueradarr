@@ -310,9 +310,9 @@ function formatTime(s: string) {
                             <!-- Playlist assignment lives on the Playlists screen ("Assign access" modal); this
                                  drawer no longer edits allowedPlaylists / allowedCustomPlaylists. The user's
                                  existing access is preserved on save (formPlaylists/formCustomPlaylists carry it
-                                 untouched) and surfaced read-only via the Published URLs column. -->
+                                 untouched) and surfaced read-only via the Playlist Access column. -->
                             <div class="form-group access-note">
-                                <label>Playlist Access</label>
+                                <label>Assign access</label>
                                 <span class="muted font-xs">
                                     Assign which playlists this user can reach from the
                                     <strong>Playlists</strong> screen → <strong>Assign access</strong>. Admins
@@ -321,21 +321,21 @@ function formatTime(s: string) {
                             </div>
                         </div>
 
-                        <!-- Right column: the conditional, ordered published-URL list, GROUPED into one card per
-                             playlist. Global card first (only when Global is checked), then one card per checked
-                             Custom playlist. Each card's header carries the playlist name + a kind badge so the
-                             name is the grouping cue; its two compact rows ("M3U" / "EPG / Guide") share that
-                             header instead of repeating the name. Only meaningful once the user row exists (a
-                             brand-new user has no slug/streamToken yet). -->
+                        <!-- Right column: the "Playlist Access" list — the user's assigned playlists as bare
+                             cards (name + Global/Custom badge, no URL rows — :show-urls="false"), GROUPED one
+                             card per playlist. Global card first (only when the user holds the Global union),
+                             then one card per assigned Custom. Admins copy the actual per-playlist URLs from the
+                             Playlists screen → Get access. Only meaningful once the user row exists (a brand-new
+                             user has no slug/streamToken yet). -->
                         <div class="drawer-col">
                             <template v-if="editingUser">
-                                <label class="section-label">Published URLs</label>
+                                <label class="section-label">Playlist Access</label>
                                 <!-- Shared cards + copy + confirmation modal. Stack layout reproduces the
                                      drawer's vertical column; membership updates live as the access boxes
                                      toggle (publishedUrls is driven by the live form refs). -->
-                                <PublishedUrlGroups :groups="publishedUrls" layout="stack" />
+                                <PublishedUrlGroups :groups="publishedUrls" layout="stack" :show-urls="false" />
                                 <div v-if="publishedUrls.length === 0" class="muted text-xs new-user-hint">
-                                    No playlists selected — check Global or a custom playlist to publish its M3U and EPG URLs.
+                                    No playlist access yet — grant it from the <strong>Playlists</strong> screen → <strong>Assign access</strong>.
                                 </div>
                             </template>
                             <div v-else class="muted text-xs new-user-hint">
