@@ -250,6 +250,8 @@ jobs:
           {
             echo "## masqueradarr $release_title"
             echo
+            echo "### [masqueradarr](https://thebinaryninja.github.io/masqueradarr/) : Guides : Explanations : Documentation"
+            echo
             echo "Multi-arch (linux/amd64, linux/arm64) images on Docker Hub."
             echo
             echo "### \`$ns/masqueradarr\` (app + external Mongo)"
