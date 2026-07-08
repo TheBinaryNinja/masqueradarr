@@ -36,7 +36,7 @@
     </a>
 </div>
 
-### [GitHub pages: masqueradarr](https://thebinaryninja.github.io/masqueradarr/) : Guides : Explanations : Documentation
+### [masqueradarr](https://thebinaryninja.github.io/masqueradarr/) : Guides : Explanations : Documentation
 
 **masqueradarr** is a self-hosted IPTV aggregator. It pulls channel playlists (M3U) and guide
 data (EPG/XMLTV) from a range of online IPTV services, normalizes them into one catalog, and
