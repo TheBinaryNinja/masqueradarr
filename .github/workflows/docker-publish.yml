@@ -10,13 +10,14 @@
 #   app image    : docker/app.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr
 #   all-in-one   : docker/aio.Dockerfile -> <DOCKERHUB_USERNAME>/masqueradarr-aio
 #
-# Rolling-tag rule (case-insensitive, identical to the skill):
-#   version contains "dev"   -> also push :dev
-#   else contains "latest"   -> also push :latest
-#   else (plain, e.g. 2.1.0) -> push the exact version only
+# Tag rule (case-insensitive):
+#   version "…-latest" (e.g. 0.0.1-latest) -> push :0.0.1 (suffix stripped) + :latest
+#   version "…-dev"    (e.g. 0.0.1-dev)     -> push :0.0.1-dev (full)        + :dev
+#   plain version      (e.g. 2.1.0)         -> push :2.1.0 only
 #   dedupe: if the version literally IS "dev"/"latest", skip the rolling tag.
-# APP_VERSION build-arg is ALWAYS the full version, so :latest/:dev self-report the release.
-# A GitHub Release (with a deployable bundle) is created ONLY when the version contains "-latest".
+# APP_VERSION build-arg is ALWAYS the full input version, so images self-report the release.
+# A GitHub Release (with a deployable bundle) is created ONLY when the version contains "-latest",
+# tagged with the clean version (e.g. 0.0.1).
 
 name: Build & Publish Docker Images
 
@@ -40,6 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.derive.outputs.version }}
+      primary: ${{ steps.derive.outputs.primary }}
       rolling: ${{ steps.derive.outputs.rolling }}
       is_release: ${{ steps.derive.outputs.is_release }}
       release_title: ${{ steps.derive.outputs.release_title }}
@@ -76,13 +78,21 @@ jobs:
           clean="$(printf '%s' "$version" | sed -E 's/-(latest|dev)$//I')"
           release_title="v$clean"
 
+          # primary versioned Docker tag: strip a trailing -latest (0.0.1-latest -> 0.0.1);
+          # keep -dev / plain versions as-is.
+          case "$rolling" in
+            latest) primary="$clean" ;;
+            *)      primary="$version" ;;
+          esac
+
           {
             echo "version=$version"
+            echo "primary=$primary"
             echo "rolling=$rolling"
             echo "is_release=$is_release"
             echo "release_title=$release_title"
           } >> "$GITHUB_OUTPUT"
-          echo "Resolved: version='$version' rolling='${rolling:-<none>}' is_release=$is_release release_title='$release_title'"
+          echo "Resolved: version='$version' primary='$primary' rolling='${rolling:-<none>}' is_release=$is_release release_title='$release_title'"
 
   build:
     needs: prepare
@@ -173,9 +183,9 @@ jobs:
         run: |
           ns="${{ secrets.DOCKERHUB_USERNAME }}"
           repo="${{ matrix.repo }}"
-          version="${{ needs.prepare.outputs.version }}"
+          primary="${{ needs.prepare.outputs.primary }}"
           rolling="${{ needs.prepare.outputs.rolling }}"
-          args="-t $ns/$repo:$version"
+          args="-t $ns/$repo:$primary"
           [ -n "$rolling" ] && args="$args -t $ns/$repo:$rolling"
           echo "args=$args" >> "$GITHUB_OUTPUT"
 
@@ -195,9 +205,9 @@ jobs:
         run: |
           ns="${{ secrets.DOCKERHUB_USERNAME }}"
           repo="${{ matrix.repo }}"
-          version="${{ needs.prepare.outputs.version }}"
+          primary="${{ needs.prepare.outputs.primary }}"
           mkdir -p /tmp/out
-          docker buildx imagetools inspect "$ns/$repo:$version" --format '{{.Manifest.Digest}}' > /tmp/out/digest.txt
+          docker buildx imagetools inspect "$ns/$repo:$primary" --format '{{.Manifest.Digest}}' > /tmp/out/digest.txt
 
       - name: Upload manifest digest
         uses: actions/upload-artifact@v4
@@ -231,22 +241,22 @@ jobs:
       - name: Build deploy bundle
         run: |
           ns="${{ secrets.DOCKERHUB_USERNAME }}"
-          version="${{ needs.prepare.outputs.version }}"
+          primary="${{ needs.prepare.outputs.primary }}"
           mkdir -p bundle
           cp .env.example bundle/.env.example
           # Point the app service at the just-published image; drop the local build block
           # so the bundle is pull-only and deployable as-is.
-          IMG="$ns/masqueradarr:$version" \
+          IMG="$ns/masqueradarr:$primary" \
             yq '.services.masqueradarr.image = strenv(IMG) | del(.services.masqueradarr.build)' \
             docker-compose.yml > bundle/docker-compose.yml
 
       - name: Compose release notes
         run: |
           ns="${{ secrets.DOCKERHUB_USERNAME }}"
-          version="${{ needs.prepare.outputs.version }}"
+          primary="${{ needs.prepare.outputs.primary }}"
           rolling="${{ needs.prepare.outputs.rolling }}"
           release_title="${{ needs.prepare.outputs.release_title }}"
-          tagline="\`$version\`"; [ -n "$rolling" ] && tagline="$tagline, \`$rolling\`"
+          tagline="\`$primary\`"; [ -n "$rolling" ] && tagline="$tagline, \`$rolling\`"
           {
             echo "## masqueradarr $release_title"
             echo
@@ -274,13 +284,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          version="${{ needs.prepare.outputs.version }}"
+          primary="${{ needs.prepare.outputs.primary }}"
           release_title="${{ needs.prepare.outputs.release_title }}"
-          if gh release view "$version" >/dev/null 2>&1; then
-            gh release edit "$version" --title "$release_title" --notes-file release-notes.md
-            gh release upload "$version" bundle/docker-compose.yml bundle/.env.example --clobber
+          if gh release view "$primary" >/dev/null 2>&1; then
+            gh release edit "$primary" --title "$release_title" --notes-file release-notes.md
+            gh release upload "$primary" bundle/docker-compose.yml bundle/.env.example --clobber
           else
-            gh release create "$version" --target "$GITHUB_SHA" --title "$release_title" \
+            gh release create "$primary" --target "$GITHUB_SHA" --title "$release_title" \
               --notes-file release-notes.md \
               bundle/docker-compose.yml bundle/.env.example
           fi
