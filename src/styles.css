@@ -1116,6 +1116,42 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .ch-card .cbx-pos { position: absolute; top: 10px; right: 10px; opacity: 0; transition: opacity .12s; }
 .ch-card:hover .cbx-pos, .ch-card.selected .cbx-pos { opacity: 1; }
 
+/* ── Failover-group tree (channel table + grid) ─────────────────────────────────────────────────────────
+   Grouped channels render as a parent → child tree: the parent row carries a collapse chevron + a "N
+   backups" count + a waffle actions menu; its children sit directly beneath, indented with a connector.
+   The leading slot in the Channel cell is a fixed width across parent / child / ungrouped rows so the logos
+   stay column-aligned; only child rows add extra left padding to read as nested. */
+.ch-tree-toggle,
+.ch-tree-branch,
+.ch-tree-spacer {
+  flex: none;
+  width: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.ch-tree-toggle {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  height: 18px;
+  color: var(--text-2);
+  cursor: pointer;
+  border-radius: var(--radius-s);
+  transition: color .12s, background .12s;
+}
+.ch-tree-toggle:hover { color: var(--text-0); background: var(--bg-3); }
+.ch-tree-branch { color: oklch(0.74 0.09 250); opacity: 0.7; font-size: 13px; line-height: 1; }
+.ch-tree-row.is-child { padding-left: 22px; }
+/* Trailing per-row group-actions cell (waffle) — anchors the absolutely-positioned RowActionsMenu. */
+.ch-row-actions { display: inline-flex; align-items: center; gap: 4px; }
+
+/* Grid cards: child cards get a slate accent bar (matching the child pill tone), parent cards a subtle
+   violet accent; the footer wraps so the added count pill + tools never clip. */
+.ch-card-child { border-left: 2px solid oklch(0.74 0.09 250 / 0.5); }
+.ch-card-parent { border-left: 2px solid oklch(0.72 0.16 305 / 0.5); }
+.ch-card-foot { flex-wrap: wrap; gap: 6px; }
+
 /* Stats row */
 .stats {
   display: grid;

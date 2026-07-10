@@ -16,7 +16,7 @@ import ProgressBar from '../components/ProgressBar.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import GroupConfigModal from '../components/GroupConfigModal.vue';
-import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
+import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, disbandFailoverGroup, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
 import { bus } from '../composables/bus';
@@ -184,26 +184,75 @@ onBeforeUnmount(() => {
   bus.off('tvapp:failover-cascade', onFailoverCascade);
 });
 
-// ── Failover group modal ──────────────────────────────────────────────────
+// ── Failover group modal + tree ───────────────────────────────────────────
 const groupOpen = ref(false);
+// Failover-group tree state: which groups are collapsed (empty ⇒ all expanded), which parent row's actions
+// menu is open, and the parent whose group the Edit-group modal is scoped to (so the per-row "Edit group"
+// path doesn't clobber the multi-select `selected` set that the toolbar "Group" button relies on).
+const collapsedGroups = ref<Set<string>>(new Set());
+const openGroupMenuId = ref<string | null>(null);
+const editGroupAnchor = ref<Channel | null>(null);
+function isCollapsed(gid: string | null | undefined): boolean {
+  return !!gid && collapsedGroups.value.has(gid);
+}
+function toggleCollapse(gid: string | null | undefined) {
+  if (!gid) return;
+  const n = new Set(collapsedGroups.value);
+  if (n.has(gid)) n.delete(gid); else n.add(gid);
+  collapsedGroups.value = n;
+}
+
 function onGroupSaved(r: FailoverGroupResult) {
   const byId = new Map([r.parent, ...r.children].map((m) => [m.id, m]));
   channels.value = channels.value.map((c) => (byId.get(c.id) ?? c));
   banner({ text: `Failover group saved · ${r.children.length} backup${r.children.length === 1 ? '' : 's'} behind "${r.parent.tvg_name}"`, tone: 'good', icon: 'check' });
   groupOpen.value = false;
+  editGroupAnchor.value = null;
   selected.value = new Set();
   // The save can also mutate rows OUTSIDE the returned group: members dropped from it, foreign children
   // moved in (their donor group possibly auto-disbanded server-side). The merge above keeps the UI snappy;
   // this authoritative refetch reconciles everything else.
   void reload();
 }
-function onGroupDisbanded(gid: string) {
+// Local patch shared by the modal's Disband and the per-row "Disband group": clear the three failover
+// fields on every member of the group and drop any stale collapsed-state for it.
+function applyDisbandLocal(gid: string) {
   channels.value = channels.value.map((c) =>
     c.failoverGroupId === gid ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null } : c,
   );
+  if (collapsedGroups.value.has(gid)) {
+    const n = new Set(collapsedGroups.value);
+    n.delete(gid);
+    collapsedGroups.value = n;
+  }
+}
+function onGroupDisbanded(gid: string) {
+  applyDisbandLocal(gid);
   banner({ text: 'Failover group disbanded — children re-enter the export', tone: 'good', icon: 'trash' });
   groupOpen.value = false;
+  editGroupAnchor.value = null;
   selected.value = new Set();
+}
+
+// Per-parent-row actions (waffle menu). "Edit group" opens the existing GroupConfigModal scoped to this
+// group via editGroupAnchor (the modal back-fills the rest of the group from :all-channels); "Disband
+// group" clears the whole group in place. Both reuse the existing data-layer + merge handlers.
+function groupMenuItems(parent: Channel): RowActionItem[] {
+  return [
+    { key: 'edit', icon: 'link', label: 'Edit group', run: () => { editGroupAnchor.value = parent; groupOpen.value = true; } },
+    { key: 'disband', icon: 'trash', label: 'Disband group', danger: true, run: () => { void disbandGroupFromRow(parent); } },
+  ];
+}
+async function disbandGroupFromRow(parent: Channel) {
+  const gid = parent.failoverGroupId;
+  if (!gid) return;
+  try {
+    await disbandFailoverGroup(props.id, gid);
+    applyDisbandLocal(gid);
+    banner({ text: 'Failover group disbanded — children re-enter the export', tone: 'good', icon: 'trash' });
+  } catch (err) {
+    banner({ text: `Disband failed: ${(err as Error).message}`, tone: 'bad', icon: 'warn' });
+  }
 }
 
 function onRowClick(c: Channel, e: MouseEvent) {
@@ -477,7 +526,12 @@ const headerMenuItems = computed<RowActionItem[]>(() => {
   return items;
 });
 
-const filtered = computed(() => {
+// The filtered + sorted rows, then CLUSTERED into a failover tree: each parent keeps its sorted slot and is
+// immediately followed by its failoverOrder-sorted children (unless the group is collapsed). `nestedIds`
+// marks the child rows placed under a present parent (indent + connector); `childCounts` is the visible
+// backup count per parent id (always equals the nested rows shown). A child whose parent is filtered out
+// falls through as a normal, un-nested row.
+const filteredView = computed(() => {
   const rows = channels.value.filter((c) =>
     c.status === stateFilter.value &&
     (group.value === 'all' || c.group === group.value) &&
@@ -502,8 +556,37 @@ const filtered = computed(() => {
       return (bothNum ? af - bf : an.localeCompare(bn)) || byName(a, b);
     });
   }
-  return sorted;
+  // Cluster failover groups over the sorted list.
+  const childrenByGroup = new Map<string, Channel[]>();
+  const parentPresent = new Set<string>();
+  for (const c of sorted) {
+    if (c.failoverGroupId && c.failoverRole === 'parent') parentPresent.add(c.failoverGroupId);
+    if (c.failoverGroupId && c.failoverRole === 'child') {
+      const arr = childrenByGroup.get(c.failoverGroupId);
+      if (arr) arr.push(c); else childrenByGroup.set(c.failoverGroupId, [c]);
+    }
+  }
+  for (const arr of childrenByGroup.values()) arr.sort((a, b) => (a.failoverOrder ?? 0) - (b.failoverOrder ?? 0));
+  const treeRows: Channel[] = [];
+  const nestedIds = new Set<string>();
+  const childCounts = new Map<string, number>();
+  for (const c of sorted) {
+    // A child whose parent is present is emitted under that parent below — don't also place it here.
+    if (c.failoverRole === 'child' && c.failoverGroupId && parentPresent.has(c.failoverGroupId)) continue;
+    treeRows.push(c);
+    if (c.failoverRole === 'parent' && c.failoverGroupId) {
+      const kids = childrenByGroup.get(c.failoverGroupId) ?? [];
+      if (kids.length) childCounts.set(c.id, kids.length);
+      if (kids.length && !collapsedGroups.value.has(c.failoverGroupId)) {
+        for (const k of kids) { treeRows.push(k); nestedIds.add(k.id); }
+      }
+    }
+  }
+  return { rows: treeRows, nestedIds, childCounts };
 });
+// `filtered` stays a flat Channel[] in tree order so every existing consumer (selection range/all, the
+// count pill, both v-for loops) is unchanged; the tree metadata rides alongside on `filteredView`.
+const filtered = computed(() => filteredView.value.rows);
 
 const selectedChannels = computed(() => channels.value.filter((c) => selected.value.has(c.id)));
 
@@ -724,15 +807,26 @@ async function doAppend() {
             <th>Source</th>
             <th>EPG</th>
             <th style="width: 80px;">Stream</th>
+            <th style="width: 44px;" aria-label="Group actions"></th>
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filtered" :key="c.id" :class="{ selected: selected.has(c.id) }" @click="onRowClick(c, $event)">
+          <tr v-for="c in filtered" :key="c.id" :class="{ selected: selected.has(c.id), 'ch-child-row': filteredView.nestedIds.has(c.id) }" @click="onRowClick(c, $event)">
             <td @click.stop>
               <Checkbox :on="selected.has(c.id)" @change="toggleSel(c.id)" />
             </td>
             <td>
-              <div class="row" style="gap: 10px;">
+              <div class="row ch-tree-row" :class="{ 'is-child': filteredView.nestedIds.has(c.id) }" style="gap: 10px;">
+                <button
+                  v-if="c.failoverRole === 'parent' && filteredView.childCounts.has(c.id)"
+                  class="ch-tree-toggle"
+                  :title="isCollapsed(c.failoverGroupId) ? 'Expand failover group' : 'Collapse failover group'"
+                  @click.stop="toggleCollapse(c.failoverGroupId)"
+                >
+                  <Icon :name="isCollapsed(c.failoverGroupId) ? 'chevron-r' : 'chevron-d'" :size="14" />
+                </button>
+                <span v-else-if="filteredView.nestedIds.has(c.id)" class="ch-tree-branch" aria-hidden="true">└</span>
+                <span v-else class="ch-tree-spacer" aria-hidden="true" />
                 <ChannelLogo :ch="c" />
                 <input v-if="editingId === c.id" :value="c.tvg_name"
                        @blur="onRenameBlur(c.id, $event)" @keydown="onRenameKey(c.id, $event)"
@@ -742,6 +836,7 @@ async function doAppend() {
                 <Pill v-if="c.stream.res">{{ c.stream.res }}</Pill>
                 <Pill v-if="c.failoverRole === 'parent'" tone="parent" title="Failover group parent — exported and served first">parent</Pill>
                 <Pill v-else-if="c.failoverRole === 'child'" tone="child" title="Failover backup — hidden from exports, EPG inherited from the parent">child</Pill>
+                <Pill v-if="filteredView.childCounts.has(c.id)" title="Failover backups behind this parent">{{ filteredView.childCounts.get(c.id) }} backup{{ filteredView.childCounts.get(c.id) === 1 ? '' : 's' }}</Pill>
               </div>
             </td>
             <td class="muted">{{ c.group }}</td>
@@ -774,12 +869,18 @@ async function doAppend() {
                 <span v-else class="muted" style="font-size: var(--fs-xs); color: var(--text-3);">—</span>
               </div>
             </td>
+            <td @click.stop>
+              <div v-if="c.failoverRole === 'parent'" class="ch-row-actions" style="position: relative;">
+                <Btn variant="ghost" size="sm" icon="waffle" title="Group actions" aria-haspopup="menu" :aria-expanded="openGroupMenuId === c.id" @click="openGroupMenuId = openGroupMenuId === c.id ? null : c.id" />
+                <RowActionsMenu v-if="openGroupMenuId === c.id" :items="groupMenuItems(c)" @close="openGroupMenuId = null" />
+              </div>
+            </td>
           </tr>
         </tbody>
       </table>
 
       <div v-else-if="view === 'grid' && filtered.length" class="ch-grid">
-        <div v-for="c in filtered" :key="c.id" :class="['ch-card', { selected: selected.has(c.id) }]" @click="onRowClick(c, $event)">
+        <div v-for="c in filtered" :key="c.id" :class="['ch-card', { selected: selected.has(c.id), 'ch-card-child': filteredView.nestedIds.has(c.id), 'ch-card-parent': filteredView.childCounts.has(c.id) }]" @click="onRowClick(c, $event)">
           <div class="cbx-pos">
             <Checkbox :on="selected.has(c.id)" @change="toggleSel(c.id)" />
           </div>
@@ -791,7 +892,7 @@ async function doAppend() {
             </div>
           </div>
           <div class="meta">{{ c.group }}</div>
-          <div class="row">
+          <div class="row ch-card-foot">
             <Pill :tone="c.status === 'Active' ? 'active' : 'disabled'">
               {{ c.status }}
             </Pill>
@@ -799,8 +900,21 @@ async function doAppend() {
             <Pill v-else-if="c.epgState === 'unmatched'" tone="warn">no EPG</Pill>
             <Pill v-if="c.failoverRole === 'parent'" tone="parent">parent</Pill>
             <Pill v-else-if="c.failoverRole === 'child'" tone="child">child</Pill>
+            <Pill v-if="filteredView.childCounts.has(c.id)" title="Failover backups behind this parent">{{ filteredView.childCounts.get(c.id) }} backup{{ filteredView.childCounts.get(c.id) === 1 ? '' : 's' }}</Pill>
             <Pill tone="cyan">{{ c.origin || c.source }}</Pill>
             <span class="spacer" />
+            <div v-if="c.failoverRole === 'parent'" class="ch-row-actions" style="position: relative;" @click.stop>
+              <button
+                v-if="filteredView.childCounts.has(c.id)"
+                class="ch-tree-toggle"
+                :title="isCollapsed(c.failoverGroupId) ? 'Expand failover group' : 'Collapse failover group'"
+                @click.stop="toggleCollapse(c.failoverGroupId)"
+              >
+                <Icon :name="isCollapsed(c.failoverGroupId) ? 'chevron-r' : 'chevron-d'" :size="14" />
+              </button>
+              <Btn variant="ghost" size="sm" icon="waffle" title="Group actions" aria-haspopup="menu" :aria-expanded="openGroupMenuId === c.id" @click="openGroupMenuId = openGroupMenuId === c.id ? null : c.id" />
+              <RowActionsMenu v-if="openGroupMenuId === c.id" :items="groupMenuItems(c)" @close="openGroupMenuId = null" />
+            </div>
             <StatusDot v-if="c.status" :status="c.status" :pulse="c.status === 'good'" />
           </div>
         </div>
@@ -953,9 +1067,9 @@ async function doAppend() {
     <GroupConfigModal
       v-if="groupOpen"
       :source="props.id"
-      :channels="selectedChannels"
+      :channels="editGroupAnchor ? [editGroupAnchor] : selectedChannels"
       :all-channels="channels"
-      @close="groupOpen = false"
+      @close="groupOpen = false; editGroupAnchor = null"
       @saved="onGroupSaved"
       @disbanded="onGroupDisbanded"
     />
