@@ -457,11 +457,7 @@ All adapters implement the `SourceAdapter` contract (`server/src/sources/types.t
 > [!NOTE]
 > Expand _Channel Adapter Architecture : Flowchart_ to view the visual diagram
 
-<details>
-  <summary><strong>Channel Adapter Architecture : Flowchart</strong></summary>
-
 <img src="docs/diagrams/adapter-taxonomy.svg" alt="Channel adapter taxonomy: every adapter registered in registry.ts, grouped by shape — synthetic, authenticated, and the four anonymous resolve strategies (scrape, API sentinel, macro-fill, identity).">
-</details>
 
 ## Key Properties Summary
 
