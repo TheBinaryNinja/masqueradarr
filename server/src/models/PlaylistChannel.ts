@@ -33,6 +33,13 @@ export interface PlaylistChannelDoc {
   logoColor: string;
   logoUrl: string | null;
   streamEntryUrl: string;
+  // Failover group (operator-configured): one 'parent' + ordered 'child' backups per failoverGroupId.
+  // Children mirror the parent's EPG identity, are hidden from exports, and serve as ordered play-time
+  // fallbacks. OPTIONAL — docs from upgraded DBs / restored backups lack the fields entirely (treat
+  // undefined as null). Settable ONLY via the /failover-groups routes, never the generic edit whitelist.
+  failoverGroupId?: string | null; // opaque shared key (crypto.randomUUID()); null = ungrouped. Stable across parent swaps.
+  failoverRole?: 'parent' | 'child' | null; // exactly one parent per group (route-enforced, no unique index)
+  failoverOrder?: number | null; // child ordinal 0..N-1; null on parent/ungrouped. Gaps harmless (resolution sorts).
   stream: {
     initials: string | null;
     isPlayable: boolean;
@@ -60,6 +67,9 @@ const PlaylistChannelSchema = new Schema<PlaylistChannelDoc>(
     logoColor: { type: String, required: true },
     logoUrl: { type: String, default: null },
     streamEntryUrl: { type: String, required: true },
+    failoverGroupId: { type: String, default: null },
+    failoverRole: { type: String, default: null }, // 'parent' | 'child' | null
+    failoverOrder: { type: Number, default: null },
     // Nested object (not a subdocument) → Mongoose adds no `stream._id`.
     stream: {
       initials: { type: String, default: null },
@@ -78,5 +88,14 @@ const PlaylistChannelSchema = new Schema<PlaylistChannelDoc>(
 PlaylistChannelSchema.index({ source: 1, group: 1, tvg_name: 1 });
 // Active/Disabled filtering per source (m3u build / dead-channel filtering).
 PlaylistChannelSchema.index({ source: 1, status: 1 });
+// Failover group member fetch + reconcile. Partial: keeps the ungrouped null-majority out of the index
+// ($type:'string' excludes both null and missing).
+PlaylistChannelSchema.index(
+  { source: 1, failoverGroupId: 1 },
+  { partialFilterExpression: { failoverGroupId: { $type: 'string' } } },
+);
+// Resolve-time reverse lookup (buildGrant attempt>=1) + statsHub/probeAll streamEntryUrl matches.
+// Leads with streamEntryUrl because the $or lookup pattern ({origin} arm) carries no `source`.
+PlaylistChannelSchema.index({ streamEntryUrl: 1, source: 1 });
 
 export const PlaylistChannel = model<PlaylistChannelDoc>('PlaylistChannel', PlaylistChannelSchema);

@@ -58,9 +58,16 @@ async function resolveDomain(): Promise<string> {
 }
 
 // A source's Active channels in the canonical UI order (group → tvg_name) — the same sort the channels
-// route applies (routes/playlists.ts).
+// route applies (routes/playlists.ts) but NOT the same filter: failover CHILDREN (hidden ordered backups
+// behind their group's parent) are excluded from every export surface here, while the UI listing route
+// deliberately shows them. `$ne: 'child'` keeps ungrouped docs whether the field is null OR missing
+// entirely (pre-feature docs). composeGuide runs off this same returned set, so children drop from the
+// exported guide automatically.
 async function activeChannels(source: string): Promise<PlaylistChannelDoc[]> {
-  return PlaylistChannel.find({ source, status: 'Active' }, { _id: 0 })
+  return PlaylistChannel.find(
+    { source, status: 'Active', failoverRole: { $ne: 'child' } },
+    { _id: 0 },
+  )
     .sort({ group: 1, tvg_name: 1 })
     .lean<PlaylistChannelDoc[]>();
 }

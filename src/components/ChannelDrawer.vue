@@ -9,7 +9,8 @@ import Segmented from './Segmented.vue';
 import HlsPlayer from './HlsPlayer.vue';
 import LivelineChart from './LivelineChart.vue';
 import { useStreamStats } from '../composables/useStreamStats';
-import { ACTIVE_STREAMS, GROUPS, PLAYLISTS, appPlayerProxyPath, type Channel, type StreamProbe } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, GROUPS, PLAYLISTS, appPlayerProxyPath, type Channel, type StreamProbe } from '../data';
+import { bus } from '../composables/bus';
 
 const props = defineProps<{ ch: Channel }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -27,9 +28,15 @@ const group = ref(props.ch.group ?? '');
 const tvgId = ref(props.ch.tvg_id ?? '');
 const streamUrl = ref(props.ch.streamEntryUrl ?? '');
 
+// A failover CHILD mirrors its parent's EPG identity (the server rejects direct EPG edits on it with
+// 409 failover_child_epg_locked), so the TVG-ID field is locked with an "inherited" hint.
+const isFailoverChild = computed(() => props.ch.failoverRole === 'child');
+
 // Persist an edit to this channel via PUT /api/playlists/<source>/channels/<id>, then reflect it locally
 // so the open lists update. (Channels are keyed by deterministic id; source === the (Default) playlist id.)
 // A nested `stream` patch is MERGED into the existing stream object so live-field PUTs don't clobber siblings.
+// A failover PARENT's EPG edit cascades server-side; the returned `_cascadedChildren` are merged into the
+// global CHANNELS union and rebroadcast on the bus so a screen holding a LOCAL list (PlaylistDetail) syncs.
 async function putChannel(patch: Record<string, unknown>): Promise<void> {
   const { source, id } = props.ch;
   if (!source) return;
@@ -42,6 +49,13 @@ async function putChannel(patch: Record<string, unknown>): Promise<void> {
       const { stream, ...flat } = patch;
       Object.assign(props.ch, flat);
       if (stream && typeof stream === 'object') Object.assign(props.ch.stream, stream);
+      const body = (await res.json().catch(() => null)) as { _cascadedChildren?: Channel[] } | null;
+      const kids = body?._cascadedChildren;
+      if (kids?.length) {
+        const byId = new Map(kids.map((k) => [k.id, k]));
+        CHANNELS.value = CHANNELS.value.map((c) => byId.get(c.id) ?? c);
+        bus.emit('tvapp:failover-cascade', { source, children: kids });
+      }
     }
   } catch {
     // best-effort
@@ -60,7 +74,8 @@ function save() {
   if (!builtin.value && (streamUrl.value || null) !== (props.ch.streamEntryUrl ?? null)) {
     patch.streamEntryUrl = streamUrl.value || null;
   }
-  if ((tvgId.value || null) !== (props.ch.tvg_id ?? null)) {
+  // Failover children never send EPG edits (locked field; the server would 409 them anyway).
+  if (!isFailoverChild.value && (tvgId.value || null) !== (props.ch.tvg_id ?? null)) {
     patch.tvg_id = tvgId.value || null;
     // Changing the EPG link factor unlinks any prior match (mirrors MappingScreen.unlink).
     patch.epg = null;
@@ -240,6 +255,8 @@ onBeforeUnmount(() => {
           <Pill :tone="ch.stream.isPlayable ? 'good' : 'warn'">Playable {{ ch.stream.isPlayable }}</Pill>
           <Pill tone="cyan">{{ ch.stream.res ?? '—' }}</Pill>
           <Pill tone="cyan">{{ playlist?.source ?? ch.source }}</Pill>
+          <Pill v-if="ch.failoverRole === 'parent'" tone="parent" title="Failover group parent">parent</Pill>
+          <Pill v-else-if="ch.failoverRole === 'child'" tone="child" title="Failover backup — hidden from exports, EPG inherited from the parent">child</Pill>
         </div>
 
         <div class="divider" />
@@ -267,10 +284,15 @@ onBeforeUnmount(() => {
             <div class="input"><input v-model="channelNo" placeholder="e.g. 101" /></div>
           </div>
           <div class="form-row">
-            <div class="field-lbl">TVG-ID (EPG link)</div>
+            <div class="field-lbl">TVG-ID (EPG link){{ isFailoverChild ? ' · inherited' : '' }}</div>
             <div class="input">
               <Icon name="link" :size="14" />
-              <input v-model="tvgId" placeholder="e.g. bbc.one.uk" />
+              <input v-model="tvgId" :disabled="isFailoverChild"
+                     :title="isFailoverChild ? 'Inherited from the failover group parent — edit the parent instead' : undefined"
+                     placeholder="e.g. bbc.one.uk" />
+            </div>
+            <div v-if="isFailoverChild" class="muted" style="font-size: var(--fs-xs); margin-top: 4px;">
+              Inherited from the group parent — edit the parent's EPG link instead.
             </div>
           </div>
           <div class="form-row">

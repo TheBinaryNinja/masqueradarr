@@ -281,6 +281,38 @@ export function mediaFor(channelKey: string): MediaInfo | null {
   return mediaByChannel.get(channelKey) ?? null;
 }
 
+// ── Failover attribution ───────────────────────────────────────────────────────────────────────────────
+// When play-time failover serves a CHILD under its parent's stream identity, every telemetry event still
+// keys on (parent source, parent entry) — so without this note Active Streams would show the parent as
+// live with no hint a backup is carrying it. The resolve seam records the serving candidate at grant-build
+// time: attempt >= 1 sets it, a successful attempt-0 (parent) resolve clears it. Same in-memory idiom as
+// mediaByChannel; statsHub prunes entries for channels that go cold.
+
+export interface FailoverServing {
+  attempt: number; // 1-based candidate attempt (1 = first child)
+  candidateId: string; // the serving child's PlaylistChannel id
+  candidateName: string; // the serving child's tvg_name (display)
+}
+
+const failoverByChannel = new Map<string, FailoverServing>(); // channelKey → serving candidate
+
+/** Record (or clear, with null) which failover candidate a channel's grants currently target. */
+export function noteFailoverServing(source: string, entryUrl: string, f: FailoverServing | null): void {
+  const key = streamKey(source, entryUrl);
+  if (f) failoverByChannel.set(key, f);
+  else failoverByChannel.delete(key);
+}
+
+/** The serving failover candidate for a channel (null = the parent itself / not a failover stream). */
+export function failoverFor(channelKey: string): FailoverServing | null {
+  return failoverByChannel.get(channelKey) ?? null;
+}
+
+/** Drop failover attribution for channels no longer active (statsHub calls this with the live key set). */
+export function pruneFailoverServing(activeKeys: Set<string>): void {
+  for (const key of failoverByChannel.keys()) if (!activeKeys.has(key)) failoverByChannel.delete(key);
+}
+
 // ── Socket-liveness hooks (the raw-TS fork) ───────────────────────────────────────────────────────────
 // Raw-TS external clients (externalTsEngine.ts) hold ONE long-lived HTTP socket and never poll, so the
 // poll-recency model above is blind to them. These three hooks give them a parallel accounting that feeds the

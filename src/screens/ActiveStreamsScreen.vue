@@ -317,6 +317,11 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   :title="`Wire format served now: ${deliveryLabel(sel.delivery)} — distinct from the Container decode label`">
                   {{ deliveryLabel(sel.delivery) }}
                 </Pill>
+                <!-- Failover attribution: this (parent) channel's own upstream is down — a backup carries it. -->
+                <Pill v-if="sel.failover" tone="parent"
+                  :title="`This channel's upstream failed — failover backup #${sel.failover.attempt} is serving`">
+                  <Icon name="refresh" :size="11" />failover → {{ sel.failover.candidateName }}
+                </Pill>
               </div>
               <div class="mono muted" style="font-size: var(--fs-xs); margin-top: 4px;">
                 #{{ chOf(sel).channelNo ?? '—' }} · {{ chOf(sel).group }} · stream-id <span style="color: var(--text-1);">{{ sel.id }}</span>
@@ -360,6 +365,10 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   <div class="k">Frame rate</div><div class="v mono">{{ selTech.fps ?? '—' }} fps · {{ selTech.tbr ?? '—' }} tbr · {{ selTech.tbn ?? '—' }} tbn</div>
                 </template>
                 <div class="k">Phase</div><div class="v mono">{{ sel.phase }}</div>
+                <template v-if="sel.failover">
+                  <div class="k">Failover</div>
+                  <div class="v mono">backup #{{ sel.failover.attempt }} · {{ sel.failover.candidateName }}</div>
+                </template>
               </div>
               <div class="asd-label-ft" aria-hidden="true"><span class="asd-cap-dim">DECODE SPEC</span><span class="asd-mk">MK-07.10</span></div>
             </div>

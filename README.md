@@ -630,6 +630,37 @@ Built-in defaults are **Global-endpoint** by default; the custom kinds are **Cus
 per-playlist export machinery (their own path + guide sibling). All the type tags (`clone`/`file`/`url`/
 `hdhomerun`) and modes (`global`/`custom`) are stored **lowercase**.
 
+## Failover groups (channel backups)
+
+Any playlist's channels can be grouped into a **failover group**: one **parent** plus an ordered list of
+**children** — silent backups for the same real-world channel, possibly from **different providers**.
+Select the channels on the playlist detail screen → **Group** → pick the parent, drag the children into
+priority order, save.
+
+- **One line exported.** The composed M3U (and its guide) contains only the **parent**; children are
+  hidden from every export surface but stay visible (badged `parent` / `child`) in the management UI.
+- **EPG identity is inherited.** Children mirror the parent's `tvg_id` / `epg` link — set at group save and
+  re-cascaded whenever the parent's EPG link changes (drawer, Mapping screen, bulk edits). Direct EPG edits
+  on a child are rejected (`409 failover_child_epg_locked`); auto-match skips children.
+- **Play-time failover (establish-time).** When the parent's stream fails to establish — resolve failure,
+  transport failure after retries, or (opt-in) a definitive upstream error — the data plane walks the
+  children **in order** via `attempt=1,2,…` resolves and serves the first one that answers, under the
+  parent's URL and stream identity. The session then **sticks** to the winning child (the failover cursor
+  never walks back to the dead parent mid-play); the pin resets a few idle minutes after playback stops.
+- **Cross-provider safe.** A child's grant carries its own adapter's headers under its own policy key
+  (`policySource`), so a dlhd parent backed by a pluto child never pollutes dlhd's other streams.
+- **Observability.** Active Streams badges a failed-over stream with `failover → <child>`; the scheduled
+  channel probe keeps probing hidden children, so a dead backup is visible before failover ever reaches it.
+- **Self-healing.** Any prune/delete that removes a group's parent (or its last child) auto-disbands the
+  group; disbanding is also available in the Group modal — children keep their inherited EPG link but
+  re-enter the export. Children must stay **Active** to remain probe-covered and candidate-eligible
+  (a `Disabled` child is skipped at failover; a `Disabled` parent hides the whole group from exports).
+
+Knobs: `failoverEnabled` (default **on** — configuring a group is the real opt-in) and
+`failoverOnDefiniteError` (default **off**) in the [proxyconfigs subsystem](#tuning-knobs--the-proxyconfigs-subsystem).
+Seamless mid-segment splicing is a future enhancement — a parent dying mid-play is caught on the player's
+next playlist refetch.
+
 ## Playlists + EPG Sources with Playlist Binding
 
 Guide data reaches a playlist through **two distinct mechanisms** — keep them separate:
@@ -814,7 +845,7 @@ graph TD
     R["proxyRelay → 127.0.0.1:8787<br/>inject client identity + secret"]
     E{"ENTRY or HOP?"}
     RES["resolve seam → grant<br/>masterUrl · headers · allowHosts · proxyConfig"]
-    F["fetch upstream<br/>retry 502/503/504 · mirror failover"]
+    F["fetch upstream<br/>retry 502/503/504 · mirror failover · failover-group walk"]
     M{"manifest or segment?"}
     RW["rewrite child URIs<br/>re-embed token + pl · grow SSRF allow-set"]
     SEG["relabel + pipe bytes<br/>bounded read-ahead buffer"]
@@ -846,9 +877,14 @@ graph TD
 The Rust engine is built to keep a stream alive on flaky upstreams:
 
 - **Retry** — transient upstream failures (transport errors + `502` / `503` / `504`) are retried with bounded
-  backoff; definitive `4xx` / `5xx` are forwarded verbatim.
+  backoff; definitive `4xx` / `5xx` are forwarded verbatim (unless `failoverOnDefiniteError` routes them into
+  the failover walk below).
 - **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd / dami to re-probe and
   rotate to a live mirror mid-stream.
+- **Failover groups** — when a channel has configured backups and its stream still won't establish, the
+  engine walks the ordered children (`attempt=1,2,…` against the resolve seam) and serves the first live
+  one under the parent's identity, then sticks to it for the session. See
+  [Failover groups](#failover-groups-channel-backups).
 - **Stall detection** — an idle read timeout (`readTimeoutMs`) turns a silent upstream into a clean truncation
   instead of a hang.
 - **Read-ahead buffer** — a bounded in-memory buffer (`bufferSizeKb`) smooths jitter and fixes the
@@ -873,6 +909,8 @@ resolved by Node into each grant (**Rust never reads MongoDB**). Two tiers, doc-
 | `connectTimeoutMs`, `maxRedirects` | live | per-config upstream HTTP client (cached in Rust) |
 | `readTimeoutMs`, `bufferSizeKb` | live | per-stream stall timeout + read-ahead buffer size |
 | `outputFormat` (`hls` \| `ts`) | live | distribution shape (`ts` = continuous MPEG-TS, external mount only) |
+| `failoverEnabled` | live | walk a channel's ordered failover children on an establish failure (default **on**) |
+| `failoverOnDefiniteError` | live | also treat a definitive upstream `4xx`/`5xx` as a failover trigger (default **off**) |
 | `segmentCacheTtlSec` | reserved | shipped in the grant, not yet enforced |
 
 ## Public edge mode (`MASQ_EDGE`)

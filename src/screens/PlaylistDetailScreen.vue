@@ -15,7 +15,8 @@ import Stat from '../components/Stat.vue';
 import ProgressBar from '../components/ProgressBar.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
-import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, type Playlist, type Channel, type CustomPlaylist } from '../data';
+import GroupConfigModal from '../components/GroupConfigModal.vue';
+import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
 import { bus } from '../composables/bus';
@@ -167,8 +168,43 @@ async function onAuthChanged() {
   const res = await fetch(`/api/playlists/${encodeURIComponent(props.id)}`);
   if (res.ok) playlistRef.value = await res.json();
 }
-onMounted(() => bus.on('tvapp:auth-changed', onAuthChanged));
-onBeforeUnmount(() => bus.off('tvapp:auth-changed', onAuthChanged));
+// A parent's EPG edit in the App-level ChannelDrawer cascaded to its children server-side — merge the
+// returned children into this screen's LOCAL list so the group stays coherent without a refetch.
+function onFailoverCascade(p: { source: string; children: Channel[] }) {
+  if (p.source !== props.id || !p.children.length) return;
+  const byId = new Map(p.children.map((k) => [k.id, k]));
+  channels.value = channels.value.map((c) => byId.get(c.id) ?? c);
+}
+onMounted(() => {
+  bus.on('tvapp:auth-changed', onAuthChanged);
+  bus.on('tvapp:failover-cascade', onFailoverCascade);
+});
+onBeforeUnmount(() => {
+  bus.off('tvapp:auth-changed', onAuthChanged);
+  bus.off('tvapp:failover-cascade', onFailoverCascade);
+});
+
+// ── Failover group modal ──────────────────────────────────────────────────
+const groupOpen = ref(false);
+function onGroupSaved(r: FailoverGroupResult) {
+  const byId = new Map([r.parent, ...r.children].map((m) => [m.id, m]));
+  channels.value = channels.value.map((c) => (byId.get(c.id) ?? c));
+  banner({ text: `Failover group saved · ${r.children.length} backup${r.children.length === 1 ? '' : 's'} behind "${r.parent.tvg_name}"`, tone: 'good', icon: 'check' });
+  groupOpen.value = false;
+  selected.value = new Set();
+  // The save can also mutate rows OUTSIDE the returned group: members dropped from it, foreign children
+  // moved in (their donor group possibly auto-disbanded server-side). The merge above keeps the UI snappy;
+  // this authoritative refetch reconciles everything else.
+  void reload();
+}
+function onGroupDisbanded(gid: string) {
+  channels.value = channels.value.map((c) =>
+    c.failoverGroupId === gid ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null } : c,
+  );
+  banner({ text: 'Failover group disbanded — children re-enter the export', tone: 'good', icon: 'trash' });
+  groupOpen.value = false;
+  selected.value = new Set();
+}
 
 function onRowClick(c: Channel, e: MouseEvent) {
   const mod = e.ctrlKey || e.metaKey;
@@ -212,15 +248,25 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   if (payload.status) body.status = payload.status;
   if (payload.group) body.group = payload.group;
   if (payload.clearEpg) { body.tvg_id = null; body.epg = null; body.epgState = 'unmatched'; }
+  // Failover CHILDREN mirror their parent's EPG — the server rejects an EPG write on them with a 409 that
+  // discards the WHOLE patch. Strip the clearEpg keys from a child's body (its link follows the parent),
+  // and skip its PUT entirely when nothing else changed.
+  const bodyFor = (c: Channel): Record<string, unknown> => {
+    if (!payload.clearEpg || c.failoverRole !== 'child') return body;
+    const { tvg_id: _t, epg: _e, epgState: _s, ...rest } = body;
+    return rest;
+  };
   // Persist each channel edit (PUT /api/playlists/<source>/channels/<id>), then update locally.
   await Promise.all(
-    targets.map((c) =>
-      fetch(`/api/playlists/${encodeURIComponent(c.source)}/channels/${encodeURIComponent(c.id)}`, {
+    targets.map((c) => {
+      const chBody = bodyFor(c);
+      if (!Object.keys(chBody).length) return Promise.resolve(undefined);
+      return fetch(`/api/playlists/${encodeURIComponent(c.source)}/channels/${encodeURIComponent(c.id)}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      }).catch(() => undefined),
-    ),
+        body: JSON.stringify(chBody),
+      }).catch(() => undefined);
+    }),
   );
   channels.value = channels.value.map((c) =>
     ids.has(c.id)
@@ -228,7 +274,9 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
           ...c,
           ...(payload.status ? { status: payload.status } : {}),
           ...(payload.group ? { group: payload.group } : {}),
-          ...(payload.clearEpg ? { tvg_id: null, epg: null, epgState: 'unmatched' as const } : {}),
+          ...(payload.clearEpg && c.failoverRole !== 'child'
+            ? { tvg_id: null, epg: null, epgState: 'unmatched' as const }
+            : {}),
         }
       : c
   );
@@ -642,6 +690,7 @@ async function doAppend() {
 
         <template v-if="selected.size > 0">
           <Pill tone="cyan">{{ selected.size }} selected</Pill>
+          <Btn variant="ghost" size="sm" icon="link" title="Configure a failover group from the selection" @click="groupOpen = true">Group</Btn>
           <Btn v-if="!isClone" variant="primary" size="sm" icon="plus" @click="openCreate">Create</Btn>
           <Btn v-if="!isClone" variant="ghost" size="sm" icon="playlist" @click="openAppend">Append</Btn>
           <span class="tbar-sep" aria-hidden="true" />
@@ -691,6 +740,8 @@ async function doAppend() {
                        style="background: var(--bg-2); border: 1px solid var(--accent); border-radius: 6px; padding: 3px 8px; color: var(--text-0); font-weight: 500; width: 200px; box-shadow: 0 0 0 3px var(--accent-soft);" />
                 <span v-else style="font-weight: 500;" @dblclick.stop="editingId = c.id" title="Double-click to rename">{{ c.tvg_name }}</span>
                 <Pill v-if="c.stream.res">{{ c.stream.res }}</Pill>
+                <Pill v-if="c.failoverRole === 'parent'" tone="parent" title="Failover group parent — exported and served first">parent</Pill>
+                <Pill v-else-if="c.failoverRole === 'child'" tone="child" title="Failover backup — hidden from exports, EPG inherited from the parent">child</Pill>
               </div>
             </td>
             <td class="muted">{{ c.group }}</td>
@@ -746,6 +797,8 @@ async function doAppend() {
             </Pill>
             <Pill v-if="c.epgState === 'matched'" tone="good"><Icon name="check" :size="11" />EPG</Pill>
             <Pill v-else-if="c.epgState === 'unmatched'" tone="warn">no EPG</Pill>
+            <Pill v-if="c.failoverRole === 'parent'" tone="parent">parent</Pill>
+            <Pill v-else-if="c.failoverRole === 'child'" tone="child">child</Pill>
             <Pill tone="cyan">{{ c.origin || c.source }}</Pill>
             <span class="spacer" />
             <StatusDot v-if="c.status" :status="c.status" :pulse="c.status === 'good'" />
@@ -896,6 +949,16 @@ async function doAppend() {
         </div>
       </div>
     </div>
+
+    <GroupConfigModal
+      v-if="groupOpen"
+      :source="props.id"
+      :channels="selectedChannels"
+      :all-channels="channels"
+      @close="groupOpen = false"
+      @saved="onGroupSaved"
+      @disbanded="onGroupDisbanded"
+    />
 
     <ChannelBulkDrawer
       v-if="bulkOpen"

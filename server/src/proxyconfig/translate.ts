@@ -50,6 +50,8 @@ export function envDefaults(): ProxyConfigData {
     headerOverrides: {},
     outputFormat: 'hls',
     streamInfRedux: false,
+    failoverEnabled: true, // group config is the real opt-in; ungrouped channels are unaffected either way
+    failoverOnDefiniteError: false, // changes forward-verbatim 4xx/5xx semantics — explicit opt-in
     segmentCacheTtlSec: null,
   };
 }
@@ -66,6 +68,8 @@ export function toRuntimeProxyConfig(doc: ProxyConfigDoc): RuntimeProxyConfig {
     headerOverrides: sanitizeHeaderMap(doc.headerOverrides),
     outputFormat: OUTPUT_FORMATS.includes(doc.outputFormat as (typeof OUTPUT_FORMATS)[number]) ? doc.outputFormat : 'hls',
     streamInfRedux: typeof doc.streamInfRedux === 'boolean' ? doc.streamInfRedux : false,
+    failoverEnabled: typeof doc.failoverEnabled === 'boolean' ? doc.failoverEnabled : true,
+    failoverOnDefiniteError: typeof doc.failoverOnDefiniteError === 'boolean' ? doc.failoverOnDefiniteError : false,
     segmentCacheTtlSec: typeof doc.segmentCacheTtlSec === 'number' ? doc.segmentCacheTtlSec : null,
   };
 }
@@ -148,12 +152,14 @@ export function toExternalPatch(body: unknown): PatchResult {
     $set.outputFormat = v;
   }
 
-  // streamInfRedux: SIR opt-in flag — a plain boolean (mirrors the outputFormat gate above).
-  if (b.streamInfRedux !== undefined) {
-    if (typeof b.streamInfRedux !== 'boolean') {
-      return { ok: false, error: 'streamInfRedux (boolean) required' };
+  // streamInfRedux / failoverEnabled / failoverOnDefiniteError: plain boolean knobs (same gate).
+  for (const key of ['streamInfRedux', 'failoverEnabled', 'failoverOnDefiniteError'] as const) {
+    if (b[key] !== undefined) {
+      if (typeof b[key] !== 'boolean') {
+        return { ok: false, error: `${key} (boolean) required` };
+      }
+      $set[key] = b[key];
     }
-    $set.streamInfRedux = b.streamInfRedux;
   }
 
   // headerOverrides: an object of header-name -> string value. An empty object clears all overrides. Reject a

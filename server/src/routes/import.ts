@@ -8,6 +8,7 @@ import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath } from '../m3u/paths.js';
 import { logoColorFor, initialsFor } from '../sources/toPlaylistChannel.js';
 import { logger } from '../sources/core/logger.js';
+import { reconcileFailoverGroups } from '../services/failover.js';
 import { cascadeDeleteCustomPlaylist, sanitizeName, resolveDomain, groupCount } from './customPlaylists.js';
 import {
   normalizeDeviceBase,
@@ -65,6 +66,9 @@ function toImportChannel(e: ParsedM3uEntry, importId: string): PlaylistChannelDo
     logoColor: logoColorFor(_id),
     logoUrl: e.tvgLogo,
     streamEntryUrl: e.url,
+    failoverGroupId: null,
+    failoverRole: null,
+    failoverOrder: null,
     stream: { initials: initialsFor(e.name), isPlayable: true, res: null, status: null, probe: null },
   };
 }
@@ -103,6 +107,9 @@ async function upsertImportChannels(entries: ParsedM3uEntry[], importId: string)
             epg: pc.epg,
             epgState: pc.epgState,
             status: pc.status,
+            failoverGroupId: pc.failoverGroupId,
+            failoverRole: pc.failoverRole,
+            failoverOrder: pc.failoverOrder,
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             'stream.probe': pc.stream.probe,
@@ -142,6 +149,10 @@ export async function syncUrlPlaylist(id: string): Promise<{ channels: number; g
   // dropped) — the live ids are this run's deterministic per-URL keys.
   const liveIds = [...new Set(entries.map((e) => `${id}:${channelKey(e.url)}`))];
   await PlaylistChannel.deleteMany({ source: id, _id: { $nin: liveIds } });
+  // The prune can orphan a failover group (parent/last child pruned) — auto-disband degenerates, non-fatal.
+  await reconcileFailoverGroups(id).catch((err: Error) =>
+    logger.warn('import', `[${id}] failover reconcile after prune failed (continuing): ${err.message}`),
+  );
 
   const channels = (await PlaylistChannel.find({ source: id }, { group: 1 }).lean()) as Array<{
     group: string | null;

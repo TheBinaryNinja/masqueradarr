@@ -17,6 +17,8 @@ export interface ProxyConfigState {
   headerOverrides: Record<string, string>; // LIVE in P2 (merged into the grant's upstream headers)
   outputFormat: string; // LIVE (P3.2/DST) — 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount); enc/fMP4→HLS
   streamInfRedux: boolean; // LIVE (SIR) — opt-in HLS master reorder (ext mount) so the first #EXT-X-STREAM-INF fits a strict player's probe window
+  failoverEnabled: boolean; // LIVE — play-time failover groups (walk the ordered children on an establish failure); default ON
+  failoverOnDefiniteError: boolean; // LIVE — also fail over on a definitive upstream 4xx/5xx (normally forwarded verbatim); default OFF
   segmentCacheTtlSec: number | null; // reserved (the only unapplied knob)
 }
 
@@ -33,6 +35,8 @@ export function proxyConfigDefaults(): ProxyConfigState {
     headerOverrides: {},
     outputFormat: 'hls',
     streamInfRedux: false,
+    failoverEnabled: true,
+    failoverOnDefiniteError: false,
     segmentCacheTtlSec: null,
   };
 }
@@ -52,6 +56,9 @@ function normalize(raw: unknown): ProxyConfigState {
         : {},
     outputFormat: typeof s.outputFormat === 'string' ? s.outputFormat : d.outputFormat,
     streamInfRedux: typeof s.streamInfRedux === 'boolean' ? s.streamInfRedux : false,
+    failoverEnabled: typeof s.failoverEnabled === 'boolean' ? s.failoverEnabled : true,
+    failoverOnDefiniteError:
+      typeof s.failoverOnDefiniteError === 'boolean' ? s.failoverOnDefiniteError : false,
     segmentCacheTtlSec: typeof s.segmentCacheTtlSec === 'number' ? s.segmentCacheTtlSec : null,
   };
 }

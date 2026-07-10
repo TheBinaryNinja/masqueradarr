@@ -1,4 +1,5 @@
 import mitt from 'mitt';
+import type { Channel } from '../data';
 
 export interface RestoreItem { kind: string; text: string }
 type Events = {
@@ -15,5 +16,9 @@ type Events = {
   // background fetchUsers() reconcile to pick up server-derived fields (recomposed slug, timestamps). The
   // optional id names the affected user. The reconcile fetch does NOT re-emit, so this never loops.
   'tvapp:users-changed': { id?: string };
+  // A failover parent's EPG edit cascaded to its children server-side (the edit route returned
+  // `_cascadedChildren`). Emitted by ChannelDrawer (App-level, over any screen) so open screens holding a
+  // LOCAL channel list (PlaylistDetailScreen) can merge the updated children without a refetch.
+  'tvapp:failover-cascade': { source: string; children: Channel[] };
 };
 export const bus = mitt<Events>();

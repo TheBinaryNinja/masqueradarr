@@ -105,6 +105,9 @@ export interface Channel {
   logoColor: string;
   logoUrl: string | null;
   streamEntryUrl: string; // always present — appPlayerProxyPath keys on it
+  failoverGroupId?: string | null; // failover group key; null/undefined = ungrouped (older docs lack the fields)
+  failoverRole?: 'parent' | 'child' | null; // 'child' rows are export-hidden backups; EPG is inherited from the parent
+  failoverOrder?: number | null; // child ordinal within the group
   stream: {
     initials: string | null;
     isPlayable: boolean;
@@ -157,6 +160,8 @@ export interface ActiveStream {
   codec: string | null; audio: string | null; container: string | null;
   resolution: string | null; fps: number | null;
   probe: StreamProbe | null;
+  // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's identity.
+  failover: { attempt: number; candidateId: string; candidateName: string } | null;
 }
 // One connected viewer of an active stream (GET /api/active-streams/:channelId/clients).
 export interface StreamClient {
@@ -450,6 +455,85 @@ export async function reorderEpgSources(orderedIds: string[]): Promise<void> {
 // Re-fetch playlists after an out-of-band change (e.g. a dulo sign-in flips a playlist's isAuthenticated).
 export async function reloadPlaylists(): Promise<void> {
   PLAYLISTS.value = await getJson<Playlist[]>('/api/playlists');
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Failover groups — thin wrappers over the /api/playlists/:id/failover-groups routes. The detail screen
+// owns a LOCAL channels ref, so each helper returns the authoritative post-state for the screen to merge
+// by id; we ALSO patch the global CHANNELS union here (the Mapping screen reads it — inherited tvg_id/epg
+// must not go stale there until the next bootstrap).
+// ──────────────────────────────────────────────────────────────────────
+
+export interface FailoverGroupResult {
+  groupId: string;
+  parent: Channel;
+  children: Channel[];
+}
+
+// Merge group members into the global CHANNELS union by id (last-write-wins).
+function patchChannelsStore(members: Channel[]): void {
+  if (!members.length) return;
+  const byId = new Map(members.map((m) => [m.id, m]));
+  CHANNELS.value = CHANNELS.value.map((c) => byId.get(c.id) ?? c);
+}
+
+// Create/replace a failover group. Non-optimistic (the save is a multi-doc cascade — children inherit the
+// parent's EPG identity server-side); await, then merge the returned members. Rows the save dropped FROM
+// this group get their grouping cleared here too; rows of a DONOR group a moved foreign child came from
+// can also change server-side (reconcile may disband it) — the detail screen's post-save reload() is the
+// authoritative reconcile for those, and Mapping refetches CHANNELS on mount.
+export async function saveFailoverGroup(
+  source: string,
+  body: { groupId?: string; parentId: string; childIds: string[] },
+): Promise<FailoverGroupResult> {
+  const res = await fetch(`/api/playlists/${source}/failover-groups`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `failover group save failed: ${res.status}`);
+  }
+  const result = (await res.json()) as FailoverGroupResult;
+  const memberIds = new Set([result.parent.id, ...result.children.map((c) => c.id)]);
+  CHANNELS.value = CHANNELS.value.map((c) =>
+    c.failoverGroupId === result.groupId && !memberIds.has(c.id)
+      ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null }
+      : c,
+  );
+  patchChannelsStore([result.parent, ...result.children]);
+  return result;
+}
+
+// Persist a new child order. Callers pass the FULL child id sequence in the new visual order (the modal's
+// local list already snapped optimistically; the response is the authoritative group to reconcile with).
+export async function reorderGroupChildren(
+  source: string,
+  groupId: string,
+  childIds: string[],
+): Promise<FailoverGroupResult> {
+  const res = await fetch(`/api/playlists/${source}/failover-groups/${groupId}/reorder`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ childIds }),
+  });
+  if (!res.ok) throw new Error(`failover reorder failed: ${res.status}`);
+  const result = (await res.json()) as FailoverGroupResult;
+  patchChannelsStore([result.parent, ...result.children].filter(Boolean) as Channel[]);
+  return result;
+}
+
+// Disband a group. Members keep their inherited EPG (clearing it is the explicit unlink action); the
+// screen re-reads/merges its local list — here we just clear the grouping in the global union.
+export async function disbandFailoverGroup(source: string, groupId: string): Promise<void> {
+  const res = await fetch(`/api/playlists/${source}/failover-groups/${groupId}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(`failover disband failed: ${res.status}`);
+  CHANNELS.value = CHANNELS.value.map((c) =>
+    c.failoverGroupId === groupId
+      ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null }
+      : c,
+  );
 }
 
 // Re-fetch the custom (clone) playlists after a create/append/delete so the shared store + the append

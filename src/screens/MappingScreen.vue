@@ -191,7 +191,9 @@ const canSelectLeft = computed(() => epgSorted.value.length > 0);
 watch(canSelectLeft, (ok) => { if (!ok) selL.value = null; });
 
 // Persist a channel's EPG link via PUT /api/playlists/<source>/channels/<id>, then reflect it locally on the
-// CHANNELS entry (mirrors ChannelDrawer.vue's putChannel). Returns whether it persisted.
+// CHANNELS entry (mirrors ChannelDrawer.vue's putChannel). Returns whether it persisted. Linking a failover
+// PARENT cascades to its children server-side — the returned `_cascadedChildren` are merged into CHANNELS
+// (the immediate watch above rebuilds `mappings` from the new list, so the children flip to matched too).
 async function putChannelLink(ch: Channel, patch: Record<string, unknown>): Promise<boolean> {
   if (!ch.source) return false;
   try {
@@ -199,7 +201,16 @@ async function putChannelLink(ch: Channel, patch: Record<string, unknown>): Prom
       `/api/playlists/${encodeURIComponent(ch.source)}/channels/${encodeURIComponent(ch.id)}`,
       { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch) },
     );
-    if (res.ok) { Object.assign(ch, patch); return true; }
+    if (res.ok) {
+      Object.assign(ch, patch);
+      const body = (await res.json().catch(() => null)) as { _cascadedChildren?: Channel[] } | null;
+      const kids = body?._cascadedChildren;
+      if (kids?.length) {
+        const byId = new Map(kids.map((k) => [k.id, k]));
+        CHANNELS.value = CHANNELS.value.map((c) => byId.get(c.id) ?? c);
+      }
+      return true;
+    }
   } catch {
     // best-effort
   }
@@ -446,6 +457,8 @@ async function autoMatch(): Promise<void> {
   const hits: { c: Channel; hit: EpgChannel }[] = [];
   for (const c of channelsView.value) {
     if (mappings[c.id]) continue;
+    // Failover children mirror their parent's link (the server 409s a direct write) — never auto-match them.
+    if (c.failoverRole === 'child') continue;
     const variants = m3uVariants(c.tvg_name).map((v) => v.str);
     if (!variants.length) continue;
     const hit = epgFiltered.value.find((e) => variants.includes(normEpg(e.affiliateName).str));
@@ -566,11 +579,17 @@ async function autoMatch(): Promise<void> {
             <div :style="{ transform: `translateY(${lPad}px)` }">
               <div v-for="c in channelsView.slice(lStart, lEnd)" :key="c.id"
                    :class="['map-item', { selected: selL === c.id, matched: !!mappings[c.id] }]"
-                   @click="() => { if (canSelectLeft) selL = c.id; }">
+                   :title="c.failoverRole === 'child' ? 'Failover backup — EPG inherited from the group parent (link the parent instead)' : undefined"
+                   @click="() => { if (canSelectLeft && c.failoverRole !== 'child') selL = c.id; }">
                 <ChannelLogo :ch="c" />
                 <div class="nm">{{ c.tvg_name }}</div>
                 <span class="pl" :title="playlistNameById[c.source] || c.source">{{ playlistNameById[c.source] || c.source }}</span>
-                <template v-if="mappings[c.id]">
+                <Pill v-if="c.failoverRole === 'parent'" tone="parent">parent</Pill>
+                <template v-if="c.failoverRole === 'child'">
+                  <span v-if="mappings[c.id]" class="id">{{ mappings[c.id].tvg_id }}</span>
+                  <Pill tone="child">child</Pill>
+                </template>
+                <template v-else-if="mappings[c.id]">
                   <span class="id">{{ mappings[c.id].tvg_id }}</span>
                   <Btn variant="ghost" size="sm" icon="x" @click.stop="unlink(c)" />
                   <Pill tone="good">matched</Pill>
