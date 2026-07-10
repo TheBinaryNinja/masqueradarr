@@ -223,6 +223,100 @@
         <div class="sec-tag"><span class="n">06</span> At play time</div>
         <h2>What happens when the parent dies</h2>
         <p class="col">Failover is an <strong>establish-time</strong> mechanism. It fires when a stream <em>fails to start</em>, not mid-picture. The Rust data plane keeps a per-stream cursor — an <em>attempt</em> number — and asks Node's resolve seam for that attempt's candidate. Attempt <code>0</code> is the channel itself; attempt <code>N</code> is its Nth <strong>Active</strong> child.</p>
+        <!-- ANIMATED · the cursor walk (overview) — the numbered .seq below carries the detail -->
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the cursor walk — attempt 0 → 1 → 2 <span class="rt">rust cursor ⇄ node resolve seam</span></div>
+          <div class="fowalk">
+
+            <div class="lane-meta" style="padding:2px 0 4px;">
+              <span class="tag">the walk</span>
+              <span class="desc">the per-stream cursor steps down the candidates — one question to the seam per attempt, answered 200 / 502 / 410.</span>
+            </div>
+
+            <!-- hero: the attempt cursor + the seam's three answers -->
+            <div class="fo-head">
+              <div class="fo-odo" aria-hidden="true">
+                <span class="fo-odo-lbl">cursor</span>
+                <span class="fo-odo-eq">attempt =</span>
+                <span class="fo-odo-reel">
+                  <span class="fo-dig fo-d0">0</span>
+                  <span class="fo-dig fo-d1">1</span>
+                  <span class="fo-dig fo-d2">2</span>
+                </span>
+              </div>
+              <ul class="fo-legend">
+                <li class="fo-k fo-ts"><span class="fo-g" aria-hidden="true">✓</span> 200 · grant → serve</li>
+                <li class="fo-k fo-warn"><span class="fo-g" aria-hidden="true">↻</span> 502 · died → next</li>
+                <li class="fo-k fo-risk"><span class="fo-g" aria-hidden="true">■</span> 410 · none left → stop</li>
+              </ul>
+            </div>
+
+            <!-- the candidate stack the cursor descends -->
+            <div class="fo-cands">
+              <div class="fo-card fo-c0">
+                <span class="fo-node" aria-hidden="true">0</span>
+                <div class="fo-main">
+                  <div class="fo-idn"><span class="fo-role">parent</span> · <span class="fo-prov">dlhd</span></div>
+                  <div class="fo-behav">the ordinary path — parent's own adapter, full retry &amp; backoff budget. Establish can fail on a dead scrape or expired token, on transport give-up after the retry budget, or — opt-in only — a definite 4xx / 5xx.</div>
+                </div>
+                <div class="fo-status">
+                  <span class="fo-try" aria-hidden="true">resolving…</span>
+                  <span class="fo-verdict fo-warn"><span class="fo-g" aria-hidden="true">↻</span> 502 · didn't establish · next</span>
+                </div>
+              </div>
+
+              <div class="fo-card fo-c1">
+                <span class="fo-node" aria-hidden="true">1</span>
+                <div class="fo-main">
+                  <div class="fo-idn"><span class="fo-role fo-child">child · 1</span> · <span class="fo-prov">pluto</span></div>
+                  <div class="fo-behav">its own provider's adapter — own headers, own SSRF allow-set · one shot, no backoff</div>
+                </div>
+                <div class="fo-status">
+                  <span class="fo-try" aria-hidden="true">resolving…</span>
+                  <span class="fo-verdict fo-warn"><span class="fo-g" aria-hidden="true">↻</span> 502 · died · try next</span>
+                </div>
+              </div>
+
+              <div class="fo-card fo-c2">
+                <span class="fo-node" aria-hidden="true">2</span>
+                <div class="fo-main">
+                  <div class="fo-idn"><span class="fo-role fo-child">child · 2</span> · <span class="fo-prov">tubi</span></div>
+                  <div class="fo-behav">one shot, no backoff · resolves alive under its own provider's policy key</div>
+                </div>
+                <div class="fo-status">
+                  <span class="fo-try" aria-hidden="true">resolving…</span>
+                  <span class="fo-verdict fo-ts"><span class="fo-g" aria-hidden="true">✓</span> 200 · grant · serve</span>
+                  <span class="fo-pin"><span class="fo-g" aria-hidden="true">◆</span> pinned · session</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- the terminal rung the cursor never reached -->
+            <div class="fo-end">
+              <span class="fo-node fo-endnode" aria-hidden="true">×</span>
+              <div class="fo-main">
+                <div class="fo-idn"><span class="fo-role fo-endrole">end of line</span></div>
+                <div class="fo-behav">had every candidate refused, attempt 3 answers <span class="fo-verdict fo-risk fo-inline"><span class="fo-g" aria-hidden="true">■</span> 410 · nothing left · stop</span> — not reached here: attempt 2 answered 200. An ungrouped channel costs exactly this one extra 410 before it fails the way it always has.</div>
+              </div>
+            </div>
+
+            <!-- the winner flows downstream under the parent's identity -->
+            <div class="fo-serve"><span class="fo-g" aria-hidden="true">▼</span> served under the parent's URL · name · guide</div>
+
+            <div class="fo-caps">
+              <span class="loopflag">wraps to the parent once · capped at 8 attempts</span>
+              <span class="fo-cap-note">the cursor pins on the winner for the session — only a 2xx keeps the pin; the next play starts from the parent again.</span>
+            </div>
+
+            <!-- downstream: what the viewer sees (nothing changes) -->
+            <div class="fo-player">
+              <span class="fo-pl-tag">downstream · player</span>
+              <span class="fo-pl-body">one <code>.m3u</code> line — the parent's name · number · guide, unchanged. The player never learns it switched providers.</span>
+              <span class="fo-pl-live"><span class="fo-pl-dot" aria-hidden="true"></span> live · switch unseen</span>
+            </div>
+
+          </div>
+        </div>
         <div class="panel">
           <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> the failover walk <span class="rt">rust data plane ⇄ node resolve seam</span></div>
           <div class="seq" style="padding:14px 16px 6px;">

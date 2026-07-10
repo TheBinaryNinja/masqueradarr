@@ -164,10 +164,201 @@
 .seam-row .path { font-family: var(--mono); font-size: 11.5px; color: var(--accent-hi); }
 .seam-row .d { font-size: 12px; color: var(--text-2); margin-top: 3px; }
 
+/* ═══ NEW · .fowalk — animated failover CURSOR walk ════════════════════════
+   The per-stream cursor descends a stack of candidates (attempt 0 → 1 → 2).
+   The node lights TEAL while a candidate is being resolved (the cursor is
+   there), then the card settles on the seam's verdict: AMBER 502 "died · try
+   next" for the parent and child 1, GREEN 200 "grant · serve" for child 2.
+   RED is reserved for the terminal 410 "nothing left · stop" rung the walk
+   never reaches — preserving the page's amber(keep-walking) vs red(stop)
+   split. The winner pins for the session and is served under the parent's
+   identity while the downstream player bar sits perfectly still. One shared
+   ~13s timeline (var --fo-dur) drives every track by percentage (no delay
+   chains), and every keyframe track ends on the resolved state so reduced
+   motion freezes to a legible end-frame. Tokens only — both themes for free. */
+.fowalk { --fo-dur: 13s; padding: 6px 14px 14px; }
+
+/* — hero: attempt odometer + the seam's three answers — */
+.fo-head { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; padding: 12px 2px 6px; }
+.fo-odo { display: inline-flex; align-items: center; gap: 8px; font-family: var(--mono); background: var(--bg-2); border: 1px solid var(--accent-line); border-radius: 999px; padding: 5px 13px 5px 11px; }
+.fo-odo-lbl { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.fo-odo-eq { font-size: 12px; color: var(--accent-hi); }
+.fo-odo-reel { position: relative; width: 1ch; height: 1.2em; overflow: hidden; font-size: 15px; }
+.fo-dig { position: absolute; inset: 0; display: grid; place-items: center; line-height: 1; font-weight: 700; color: var(--accent-hi); opacity: 0; }
+
+.fo-legend { display: flex; flex-wrap: wrap; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.fo-legend .fo-k { padding: 3px 9px; display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.03em; border-radius: 999px; border: 1px solid; }
+.fo-k.fo-ts   { color: var(--ts-hi); background: var(--ts-soft); border-color: var(--ts-line); }
+.fo-k.fo-warn { color: var(--cfg);   background: var(--cfg-soft); border-color: var(--cfg-line); }
+.fo-k.fo-risk { color: var(--risk);  background: var(--risk-soft); border-color: var(--risk-line); }
+.fo-g { font-size: 0.95em; }
+
+/* — the candidate stack + descending cursor rail — */
+.fo-cands { position: relative; display: flex; flex-direction: column; gap: 10px; padding: 6px 0 2px; }
+.fo-cands::before { content: ""; position: absolute; left: 22px; top: 30px; bottom: 30px; width: 2px; transform: translateX(-50%); border-radius: 2px; background: repeating-linear-gradient(180deg, var(--accent-line) 0 6px, transparent 6px 11px); }
+
+.fo-card, .fo-end { position: relative; display: flex; align-items: center; flex-wrap: wrap; gap: 10px; padding: 12px 14px 12px 46px; min-height: 58px; border-radius: var(--radius-m); border: 1px solid var(--hairline); background: var(--bg-1); overflow: hidden; }
+.fo-card::before, .fo-end::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--text-3); }
+
+.fo-node { position: absolute; left: 11px; top: 18px; z-index: 1; width: 22px; height: 22px; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 11px; font-weight: 600; background: var(--bg-2); color: var(--text-3); border: 1px solid var(--hairline-strong); }
+
+.fo-main { flex: 1 1 200px; min-width: 0; }
+.fo-idn { font-size: 13.5px; color: var(--text-2); }
+.fo-role { font-family: var(--mono); font-size: 10px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--accent-hi); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 999px; padding: 1px 7px; }
+.fo-role.fo-child { color: var(--ts-hi); background: var(--ts-soft); border-color: var(--ts-line); }
+.fo-role.fo-endrole { color: var(--text-3); background: var(--bg-2); border-color: var(--hairline-strong); }
+.fo-prov { font-family: var(--mono); font-size: 12.5px; color: var(--text-0); font-weight: 600; }
+.fo-behav { font-size: 12.5px; color: var(--text-2); margin-top: 3px; line-height: 1.45; }
+
+.fo-status { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-left: auto; }
+.fo-try { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.03em; color: var(--accent-hi); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 999px; padding: 3px 9px; opacity: 0; }
+.fo-verdict { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; border: 1px solid; border-radius: 999px; padding: 3px 10px; }
+.fo-verdict.fo-inline { padding: 1px 7px; font-size: 10px; vertical-align: middle; }
+.fo-verdict.fo-ts   { color: var(--ts-hi); background: var(--ts-soft); border-color: var(--ts-line); }
+.fo-verdict.fo-warn { color: var(--cfg);  background: var(--cfg-soft); border-color: var(--cfg-line); }
+.fo-verdict.fo-risk { color: var(--risk); background: var(--risk-soft); border-color: var(--risk-line); }
+.fo-card .fo-verdict { opacity: 0; }        /* revealed by the walk / reduced motion */
+.fo-pin { display: inline-flex; align-items: center; gap: 6px; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.03em; color: var(--ts-hi); background: var(--ts-soft); border: 1px solid var(--ts-line); border-radius: 999px; padding: 3px 9px; opacity: 0; }
+
+/* — terminal / end-of-line rung (the 410 the happy walk never reaches) — */
+.fo-end { align-items: flex-start; min-height: 0; background: var(--bg-2); }
+.fo-end::before { background: var(--risk-line); }
+.fo-end .fo-behav { color: var(--text-3); }
+.fo-node.fo-endnode { background: var(--bg-3); color: var(--text-3); border-color: var(--hairline-strong); }
+
+/* — winner flows downstream under the parent's identity — */
+.fo-serve { margin: 8px 0 2px 46px; font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; color: var(--ts-hi); opacity: 0; }
+
+/* — captions: the bounded loop + the session pin (prose the animation can't hold) — */
+.fo-caps { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 12px; margin-top: 10px; }
+.fo-cap-note { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em; color: var(--text-3); }
+
+/* — downstream player: constant, the viewer sees nothing change — */
+.fo-player { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; margin-top: 12px; padding: 11px 14px; border-radius: var(--radius-m); border: 1px dashed var(--hairline-strong); background: var(--bg-2); }
+.fo-pl-tag { font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); }
+.fo-pl-body { flex: 1 1 auto; min-width: 0; font-size: 13px; color: var(--text-1); }
+.fo-pl-live { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.03em; text-transform: uppercase; color: var(--ts-hi); }
+.fo-pl-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ts); box-shadow: 0 0 7px var(--ts); }
+
+/* — animation wiring (one shared timeline, percentage-driven) — */
+.fo-c0 { animation: fo-card0 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c1 { animation: fo-card1 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c2 { animation: fo-card2 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c0::before { animation: fo-bar0 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c1::before { animation: fo-bar1 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c2::before { animation: fo-bar2 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c0 .fo-node { animation: fo-node0 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c1 .fo-node { animation: fo-node1 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c2 .fo-node { animation: fo-node2 var(--fo-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.fo-c0 .fo-try { animation: fo-try0 var(--fo-dur) linear infinite; }
+.fo-c1 .fo-try { animation: fo-try1 var(--fo-dur) linear infinite; }
+.fo-c2 .fo-try { animation: fo-try2 var(--fo-dur) linear infinite; }
+.fo-c0 .fo-verdict { animation: fo-v0 var(--fo-dur) linear infinite; }
+.fo-c1 .fo-verdict { animation: fo-v1 var(--fo-dur) linear infinite; }
+.fo-c2 .fo-verdict { animation: fo-v2 var(--fo-dur) linear infinite; }
+.fo-pin  { animation: fo-pinin var(--fo-dur) cubic-bezier(.5,-0.35,.3,1.6) infinite; }
+.fo-serve { animation: fo-servein var(--fo-dur) ease infinite; }
+.fo-d0 { animation: fo-dig0 var(--fo-dur) linear infinite; }
+.fo-d1 { animation: fo-dig1 var(--fo-dur) linear infinite; }
+.fo-d2 { animation: fo-dig2 var(--fo-dur) linear infinite; }
+.fo-pl-dot { animation: fo-live 2.6s ease-in-out infinite; }
+
+/* card body: neutral → teal (resolving) → amber 502 / green 200 → neutral */
+@keyframes fo-card0 {
+  0%,2%    { background: var(--bg-1); border-color: var(--hairline); }
+  4%,10%   { background: var(--accent-soft); border-color: var(--accent-line); }
+  13%,92%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  96%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes fo-card1 {
+  0%,16%   { background: var(--bg-1); border-color: var(--hairline); }
+  18%,26%  { background: var(--accent-soft); border-color: var(--accent-line); }
+  29%,92%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  96%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes fo-card2 {
+  0%,34%   { background: var(--bg-1); border-color: var(--hairline); }
+  36%,44%  { background: var(--accent-soft); border-color: var(--accent-line); }
+  47%,92%  { background: var(--ts-soft); border-color: var(--ts-line); }
+  96%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+
+/* the ::before accent bar tracks the same states (idiom: .nm-card / .tx-leaf) */
+@keyframes fo-bar0 {
+  0%,2%{background:var(--text-3)} 4%,10%{background:var(--accent)} 13%,92%{background:var(--cfg)} 96%,100%{background:var(--text-3)}
+}
+@keyframes fo-bar1 {
+  0%,16%{background:var(--text-3)} 18%,26%{background:var(--accent)} 29%,92%{background:var(--cfg)} 96%,100%{background:var(--text-3)}
+}
+@keyframes fo-bar2 {
+  0%,34%{background:var(--text-3)} 36%,44%{background:var(--accent)} 47%,92%{background:var(--ts)} 96%,100%{background:var(--text-3)}
+}
+
+/* the teal cursor node — lights on the candidate being resolved, then returns
+   to the parent at the loop's end (mirrors "the next play starts from the parent") */
+@keyframes fo-node0 {
+  0%,13%   { background: var(--accent-soft); color: var(--accent-hi); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); transform: scale(1.14); }
+  16%,95%  { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline-strong); box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+  98%,100% { background: var(--accent-soft); color: var(--accent-hi); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); transform: scale(1.14); }
+}
+@keyframes fo-node1 {
+  0%,14%   { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline-strong); box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+  16%,31%  { background: var(--accent-soft); color: var(--accent-hi); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); transform: scale(1.14); }
+  33%,100% { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline-strong); box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+}
+@keyframes fo-node2 {
+  0%,32%   { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline-strong); box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+  34%,93%  { background: var(--accent-soft); color: var(--accent-hi); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); transform: scale(1.14); }
+  96%,100% { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline-strong); box-shadow: 0 0 0 0 transparent; transform: scale(1); }
+}
+
+@keyframes fo-try0 { 0%,2%{opacity:0} 4%,10%{opacity:1} 12%,100%{opacity:0} }
+@keyframes fo-try1 { 0%,16%{opacity:0} 18%,26%{opacity:1} 28%,100%{opacity:0} }
+@keyframes fo-try2 { 0%,34%{opacity:0} 36%,44%{opacity:1} 46%,100%{opacity:0} }
+
+@keyframes fo-v0 { 0%,11%{opacity:0;transform:translateX(5px)} 14%,92%{opacity:1;transform:none} 95%,100%{opacity:0;transform:translateX(5px)} }
+@keyframes fo-v1 { 0%,27%{opacity:0;transform:translateX(5px)} 30%,92%{opacity:1;transform:none} 95%,100%{opacity:0;transform:translateX(5px)} }
+@keyframes fo-v2 { 0%,45%{opacity:0;transform:translateX(5px)} 48%,92%{opacity:1;transform:none} 95%,100%{opacity:0;transform:translateX(5px)} }
+
+@keyframes fo-pinin {
+  0%,50%   { opacity:0; transform: scale(.5); }
+  55%      { opacity:1; transform: scale(1); }
+  92%      { opacity:1; transform: scale(1); }
+  95%,100% { opacity:0; transform: scale(.5); }
+}
+@keyframes fo-servein {
+  0%,52%   { opacity:0; transform: translateY(-5px); }
+  60%,92%  { opacity:1; transform: none; }
+  95%,100% { opacity:0; transform: translateY(-5px); }
+}
+
+@keyframes fo-dig0 { 0%,14%{opacity:1} 15%,95%{opacity:0} 96%,100%{opacity:1} }
+@keyframes fo-dig1 { 0%,15%{opacity:0} 16%,32%{opacity:1} 33%,100%{opacity:0} }
+@keyframes fo-dig2 { 0%,33%{opacity:0} 34%,94%{opacity:1} 95%,100%{opacity:0} }
+
+@keyframes fo-live { 0%,100%{opacity:1; box-shadow:0 0 7px var(--ts)} 50%{opacity:.55; box-shadow:0 0 3px var(--ts)} }
+
 /* ── reduced motion — freeze packet animations at a legible resting state ─── */
 @media (prefers-reduced-motion: reduce) {
   .pkt { animation: none !important; }
   .lane:not(.ts) .pkt:nth-child(1) { left: 30%; } .lane:not(.ts) .pkt:nth-child(2) { left: 24%; } .lane:not(.ts) .pkt:nth-child(3) { left: 18%; }
   .ts .pkt:nth-child(1){left:6%}.ts .pkt:nth-child(2){left:19%}.ts .pkt:nth-child(3){left:32%}.ts .pkt:nth-child(4){left:45%}
   .ts .pkt:nth-child(5){left:58%}.ts .pkt:nth-child(6){left:71%}.ts .pkt:nth-child(7){left:84%}.ts .pkt:nth-child(8){left:96%}
+
+  /* .fowalk — freeze on the RESOLVED end-state: attempt 2, cursor pinned on
+     child 2 (tubi), parent + child 1 answered 502, child 2 served + pinned. */
+  .fowalk *, .fowalk *::before, .fowalk *::after { animation: none !important; }
+  .fo-d0, .fo-d1 { opacity: 0; }
+  .fo-d2 { opacity: 1; }
+  .fo-c0, .fo-c1 { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  .fo-c0::before, .fo-c1::before { background: var(--cfg); }
+  .fo-c2 { background: var(--ts-soft); border-color: var(--ts-line); }
+  .fo-c2::before { background: var(--ts); }
+  .fo-c0 .fo-node, .fo-c1 .fo-node { background: var(--bg-2); color: var(--text-3); border-color: var(--hairline-strong); box-shadow: none; transform: none; }
+  .fo-c2 .fo-node { background: var(--accent-soft); color: var(--accent-hi); border-color: var(--accent); box-shadow: 0 0 0 4px var(--accent-soft); transform: scale(1.14); }
+  .fo-try { opacity: 0; }
+  .fo-card .fo-verdict { opacity: 1; transform: none; }
+  .fo-pin { opacity: 1; transform: none; }
+  .fo-serve { opacity: 1; transform: none; }
+  .fo-pl-dot { opacity: 1; box-shadow: 0 0 7px var(--ts); }
 }
