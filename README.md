@@ -554,6 +554,8 @@ Knobs: `failoverEnabled` (default **on** — configuring a group is the real opt
 Seamless mid-segment splicing is a future enhancement — a parent dying mid-play is caught on the player's
 next playlist refetch.
 
+<img src="docs/diagrams/failover-groups.svg" alt="Failover groups end to end: the group modal writes three fields on each channel doc and cascades the parent's EPG identity; compose exports only the parent; at play time a failed ENTRY establish sends the Rust data plane through failover_walk, resolving each ordered Active child through Node's seam (200 grant, 502 try-the-next, 410 exhausted) until one answers, after which the stream's cursor sticks to the winning candidate.">
+
 ## Playlists + EPG Sources with Playlist Binding
 
 Guide data reaches a playlist through **two distinct mechanisms** — keep them separate:

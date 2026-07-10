@@ -456,3 +456,127 @@ topology({
   b += legend(34, gl.bottom + 34, [[G.syn, 'Synthetic'], [G.auth, 'Authenticated'], [G.scrape, 'Scrape'], [G.sentinel, 'API sentinel'], [G.macro, 'Macro-fill'], [G.ident, 'Identity']]);
   write('adapter-taxonomy.svg', svg(W, gl.bottom + 58, b));
 }
+
+/* ── 9 · failover groups ────────────────────────────────────────────────── */
+{
+  const W = 1060, H = 1284;
+  let b = header(W, 'Failover groups — configure, hide, walk, stick', 'services/failover.ts · proxy/src/proxy.rs');
+
+  /* 1 · configure — the group is three fields on the channel doc */
+  b += lane({ x: 32, y: 84, w: 996, h: 216, label: '1 · CONFIGURE — NODE CONTROL PLANE', color: C.teal });
+
+  const g1 = card({ x: 52, y: 112, w: 225, rail: C.ash, title: 'Group modal', sub: ['select channels → Group', 'pick parent · drag order', 'save'] });
+  const g2 = card({ x: 297, y: 112, w: 225, rail: C.teal, titleMono: true, title: 'PUT /failover-groups', sub: ['bulkWrite: id · role · order', 'exactly one parent (enforced)', 'admin-only'] });
+  const g3 = card({ x: 542, y: 112, w: 225, rail: C.teal, titleMono: true, title: 'cascadeFailoverEpg', sub: ['parent (tvg_id, epg) → children', 'a child epgState is never null', 'direct child EPG edit → 409'] });
+  const g4 = card({ x: 787, y: 112, w: 225, rail: C.teal, titleMono: true, title: 'reconcileFailoverGroups', sub: ['after every delete / prune', 'parents ≠ 1 or children < 1', '→ disband · keep inherited EPG'] });
+
+  const store = card({
+    x: 52, y: 213, w: 470, rail: C.green, dashed: true, fill: C.carbon, title: 'playlistchannels — three fields',
+    sub: ['failoverGroupId (uuid) · failoverRole · failoverOrder', 'partial index {source, failoverGroupId} · written only by the group routes'],
+  });
+  const exp = card({
+    x: 542, y: 213, w: 470, rail: C.teal, dashed: true, fill: C.carbon, title: 'Export surface — a group is one line',
+    sub: ["compose.ts filters failoverRole ≠ 'child' (serialize.ts re-checks)", 'children stay badged in the UI — never in the .m3u or the guide'],
+  });
+
+  for (const x of [279, 524, 769]) b += edge([[x, 155], [x + 14, 155]], { color: 'teal', r: 0 });
+  b += edge([[409, 199], [409, 211]], { color: 'green' });
+  b += edge([[899, 199], [899, 211]], { color: 'teal' });
+  b += g1.svg + g2.svg + g3.svg + g4.svg + store.svg + exp.svg;
+
+  /* 2 · the walk — the Rust↔Node loop that actually fails over */
+  b += lane({ x: 32, y: 340, w: 996, h: 594, label: '2 · PLAY-TIME WALK — RUST DATA PLANE + NODE RESOLVE SEAM', color: C.amber });
+
+  const trig = card({
+    x: 52, y: 368, w: 960, rail: C.risk, title: 'ENTRY establish fails',
+    sub: [
+      'resolve failed — dead scrape · expired auth · unknown adapter',
+      'transport failure after the RSL retry budget (502 / 503 / 504 · timeouts)',
+      'definitive 4xx / 5xx — only when failoverOnDefiniteError is on (default off)',
+    ],
+  });
+  b += trig.svg;
+  b += edge([[532, 455], [532, 468]], { color: 'risk' });
+
+  // the loop box + its fieldset chip
+  b += `<rect x="44" y="470" width="976" height="448" rx="12" fill="${C.lane}" stroke="${C.amber}" stroke-opacity="0.42" stroke-width="1.2"/>`;
+  const chipLabel = 'failover_walk() · attempt cursor · cap MAX_FAILOVER_ATTEMPTS = 8';
+  const chipW = measure(chipLabel, 9, true) + 22;
+  b += `<rect x="66" y="462" width="${chipW}" height="16" rx="5" fill="${C.bg}" stroke="${C.bracket}" stroke-width="1"/>`
+    + text(66 + chipW / 2, 473.4, chipLabel, { fill: C.amber, size: 9, weight: 600, mono: true, anchor: 'middle' });
+
+  // the seam gutter
+  b += `<line x1="538" y1="512" x2="538" y2="800" stroke="${C.teal}" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>`;
+
+  const r1 = card({
+    x: 76, y: 520, w: 400, rail: C.amber, title: 'attempt = the stream cursor',
+    sub: ['0 = the channel itself · N ≥ 1 = its Nth Active child', 'fetch failed → retry the cursor (fresh resolve · mirror rotation)', 'resolve failed → start one past the cursor'],
+  });
+  const r2 = card({
+    x: 76, y: 725, w: 400, rail: C.amber, title: 'fetch the candidate',
+    sub: ['first try keeps the full RSL budget (retry + backoff)', 'later candidates: one shot, no backoff — beat the player timeout'],
+  });
+  const n1 = card({
+    x: 600, y: 520, w: 400, rail: C.teal, titleMono: true, title: 'buildGrant(source, url, pl, attempt)',
+    sub: ['attempt 0 → adapter.resolveStream(url)', 'attempt ≥ 1 → buildFailoverGrant()'], subMono: false,
+  });
+  const n2 = card({
+    x: 600, y: 610, w: 400, rail: C.teal, titleMono: true, title: 'buildFailoverGrant()',
+    sub: ['parent ← (streamEntryUrl, pl, role: parent)', 'children: role child · status Active · sort failoverOrder', 'cand = children[attempt-1] → its adapter (origin ?? source)'],
+    subMono: true,
+  });
+  const n3 = card({
+    x: 600, y: 715, w: 400, rail: C.teal, title: 'Reply — the walk contract',
+    sub: [
+      "200 · grant — policySource = the child's own adapter",
+      '502 · resolve_failed — this candidate died, try the next',
+      '410 · failover_exhausted — nothing left, end the walk',
+    ],
+  });
+
+  const o1 = card({ x: 76, y: 830, w: 296, rail: C.green, title: 'Recovered — 2xx', sub: ['pin the cursor to this attempt', "serve under the parent's URL + identity"] });
+  const o2 = card({ x: 392, y: 830, w: 296, rail: C.amber, title: 'Definitive non-2xx', sub: ['knob off → forward verbatim, un-pin', 'knob on → stash it and walk on'] });
+  const o3 = card({ x: 708, y: 830, w: 296, rail: C.risk, title: 'Dead — nothing served', sub: ['410 + untried earlier → wrap ONCE to 0', 'else reset cursor → 502 to the player'] });
+
+  b += edge([[478, 555], [598, 555]], { color: 'amber', r: 0 });
+  b += edge([[800, 592], [800, 608]], { color: 'teal' });
+  b += edge([[800, 697], [800, 713]], { color: 'teal' });
+  b += edge([[598, 757], [478, 757]], { color: 'teal', r: 0 });
+  b += edge([[76, 760], [58, 760], [58, 498], [380, 498], [380, 518]], { color: 'amber' });
+  b += edge([[276, 798], [276, 812], [224, 812], [224, 828]], { color: 'green' });
+  b += edge([[276, 798], [276, 812], [540, 812], [540, 828]], { color: 'amber' });
+  b += edge([[276, 798], [276, 812], [856, 812], [856, 828]], { color: 'risk' });
+
+  b += r1.svg + r2.svg + n1.svg + n2.svg + n3.svg + o1.svg + o2.svg + o3.svg;
+
+  b += pill(538, 492, ['/api/internal/resolve', 'loopback · x-masq-secret'], { color: C.teal });
+  b += pill(538, 555, 'attempt', { color: C.amber });
+  b += pill(538, 757, 'grant · 502 · 410', { color: C.teal });
+  b += pill(170, 498, 'attempt + 1', { color: C.amber });
+
+  /* 3 + 4 · the cursor and what it lights up */
+  b += lane({ x: 32, y: 974, w: 488, h: 216, label: '3 · CURSOR — STICK ON THE WINNER', color: C.green });
+  b += lane({ x: 540, y: 974, w: 488, h: 216, label: '4 · OBSERVABILITY', color: C.teal });
+
+  const cur = card({
+    x: 52, y: 1002, w: 448, rail: C.green, titleMono: true, title: 'ResolvedEntry.attempt',
+    sub: ['only an attempt that SERVED 2xx keeps the pin', 'every other exit resets the cursor to 0', 'FAILOVER_CURSOR_IDLE — 300s idle → back to the parent'],
+  });
+  const curN = card({
+    x: 52, y: 1103, w: 448, rail: C.dim, dashed: true, fill: C.carbon, title: 'Why it sticks',
+    sub: ["hops inherit the pinned candidate's policy_key", 'a live session never snaps back to the dead parent'],
+  });
+  const obs = card({
+    x: 560, y: 1002, w: 448, rail: C.teal, titleMono: true, title: 'noteFailoverServing → statsHub',
+    sub: ['Active Streams badges  failover → <child>', "attribution stays on the parent's (source, entry)", 'cleared on attempt 0 · pruned with the session'],
+  });
+  const obsN = card({
+    x: 560, y: 1103, w: 448, rail: C.dim, dashed: true, fill: C.carbon, title: 'Log category  failover',
+    sub: ['1 issue · 2 milestone · 3 lineage — tier-gated', 'Node names the parent · Rust carries the session rid'],
+  });
+  b += cur.svg + curN.svg + obs.svg + obsN.svg;
+
+  b += text(W / 2, 1220, 'Failover can never mask a dead parent: the scheduled probe keeps probing hidden children, and probeAll resolves each channel itself (no attempt).', { fill: C.dim, size: 9.6, anchor: 'middle' });
+  b += legend(32, 1252, [[C.ash, 'SPA / player'], [C.teal, 'Node — control plane'], [C.amber, 'Rust — data plane'], [C.green, 'Group state · recovery'], [C.risk, 'Failure path']]);
+  write('failover-groups.svg', svg(W, H, b));
+}
