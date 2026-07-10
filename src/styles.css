@@ -669,6 +669,8 @@ button, input, textarea, select { outline: none; }
 .btn.icon { padding: 0; width: 34px; justify-content: center; }
 .btn.danger { color: var(--bad); }
 .btn.danger:hover { background: oklch(0.7 0.18 25 / 0.1); border-color: oklch(0.7 0.18 25 / 0.3); }
+.btn.cyan { background: var(--accent-soft); color: var(--accent-hi); border-color: oklch(0.82 0.13 220 / 0.3); }
+.btn.cyan:hover { background: var(--accent-glow); border-color: oklch(0.82 0.13 220 / 0.5); color: var(--accent-hi); }
 .btn.sm { height: 28px; padding: 0 10px; font-size: var(--fs-xs); }
 .btn.sm.icon { width: 28px; padding: 0; }
 

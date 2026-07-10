@@ -14,6 +14,7 @@ import PlaylistStatusDrawer from '../components/PlaylistStatusDrawer.vue';
 import Stat from '../components/Stat.vue';
 import ProgressBar from '../components/ProgressBar.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
+import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, type Playlist, type Channel, type CustomPlaylist } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
@@ -378,6 +379,56 @@ function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResul
   opOpen.value = true;
 }
 
+// Header actions, collapsed into the waffle popover menu. Faithfully ports the former inline button cluster:
+// the Global cohort gets a single Sync + the cohort-wide Sync Global / Compose Global; a clone gets manual
+// Compose m3u; a syncable custom playlist gets Sync (live upstream only) + Compose; Edit and Delete are
+// always present. Each run() calls the same openOpModal / statusOpen / openDelete path the buttons used, so
+// toast / reload / modal behavior is unchanged. The computed recomputes on the inflight refs, so the
+// labels/disabled stay live while the menu is open.
+const menuOpen = ref(false);
+const headerMenuItems = computed<RowActionItem[]>(() => {
+  const p = playlist.value;
+  const items: RowActionItem[] = [];
+  if (playlistSource.value && !isCustom.value) {
+    items.push({
+      key: 'sync', icon: 'refresh', disabled: syncing.value, label: syncing.value ? 'Syncing…' : 'Sync',
+      run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncNow()); },
+    });
+    items.push({
+      key: 'sync-global', icon: 'refresh', disabled: syncingGlobal.value, label: syncingGlobal.value ? 'Syncing…' : 'Sync Global',
+      run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); },
+    });
+    items.push({
+      key: 'compose-global', icon: 'file', disabled: composingGlobal.value, label: composingGlobal.value ? 'Composing…' : 'Compose Global',
+      run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); },
+    });
+  } else if (isClone.value) {
+    items.push({
+      key: 'compose', icon: 'file', disabled: composing.value, label: composing.value ? 'Composing…' : 'Compose m3u',
+      run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeNow()); },
+    });
+  } else if (playlistSource.value) {
+    if (isSyncableCustom.value) {
+      items.push({
+        key: 'sync', icon: 'refresh', disabled: syncing.value, label: syncing.value ? 'Syncing…' : 'Sync',
+        run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncNow()); },
+      });
+    }
+    items.push({
+      key: 'compose', icon: 'file', disabled: composing.value, label: composing.value ? 'Composing…' : 'Compose',
+      run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeNow()); },
+    });
+  }
+  items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { statusOpen.value = true; } });
+  if (p.id) {
+    items.push({
+      key: 'delete', icon: 'trash', label: 'Delete', danger: true, disabled: deleting.value,
+      run: () => { void openDelete(); },
+    });
+  }
+  return items;
+});
+
 const filtered = computed(() => {
   const rows = channels.value.filter((c) =>
     c.status === stateFilter.value &&
@@ -553,40 +604,21 @@ async function doAppend() {
         <Stat label="Groups" :value="playlist.groups" />
         <Stat label="Synced" :value="playlist.lastSync" small />
       </div>
-      <div class="row" style="gap: 10px;">
-        <template v-if="playlistSource && !isCustom">
-          <!-- Individual sync of THIS global playlist (syncNow → POST /api/sources/:source/sync), alongside the
-               cohort-wide Sync Global. -->
-          <Btn variant="ghost" icon="refresh" :disabled="syncing" @click="openOpModal('sync', { kind: 'custom', id: playlist.id, name: playlist.name }, () => syncNow())">
-            {{ syncing ? 'Syncing…' : 'Sync' }}
-          </Btn>
-          <Btn variant="ghost" icon="refresh" :disabled="syncingGlobal" @click="openOpModal('sync', { kind: 'global' }, () => onSyncGlobal())">
-            {{ syncingGlobal ? 'Syncing…' : 'Sync Global' }}
-          </Btn>
-          <Btn variant="ghost" icon="file" :disabled="composingGlobal" @click="openOpModal('compose', { kind: 'global' }, () => onComposeGlobal())">
-            {{ composingGlobal ? 'Composing…' : 'Compose Global' }}
-          </Btn>
-        </template>
-        <template v-else-if="isClone">
-          <!-- A clone has no source to sync; m3u compose is manual only (interval 'none'). -->
-          <Btn variant="ghost" icon="file" :disabled="composing" @click="openOpModal('compose', { kind: 'custom', id: playlist.id, name: playlist.name }, () => composeNow())">
-            {{ composing ? 'Composing…' : 'Compose m3u' }}
-          </Btn>
-        </template>
-        <template v-else-if="playlistSource">
-          <!-- Sync only for custom types with a live upstream ('url'/'hdhomerun'); 'file'/'import' have none. -->
-          <Btn v-if="isSyncableCustom" variant="ghost" icon="refresh" :disabled="syncing" @click="openOpModal('sync', { kind: 'custom', id: playlist.id, name: playlist.name }, () => syncNow())">
-            {{ syncing ? 'Syncing…' : 'Sync' }}
-          </Btn>
-          <Btn variant="ghost" icon="file" :disabled="composing" @click="openOpModal('compose', { kind: 'custom', id: playlist.id, name: playlist.name }, () => composeNow())">
-            {{ composing ? 'Composing…' : 'Compose' }}
-          </Btn>
-        </template>
-        <Btn v-else-if="!playlist.builtin" variant="ghost" icon="refresh">Sync</Btn>
-        <Btn variant="primary" icon="edit" @click="statusOpen = true">Edit</Btn>
-        <button v-if="playlist.id" class="btn ghost danger" :disabled="deleting" @click="openDelete" title="Delete playlist">
-          <Icon name="trash" :size="14" />Delete
-        </button>
+      <!-- All header actions (Sync / Sync Global / Compose[ Global] / Edit / Delete) collapse into one cyan
+           waffle popover, mirroring the Playlists list-screen row-actions pattern. position:relative anchors
+           the absolutely-positioned RowActionsMenu; @click.stop is the contract its outside-click listener
+           relies on (and keeps the trigger click off the card). -->
+      <div class="row" style="gap: 10px; position: relative;" @click.stop>
+        <Btn
+          variant="cyan"
+          icon="waffle"
+          title="Actions"
+          aria-label="Actions"
+          aria-haspopup="menu"
+          :aria-expanded="menuOpen"
+          @click="menuOpen = !menuOpen"
+        />
+        <RowActionsMenu v-if="menuOpen" :items="headerMenuItems" @close="menuOpen = false" />
       </div>
     </div>
 
