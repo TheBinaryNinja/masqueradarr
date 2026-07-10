@@ -594,11 +594,13 @@ pub(crate) async fn failover_walk(
     let mut tried: u32 = 0;
     loop {
         if tried >= MAX_FAILOVER_ATTEMPTS {
-            log::warn("proxy", rid, || format!("failover walk hit the attempt cap ({MAX_FAILOVER_ATTEMPTS}) — giving up"));
+            log::warn("failover", rid, || format!("failover walk hit the attempt cap ({MAX_FAILOVER_ATTEMPTS}) — giving up"));
             state.reset_cursor(source, stream_entry);
             break;
         }
         tried += 1;
+        // Level-3 lineage: one line per hop of the walk (attempt cursor + how many we've tried this walk).
+        log::trace("failover", rid, || format!("attempt {attempt} (tried {tried}/{MAX_FAILOVER_ATTEMPTS})"));
         match state.resolve_at(source, stream_entry, pl, attempt).await {
             Ok((p, target)) => {
                 // The grant carries the authoritative failoverEnabled — a cold pre-walk policy cache may
@@ -607,7 +609,7 @@ pub(crate) async fn failover_walk(
                 if !p.failover_enabled.load(Ordering::Relaxed) {
                     walk_children = false;
                     if attempt > 0 {
-                        log::warn("proxy", rid, || "failover disabled by config — not serving a backup candidate".to_string());
+                        log::warn("failover", rid, || "failover disabled by config — not serving a backup candidate".to_string());
                         state.reset_cursor(source, stream_entry);
                         break;
                     }
@@ -618,43 +620,60 @@ pub(crate) async fn failover_walk(
                 );
                 let read_timeout_ms = p.read_timeout_ms.load(Ordering::Relaxed);
                 let retries = if tried == 1 { MAX_UPSTREAM_RETRIES } else { 0 };
+                // Level-3 lineage: backups get a single one-shot fetch (no RSL budget, no backoff) so a
+                // multi-child group still establishes inside a player's manifest timeout.
+                if retries == 0 {
+                    log::trace("failover", rid, || format!("candidate {attempt} on reduced budget (one-shot, no backoff)"));
+                }
                 match fetch_with_retry(&client, &target, &build_headers(&p), read_timeout_ms, rid, "failover", retries).await {
                     Ok(r) if r.status().is_success() => {
-                        log::info("proxy", rid, || format!("failover recovered on candidate {attempt} → {}", host_of(&target)));
+                        // Milestone (≥2): a backup established and now serves the session — the cursor stays
+                        // pinned to this attempt (stick-on-winner) for the stream's lifetime.
+                        log::info("failover", rid, || format!("recovered on candidate {attempt} → {} (sticking for the session)", host_of(&target)));
                         return WalkOutcome::Recovered(p, target, r);
                     }
                     Ok(r) => {
                         let s = r.status().as_u16();
                         if walk_children && keep_walking_on_definite {
-                            log::warn("proxy", rid, || format!("candidate {attempt} answered definitive {s} — walking on"));
+                            log::warn("failover", rid, || format!("candidate {attempt} answered definitive {s} — walking on"));
                             last_definitive = Some((p, r));
                         } else {
                             // Forward-verbatim semantics: a definitive response ends the walk (exactly
                             // today's mirror-rotation behavior — resp is used whatever its status). The
                             // candidate did NOT serve, so un-pin: the next poll re-resolves from the
                             // parent instead of replaying this failure for the cursor's lifetime.
-                            log::warn("proxy", rid, || format!("candidate {attempt} answered definitive {s} — forwarding"));
+                            log::warn("failover", rid, || format!("candidate {attempt} answered definitive {s} — forwarding"));
                             state.reset_cursor(source, stream_entry);
                             return WalkOutcome::Recovered(p, target, r);
                         }
                     }
                     Err(e) => {
-                        log::warn("proxy", rid, || format!("candidate {attempt} fetch failed: {e}"));
+                        log::warn("failover", rid, || format!("candidate {attempt} fetch failed: {e}"));
                     }
                 }
             }
             Err(ResolveErr::Exhausted) => {
                 if walk_children && wrap && start > 0 && !wrapped {
-                    log::info("proxy", rid, || "candidate list exhausted — wrapping to the parent".to_string());
+                    log::info("failover", rid, || "candidate list exhausted — wrapping to the parent".to_string());
                     wrapped = true;
                     attempt = 0;
                     continue;
+                }
+                // The terminal event: Node returned failover_exhausted with nothing left to try. Issue-level
+                // (≥1) — pairs with the Node resolve-seam "exhausted all N backup(s)" warn (that side names
+                // the parent/source; this side carries the session rid). `tried > 1` means we actually tried
+                // a candidate before running out; `tried == 1` is an ungrouped channel's one-probe cost (or
+                // an emptied group) — that's normal, so it stays quiet at level 1 (Node traces it at 3).
+                if tried > 1 {
+                    log::warn("failover", rid, || format!("all backups exhausted after {} attempt(s) — giving up", tried - 1));
+                } else {
+                    log::trace("failover", rid, || "no failover candidates for this stream".to_string());
                 }
                 state.reset_cursor(source, stream_entry);
                 break;
             }
             Err(ResolveErr::Other(e)) => {
-                log::warn("proxy", rid, || format!("candidate {attempt} resolve failed: {e}"));
+                log::warn("failover", rid, || format!("candidate {attempt} resolve failed: {e}"));
             }
         }
         if !walk_children {

@@ -18,6 +18,7 @@ import { cascadeDeleteEpgSource } from './epgSources.js';
 import { cascadeFailoverEpg, reconcileFailoverGroups, inheritedEpgState } from '../services/failover.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { logger } from '../sources/core/logger.js';
+import { logMilestone, logTrace } from '../logs/tier.js';
 
 export const playlistsRouter = Router();
 
@@ -623,6 +624,12 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
         { failoverRole: 1, epg: 1, epgState: 1 },
       ).lean();
       if (target?.failoverRole === 'child') {
+        // Issue-level (≥1): the operator tried to edit a failover child's guide directly, but children
+        // mirror their parent's EPG — the edit must go to the parent (which cascades).
+        logger.warn(
+          'failover',
+          `rejected EPG edit on failover child ${req.params.channelId} (locked to parent) on ${req.params.id}`,
+        );
         return res.status(409).json({ error: 'failover_child_epg_locked' });
       }
       // A grouped PARENT must never land back on the { epg: null, epgState: null } seed state: the
@@ -726,6 +733,12 @@ playlistsRouter.put('/:id/failover-groups', requireAdmin, async (req, res, next)
       (m) => m.failoverRole === 'parent' && m.failoverGroupId && m.failoverGroupId !== groupId,
     );
     if (foreignParent) {
+      // Issue-level (≥1): a requested member already heads another group — the operator must disband that
+      // group first, so the save is refused rather than silently leaving it headless.
+      logger.warn(
+        'failover',
+        `group ${groupId} save on ${source} refused: member ${String(foreignParent._id)} heads another group`,
+      );
       return res
         .status(409)
         .json({ error: 'member_is_foreign_parent', channelId: String(foreignParent._id) });
@@ -779,6 +792,11 @@ playlistsRouter.put('/:id/failover-groups', requireAdmin, async (req, res, next)
       },
     ];
     await PlaylistChannel.bulkWrite(ops, { ordered: true });
+    // Level-3 lineage: the members were written (children inherit the parent's EPG state at save).
+    logTrace(
+      'failover',
+      `group ${groupId} bulkWrite on ${source}: parent ${parentId}, ${childIds.length} child(ren), epgState '${inheritedState}'`,
+    );
 
     // Self-heal: donor groups that lost children above, plus any race leftovers (two admins saving
     // overlapping groups can violate single-parent — reconcile disbands such groups; groups are
@@ -792,10 +810,15 @@ playlistsRouter.put('/:id/failover-groups', requireAdmin, async (req, res, next)
       .sort((a, b) => (a.failoverOrder ?? 0) - (b.failoverOrder ?? 0));
     if (parents.length !== 1 || children.length < 1) {
       // A concurrent mutation raced us and reconcile disbanded the result — surface it rather than
-      // returning a half-group the UI would render as authoritative.
+      // returning a half-group the UI would render as authoritative. Issue-level (≥1) — a lost write.
+      logger.error(
+        'failover',
+        `group ${groupId} save on ${source} lost to a concurrent mutation (parents ${parents.length}, children ${children.length})`,
+      );
       return res.status(500).json({ error: 'failover_group_write_conflict' });
     }
-    logger.info(
+    // Milestone (≥2): the group was created/replaced.
+    logMilestone(
       'failover',
       `group ${groupId} saved on ${source}: parent ${parentId}, ${children.length} child(ren)`,
     );
@@ -832,6 +855,8 @@ playlistsRouter.put('/:id/failover-groups/:groupId/reorder', requireAdmin, async
     ).lean();
     const currentIds = new Set(current.map((c) => String(c._id)));
     if (currentIds.size !== childIds.length || (childIds as string[]).some((c) => !currentIds.has(c))) {
+      // Level-3 lineage: a stale client child set (someone else mutated the group) — the reorder is refused.
+      logTrace('failover', `group ${groupId} reorder on ${source} refused: child set mismatch`);
       return res.status(400).json({ error: 'child_set_mismatch' });
     }
     await PlaylistChannel.bulkWrite(
@@ -841,6 +866,11 @@ playlistsRouter.put('/:id/failover-groups/:groupId/reorder', requireAdmin, async
           update: { $set: { failoverOrder: i } },
         },
       })),
+    );
+    // Milestone (≥2): the child backup order changed (the route logged nothing before this).
+    logMilestone(
+      'failover',
+      `group ${groupId} reordered on ${source} (${(childIds as string[]).length} child(ren))`,
     );
     const after = await PlaylistChannel.find({ source, failoverGroupId: groupId }, { _id: 0 }).lean();
     const parent = after.find((m) => m.failoverRole === 'parent') ?? null;
@@ -865,7 +895,8 @@ playlistsRouter.delete('/:id/failover-groups/:groupId', requireAdmin, async (req
       { $set: { failoverGroupId: null, failoverRole: null, failoverOrder: null } },
     );
     if (r.matchedCount === 0) return res.status(404).json({ error: 'not_found' });
-    logger.info('failover', `group ${groupId} disbanded on ${source} (${r.matchedCount} member(s))`);
+    // Milestone (≥2): the group was disbanded (members keep inherited EPG, lose only the grouping).
+    logMilestone('failover', `group ${groupId} disbanded on ${source} (${r.matchedCount} member(s))`);
     composeM3u(source).catch((err) =>
       logger.warn('m3u', `compose after failover-group disband (${source}) failed: ${(err as Error).message}`),
     );

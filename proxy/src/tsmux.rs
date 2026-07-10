@@ -187,7 +187,8 @@ pub async fn try_ts_response(
 /// master. Swaps the producer onto the winning candidate's policy + client (FOG: a cross-provider child's
 /// headers live under ITS adapter's policy). `None` ⇒ nothing reachable (the producer ends).
 async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
-    log::info("tsmux", &ctx.rid, || "media playlist unreachable — walking failover candidates".to_string());
+    // Milestone (≥2): a live raw-TS session lost its media playlist and is now failing over.
+    log::info("failover", &ctx.rid, || "media playlist unreachable — walking failover candidates".to_string());
     let walk_children = ctx.policy.failover_enabled.load(Ordering::Relaxed);
     let on_definite = ctx.policy.failover_on_definite_error.load(Ordering::Relaxed);
     ctx.state.invalidate_target(&ctx.source, &ctx.entry);
@@ -214,6 +215,9 @@ async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
                 ctx.policy.connect_timeout_ms.load(Ordering::Relaxed),
                 ctx.policy.max_redirects.load(Ordering::Relaxed),
             );
+            // Level-3 lineage: the raw-TS producer now follows the winning (possibly cross-provider)
+            // candidate's policy + client for the rest of the session (the walk logged the recovery above).
+            log::trace("failover", &ctx.rid, || "raw-TS producer swapped onto the winning candidate's policy".to_string());
             r
         }
         _ => return None, // definitive non-2xx / dead — nothing a raw-TS producer can serve
@@ -285,7 +289,8 @@ async fn ts_producer(
                         media_body = b;
                     }
                     None => {
-                        log::warn("tsmux", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
+                        // Issue-level (≥1): the raw-TS session exhausted its failover chain and ends.
+                        log::warn("failover", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
                         break 'outer; // nothing reachable — end the stream
                     }
                 },

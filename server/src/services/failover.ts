@@ -6,7 +6,7 @@
 //    remove-channels, built-in cascade delete) and after group saves move members between groups.
 
 import { PlaylistChannel, type PlaylistChannelDoc } from '../models/PlaylistChannel.js';
-import { logger } from '../sources/core/logger.js';
+import { logMilestone, logTrace } from '../logs/tier.js';
 
 export interface FailoverEpgSnapshot {
   tvg_id: string | null;
@@ -44,9 +44,16 @@ export async function cascadeFailoverEpg(
     { source, failoverGroupId, failoverRole: 'child' },
     { $set: { tvg_id: snap.tvg_id, epg: snap.epg, epgState: inheritedEpgState(snap) } },
   );
-  return PlaylistChannel.find({ source, failoverGroupId, failoverRole: 'child' }, { _id: 0 })
+  const children = await PlaylistChannel.find({ source, failoverGroupId, failoverRole: 'child' }, { _id: 0 })
     .sort({ failoverOrder: 1 })
     .lean<PlaylistChannelDoc[]>();
+  // Level-3 lineage: the parent's EPG identity was mirrored onto the group's children. This is the single
+  // logging site for the cascade — every caller (the channel-edit route today) funnels through here.
+  logTrace(
+    'failover',
+    `cascaded parent EPG → ${children.length} child(ren) · group ${failoverGroupId} · ${source}`,
+  );
+  return children;
 }
 
 // Disband every degenerate group on a source: a group whose parent vanished (pruned/deleted), whose last
@@ -70,10 +77,13 @@ export async function reconcileFailoverGroups(source: string): Promise<void> {
   const degenerate = [...tally.entries()]
     .filter(([, t]) => t.parents !== 1 || t.children < 1)
     .map(([g]) => g);
+  // Level-3 lineage: record every reconcile pass, not just the ones that disband something.
+  logTrace('failover', `reconcile on ${source}: ${tally.size} group(s), ${degenerate.length} degenerate`);
   if (!degenerate.length) return;
   await PlaylistChannel.updateMany(
     { source, failoverGroupId: { $in: degenerate } },
     { $set: { failoverGroupId: null, failoverRole: null, failoverOrder: null } },
   );
-  logger.info('failover', `disbanded ${degenerate.length} degenerate failover group(s) on ${source}`);
+  // Milestone (≥2): a group self-healed away (parent pruned, last child left, or a race left two parents).
+  logMilestone('failover', `disbanded ${degenerate.length} degenerate failover group(s) on ${source}`);
 }

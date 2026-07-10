@@ -4,6 +4,7 @@ import type { RuntimeProxyConfig } from '../proxyconfig/translate.js';
 import { PlaylistChannel, type PlaylistChannelDoc } from '../models/PlaylistChannel.js';
 import { noteFailoverServing } from '../sources/core/streamTelemetry.js';
 import { logger } from '../sources/core/logger.js';
+import { logMilestone, logTrace } from '../logs/tier.js';
 
 // The RESOLVE SEAM (control plane). Given a stream request the Rust data plane can't resolve itself, Node
 // runs the stateful, per-source adapter logic (dulo Supabase auth, dlhd 3-hop scrape + mirror rotation, the
@@ -174,7 +175,12 @@ async function buildFailoverGrant(
       (await PlaylistChannel.findOne({ streamEntryUrl: url, origin: source, failoverRole: 'parent' })
         .sort({ source: 1 })
         .lean()));
-  if (!parent?.failoverGroupId) return { ok: false, status: 410, error: 'failover_exhausted' };
+  if (!parent?.failoverGroupId) {
+    // Defensive: Rust asked to fail over a channel that isn't a grouped parent (no group, or an in-app
+    // probe past a plain channel). Normal terminator, not an operator-facing issue — level-3 lineage only.
+    logTrace('failover', `attempt ${attempt}: ${url} is not a grouped failover parent — exhausted`);
+    return { ok: false, status: 410, error: 'failover_exhausted' };
+  }
 
   // Candidates = the group's Active children in failover order. Disabled children are deliberately
   // skipped (status is the operator's exclusion governor — a disabled backup must never be served).
@@ -190,12 +196,25 @@ async function buildFailoverGrant(
     .sort({ failoverOrder: 1 })
     .lean<PlaylistChannelDoc[]>();
   const cand = children[attempt - 1];
-  if (!cand) return { ok: false, status: 410, error: 'failover_exhausted' };
+  if (!cand) {
+    // Every Active backup was tried and none established — the real terminal event. Issue-level (≥1): an
+    // operator wants to know a stream fully exhausted its failover chain. Pairs with the Rust data-plane
+    // "all backups exhausted" warn (data plane carries the session rid; this names the parent + source).
+    logger.warn(
+      'failover',
+      `exhausted all ${children.length} backup(s) for ${parent.id} on ${parent.source}`,
+    );
+    return { ok: false, status: 410, error: 'failover_exhausted' };
+  }
 
   const candSource = cand.origin ?? cand.source;
   const candAdapter = getSource(candSource);
   if (!candAdapter) {
     // A 502 (not 410) so the data plane advances to the NEXT candidate rather than giving up.
+    logger.warn(
+      'failover',
+      `candidate ${attempt} ("${cand.tvg_name}") for ${parent.id}: unknown adapter '${candSource}'`,
+    );
     return { ok: false, status: 502, error: `resolve_failed: unknown candidate adapter '${candSource}'` };
   }
 
@@ -207,6 +226,12 @@ async function buildFailoverGrant(
       target = (await candAdapter.resolveStream(target)).masterUrl;
     }
   } catch (err) {
+    // This backup couldn't resolve its stream; the 502 advances the data plane to the next candidate.
+    // Issue-level (≥1) — a failing backup is worth surfacing even at the quietest verbosity.
+    logger.warn(
+      'failover',
+      `candidate ${attempt} ("${cand.tvg_name}") for ${parent.id} resolve failed: ${(err as Error).message}`,
+    );
     return { ok: false, status: 502, error: `resolve_failed: ${(err as Error).message}` };
   }
 
@@ -222,7 +247,8 @@ async function buildFailoverGrant(
   // actually serves so Active Streams can show "failover → <child>" (see statsHub DisplayStream.failover).
   const failover = { attempt, total: children.length, candidateId: cand.id, candidateName: cand.tvg_name };
   noteFailoverServing(source, url, failover);
-  logger.info(
+  // Milestone (≥2): a backup is now serving in place of the parent — the headline failover event.
+  logMilestone(
     'failover',
     `serving candidate ${attempt}/${failover.total} ("${cand.tvg_name}") for ${parent.id}`,
   );

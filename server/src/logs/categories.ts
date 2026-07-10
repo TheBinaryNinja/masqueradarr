@@ -8,7 +8,7 @@ import type { LogCategory } from '../models/Log.js';
 
 export const LOG_CATEGORIES: LogCategory[] = [
   'dashboard', 'active', 'playlists', 'epg-sources', 'mapping', 'history',
-  'users', 'import', 'settings', 'api', 'core', 'mongodb', 'proxy',
+  'users', 'import', 'settings', 'api', 'core', 'mongodb', 'proxy', 'failover',
 ];
 
 export const TAG_CATEGORY: Record<string, LogCategory> = {
@@ -27,6 +27,11 @@ export const TAG_CATEGORY: Record<string, LogCategory> = {
   // from `active` (the viewer/telemetry cores above) so the engine's full-lineage trace is filterable on its
   // own. The Rust log seam (POST /api/internal/log → logStore.ingestExternalLog) tags every line one of these.
   proxy: 'proxy', stream: 'proxy', tsmux: 'proxy', edge: 'proxy', probe: 'proxy', resolve: 'proxy',
+  // Failover groups (parent + ordered child backups): the admin group routes + reconcile/cascade service +
+  // the Node resolve seam AND the Rust data-plane failover walk all log under `failover` — a cross-boundary
+  // tag (Node and Rust both emit it) with its own UI category, so the whole fail-over story is filterable on
+  // its own rather than buried in `playlists`/`proxy`. The prefix fallback covers any `failover:*` variant.
+  failover: 'failover',
   epg: 'epg-sources', xmltv: 'epg-sources', gracenote: 'epg-sources', epgpw: 'epg-sources',
   auth: 'users', users: 'users',
   mapping: 'mapping', import: 'import', settings: 'settings', history: 'history', dashboard: 'dashboard',
