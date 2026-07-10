@@ -454,9 +454,6 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`) never branches per source — every per-source difference is encapsulated in the adapter object. Each adapter's `resolveStream`/`proxy` are **live** — the Rust data-plane engine calls them per stream through the resolve seam (see [Video Proxy Engine](#video-proxy-engine)).
 
-> [!NOTE]
-> Expand _Channel Adapter Architecture : Flowchart_ to view the visual diagram
-
 <img src="docs/diagrams/adapter-taxonomy.svg" alt="Channel adapter taxonomy: every adapter registered in registry.ts, grouped by shape — synthetic, authenticated, and the four anonymous resolve strategies (scrape, API sentinel, macro-fill, identity).">
 
 ## Key Properties Summary
