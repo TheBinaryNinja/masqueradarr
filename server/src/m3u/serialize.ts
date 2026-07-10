@@ -18,8 +18,10 @@ export function m3uHeader(guideUrl: string | null): string {
 // One channel → its 2-line "#EXTINF:-1 …,<name>\n<url>" entry, or null when the channel can't be composed
 // (not Active, or no stream entry). `domain` is the absolute origin used to build the derived proxy URL.
 export function channelToExtinf(ch: PlaylistChannelDoc, domain: string, token?: string): string | null {
-  // §5 inclusion governor — only Active channels (callers already filter; this is defensive).
-  if (ch.status !== 'Active') return null;
+  // §5 inclusion governor — only Active, non-failover-child channels (callers already filter; this is
+  // defensive). A failover child is a hidden backup served through its parent's line — never exported.
+  // Undefined-safe: pre-feature docs lack failoverRole entirely.
+  if (ch.status !== 'Active' || ch.failoverRole === 'child') return null;
 
   // §4 URL line — DERIVED, never stored. This M3U is consumed by EXTERNAL IPTV clients (TiviMate/Kodi/VLC/…).
   // It targets the externalPlayer mount /api/ext/v1, which was REMOVED in the video-engine teardown — so these

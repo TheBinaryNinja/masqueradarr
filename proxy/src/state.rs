@@ -28,6 +28,16 @@ const TELEMETRY_FLUSH_MS: u64 = 250;
 /// entries. (P3 could honor a per-grant `expiresAt` instead of a fixed cap.)
 const TARGET_TTL: Duration = Duration::from_secs(60);
 
+/// FOG (failover groups): how long a stream's failover cursor survives without ANY request (entry or hop)
+/// before it resets to the parent. The cursor pins a stream to its winning candidate for the WHOLE viewing
+/// session — a re-resolve never walks back to a dead parent mid-play — so the only reset is "playback
+/// stopped": once requests cease for this long, the next session re-probes the channel itself first.
+const FAILOVER_CURSOR_IDLE: Duration = Duration::from_secs(300);
+
+/// FOG: hard cap on resolve attempts per failover walk (a runaway backstop over any real group size — the
+/// walk normally ends on Node's distinct `failover_exhausted` reply).
+pub const MAX_FAILOVER_ATTEMPTS: u32 = 8;
+
 // EDGE-3 gate cache. When Rust is the public edge, the stream-token gate lives in Node (POST
 // /api/internal/authorize) but Rust must gate EVERY request — including warm hops that never re-hit the
 // resolve seam. So each (token, source) decision is cached for AUTH_TTL: warm requests are an in-memory
@@ -55,7 +65,7 @@ pub struct AppState {
     pub node_url: String,
     pub secret: String,
     cache: Arc<Mutex<HashMap<String, Arc<SourcePolicy>>>>,
-    targets: Arc<Mutex<HashMap<String, (String, Instant)>>>,
+    targets: Arc<Mutex<HashMap<String, TargetEntry>>>,
     /// PXY-2: upstream clients keyed by the proxy-config knobs that are CLIENT-level in reqwest
     /// (connect_timeout_ms, max_redirects). Distinct combos are few (the Default + a handful of per-playlist
     /// Custom overrides), so this stays a tiny bounded cache; the Default combo serves every non-overriding
@@ -71,6 +81,44 @@ pub struct AppState {
     /// EDGE-3: the per-(token, source) stream-gate decision cache (see AUTH_TTL). Only consulted on the public
     /// edge path (edge.rs); the loopback sidecar path is gated by Node's Express streamGate as before.
     auth_cache: Arc<Mutex<HashMap<(String, String), AuthDecision>>>,
+}
+
+/// A cached resolved ENTRY target + the stream's FAILOVER CURSOR. `attempt` pins which candidate the
+/// stream is on (0 = the channel itself, N >= 1 = its Nth failover child) and `policy_key` names the
+/// SourcePolicy that candidate's grants file under — the SERVING adapter, which differs from the URL mount
+/// source for a cross-provider child (keying by it is what stops a child grant from overwriting the parent
+/// provider's shared policy). The cursor OUTLIVES target validity: invalidate_target only expires the
+/// target, the attempt survives so the next resolve resumes at the pinned candidate; `last_access` gives
+/// the cursor its idle lifetime (FAILOVER_CURSOR_IDLE — see there).
+pub struct TargetEntry {
+    target: String,
+    expires: Instant,
+    policy_key: String,
+    attempt: u32,
+    last_access: Instant,
+}
+
+/// The target-cache key for a stream: (mount source, entry url) — NUL-joined like the log rid.
+fn target_key(source: &str, entry: &str) -> String {
+    format!("{source}\u{0}{entry}")
+}
+
+/// A resolve-seam failure. `Exhausted` is Node's DISTINCT 410 `failover_exhausted` reply — the requested
+/// entry has no (more) failover candidates — which terminates a failover walk. Everything else (a dead
+/// candidate's resolve_failed 502, Node unreachable, a malformed grant, …) is `Other`: a walk advances
+/// past it, non-walk callers just log it.
+pub enum ResolveErr {
+    Exhausted,
+    Other(String),
+}
+
+impl std::fmt::Display for ResolveErr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ResolveErr::Exhausted => write!(f, "failover candidates exhausted"),
+            ResolveErr::Other(e) => write!(f, "{e}"),
+        }
+    }
 }
 
 pub struct SourcePolicy {
@@ -99,6 +147,13 @@ pub struct SourcePolicy {
     /// /api/ext/v1 mount) so the first #EXT-X-STREAM-INF lands within a strict player's manifest probe window
     /// (e.g. VLC's ~8 KiB peek). AtomicBool so a re-resolve can flip it; false = today's byte-identical output.
     pub stream_inf_redux: AtomicBool,
+    /// FOG: play-time failover groups — on a failed ENTRY establish, walk the channel's ordered failover
+    /// children via attempt=1,2,… resolves. Default ON (configuring a group is the operator's real opt-in;
+    /// ungrouped channels behave identically either way — their attempt-1 resolve is `failover_exhausted`).
+    pub failover_enabled: AtomicBool,
+    /// FOG: also treat a DEFINITIVE upstream non-2xx (4xx/5xx — normally forwarded verbatim) as a failover
+    /// trigger. Default OFF: it changes long-standing forward-verbatim semantics, so the operator opts in.
+    pub failover_on_definite_error: AtomicBool,
 }
 
 impl SourcePolicy {
@@ -114,6 +169,8 @@ impl SourcePolicy {
             buffer_size_kb: AtomicU64::new(0),
             output_format: RwLock::new("hls".to_string()),
             stream_inf_redux: AtomicBool::new(false),
+            failover_enabled: AtomicBool::new(true),
+            failover_on_definite_error: AtomicBool::new(false),
         }
     }
 }
@@ -134,7 +191,26 @@ pub struct Grant {
     // serde silently ignores only the still-reserved segmentCacheTtlSec.
     #[serde(rename = "proxyConfig", default)]
     pub proxy_config: ProxyConfigWire,
+    /// FOG: which per-source policy this grant belongs to — the SERVING candidate's adapter id (equals the
+    /// mount source for attempt 0 / ungrouped; the child's provider for a failover candidate). resolve()
+    /// keys the SourcePolicy by this, never the URL mount source. `default` → None → an older Node degrades
+    /// to mount-source keying (today's behavior).
+    #[serde(rename = "policySource", default)]
+    pub policy_source: Option<String>,
+    /// FOG: failover context when this grant serves a candidate (attempt >= 1) — used for log attribution.
+    #[serde(rename = "failover", default)]
+    pub failover: Option<FailoverWire>,
     // (Node's grant also carries `isEntry`; the sidecar decides entry/hop from the path, so serde ignores it.)
+}
+
+/// FOG: the grant's failover block (attempt >= 1 grants only). Node also records the serving candidate for
+/// Active Streams itself, so Rust only uses this for log lines — but `total` doubles as a sanity bound.
+#[derive(Deserialize, Clone)]
+pub struct FailoverWire {
+    pub attempt: u32,
+    pub total: u32,
+    #[serde(rename = "candidateName", default)]
+    pub candidate_name: String,
 }
 
 /// The resolved proxy config Rust applies. connectTimeoutMs + maxRedirects are CLIENT-level in reqwest (keyed
@@ -159,6 +235,12 @@ pub struct ProxyConfigWire {
     // the data plane degrades to today's byte-identical HLS master output.
     #[serde(rename = "streamInfRedux", default)]
     pub stream_inf_redux: bool,
+    // FOG knobs. failoverEnabled defaults TRUE (an absent key — older Node — must not disable the feature
+    // the group config opted into); failoverOnDefiniteError defaults false (explicit opt-in).
+    #[serde(rename = "failoverEnabled", default = "default_true")]
+    pub failover_enabled: bool,
+    #[serde(rename = "failoverOnDefiniteError", default)]
+    pub failover_on_definite_error: bool,
 }
 
 fn default_connect_ms() -> u64 {
@@ -170,6 +252,9 @@ fn default_max_redirects() -> u32 {
 fn default_output_format() -> String {
     "hls".to_string()
 }
+fn default_true() -> bool {
+    true
+}
 
 impl Default for ProxyConfigWire {
     fn default() -> Self {
@@ -180,6 +265,8 @@ impl Default for ProxyConfigWire {
             buffer_size_kb: None,
             output_format: default_output_format(),
             stream_inf_redux: false,
+            failover_enabled: true,
+            failover_on_definite_error: false,
         }
     }
 }
@@ -257,53 +344,148 @@ impl AppState {
 
     /// Resolve an ENTRY to (policy, target), reusing a recently-resolved target within TARGET_TTL so a
     /// re-polled media-playlist entry doesn't re-hit the provider each poll. Falls through to a live resolve
-    /// when the cache is cold/stale or the source policy has been evicted.
+    /// when the cache is cold/stale or the pinned policy has been evicted. FOG: cursor-aware — the live
+    /// resolve resumes at the stream's pinned candidate (a session stuck to a winning child STAYS on it;
+    /// the pin resets to the parent only after FAILOVER_CURSOR_IDLE without requests).
     pub async fn resolve_entry(
         &self,
         source: &str,
         entry: &str,
         pl: Option<&str>,
-    ) -> Result<(Arc<SourcePolicy>, String), String> {
-        let key = format!("{source}\u{0}{entry}");
-        let cached = { self.targets.lock().unwrap().get(&key).cloned() };
-        if let Some((target, exp)) = cached {
-            if exp > Instant::now() {
-                if let Some(policy) = self.get(source) {
-                    return Ok((policy, target));
+    ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
+        let key = target_key(source, entry);
+        let now = Instant::now();
+        let (cached, attempt) = {
+            let mut m = self.targets.lock().unwrap();
+            match m.get_mut(&key) {
+                Some(e) => {
+                    if now.duration_since(e.last_access) > FAILOVER_CURSOR_IDLE {
+                        e.attempt = 0; // playback stopped — a fresh session re-probes the channel itself
+                    }
+                    e.last_access = now;
+                    if e.expires > now {
+                        (Some((e.target.clone(), e.policy_key.clone())), e.attempt)
+                    } else {
+                        (None, e.attempt)
+                    }
                 }
+                None => (None, 0),
+            }
+        };
+        if let Some((target, policy_key)) = cached {
+            if let Some(policy) = self.get(&policy_key) {
+                return Ok((policy, target));
             }
         }
-        let (policy, target) = self.resolve(source, entry, pl).await?;
-        self.targets
-            .lock()
-            .unwrap()
-            .insert(key, (target.clone(), Instant::now() + TARGET_TTL));
+        self.resolve_at(source, entry, pl, attempt).await
+    }
+
+    /// FOG: force a FRESH resolve of a SPECIFIC candidate (bypass the target cache) and re-cache the
+    /// result — pinning the stream's cursor to that attempt. attempt 0 = the channel itself (Node re-runs
+    /// `resolveStream`, which drives dlhd/dami `reprobeMirror()` — the pre-failover "mirror failover");
+    /// attempt N >= 1 = the channel's Nth ordered failover child, resolved via the child's own adapter.
+    pub async fn resolve_at(
+        &self,
+        source: &str,
+        entry: &str,
+        pl: Option<&str>,
+        attempt: u32,
+    ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
+        let (policy, policy_key, target) = self.resolve(source, entry, pl, attempt).await?;
+        let now = Instant::now();
+        self.targets.lock().unwrap().insert(
+            target_key(source, entry),
+            TargetEntry {
+                target: target.clone(),
+                expires: now + TARGET_TTL,
+                policy_key,
+                attempt,
+                last_access: now,
+            },
+        );
         Ok((policy, target))
     }
 
-    /// RSL failover: force a FRESH resolve (bypass the target cache) and re-cache the result. Used when a
-    /// cached/resolved target's fetch fails — Node re-runs `resolveStream`, which drives dlhd/dami
-    /// `reprobeMirror()` (mirror failover), so a mirror that died mid-window self-heals onto a live base.
+    /// RSL failover: a fresh resolve at the stream's CURRENT pinned candidate (see resolve_at). Used by the
+    /// hop-failure async refresh + the tsmux producer, so a mid-session re-resolve never snaps a
+    /// failover-pinned stream back to its dead parent.
     pub async fn resolve_fresh(
         &self,
         source: &str,
         entry: &str,
         pl: Option<&str>,
-    ) -> Result<(Arc<SourcePolicy>, String), String> {
-        let (policy, target) = self.resolve(source, entry, pl).await?;
-        let key = format!("{source}\u{0}{entry}");
-        self.targets
-            .lock()
-            .unwrap()
-            .insert(key, (target.clone(), Instant::now() + TARGET_TTL));
-        Ok((policy, target))
+    ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
+        let attempt = self.cursor_attempt(source, entry);
+        self.resolve_at(source, entry, pl, attempt).await
     }
 
-    /// Drop a cached resolved target so the next ENTRY request re-resolves (RSL: a dead target that failed to
-    /// fetch must not be re-served from cache for the rest of its TTL).
+    /// Expire a cached resolved target so the next ENTRY request re-resolves (RSL: a dead target that failed
+    /// to fetch must not be re-served from cache for the rest of its TTL). FOG: expires the TARGET only —
+    /// the entry (and its failover cursor) survives, so the re-resolve resumes at the pinned candidate.
     pub fn invalidate_target(&self, source: &str, entry: &str) {
-        let key = format!("{source}\u{0}{entry}");
-        self.targets.lock().unwrap().remove(&key);
+        let now = Instant::now();
+        if let Some(e) = self.targets.lock().unwrap().get_mut(&target_key(source, entry)) {
+            e.expires = now; // `expires > now` is strict — equal means stale
+        }
+    }
+
+    /// FOG: the stream's current failover cursor (0 = the channel itself), after the idle reset.
+    pub fn cursor_attempt(&self, source: &str, entry: &str) -> u32 {
+        let now = Instant::now();
+        let mut m = self.targets.lock().unwrap();
+        match m.get_mut(&target_key(source, entry)) {
+            Some(e) => {
+                if now.duration_since(e.last_access) > FAILOVER_CURSOR_IDLE {
+                    e.attempt = 0;
+                }
+                e.attempt
+            }
+            None => 0,
+        }
+    }
+
+    /// FOG: reset the cursor to the parent (attempt 0) — a failover walk exhausted every candidate (or
+    /// ended on a candidate that never actually served), so the NEXT request must start from the channel
+    /// itself rather than replaying the dead tail. ALSO expires the cached target: after a reset it names
+    /// a candidate the cursor no longer points at, and serving it for the rest of its TTL would mismatch.
+    pub fn reset_cursor(&self, source: &str, entry: &str) {
+        let now = Instant::now();
+        if let Some(e) = self.targets.lock().unwrap().get_mut(&target_key(source, entry)) {
+            e.attempt = 0;
+            e.expires = now;
+        }
+    }
+
+    /// FOG: refresh a stream's cursor-idle clock without an entry/hop request. The raw-TS producer holds
+    /// ONE long-lived socket and never re-requests the entry or polls hops through the handler, so its
+    /// healthy media-playlist refresh loop calls this each cycle — otherwise a pinned session would be
+    /// treated as idle after FAILOVER_CURSOR_IDLE and snap back to the parent on the next re-resolve.
+    pub fn touch_stream(&self, source: &str, entry: &str) {
+        if let Some(e) = self.targets.lock().unwrap().get_mut(&target_key(source, entry)) {
+            e.last_access = Instant::now();
+        }
+    }
+
+    /// FOG: the policy for a HOP request. A hop belongs to whatever candidate its stream is pinned to — the
+    /// target entry (looked up via the hop's propagated `&e=` entry) names the policy_key; a hop with no
+    /// entry record falls back to the mount source's policy (today's behavior). Touches last_access so an
+    /// actively-polling session (hops only — HLS players rarely re-request the ENTRY) keeps its cursor.
+    pub fn hop_policy(&self, source: &str, entry: &str) -> Option<Arc<SourcePolicy>> {
+        if !entry.is_empty() {
+            let policy_key = {
+                let mut m = self.targets.lock().unwrap();
+                m.get_mut(&target_key(source, entry)).map(|e| {
+                    e.last_access = Instant::now();
+                    e.policy_key.clone()
+                })
+            };
+            if let Some(pk) = policy_key {
+                if let Some(p) = self.get(&pk) {
+                    return Some(p);
+                }
+            }
+        }
+        self.get(source)
     }
 
     pub fn get(&self, source: &str) -> Option<Arc<SourcePolicy>> {
@@ -317,19 +499,27 @@ impl AppState {
             .clone()
     }
 
-    /// Call the Node resolve seam for an ENTRY url; update the source's policy (headers/relabel/allow +
-    /// seed the master host into the allowlist); return the policy and the resolved target to fetch.
-    pub async fn resolve(
+    /// Call the Node resolve seam for an ENTRY url; update the SERVING adapter's policy (headers/relabel/
+    /// allow + seed the master host into the allowlist); return (policy, its cache key, the target to
+    /// fetch). FOG: `attempt` selects the failover candidate (0 = the channel itself); the policy is keyed
+    /// by the grant's `policySource` — the serving candidate's adapter — NOT the URL mount source, so a
+    /// cross-provider child's headers/relabel never overwrite the parent provider's shared policy.
+    async fn resolve(
         &self,
         source: &str,
         entry_url: &str,
         pl: Option<&str>,
-    ) -> Result<(Arc<SourcePolicy>, String), String> {
+        attempt: u32,
+    ) -> Result<(Arc<SourcePolicy>, String, String), ResolveErr> {
         let rid = crate::log::rid(source, entry_url);
         crate::log::trace("resolve", &rid, || {
-            format!("seam POST /resolve source={source} entry={}", crate::proxy::host_of(entry_url))
+            format!(
+                "seam POST /resolve source={source} attempt={attempt} entry={}",
+                crate::proxy::host_of(entry_url)
+            )
         });
-        let body = serde_json::json!({ "source": source, "url": entry_url, "pl": pl });
+        let body =
+            serde_json::json!({ "source": source, "url": entry_url, "pl": pl, "attempt": attempt });
         let resp = self
             .client
             .post(format!("{}/api/internal/resolve", self.node_url))
@@ -337,14 +527,20 @@ impl AppState {
             .json(&body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| ResolveErr::Other(e.to_string()))?;
         let status = resp.status();
         if !status.is_success() {
             let txt = resp.text().await.unwrap_or_default();
-            return Err(format!("resolve {}: {}", status.as_u16(), txt));
+            // Node's DISTINCT exhausted reply (410 failover_exhausted) — the walk's terminator. Matched on
+            // both signals so neither a proxy in front nor a body tweak can turn it into an endless walk.
+            if status.as_u16() == 410 || txt.contains("failover_exhausted") {
+                return Err(ResolveErr::Exhausted);
+            }
+            return Err(ResolveErr::Other(format!("resolve {}: {}", status.as_u16(), txt)));
         }
-        let grant: Grant = resp.json().await.map_err(|e| e.to_string())?;
-        let policy = self.get_or_create(source);
+        let grant: Grant = resp.json().await.map_err(|e| ResolveErr::Other(e.to_string()))?;
+        let policy_key = grant.policy_source.clone().unwrap_or_else(|| source.to_string());
+        let policy = self.get_or_create(&policy_key);
         *policy.headers.write().unwrap() = grant.upstream_headers.into_iter().collect();
         *policy.relabel_segment.write().unwrap() = grant.relabel_segment;
         policy.allow_private.store(grant.allow_private, Ordering::Relaxed);
@@ -357,14 +553,23 @@ impl AppState {
         *policy.output_format.write().unwrap() = grant.proxy_config.output_format.clone();
         // SIR: the opt-in master-reorder flag (proxy.rs gates it to the /api/ext/v1 mount).
         policy.stream_inf_redux.store(grant.proxy_config.stream_inf_redux, Ordering::Relaxed);
+        // FOG: the failover knobs (per-playlist resolved, per-source applied like every other knob).
+        policy.failover_enabled.store(grant.proxy_config.failover_enabled, Ordering::Relaxed);
+        policy
+            .failover_on_definite_error
+            .store(grant.proxy_config.failover_on_definite_error, Ordering::Relaxed);
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write().unwrap().insert(h.to_lowercase());
             }
         }
         crate::log::info("resolve", &rid, || {
+            let failover = match &grant.failover {
+                Some(f) => format!(" failover={}/{} (\"{}\")", f.attempt, f.total, f.candidate_name),
+                None => String::new(),
+            };
             format!(
-                "grant: target={} relabel={} outputFormat={} streamInfRedux={} connectTimeout={}ms maxRedirects={}",
+                "grant: target={} policy={policy_key} relabel={} outputFormat={} streamInfRedux={} connectTimeout={}ms maxRedirects={}{failover}",
                 crate::proxy::host_of(&grant.target),
                 policy.relabel_segment.read().unwrap().as_deref().unwrap_or("passthrough"),
                 policy.output_format.read().unwrap(),
@@ -373,7 +578,7 @@ impl AppState {
                 policy.max_redirects.load(Ordering::Relaxed),
             )
         });
-        Ok((policy, grant.target))
+        Ok((policy, policy_key, grant.target))
     }
 
     /// Enqueue a telemetry event for the batched flusher (best-effort — a full queue DROPS the event so the byte

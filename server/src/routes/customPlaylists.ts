@@ -7,6 +7,7 @@ import { composeM3u, pruneCustomFile } from '../m3u/compose.js';
 import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath, CUSTOM_PLAYLIST_TYPES } from '../m3u/paths.js';
 import { logger } from '../sources/core/logger.js';
+import { reconcileFailoverGroups } from '../services/failover.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
 import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from './import.js';
@@ -88,12 +89,24 @@ async function copyChannelsInto(cloneId: string, originIds: string[]): Promise<v
   if (!originals.length) return;
   const ops = originals.map((o) => {
     const copyId = `${cloneId}:${o._id}`;
-    // Strip the immutable _id (set from the filter on insert) and the id mirror (re-derived below).
-    const { _id: _drop, id: _dropId, ...rest } = o;
+    // Strip the immutable _id (set from the filter on insert), the id mirror (re-derived below), and the
+    // failover group fields (groups are source-scoped — a copy must start ungrouped, not carry a stale
+    // cross-source failoverGroupId / a parentless partial group into the clone).
+    const { _id: _drop, id: _dropId, failoverGroupId: _fg, failoverRole: _fr, failoverOrder: _fo, ...rest } = o;
     return {
       updateOne: {
         filter: { _id: copyId },
-        update: { $setOnInsert: { ...rest, id: copyId, source: cloneId, origin: o.origin ?? o.source } },
+        update: {
+          $setOnInsert: {
+            ...rest,
+            id: copyId,
+            source: cloneId,
+            origin: o.origin ?? o.source,
+            failoverGroupId: null,
+            failoverRole: null,
+            failoverOrder: null,
+          },
+        },
         upsert: true,
       },
     };
@@ -208,6 +221,10 @@ customPlaylistsRouter.put('/:id', async (req, res, next) => {
       // removeChannelIds may be original ids ("dulo:ch1") or already-namespaced copy ids ("<id>:dulo:ch1").
       const copyIds = remove.map((r) => (r.startsWith(`${clone.id}:`) ? r : `${clone.id}:${r}`));
       await PlaylistChannel.deleteMany({ source: clone.id, _id: { $in: copyIds } });
+      // Removing a group's parent (or last child) orphans it — auto-disband degenerates, non-fatal.
+      await reconcileFailoverGroups(clone.id).catch((err: Error) =>
+        logger.warn('m3u', `failover reconcile after clone remove (${clone.id}) failed: ${err.message}`),
+      );
     }
 
     const channels = (await PlaylistChannel.find({ source: clone.id }, { group: 1 }).lean()) as Array<{

@@ -12,6 +12,7 @@ import { PlaylistChannel, type PlaylistChannelDoc } from '../../../models/Playli
 import { composeM3u } from '../../../m3u/compose.js';
 import { logoColorFor, initialsFor } from '../../toPlaylistChannel.js';
 import { logger } from '../../core/logger.js';
+import { reconcileFailoverGroups } from '../../../services/failover.js';
 import { resolveProgramOffset } from '../../../settings/programOffset.js';
 import { writeLocalEpg, upsertLocalEpgSource } from '../../../epg/local.js';
 import { fetchMarket, selectChannels, type LocalRawChannel } from './api.js';
@@ -58,6 +59,9 @@ function toLocalChannel(ch: LocalRawChannel, id: string, playlistId: string): Pl
     logoColor: logoColorFor(_id),
     logoUrl: ch.logo || null,
     streamEntryUrl: entry,
+    failoverGroupId: null,
+    failoverRole: null,
+    failoverOrder: null,
     stream: { initials: initialsFor(name), isPlayable: true, res: null, status: null, probe: null },
   };
 }
@@ -95,6 +99,9 @@ async function upsertLocalChannels(selected: Array<{ ch: LocalRawChannel; id: st
             epg: pc.epg,
             epgState: pc.epgState,
             status: pc.status,
+            failoverGroupId: pc.failoverGroupId,
+            failoverRole: pc.failoverRole,
+            failoverOrder: pc.failoverOrder,
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             'stream.probe': pc.stream.probe,
@@ -108,6 +115,10 @@ async function upsertLocalChannels(selected: Array<{ ch: LocalRawChannel; id: st
   if (ops.length) await PlaylistChannel.bulkWrite(ops as any[]);
   // Prune channels no longer in the market (preserve edits on the survivors).
   await PlaylistChannel.deleteMany({ source: playlistId, _id: { $nin: [...seen] } });
+  // The prune can orphan a failover group (parent/last child pruned) — auto-disband degenerates, non-fatal.
+  await reconcileFailoverGroups(playlistId).catch((err: Error) =>
+    logger.warn('local', `[${playlistId}] failover reconcile after prune failed (continuing): ${err.message}`),
+  );
 }
 
 // Re-fetch a market's catalog + inline guide and reconcile its playlist's channels AND its playlist-bound EPG

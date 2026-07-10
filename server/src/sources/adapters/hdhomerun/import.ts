@@ -12,6 +12,7 @@ import { PlaylistChannel, type PlaylistChannelDoc } from '../../../models/Playli
 import { composeM3u } from '../../../m3u/compose.js';
 import { logoColorFor, initialsFor } from '../../toPlaylistChannel.js';
 import { logger } from '../../core/logger.js';
+import { reconcileFailoverGroups } from '../../../services/failover.js';
 import { fetchDiscover, fetchLineup, type HdhrLineupEntry } from './lineup.js';
 
 export const HDHR_SOURCE = 'hdhomerun'; // Playlist.source TYPE TAG (channels keyed by the playlist id, like 'clone'/'import')
@@ -41,6 +42,9 @@ function toHdhrChannel(e: HdhrLineupEntry, importId: string): PlaylistChannelDoc
     logoColor: logoColorFor(_id),
     logoUrl: null,
     streamEntryUrl: e.url,
+    failoverGroupId: null,
+    failoverRole: null,
+    failoverOrder: null,
     stream: { initials: initialsFor(e.guideName), isPlayable: !e.drm, res: null, status: null, probe: null },
   };
 }
@@ -77,6 +81,9 @@ async function upsertHdhrChannels(entries: HdhrLineupEntry[], importId: string):
             epg: pc.epg,
             epgState: pc.epgState,
             status: pc.status,
+            failoverGroupId: pc.failoverGroupId,
+            failoverRole: pc.failoverRole,
+            failoverOrder: pc.failoverOrder,
             logoUrl: pc.logoUrl,
             'stream.initials': pc.stream.initials,
             'stream.res': pc.stream.res,
@@ -92,6 +99,10 @@ async function upsertHdhrChannels(entries: HdhrLineupEntry[], importId: string):
   if (ops.length) await PlaylistChannel.bulkWrite(ops as any[]);
   // Prune channels no longer in the device lineup (preserve edits on the survivors).
   await PlaylistChannel.deleteMany({ source: importId, _id: { $nin: [...seen] } });
+  // The prune can orphan a failover group (parent/last child pruned) — auto-disband degenerates, non-fatal.
+  await reconcileFailoverGroups(importId).catch((err: Error) =>
+    logger.warn('hdhr', `[${importId}] failover reconcile after prune failed (continuing): ${err.message}`),
+  );
 }
 
 // Re-fetch a device's lineup and reconcile its playlist's channels. Shared by create + the manual "Sync now".

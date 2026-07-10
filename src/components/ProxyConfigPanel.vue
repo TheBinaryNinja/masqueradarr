@@ -167,6 +167,32 @@ watch(
         </div>
       </div>
 
+      <!-- Failover knobs share a 2-col row (both are plain toggles like STREAM-INF Redux above). -->
+      <div class="form-grid-2" style="margin-top: 14px;">
+        <div class="form-row">
+          <div class="field-lbl">Failover groups</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle :on="state.failoverEnabled" @change="(v) => (state.failoverEnabled = v)" />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.failoverEnabled ? 'On' : 'Off' }}</span>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            When a channel's stream fails to establish, fall through to its configured failover backups in
+            order (set up per channel on the playlist detail screen). Off = fail like an ungrouped channel.
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field-lbl">Failover on upstream error</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle :on="state.failoverOnDefiniteError" @change="(v) => (state.failoverOnDefiniteError = v)" />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.failoverOnDefiniteError ? 'On' : 'Off' }}</span>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Also treat a definitive upstream error response (404 / 403 / 5xx — normally passed through to the
+            player) as a failover trigger. Off keeps the long-standing pass-through behavior.
+          </div>
+        </div>
+      </div>
+
       <div class="field-lbl" style="margin: 14px 0 6px;">Upstream header overrides</div>
       <div class="muted" style="font-size: var(--fs-xs); margin: -2px 0 10px;">
         Extra request headers sent to the upstream on every hop (merged over the source's own headers).

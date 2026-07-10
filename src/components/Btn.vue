@@ -3,7 +3,7 @@ import { computed, useSlots } from 'vue';
 import Icon from './Icon.vue';
 
 const props = defineProps<{
-  variant?: 'primary' | 'ghost';
+  variant?: 'primary' | 'ghost' | 'cyan';
   size?: 'sm';
   icon?: string;
   title?: string;

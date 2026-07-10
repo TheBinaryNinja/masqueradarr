@@ -16,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, mediaFor, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing } from '../sources/core/streamTelemetry.js';
 import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -83,6 +83,9 @@ export interface DisplayStream {
   resolution: string | null;
   fps: number | null;
   probe: null; // was the ffprobe technical snapshot — always null after the video-engine teardown
+  // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's
+  // identity — the parent's own upstream is dead and the named backup is carrying the stream.
+  failover: FailoverServing | null;
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -161,10 +164,12 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       resolution: decode.resolution,
       fps: decode.fps,
       probe: null, // the deep ffprobe technical snapshot is not rebuilt (video-engine teardown)
+      failover: failoverFor(r.channelKey),
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
   for (const key of bufferDebounce.keys()) if (!activeKeys.has(key)) bufferDebounce.delete(key);
+  pruneFailoverServing(activeKeys);
   return out;
 }
 

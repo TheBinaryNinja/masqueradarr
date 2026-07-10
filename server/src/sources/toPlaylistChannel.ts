@@ -53,6 +53,9 @@ export function toPlaylistChannelDoc(src: SourceChannelDoc): PlaylistChannelDoc 
     logoColor: logoColorFor(src._id),
     logoUrl: src.logoUrl,
     streamEntryUrl: src.streamEntryUrl,
+    failoverGroupId: null, // ungrouped at seed — failover groups are operator-configured post-sync
+    failoverRole: null,
+    failoverOrder: null,
     stream: {
       initials: initialsFor(src.name),
       isPlayable: src.isPlayable,

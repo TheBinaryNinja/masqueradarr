@@ -8,6 +8,7 @@ export interface RowActionItem {
     label: string;
     icon: string;
     disabled?: boolean;
+    danger?: boolean;
     run: () => void;
 }
 </script>
@@ -85,6 +86,7 @@ onBeforeUnmount(() => {
             type="button"
             role="menuitem"
             class="ram-item"
+            :class="{ danger: item.danger }"
             :disabled="item.disabled"
             @click="select(item)"
         >
@@ -152,5 +154,18 @@ onBeforeUnmount(() => {
 .ram-item:hover:not(:disabled) :deep(svg),
 .ram-item:focus-visible :deep(svg) {
     color: var(--accent-hi);
+}
+.ram-item.danger,
+.ram-item.danger :deep(svg) {
+    color: var(--bad);
+}
+.ram-item.danger:hover:not(:disabled),
+.ram-item.danger:focus-visible {
+    color: var(--bad);
+    background: oklch(0.7 0.18 25 / 0.1);
+}
+.ram-item.danger:hover:not(:disabled) :deep(svg),
+.ram-item.danger:focus-visible :deep(svg) {
+    color: var(--bad);
 }
 </style>

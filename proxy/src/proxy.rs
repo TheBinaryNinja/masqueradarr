@@ -16,19 +16,20 @@ use axum::response::Response;
 use percent_encoding::percent_decode_str;
 use std::net::IpAddr;
 use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 use url::Url;
 
 use crate::log;
 use crate::manifest::{enc, rewrite_manifest, RewriteResult};
-use crate::state::{AppState, SourcePolicy};
+use crate::state::{AppState, ResolveErr, SourcePolicy, MAX_FAILOVER_ATTEMPTS};
 use crate::stream::{segment_body, TelemetryCtx};
 
 // RSL-3 upstream retry. A transient failure (transport error, or a 502/503/504 gateway status) is retried with
 // bounded backoff before the request is failed; a definitive response (2xx, 4xx, or a non-gateway 5xx) is used
 // as-is. Kept small so a genuinely dead upstream fails fast (the total added latency is bounded by the sum of
 // RETRY_BACKOFF_MS) and a flaky CDN edge still recovers within a poll.
-const MAX_UPSTREAM_RETRIES: u32 = 2; // total attempts = 1 + this
+pub(crate) const MAX_UPSTREAM_RETRIES: u32 = 2; // total attempts = 1 + this
 const RETRY_BACKOFF_MS: [u64; 2] = [200, 500];
 
 /// Retryable = a transient gateway status. 404 (not live) / 403 (gate) / other 4xx and a plain 500 are
@@ -142,10 +143,17 @@ pub async fn serve_stream(
         )
     });
 
-    // Resolve the policy + the URL to fetch + the stream's entry (for telemetry attribution). fetch_url is `mut`
-    // so the RSL ENTRY failover below can swap in a freshly-resolved master when the first target is dead.
-    let (policy, mut fetch_url, stream_entry) = if is_hop {
-        let policy = match state.get(source) {
+    // Resolve the policy + the URL to fetch + the stream's entry (for telemetry attribution). fetch_url and
+    // policy are `mut` so the RSL/FOG ENTRY failover walk below can swap in a freshly-resolved candidate
+    // (its own target AND its own policy — a failover child's grants file under the child's adapter key).
+    // `prefetched` carries a response the resolve-failure walk already fetched (skips the initial fetch).
+    let mut prefetched: Option<reqwest::Response> = None;
+    let (mut policy, mut fetch_url, stream_entry) = if is_hop {
+        // FOG: a hop belongs to whatever candidate its stream is pinned to — hop_policy resolves the
+        // stream's policy_key via the propagated `&e=` entry (falling back to the mount source's policy),
+        // and keeps the failover cursor alive for actively-polling sessions.
+        let hop_entry = e_param.clone().unwrap_or_default();
+        let policy = match state.hop_policy(source, &hop_entry) {
             Some(p) => {
                 log::trace("proxy", &rid, || format!("hop → cached policy, fetch {}", host_of(&decoded)));
                 p
@@ -180,13 +188,48 @@ pub async fn serve_stream(
                 (p, target, decoded.clone())
             }
             Err(err) => {
-                // The channel could not be resolved (unknown source / dead upstream / expired auth) — mark it
-                // failed (a resolve failure has no HTTP status → 502 sentinel → noteFailed → `failed`).
+                // The pinned candidate could not even RESOLVE (unknown source / dead upstream / expired
+                // auth). FOG: walk the channel's failover candidates before failing — a dead parent whose
+                // scrape/auth broke is a primary failover case.
+                //  · Exhausted (a pinned attempt outlived its group — children removed/disbanded): reset
+                //    the cursor and walk from the parent (attempt 0), so a stale pin can never 502-loop.
+                //  · Other: walk from one PAST the failed cursor (re-resolving it now would just repeat
+                //    the error), wrapping to the earlier candidates only when there ARE untried ones
+                //    (cursor > 0) — an ungrouped channel costs one exhausted probe and 502s like today.
                 log::error("proxy", &rid, || format!("entry resolve failed: {err}"));
-                state.report(serde_json::json!({
-                    "kind": "upstream", "ok": false, "status": 502, "source": source, "entryUrl": decoded.as_str(),
-                }));
-                return text(502, &format!("resolve failed: {err}"));
+                let (walk_children, on_definite) = failover_knobs(&state, source);
+                let walked = if walk_children {
+                    let cursor = state.cursor_attempt(source, &decoded);
+                    let (start, wrap) = if matches!(err, ResolveErr::Exhausted) {
+                        state.reset_cursor(source, &decoded);
+                        (0, false)
+                    } else {
+                        (cursor.saturating_add(1), cursor > 0)
+                    };
+                    failover_walk(&state, source, &decoded, pl.as_deref(), true, on_definite, None, start, wrap, &rid)
+                        .await
+                } else {
+                    WalkOutcome::Dead
+                };
+                match walked {
+                    WalkOutcome::Recovered(p, target, r) => {
+                        prefetched = Some(r);
+                        (p, target, decoded.clone())
+                    }
+                    WalkOutcome::Definitive(p, r) => {
+                        // Every candidate exhausted; the last definitive upstream response is forwarded
+                        // verbatim by the definitive branch below (it also reports noteFailed telemetry).
+                        prefetched = Some(r);
+                        (p, decoded.clone(), decoded.clone())
+                    }
+                    WalkOutcome::Dead => {
+                        // A resolve failure has no HTTP status → 502 sentinel → noteFailed → `failed`.
+                        state.report(serde_json::json!({
+                            "kind": "upstream", "ok": false, "status": 502, "source": source, "entryUrl": decoded.as_str(),
+                        }));
+                        return text(502, &format!("resolve failed: {err}"));
+                    }
+                }
             }
         }
     };
@@ -203,48 +246,83 @@ pub async fn serve_stream(
 
     // Fetch upstream with RSL retry (transient transport error / 502/503/504 → bounded backoff; 4xx and other
     // definitive responses are used as-is). Client cached by (connect_timeout, max_redirects) — PXY-2; headers
-    // replayed from the (possibly just-refreshed) policy.
-    let client = state.client_for(
-        policy.connect_timeout_ms.load(Ordering::Relaxed),
-        policy.max_redirects.load(Ordering::Relaxed),
-    );
+    // replayed from the (possibly just-refreshed) policy. A resolve-failure walk above may have already
+    // fetched the winning candidate — reuse that response instead of a second identical fetch.
     let fetch_what = if is_hop { "hop" } else { "entry" };
-    let mut resp = fetch_with_retry(&client, &fetch_url, &build_headers(&policy), read_timeout_ms, &rid, fetch_what)
-        .await
-        .ok();
+    let mut resp = match prefetched.take() {
+        Some(r) => Some(r),
+        None => {
+            let client = state.client_for(
+                policy.connect_timeout_ms.load(Ordering::Relaxed),
+                policy.max_redirects.load(Ordering::Relaxed),
+            );
+            fetch_with_retry(
+                &client,
+                &fetch_url,
+                &build_headers(&policy),
+                read_timeout_ms,
+                &rid,
+                fetch_what,
+                MAX_UPSTREAM_RETRIES,
+            )
+            .await
+            .ok()
+        }
+    };
 
-    // RSL mirror failover on a persistent fetch failure:
-    //  · ENTRY — the resolved master is dead (the mirror rotated between resolve and fetch). Drop the cached
-    //    target and force a FRESH resolve (Node re-runs resolveStream → dlhd/dami reprobeMirror), then fetch the
-    //    new master. `policy` is the same cached Arc, re-populated in place by the fresh resolve.
-    //  · HOP — a child segment/variant host died; a fresh master can't be substituted for a child mid-poll, so
-    //    kick a best-effort async policy refresh (so a re-requested entry / cold hop rides the live mirror) and
-    //    fail this request (the player refetches).
-    if resp.is_none() {
-        if is_hop {
-            log::warn("proxy", &rid, || "hop fetch failed — kicking async policy refresh (client refetches)".to_string());
-            if !stream_entry.is_empty() {
-                let (st, src, ent, plc) =
-                    (state.clone(), source.to_string(), stream_entry.clone(), pl.clone());
-                tokio::spawn(async move {
-                    let _ = st.resolve_fresh(&src, &ent, plc.as_deref()).await;
-                });
-            }
-        } else {
-            log::warn("proxy", &rid, || "entry fetch failed — forcing a fresh resolve (mirror failover)".to_string());
+    // RSL mirror failover + FOG failover-group walk on a failed ENTRY establish:
+    //  · HOP — a child segment/variant host died; a fresh master can't be substituted for a child mid-poll,
+    //    so kick a best-effort async policy refresh AT THE STREAM'S PINNED CANDIDATE (so a re-requested
+    //    entry / cold hop rides the live mirror — and a failover-pinned stream never snaps back to its dead
+    //    parent) and fail this request (the player refetches).
+    //  · ENTRY — a transport failure always enters the walk: a fresh resolve of the SAME pinned candidate
+    //    first (Node re-runs resolveStream → dlhd/dami reprobeMirror — the pre-failover mirror rotation),
+    //    then, when failoverEnabled, the NEXT candidates in Node's order. A DEFINITIVE non-2xx enters the
+    //    walk only when failoverOnDefiniteError is on (default keeps the forward-verbatim semantics).
+    if resp.is_none() && is_hop {
+        log::warn("proxy", &rid, || "hop fetch failed — kicking async policy refresh (client refetches)".to_string());
+        if !stream_entry.is_empty() {
+            let (st, src, ent, plc) =
+                (state.clone(), source.to_string(), stream_entry.clone(), pl.clone());
+            tokio::spawn(async move {
+                let _ = st.resolve_fresh(&src, &ent, plc.as_deref()).await;
+            });
+        }
+    } else if !is_hop {
+        let walk_children = policy.failover_enabled.load(Ordering::Relaxed);
+        let on_definite = policy.failover_on_definite_error.load(Ordering::Relaxed);
+        let definitive_trigger = walk_children
+            && on_definite
+            && matches!(&resp, Some(r) if !r.status().is_success());
+        if resp.is_none() || definitive_trigger {
+            log::warn("proxy", &rid, || "entry fetch failed — walking failover candidates (fresh resolve first)".to_string());
             state.invalidate_target(source, &stream_entry);
-            if let Ok((_p, target2)) = state.resolve_fresh(source, &stream_entry, pl.as_deref()).await {
-                let client2 = state.client_for(
-                    policy.connect_timeout_ms.load(Ordering::Relaxed),
-                    policy.max_redirects.load(Ordering::Relaxed),
-                );
-                if let Ok(r) =
-                    fetch_with_retry(&client2, &target2, &build_headers(&policy), read_timeout_ms, &rid, "failover").await
-                {
-                    log::info("proxy", &rid, || format!("failover recovered → {}", host_of(&target2)));
-                    fetch_url = target2;
+            let start = state.cursor_attempt(source, &stream_entry);
+            let first_definitive = if definitive_trigger { resp.take().map(|r| (policy.clone(), r)) } else { None };
+            match failover_walk(
+                &state,
+                source,
+                &stream_entry,
+                pl.as_deref(),
+                walk_children,
+                on_definite,
+                first_definitive,
+                start,
+                true,
+                &rid,
+            )
+            .await
+            {
+                WalkOutcome::Recovered(p, target, r) => {
+                    policy = p;
+                    fetch_url = target;
                     resp = Some(r);
                 }
+                WalkOutcome::Definitive(p, r) => {
+                    policy = p;
+                    resp = Some(r); // forwarded verbatim by the definitive branch below
+                }
+                WalkOutcome::Dead => resp = None,
             }
         }
     }
@@ -459,6 +537,162 @@ pub async fn serve_stream(
         .unwrap()
 }
 
+// ── FOG: failover-group candidate walk ─────────────────────────────────────────────────────────────────
+
+/// Outcome of a failover candidate walk (see `failover_walk`).
+pub(crate) enum WalkOutcome {
+    /// A candidate resolved and FETCHED — serve its response under the (possibly swapped) policy/target.
+    /// May carry a definitive non-2xx when forward-verbatim semantics ended the walk (knob off): the
+    /// caller's definitive branch then forwards it exactly like today's mirror-rotation retry.
+    Recovered(Arc<SourcePolicy>, String, reqwest::Response),
+    /// Every candidate exhausted; the LAST definitive non-2xx response (+ its policy), forwarded verbatim.
+    Definitive(Arc<SourcePolicy>, reqwest::Response),
+    /// Every candidate exhausted with nothing definitive to forward (transport failures all the way) → 502.
+    Dead,
+}
+
+/// Read a source's failover knobs from its cached policy — defaults (on, off) when no policy exists yet.
+/// The knobs are per-playlist-resolved, so any of the stream's policies carries the same values.
+fn failover_knobs(state: &AppState, source: &str) -> (bool, bool) {
+    match state.get(source) {
+        Some(p) => (
+            p.failover_enabled.load(Ordering::Relaxed),
+            p.failover_on_definite_error.load(Ordering::Relaxed),
+        ),
+        None => (true, false),
+    }
+}
+
+/// Walk the stream's failover candidates after a failed ENTRY establish. `start` is the first attempt to
+/// try; the FIRST try keeps the full RSL fetch budget (for the fetch-failure path that is a fresh resolve
+/// of the SAME pinned candidate — the pre-failover mirror-rotation retry), later candidates get ONE fetch
+/// with no backoff so a multi-child group still establishes inside a player's manifest timeout. Node owns
+/// the candidate order and replies a DISTINCT `failover_exhausted` (→ ResolveErr::Exhausted) past the end;
+/// with `wrap` the walk then wraps ONCE to the candidates before `start` (including the parent) so a
+/// mid-list pin still lets earlier candidates recover (callers pass wrap=false when everything before
+/// `start` was already just tried). The cursor only stays pinned to an attempt that actually SERVED 2xx —
+/// every other exit resets it (and expires the cached target) so the NEXT request walks from the parent.
+/// `walk_children` = failoverEnabled (false ⇒ only the first try); it is also re-read from every resolved
+/// grant, so an operator's knob-off is authoritative even when the pre-walk policy cache was cold.
+/// `keep_walking_on_definite` = failoverOnDefiniteError (false ⇒ a definitive non-2xx ends the walk and is
+/// forwarded verbatim — today's semantics).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn failover_walk(
+    state: &AppState,
+    source: &str,
+    stream_entry: &str,
+    pl: Option<&str>,
+    mut walk_children: bool,
+    keep_walking_on_definite: bool,
+    mut last_definitive: Option<(Arc<SourcePolicy>, reqwest::Response)>,
+    start: u32,
+    wrap: bool,
+    rid: &str,
+) -> WalkOutcome {
+    let mut attempt = start;
+    let mut wrapped = false;
+    let mut tried: u32 = 0;
+    loop {
+        if tried >= MAX_FAILOVER_ATTEMPTS {
+            log::warn("failover", rid, || format!("failover walk hit the attempt cap ({MAX_FAILOVER_ATTEMPTS}) — giving up"));
+            state.reset_cursor(source, stream_entry);
+            break;
+        }
+        tried += 1;
+        // Level-3 lineage: one line per hop of the walk (attempt cursor + how many we've tried this walk).
+        log::trace("failover", rid, || format!("attempt {attempt} (tried {tried}/{MAX_FAILOVER_ATTEMPTS})"));
+        match state.resolve_at(source, stream_entry, pl, attempt).await {
+            Ok((p, target)) => {
+                // The grant carries the authoritative failoverEnabled — a cold pre-walk policy cache may
+                // have defaulted it on. Never SERVE a child the operator disabled failover to; a disabled
+                // knob still permits the attempt-0 (channel itself) mirror-rotation retry.
+                if !p.failover_enabled.load(Ordering::Relaxed) {
+                    walk_children = false;
+                    if attempt > 0 {
+                        log::warn("failover", rid, || "failover disabled by config — not serving a backup candidate".to_string());
+                        state.reset_cursor(source, stream_entry);
+                        break;
+                    }
+                }
+                let client = state.client_for(
+                    p.connect_timeout_ms.load(Ordering::Relaxed),
+                    p.max_redirects.load(Ordering::Relaxed),
+                );
+                let read_timeout_ms = p.read_timeout_ms.load(Ordering::Relaxed);
+                let retries = if tried == 1 { MAX_UPSTREAM_RETRIES } else { 0 };
+                // Level-3 lineage: backups get a single one-shot fetch (no RSL budget, no backoff) so a
+                // multi-child group still establishes inside a player's manifest timeout.
+                if retries == 0 {
+                    log::trace("failover", rid, || format!("candidate {attempt} on reduced budget (one-shot, no backoff)"));
+                }
+                match fetch_with_retry(&client, &target, &build_headers(&p), read_timeout_ms, rid, "failover", retries).await {
+                    Ok(r) if r.status().is_success() => {
+                        // Milestone (≥2): a backup established and now serves the session — the cursor stays
+                        // pinned to this attempt (stick-on-winner) for the stream's lifetime.
+                        log::info("failover", rid, || format!("recovered on candidate {attempt} → {} (sticking for the session)", host_of(&target)));
+                        return WalkOutcome::Recovered(p, target, r);
+                    }
+                    Ok(r) => {
+                        let s = r.status().as_u16();
+                        if walk_children && keep_walking_on_definite {
+                            log::warn("failover", rid, || format!("candidate {attempt} answered definitive {s} — walking on"));
+                            last_definitive = Some((p, r));
+                        } else {
+                            // Forward-verbatim semantics: a definitive response ends the walk (exactly
+                            // today's mirror-rotation behavior — resp is used whatever its status). The
+                            // candidate did NOT serve, so un-pin: the next poll re-resolves from the
+                            // parent instead of replaying this failure for the cursor's lifetime.
+                            log::warn("failover", rid, || format!("candidate {attempt} answered definitive {s} — forwarding"));
+                            state.reset_cursor(source, stream_entry);
+                            return WalkOutcome::Recovered(p, target, r);
+                        }
+                    }
+                    Err(e) => {
+                        log::warn("failover", rid, || format!("candidate {attempt} fetch failed: {e}"));
+                    }
+                }
+            }
+            Err(ResolveErr::Exhausted) => {
+                if walk_children && wrap && start > 0 && !wrapped {
+                    log::info("failover", rid, || "candidate list exhausted — wrapping to the parent".to_string());
+                    wrapped = true;
+                    attempt = 0;
+                    continue;
+                }
+                // The terminal event: Node returned failover_exhausted with nothing left to try. Issue-level
+                // (≥1) — pairs with the Node resolve-seam "exhausted all N backup(s)" warn (that side names
+                // the parent/source; this side carries the session rid). `tried > 1` means we actually tried
+                // a candidate before running out; `tried == 1` is an ungrouped channel's one-probe cost (or
+                // an emptied group) — that's normal, so it stays quiet at level 1 (Node traces it at 3).
+                if tried > 1 {
+                    log::warn("failover", rid, || format!("all backups exhausted after {} attempt(s) — giving up", tried - 1));
+                } else {
+                    log::trace("failover", rid, || "no failover candidates for this stream".to_string());
+                }
+                state.reset_cursor(source, stream_entry);
+                break;
+            }
+            Err(ResolveErr::Other(e)) => {
+                log::warn("failover", rid, || format!("candidate {attempt} resolve failed: {e}"));
+            }
+        }
+        if !walk_children {
+            state.reset_cursor(source, stream_entry);
+            break; // failover disabled — only the single mirror-rotation retry
+        }
+        attempt += 1;
+        if wrapped && attempt >= start {
+            state.reset_cursor(source, stream_entry);
+            break;
+        }
+    }
+    // Exhausted with a stashed definitive response: forward the LAST one verbatim (cursor already reset).
+    match last_definitive {
+        Some((p, r)) => WalkOutcome::Definitive(p, r),
+        None => WalkOutcome::Dead,
+    }
+}
+
 // ── helpers ───────────────────────────────────────────────────────────────────────────────────────────
 
 pub(crate) fn check_secret(h: &HeaderMap, secret: &str) -> bool {
@@ -584,8 +818,11 @@ pub(crate) fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap
 /// Fetch an upstream URL with RSL retry (transport error + 502/503/504 → bounded-backoff retry; 4xx / other
 /// definitive responses returned as-is). `read_timeout_ms` (when >0) bounds the wait for RESPONSE HEADERS —
 /// a connect-but-never-answer stall — per attempt; the body-stall case is handled downstream in stream::pump.
-/// Returns the final Response (which may be a definitive non-2xx to forward verbatim) or the last error string
-/// after every attempt fails at the transport level.
+/// `retries` is the retry budget (total attempts = 1 + retries): MAX_UPSTREAM_RETRIES normally, 0 for a
+/// reduced-budget failover-candidate fetch (FOG — one try, no backoff). Returns the final Response (which
+/// may be a definitive non-2xx to forward verbatim) or the last error string after every attempt fails at
+/// the transport level.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn fetch_with_retry(
     client: &reqwest::Client,
     url: &str,
@@ -593,6 +830,7 @@ pub(crate) async fn fetch_with_retry(
     read_timeout_ms: u64,
     rid: &str,
     what: &str,
+    retries: u32,
 ) -> Result<reqwest::Response, String> {
     let idle = if read_timeout_ms > 0 {
         Some(Duration::from_millis(read_timeout_ms))
@@ -600,7 +838,7 @@ pub(crate) async fn fetch_with_retry(
         None
     };
     let mut last_err = String::from("upstream unreachable");
-    for attempt in 0..=MAX_UPSTREAM_RETRIES {
+    for attempt in 0..=retries {
         if attempt > 0 {
             let backoff = RETRY_BACKOFF_MS.get((attempt - 1) as usize).copied().unwrap_or(500);
             log::warn("proxy", rid, || format!("{what} attempt {attempt} failed ({last_err}) — retry in {backoff}ms"));
@@ -621,7 +859,7 @@ pub(crate) async fn fetch_with_retry(
         match res {
             Ok(resp) => {
                 let s = resp.status().as_u16();
-                if is_retryable_status(s) && attempt < MAX_UPSTREAM_RETRIES {
+                if is_retryable_status(s) && attempt < retries {
                     last_err = format!("upstream {s}");
                     continue;
                 }

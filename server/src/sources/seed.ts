@@ -24,6 +24,7 @@ import { seedSettings } from './seedSettings.js';
 import { seedProxyConfig } from '../proxyconfig/seed.js';
 import { envDefaults } from '../settings/translate.js';
 import { toPlaylistChannelDoc } from './toPlaylistChannel.js';
+import { reconcileFailoverGroups } from '../services/failover.js';
 import type { SourceAdapter } from './types.js';
 
 // A (Default)/Global playlist is no longer "hosted" at a single canonical file — the m3u compose writes
@@ -268,6 +269,10 @@ async function upsertPlaylistChannels(docs: SourceChannelDoc[]): Promise<void> {
             epg: pc.epg,
             epgState: pc.epgState,
             status: pc.status,
+            // Operator-owned failover group assignment — written-once null, NEVER $set (survives re-sync).
+            failoverGroupId: pc.failoverGroupId,
+            failoverRole: pc.failoverRole,
+            failoverOrder: pc.failoverOrder,
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             // Written-once null; the live probe (set by the proxy sink) is preserved across re-syncs.
@@ -428,6 +433,14 @@ export async function syncLive(
     const del = await SourceChannel.deleteMany({ source: id, _id: { $nin: liveIds } });
     await PlaylistChannel.deleteMany({ source: id, _id: { $nin: liveIds } });
     removed = del.deletedCount ?? 0;
+    // The prune can orphan a failover group (parent pruned / last child pruned) — auto-DISBAND the
+    // degenerate groups (never auto-promote a child: that would silently change the group's EPG identity).
+    // Non-fatal, like the afterSync hook below: a reconcile hiccup must never fail a succeeded sync.
+    try {
+      await reconcileFailoverGroups(id);
+    } catch (err) {
+      logger.warn('seed', `[${id}] failover reconcile after prune failed (continuing): ${(err as Error).message}`);
+    }
   }
 
   await upsertPlaylistRow(adapter, groupCount(result.docs), {

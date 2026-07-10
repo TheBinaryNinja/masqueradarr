@@ -273,6 +273,10 @@ export async function cascadeDeleteEpgSource(id: string): Promise<void> {
   //    cross-source over-match (two sources publishing the same channelId stay distinct via `epg`). We also
   //    flip epgState to 'unmatched' — the channel WAS matched to this now-deleted source, so post-unlink it
   //    is genuinely unmatched (not back to the seed `null` "never matched" state).
+  //    Failover groups stay consistent here WITHOUT the cascade helper only because children mirror the
+  //    parent's `epg` value (services/failover.ts invariant) — { epg: id } therefore unlinks the parent and
+  //    all its children together, and 'unmatched' is exactly the non-null state grouped children must keep.
+  //    If this filter ever stops matching whole groups at once, route it through cascadeFailoverEpg.
   await PlaylistChannel.updateMany(
     { epg: id },
     { $set: { tvg_id: null, epg: null, epgState: 'unmatched' } },

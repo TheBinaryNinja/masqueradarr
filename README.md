@@ -131,26 +131,7 @@ image stitches together — *not* a workspace, and they never import across the 
 At a high level, the SPA and IPTV clients talk to the Express **control plane**, which owns MongoDB and
 drives a Rust **data-plane** sidecar (`masq-proxy`) for stream bytes:
 
-```mermaid
-graph TD
-    subgraph Clients
-      BROWSER["Browser — Vue 3 SPA"]
-      IPTV["IPTV clients<br/>TiviMate · VLC · Plex · Jellyfin"]
-    end
-    subgraph Container["masqueradarr container"]
-      NODE["Express 4 API — Node<br/>control plane"]
-      RUST["masq-proxy — Rust<br/>data-plane sidecar"]
-      MONGO[("MongoDB")]
-    end
-    UP["Upstream IPTV sources<br/>dulo · DaddyLive · Pluto · Roku · …"]
-    BROWSER -->|"/api/* · WebSockets"| NODE
-    IPTV -->|"token-gated .m3u + XMLTV download"| NODE
-    IPTV -->|"stream bytes · /api/ext/v1"| NODE
-    NODE <--> MONGO
-    NODE -->|"gate + relay"| RUST
-    RUST -->|"internal seams · loopback"| NODE
-    RUST -->|"resolve · fetch · rewrite · pipe"| UP
-```
+<img src="docs/diagrams/architecture-overview.svg" alt="masqueradarr primary architecture: browser and IPTV clients talk to the Express control plane, which owns MongoDB and drives the Rust masq-proxy data plane out to upstream IPTV sources.">
 
 Key subsystems:
 
@@ -479,73 +460,7 @@ All adapters implement the `SourceAdapter` contract (`server/src/sources/types.t
 <details>
   <summary><strong>Channel Adapter Architecture : Flowchart</strong></summary>
 
-```mermaid
-flowchart LR
-    REG["registry.ts\nSOURCES: SourceAdapter[]"]
-
-    REG --> SYN["Synthetic\nproxy-only · no catalog · synthetic: true\nboot init skips shell row · manifest omits"]
-    REG --> BIN["Built-in\nsyncable catalog · shell row on demand\nProvision → Sync now → playlistchannels"]
-
-    %% ── Synthetic ──────────────────────────────────────────────
-    SYN --> DIRECT["direct\n'Imported'\nPassthrough for user-imported M3U URLs\nidentity resolveStream · any https allowed\nno shell row · channels carry origin:'direct'"]
-    SYN --> HDHOMERUN["hdhomerun\n'HDHomeRun'\nLocal OTA/cable tuner\nCatalog import (channel lineup) live\nplayback dormant — needs TS→HLS remux\nno shell row · channels carry origin:'hdhomerun'"]
-    SYN --> LOCAL["local\n'Local Now'\nlocalnow://id?slug sentinel\nresolveStream → rotating CDN master\ndynamic SSRF allow · no shell row\nchannels carry origin:'local'"]
-
-    %% ── Built-in ────────────────────────────────────────────────
-    BIN --> AUTH["Authenticated\nrequiresAuth: true"]
-    BIN --> ANON["Anonymous\nno auth surface"]
-
-    %% ── Authenticated ───────────────────────────────────────────
-    AUTH --> DULO["dulo\n'dulo.tv'\nSupabase session + device fingerprint\nCapture via headful Chromium (DuloLoginDrawer)\ndulo://channel/id sentinel\nresolveStream → fresh playbackUrl per play\nSSRF: dynamic allow (learned hosts)\nEPG: Gracenote crosswalk only\n(no self-EPG)"]
-
-    %% ── Anonymous ───────────────────────────────────────────────
-    ANON --> SCRAPE["Scrape-based\ncatalog from HTML/rotating mirror\nresolution via multi-hop scrape"]
-    ANON --> APISENTINEL["API Sentinel\ncatalog from JSON API\nstorage: opaque sentinel URL\nresolution: API call per play"]
-    ANON --> MACROFILL["Macro-fill\ncatalog from JSON API\nstorage: HLS URL with __MACRO__ slots\nresolution: fill macros per play"]
-    ANON --> IDENTITY["Identity / Direct\ncatalog carries real HLS master\nresolveStream: pre-allow host only"]
-
-    %% ── Scrape-based ────────────────────────────────────────────
-    SCRAPE --> DLHD["dlhd\n'DaddyLive'\nCatalog: scraped rotating mirror HTML directory\nwatch.php?id=id sentinel\nresolveStream: 3-hop Referer-gated scrape\nSSRF: dynamic allow · segments disguised as image/pdf\nEPG: Gracenote crosswalk + self-EPG (afterSync)\ndefaultDisabled: 18+ channels"]
-    SCRAPE --> DAMI["dami\n'Dami.TV'\nDlhd-derived — reuses dlhd resolveStream + mirror\nOwn catalog (~878 ch, logos, ISO country grouping)\nfrom /papi/api/streams\nEPG: Gracenote crosswalk + self-EPG (afterSync)\nHard-depends on dlhd leaves"]
-
-    %% ── API Sentinel ────────────────────────────────────────────
-    APISENTINEL --> TUBI["tubi\n'Tubi.TV'\ntubi://channel/id sentinel\nresolveStream: Tubi API per play\nSSRF: dynamic allow\nEPG: inline self-EPG (afterSync)\nprograms[] carried on raw catalog rows"]
-    APISENTINEL --> XUMO["xumo\n'Xumo Play'\nbroadcast.json URL sentinel\nresolveStream: 3-hop API resolve per play\nSSRF: dynamic allow\nEPG: paginated market guide (afterSync)"]
-    APISENTINEL --> STIRR["stirr\n'STIRR'\n/playable URL sentinel (video id in path)\nresolveStream: 1-hop POST /playable per play\nSSRF: dynamic allow\nEPG: two-tier per-channel guide (afterSync)"]
-    APISENTINEL --> TCL["tcl\n'TCL TV+'\nformat-stream-url?... sentinel\nresolveStream: 1-hop POST per play\nSSRF: dynamic allow\nEPG: category schedule + batched detail (afterSync)"]
-    APISENTINEL --> PLUTO["pluto\n'Pluto TV'\npluto://region/id sentinel\nresolveStream: region boot (cached) + URL construct\nSSRF: dynamic allow\nEPG: per-region timelines guide (afterSync)\nGracenote crosswalk wired"]
-    APISENTINEL --> ROKU["roku\n'The Roku Channel'\nroku://id sentinel\nresolveStream: session boot (cached) + playId resolve\nSSRF: dynamic allow\nEPG: content-proxy fanout guide (afterSync)"]
-
-    %% ── Macro-fill ──────────────────────────────────────────────
-    MACROFILL --> SAMSUNG["samsung\n'Samsung TV Plus'\njmp2.uk redirect → CDN master\nresolveStream: follow redirect per play\nSSRF: dynamic allow\nEPG: self-EPG (afterSync)\nGracenote crosswalk wired"]
-    MACROFILL --> LG["lg\n'LG Channels'\nHLS URL with {MACRO} slots\nresolveStream: macro expand per play\nSSRF: dynamic allow\nEPG: inline program self-EPG (afterSync)"]
-    MACROFILL --> WHALE["whale\n'Whale TV+'\nHLS URL with macro slots\nresolveStream: macro fill per play\nSSRF: dynamic allow\nEPG: separate /epg fetch (afterSync, Vidaa shape)"]
-    MACROFILL --> DISTRO["distro\n'Distro TV'\nHLS URL with __MACRO__ VAST slots\nresolveStream: macro fill per play\nSSRF: dynamic allow\nEPG: tvg_id-keyed self-EPG (afterSync)"]
-    MACROFILL --> FLS["freelivesports\n'FreeLiveSports'\nHLS URL with device/cb/ref macro slots\nresolveStream: macro fill per play\nSSRF: dynamic allow\nEPG: inline program self-EPG (afterSync)"]
-
-    %% ── Identity / Direct ───────────────────────────────────────
-    IDENTITY --> VIZIO["vizio\n'Vizio WatchFree+'\ncatalog: channelUrls[0] IS the real HLS master\nresolveStream: identity + pre-allow host\nSSRF: dynamic allow\nEPG: separate /api/airings schedule (afterSync)"]
-    IDENTITY --> VIDAA["vidaa\n'Vidaa Free TV'\ncatalog: macros already expanded at catalog time\nresolveStream: identity + pre-allow host\nSSRF: dynamic allow\nEPG: self-EPG via uid (afterSync)\nGracenote crosswalk wired"]
-
-    %% ── Styling ─────────────────────────────────────────────────
-    classDef synthetic fill:#2d2d3a,stroke:#7c7cad,color:#c8c8e8
-    classDef auth fill:#3a2020,stroke:#ad4040,color:#e8c8c8
-    classDef scrape fill:#1e2d1e,stroke:#4a8c4a,color:#c8e8c8
-    classDef sentinel fill:#1e2535,stroke:#4a7cad,color:#c8d8e8
-    classDef macro fill:#2d2020,stroke:#8c6a30,color:#e8d8b0
-    classDef identity fill:#252525,stroke:#666,color:#ccc
-    classDef group fill:#1a1a2a,stroke:#555,color:#aaa
-    classDef registry fill:#111,stroke:#888,color:#fff,font-weight:bold
-
-    class REG registry
-    class SYN,BIN,AUTH,ANON,SCRAPE,APISENTINEL,MACROFILL,IDENTITY group
-    class DIRECT,HDHOMERUN,LOCAL synthetic
-    class DULO auth
-    class DLHD,DAMI scrape
-    class TUBI,XUMO,STIRR,TCL,PLUTO,ROKU sentinel
-    class SAMSUNG,LG,WHALE,DISTRO,FLS macro
-    class VIZIO,VIDAA identity
-```
+<img src="docs/diagrams/adapter-taxonomy.svg" alt="Channel adapter taxonomy: every adapter registered in registry.ts, grouped by shape — synthetic, authenticated, and the four anonymous resolve strategies (scrape, API sentinel, macro-fill, identity).">
 </details>
 
 ## Key Properties Summary
@@ -574,22 +489,7 @@ flowchart LR
 
 ## Lifecycle: how a built-in source reaches the UI
 
-```mermaid
-flowchart TD
-    PROVISION["POST /api/sources/:id/provision\n→ ensureShellRow\nCreates a zero-channel Playlist doc"]
-    SYNC["Sync now\n→ syncLive\n→ adapter.listChannels()"]
-    NORMALIZE["adapter.normalize(raw)\n→ SourceChannel docs\n(sourcechannels)"]
-    PLAYLIST["toPlaylistChannel\n→ PlaylistChannel docs\n(playlistchannels)\nUser edits preserved via $setOnInsert"]
-    AFTERSYNC["adapter.afterSync()\n→ writes epgsources / epgchannels / programs\n(sources with self-EPG only)"]
-    PROXY["stream request → /api/v1/:source/:encUrl\nstreamGate → proxyRelay → masq-proxy (Rust)\nresolve seam → resolveStream → fetch · rewrite · pipe\nLIVE (HLS + raw-TS)"]
-    SPA["SPA reads playlistchannels\nvia GET /api/playlists/:id/channels"]
-
-    PROVISION --> SYNC
-    SYNC --> NORMALIZE --> PLAYLIST
-    NORMALIZE --> AFTERSYNC
-    PLAYLIST --> SPA
-    SPA -->|"stream request"| PROXY
-```
+<img src="docs/diagrams/source-lifecycle.svg" alt="Lifecycle of a built-in source: provision, sync, normalize into sourcechannels, project into playlistchannels, afterSync writes guide data, and the SPA reaches playback through the resolve seam.">
 
 # Playlists
 
@@ -629,6 +529,37 @@ schedule, state). Its **channels live separately** in `playlistchannels`, querie
 Built-in defaults are **Global-endpoint** by default; the custom kinds are **Custom-endpoint** and ride the
 per-playlist export machinery (their own path + guide sibling). All the type tags (`clone`/`file`/`url`/
 `hdhomerun`) and modes (`global`/`custom`) are stored **lowercase**.
+
+## Failover groups (channel backups)
+
+Any playlist's channels can be grouped into a **failover group**: one **parent** plus an ordered list of
+**children** — silent backups for the same real-world channel, possibly from **different providers**.
+Select the channels on the playlist detail screen → **Group** → pick the parent, drag the children into
+priority order, save.
+
+- **One line exported.** The composed M3U (and its guide) contains only the **parent**; children are
+  hidden from every export surface but stay visible (badged `parent` / `child`) in the management UI.
+- **EPG identity is inherited.** Children mirror the parent's `tvg_id` / `epg` link — set at group save and
+  re-cascaded whenever the parent's EPG link changes (drawer, Mapping screen, bulk edits). Direct EPG edits
+  on a child are rejected (`409 failover_child_epg_locked`); auto-match skips children.
+- **Play-time failover (establish-time).** When the parent's stream fails to establish — resolve failure,
+  transport failure after retries, or (opt-in) a definitive upstream error — the data plane walks the
+  children **in order** via `attempt=1,2,…` resolves and serves the first one that answers, under the
+  parent's URL and stream identity. The session then **sticks** to the winning child (the failover cursor
+  never walks back to the dead parent mid-play); the pin resets a few idle minutes after playback stops.
+- **Cross-provider safe.** A child's grant carries its own adapter's headers under its own policy key
+  (`policySource`), so a dlhd parent backed by a pluto child never pollutes dlhd's other streams.
+- **Observability.** Active Streams badges a failed-over stream with `failover → <child>`; the scheduled
+  channel probe keeps probing hidden children, so a dead backup is visible before failover ever reaches it.
+- **Self-healing.** Any prune/delete that removes a group's parent (or its last child) auto-disbands the
+  group; disbanding is also available in the Group modal — children keep their inherited EPG link but
+  re-enter the export. Children must stay **Active** to remain probe-covered and candidate-eligible
+  (a `Disabled` child is skipped at failover; a `Disabled` parent hides the whole group from exports).
+
+Knobs: `failoverEnabled` (default **on** — configuring a group is the real opt-in) and
+`failoverOnDefiniteError` (default **off**) in the [proxyconfigs subsystem](#tuning-knobs--the-proxyconfigs-subsystem).
+Seamless mid-segment splicing is a future enhancement — a parent dying mid-play is caught on the player's
+next playlist refetch.
 
 ## Playlists + EPG Sources with Playlist Binding
 
@@ -711,17 +642,7 @@ Guide data only reaches a downstream client at **compose** time, and composition
 guide is written as a **sibling of the M3U** by `composeGuide()`, which runs off the *same Active channel set*
 `composeM3u()` just wrote (the Global union, or one Custom playlist) — so a guide can never drift from its M3U.
 
-```mermaid
-graph LR
-    M["composeM3u(surface)<br/>Active channels"] --> G["composeGuide(sameChannels, path)"]
-    G --> S["keep Active + (tvg_id, epg)-linked<br/>key = &lt;epg&gt;:&lt;tvg_id&gt;"]
-    S --> C["epgchannels → &lt;channel&gt;<br/>(dedupe by bare tvg_id, first-wins)"]
-    S --> P["programs → &lt;programme&gt;<br/>(re-tag to bare tvg_id)"]
-    C --> X["&lt;tv&gt; written beside the .m3u"]
-    P --> X
-    X --> A["M3U advertises it via x-tvg-url<br/>token-free, NOT per-user"]
-    X --> R["credit each source:<br/>lastXmlAt + xmlGeneratedCount++"]
-```
+<img src="docs/diagrams/guide-composition.svg" alt="Guide composition: composeM3u hands its Active channel set to composeGuide, which selects (tvg_id, epg)-linked channels, emits the channel and programme elements, merges them into one tv document beside the .m3u, and credits each contributing source.">
 
 Per composed surface:
 
@@ -767,29 +688,7 @@ downloads; only live playback pauses until it's back.
 Node and Rust talk over one private loopback channel — `POST /api/internal/*`, guarded by a shared
 `x-masq-secret` (the SPA never calls it; only the Rust engine does). One contract, four jobs:
 
-```mermaid
-graph TD
-    subgraph NodePlane["Node — control plane"]
-      GATE["streamGate<br/>stream-token access ladder"]
-      RELAY["proxyRelay<br/>reverse-proxy + client identity"]
-      SEAM["/api/internal/* · shared secret"]
-      RESOLVE["adapter resolve<br/>dulo auth · dlhd scrape · SourceProxy bag"]
-      TEL["telemetry authority<br/>streamState · ViewSession · WS"]
-      LOGS["log store · proxy category"]
-    end
-    subgraph RustPlane["Rust — data plane · masq-proxy"]
-      ENGINE["serve_stream<br/>fetch · manifest rewrite · segment pipe"]
-      RSL["RSL durability<br/>retry · failover · read-ahead buffer"]
-      TS["tsmux<br/>raw MPEG-TS distribution"]
-    end
-    GATE --> RELAY --> ENGINE
-    ENGINE --> RSL
-    ENGINE --> TS
-    ENGINE -->|"POST /resolve → grant"| SEAM --> RESOLVE
-    ENGINE -->|"POST /telemetry · batched"| SEAM --> TEL
-    ENGINE -->|"POST /log · batched"| SEAM --> LOGS
-    ENGINE -.->|"POST /authorize · EDGE mode only"| SEAM
-```
+<img src="docs/diagrams/internal-seams.svg" alt="The internal seams: Rust calls Node over loopback POST /api/internal/* with a shared x-masq-secret for resolve, telemetry, log, and (edge mode only) authorize.">
 
 - **resolve** (`/api/internal/resolve`) — Rust asks Node to resolve a stream; Node runs the adapter logic and
   returns a per-stream **grant** (`masterUrl`, `upstreamHeaders`, `allowHosts`, segment relabel, the resolved
@@ -807,28 +706,7 @@ screen reaches the sidecar within one flush — no restart.
 
 ## How a stream request flows
 
-```mermaid
-graph TD
-    P["Player → /api/ext/v1/&lt;source&gt;/&lt;enc-url&gt; · token · pl"]
-    G["streamGate<br/>valid token? enabled? source allowed?"]
-    R["proxyRelay → 127.0.0.1:8787<br/>inject client identity + secret"]
-    E{"ENTRY or HOP?"}
-    RES["resolve seam → grant<br/>masterUrl · headers · allowHosts · proxyConfig"]
-    F["fetch upstream<br/>retry 502/503/504 · mirror failover"]
-    M{"manifest or segment?"}
-    RW["rewrite child URIs<br/>re-embed token + pl · grow SSRF allow-set"]
-    SEG["relabel + pipe bytes<br/>bounded read-ahead buffer"]
-    C["bytes → player"]
-    X["401 / 403 · plain text"]
-    P --> G
-    G -->|allow| R --> E
-    G -.->|deny| X
-    E -->|ENTRY| RES --> F
-    E -->|HOP| F
-    F --> M
-    M -->|manifest| RW --> C
-    M -->|segment| SEG --> C
-```
+<img src="docs/diagrams/stream-request-flow.svg" alt="Stream request flow: streamGate authorizes, proxyRelay forwards to the sidecar, an ENTRY request resolves a grant, upstream is fetched, and manifests are rewritten while segments are relabelled and piped to the player.">
 
 1. A player requests `/api/v1/…` (in-app) or `/api/ext/v1/…` (external clients; the mount the composed M3U
    always emits), carrying the per-user `?token=` and the `?pl=` playlist id.
@@ -846,9 +724,14 @@ graph TD
 The Rust engine is built to keep a stream alive on flaky upstreams:
 
 - **Retry** — transient upstream failures (transport errors + `502` / `503` / `504`) are retried with bounded
-  backoff; definitive `4xx` / `5xx` are forwarded verbatim.
+  backoff; definitive `4xx` / `5xx` are forwarded verbatim (unless `failoverOnDefiniteError` routes them into
+  the failover walk below).
 - **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd / dami to re-probe and
   rotate to a live mirror mid-stream.
+- **Failover groups** — when a channel has configured backups and its stream still won't establish, the
+  engine walks the ordered children (`attempt=1,2,…` against the resolve seam) and serves the first live
+  one under the parent's identity, then sticks to it for the session. See
+  [Failover groups](#failover-groups-channel-backups).
 - **Stall detection** — an idle read timeout (`readTimeoutMs`) turns a silent upstream into a clean truncation
   instead of a hang.
 - **Read-ahead buffer** — a bounded in-memory buffer (`bufferSizeKb`) smooths jitter and fixes the
@@ -873,6 +756,8 @@ resolved by Node into each grant (**Rust never reads MongoDB**). Two tiers, doc-
 | `connectTimeoutMs`, `maxRedirects` | live | per-config upstream HTTP client (cached in Rust) |
 | `readTimeoutMs`, `bufferSizeKb` | live | per-stream stall timeout + read-ahead buffer size |
 | `outputFormat` (`hls` \| `ts`) | live | distribution shape (`ts` = continuous MPEG-TS, external mount only) |
+| `failoverEnabled` | live | walk a channel's ordered failover children on an establish failure (default **on**) |
+| `failoverOnDefiniteError` | live | also treat a definitive upstream `4xx`/`5xx` as a failover trigger (default **off**) |
 | `segmentCacheTtlSec` | reserved | shipped in the grant, not yet enforced |
 
 ## Public edge mode (`MASQ_EDGE`)
@@ -884,32 +769,12 @@ downloads, and all four WebSockets — back to Node on a loopback internal port.
 are unchanged, and it's **fully reversible** by clearing the flag (no rebuild).
 
 **Default — `MASQ_EDGE` off (Node is the front door):**
-```mermaid
-graph TD
-    CLIENT["Clients · public :3000"]
-    subgraph Default["MASQ_EDGE off — default"]
-      NODE["Node — public front door<br/>0.0.0.0:3000<br/>SPA · /api/* · WS · gate · relay"]
-      RUST["masq-proxy — loopback sidecar<br/>127.0.0.1:8787<br/>/health · /probe · stream engine"]
-    end
-    CLIENT --> NODE
-    NODE -->|"relay stream bytes"| RUST
-    RUST -->|"seams · loopback"| NODE
-```
+
+<img src="docs/diagrams/topology-default.svg" alt="Default topology with MASQ_EDGE off: Node binds the public port and relays stream bytes to the loopback-only masq-proxy sidecar.">
 
 **`MASQ_EDGE=1` (Rust is the front door):**
-```mermaid
-graph TD
-    CLIENT["Clients · public :3000"]
-    subgraph Edge["MASQ_EDGE=1 — inverted"]
-      RUST["masq-proxy — public edge<br/>0.0.0.0:3000<br/>serves /api/v1 + /api/ext/v1 in-process · token-gated"]
-      NODE["Node — internal<br/>127.0.0.1:8080<br/>SPA · /api/* · WS · control plane"]
-      LOOP["masq-proxy loopback<br/>127.0.0.1:8787 · /health · /probe · unchanged"]
-    end
-    CLIENT -->|"stream mounts"| RUST
-    CLIENT -->|"SPA · /api/* · .m3u · WebSockets"| RUST
-    RUST -->|"reverse-proxy non-stream + WS splice"| NODE
-    RUST -->|"POST /api/internal/authorize · 30s TTL"| NODE
-```
+
+<img src="docs/diagrams/topology-edge.svg" alt="Edge topology with MASQ_EDGE=1: masq-proxy binds the public port, serves the stream mounts in-process, and reverse-proxies everything else back to Node on a loopback port.">
 
 **What changes under the hood.** In edge mode the token gate can't be Express middleware (Rust owns the
 socket), so it becomes a **per-request check** against a small Rust auth cache backed by

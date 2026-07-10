@@ -12,7 +12,8 @@ import { gateStreamAccess } from '../middleware/streamGate.js';
 // and behind the (non-blocking) global `authenticate`, but its OWN guard is the shared secret (secret.ts) —
 // a request without the matching x-masq-secret header is rejected 403 regardless of any user token.
 //
-//   POST /api/internal/resolve    { source, url, pl? }   → the per-stream GRANT (resolveSeam.buildGrant)
+//   POST /api/internal/resolve    { source, url, pl?, attempt? } → the per-stream GRANT (resolveSeam.buildGrant;
+//                                 attempt N >= 1 targets the channel's Nth failover child, 410 = exhausted)
 //   POST /api/internal/authorize  { token, source }      → the stream-token gate decision (EDGE-3)
 //   POST /api/internal/telemetry  a viewer/bytes event (or { events:[...] }) → streamTelemetry writers
 //   POST /api/internal/log        an engine log event (or { events:[...] }) → logStore (the `proxy` category)
@@ -33,12 +34,16 @@ internalRouter.use((req, res, next) => {
 
 internalRouter.post('/resolve', async (req, res, next) => {
   try {
-    const { source, url, pl } = req.body ?? {};
+    const { source, url, pl, attempt } = req.body ?? {};
     if (typeof source !== 'string' || !source || typeof url !== 'string' || !url) {
       res.status(400).json({ error: 'source_and_url_required' });
       return;
     }
-    const grant = await buildGrant(source, url, typeof pl === 'string' ? pl : undefined);
+    // attempt: the failover-candidate cursor (0 = the channel itself; N >= 1 = its Nth ordered child).
+    // Older sidecars omit it → undefined (identical to today; also keeps probe-style callers inert).
+    const att =
+      typeof attempt === 'number' && Number.isInteger(attempt) && attempt >= 0 ? attempt : undefined;
+    const grant = await buildGrant(source, url, typeof pl === 'string' ? pl : undefined, att);
     if (!grant.ok) {
       res.status(grant.status).json({ error: grant.error });
       return;

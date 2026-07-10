@@ -228,7 +228,7 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
         <PlaylistRow v-for="p in g.items" :key="p.id" :playlist="p" grouped @open="router.push(`/playlists/${p.id}`)">
           <template #actions>
             <Btn
-              variant="ghost"
+              variant="cyan"
               size="sm"
               icon="waffle"
               title="Row actions"

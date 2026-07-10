@@ -20,6 +20,7 @@ use axum::http::StatusCode;
 use axum::response::Response;
 use bytes::Bytes;
 use std::io;
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
@@ -28,7 +29,7 @@ use tokio_stream::StreamExt;
 use url::Url;
 
 use crate::log;
-use crate::proxy::{build_headers, fetch_with_retry, is_private_host};
+use crate::proxy::{build_headers, failover_walk, fetch_with_retry, is_private_host, WalkOutcome, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, SourcePolicy};
 
 /// Everything the TS producer needs to follow a stream + attribute its telemetry. Cloned out of the proxy
@@ -152,7 +153,7 @@ pub async fn try_ts_response(
     // Resolve to the MEDIA playlist to follow (peek the top variant for a master), then guard TS-only.
     let (media_url, media_body) = if is_master(&first_body) {
         let vurl = pick_variant(&first_body, &first_url)?;
-        let resp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant")
+        let resp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !resp.status().is_success() {
@@ -180,23 +181,52 @@ pub async fn try_ts_response(
     )
 }
 
-/// Failover: re-resolve the entry (Node re-runs resolveStream → reprobeMirror) and derive the media playlist
-/// again from the fresh master. `None` ⇒ nothing reachable (the producer ends).
-async fn reresolve_media(ctx: &TsContext) -> Option<(Url, String)> {
-    log::info("tsmux", &ctx.rid, || "media playlist unreachable — re-resolving (mirror failover)".to_string());
-    let (_p, target) = ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await.ok()?;
-    let turl = Url::parse(&target).ok()?;
-    let resp = fetch_with_retry(&ctx.client, turl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-reresolve")
-        .await
-        .ok()?;
-    if !resp.status().is_success() {
-        return None;
-    }
+/// Failover: walk the stream's candidates (a fresh resolve of the PINNED candidate first — Node re-runs
+/// resolveStream → reprobeMirror, the pre-failover mirror rotation — then, when failoverEnabled, the next
+/// failover children via the shared proxy.rs walk) and derive the media playlist again from the winning
+/// master. Swaps the producer onto the winning candidate's policy + client (FOG: a cross-provider child's
+/// headers live under ITS adapter's policy). `None` ⇒ nothing reachable (the producer ends).
+async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
+    // Milestone (≥2): a live raw-TS session lost its media playlist and is now failing over.
+    log::info("failover", &ctx.rid, || "media playlist unreachable — walking failover candidates".to_string());
+    let walk_children = ctx.policy.failover_enabled.load(Ordering::Relaxed);
+    let on_definite = ctx.policy.failover_on_definite_error.load(Ordering::Relaxed);
+    ctx.state.invalidate_target(&ctx.source, &ctx.entry);
+    let start = ctx.state.cursor_attempt(&ctx.source, &ctx.entry);
+    let resp = match failover_walk(
+        &ctx.state,
+        &ctx.source,
+        &ctx.entry,
+        ctx.pl.as_deref(),
+        walk_children,
+        on_definite,
+        None,
+        start,
+        true,
+        &ctx.rid,
+    )
+    .await
+    {
+        WalkOutcome::Recovered(p, _target, r) if r.status().is_success() => {
+            // FOG: follow the winning candidate from here on — its policy (headers/relabel/hosts) and the
+            // client matching its knobs. Same-provider candidates resolve to the same Arc — a no-op swap.
+            ctx.policy = p;
+            ctx.client = ctx.state.client_for(
+                ctx.policy.connect_timeout_ms.load(Ordering::Relaxed),
+                ctx.policy.max_redirects.load(Ordering::Relaxed),
+            );
+            // Level-3 lineage: the raw-TS producer now follows the winning (possibly cross-provider)
+            // candidate's policy + client for the rest of the session (the walk logged the recovery above).
+            log::trace("failover", &ctx.rid, || "raw-TS producer swapped onto the winning candidate's policy".to_string());
+            r
+        }
+        _ => return None, // definitive non-2xx / dead — nothing a raw-TS producer can serve
+    };
     let furl = resp.url().clone();
     let body = resp.text().await.ok()?;
     if is_master(&body) {
         let vurl = pick_variant(&body, &furl)?;
-        let vresp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant")
+        let vresp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
@@ -211,7 +241,7 @@ async fn reresolve_media(ctx: &TsContext) -> Option<(Url, String)> {
 async fn ts_producer(
     mut media_url: Url,
     mut media_body: String,
-    ctx: TsContext,
+    mut ctx: TsContext,
     tx: mpsc::Sender<Result<Bytes, io::Error>>,
 ) {
     let stream_id = ctx.state.next_stream_id();
@@ -236,10 +266,14 @@ async fn ts_producer(
     'outer: loop {
         // Refresh the media playlist each cycle (except the first — we already have it from try_ts_response).
         if !first {
-            match fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-media")
+            match fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-media", MAX_UPSTREAM_RETRIES)
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
+                    // FOG: a raw-TS session holds ONE socket and never re-requests the entry, so keep the
+                    // stream's failover-cursor idle clock alive from the healthy refresh loop — otherwise
+                    // a pinned session would look idle and snap back to the parent on the next re-resolve.
+                    ctx.state.touch_stream(&ctx.source, &ctx.entry);
                     media_url = resp.url().clone();
                     match resp.text().await {
                         Ok(t) => media_body = t,
@@ -249,13 +283,14 @@ async fn ts_producer(
                         }
                     }
                 }
-                _ => match reresolve_media(&ctx).await {
+                _ => match reresolve_media(&mut ctx).await {
                     Some((u, b)) => {
                         media_url = u;
                         media_body = b;
                     }
                     None => {
-                        log::warn("tsmux", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
+                        // Issue-level (≥1): the raw-TS session exhausted its failover chain and ends.
+                        log::warn("failover", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
                         break 'outer; // nothing reachable — end the stream
                     }
                 },
@@ -295,7 +330,7 @@ async fn ts_producer(
                 ctx.policy.hosts.write().unwrap().insert(h.to_lowercase());
             }
             log::trace("tsmux", &ctx.rid, || format!("TS segment seq={seq} → {}", crate::proxy::host_of(seg_url.as_str())));
-            match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-segment")
+            match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-segment", MAX_UPSTREAM_RETRIES)
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
