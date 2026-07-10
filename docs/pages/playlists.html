@@ -47,6 +47,7 @@
           <a class="nav-link" href="concepts.html">Concepts</a>
           <a class="nav-link" href="getting-started.html">Getting started</a>
           <a class="nav-link" href="playlists.html" aria-current="page">Playlists</a>
+          <a class="nav-link" href="failover.html">Playlist Failover</a>
         </div>
       </noscript>
     </nav>
@@ -113,6 +114,7 @@
           <div class="lbl">never fabricated</div>
           <p>Fields the source has no equivalent for (channel #, <code>tvg_id</code>, <code>epg</code>, <code>stream.res</code>) are stored as explicit <code>null</code> — never invented. Top-level <code>status</code> is the <code>Active</code>/<code>Disabled</code> governor; a <code>Disabled</code> channel is dropped from the published playlist without being deleted.</p>
         </div>
+        <p class="col" style="margin-top:14px;">Three further fields on a <code>playlistchannels</code> row — <code>failoverGroupId</code>, <code>failoverRole</code>, <code>failoverOrder</code> — are <strong>operator-owned</strong>: no sync ever writes them, so a channel's failover grouping survives a re-sync alongside your other edits. That's the <a href="failover.html">Playlist Failover</a> story.</p>
       </section>
 
       <!-- LIFECYCLE #3 ─────────────────────────────────────────────────── -->
@@ -158,9 +160,21 @@
         </div>
       </section>
 
+      <!-- FAILOVER ─────────────────────────────────────────────────────── -->
+      <section id="failover">
+        <div class="sec-tag"><span class="n">05</span> Grouped channels</div>
+        <h2>A channel can have backups</h2>
+        <p class="col">Any playlist's channels can be gathered into a <strong>failover group</strong>: one <strong>parent</strong> plus an ordered line of <strong>children</strong> — silent backups for the same real-world channel, often from entirely different providers. Select the channels on the playlist detail screen, hit <strong>Group</strong>, pick the parent, drag the rest into priority order.</p>
+        <p class="col">Only the parent is exported: the composed <code>.m3u</code> and its guide carry <em>one</em> line for the group, and the children inherit the parent's guide link. When the parent's stream won't start, the engine walks the children in order and serves the first one that answers — under the parent's URL and identity, so the viewer never notices.</p>
+        <div class="aha">
+          <div class="lbl">group on a clone, not on a built-in</div>
+          <p>A group lives inside a <strong>single playlist</strong>, and a built-in <strong>(Default)</strong> playlist only ever holds <em>one</em> provider's channels — so every backup you could pick there shares the upstream that just died. Clone the channels into a custom playlist, <strong>Append</strong> the equivalents from other providers, and build the group there. The full reasoning, the walkthrough, and the play-time mechanics are on the <a href="failover.html">Playlist Failover</a> page.</p>
+        </div>
+      </section>
+
       <!-- ON SCREEN ────────────────────────────────────────────────────── -->
       <section id="on-screen">
-        <div class="sec-tag"><span class="n">05</span> On screen</div>
+        <div class="sec-tag"><span class="n">06</span> On screen</div>
         <h2>List view and detail view</h2>
         <p class="col">The <strong>list view</strong> shows every playlist as a row — name, source/type, status, channel count, schedule chips — built-in and custom side by side. The <strong>detail view</strong> is the channels inside one playlist, where you edit individual channels and run syncs.</p>
         <div class="shots">
@@ -171,7 +185,7 @@
 
       <!-- ENDPOINTS ────────────────────────────────────────────────────── -->
       <section id="endpoints">
-        <div class="sec-tag"><span class="n">06</span> Endpoint modes</div>
+        <div class="sec-tag"><span class="n">07</span> Endpoint modes</div>
         <h2>Global vs. Custom — where a playlist is served</h2>
         <p class="col">The <code>endpoint</code> mode decides how a playlist is exposed. Built-in defaults are <strong>Global</strong> by default; the custom kinds are <strong>Custom</strong>.</p>
         <div class="pair">
@@ -195,7 +209,7 @@
 
       <!-- EPG BINDING ──────────────────────────────────────────────────── -->
       <section id="epg">
-        <div class="sec-tag"><span class="n">07</span> How guide data binds</div>
+        <div class="sec-tag"><span class="n">08</span> How guide data binds</div>
         <h2>Two mechanisms — keep them separate</h2>
         <p class="col">Guide data reaches a playlist two distinct ways. (The full EPG story — providers, the shared sync path, the compose pipeline — is the <a href="epg.html">EPG &amp; guide data</a> page.)</p>
         <div class="pair">
@@ -214,7 +228,7 @@
 
       <!-- ACCESS ───────────────────────────────────────────────────────── -->
       <section id="access">
-        <div class="sec-tag"><span class="n">08</span> Per-user access</div>
+        <div class="sec-tag"><span class="n">09</span> Per-user access</div>
         <h2>Who can use which playlist</h2>
         <p class="col">Access is a <strong>per-user allow-list</strong>, split to mirror the endpoint modes: <code>allowedPlaylists</code> (Global-endpoint) and <code>allowedCustomPlaylists</code> (Custom-endpoint). You assign membership on the <strong>Playlists screen</strong>, per playlist — not by editing the user. (Full auth &amp; token detail is on the <a href="users.html">Users &amp; access</a> page.)</p>
         <ul class="col">
@@ -226,13 +240,13 @@
           <span class="ref"><b>README</b> · Playlists</span>
           <span class="ref"><b>schemas.md</b> · §3.2 · sourcechannels → playlistchannels</span>
           <span class="ref"><b>m3u</b> skill · composition &amp; export</span>
-          <span class="ref">next → <b>Sources &amp; adapters</b> <span style="color:var(--text-3)">(soon)</span></span>
+          <span class="ref">next → <b>Playlist Failover</b></span>
         </div>
       </section>
 
       <footer class="doc-foot">
         <span>masqueradarr · playlists</span>
-        <span>next → sources &amp; adapters</span>
+        <span>next → playlist failover</span>
       </footer>
 
     </div>

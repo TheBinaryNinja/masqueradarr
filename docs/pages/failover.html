@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Playlist Failover — masqueradarr docs</title>
+<meta name="description" content="Grouped playlist channels: one parent plus ordered backup children for the same real-world channel. How to build a cross-provider failover group, how the play-time walk works, and the rules — including why you should never group inside a built-in playlist.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Playlist Failover — masqueradarr">
+<meta property="og:description" content="One parent, ordered backup children. Grouped playlist channels, the play-time failover walk, and what you can and cannot do.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="concepts.html">Concepts</a>
+          <a class="nav-link" href="getting-started.html">Getting started</a>
+          <a class="nav-link" href="playlists.html">Playlists</a>
+          <a class="nav-link" href="failover.html" aria-current="page">Playlist Failover</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>playlist failover</b> · 04 <span class="rule"></span> channel backups</div>
+        <h1>Playlist Failover — a channel with a <span class="em">stand-in</span></h1>
+        <p class="lede">The same real-world channel usually exists on several providers. Group them — one parent, an ordered line of backup children — and masqueradarr quietly serves the next one alive when the first won't start.</p>
+      </header>
+
+      <!-- WHY ──────────────────────────────────────────────────────────── -->
+      <section id="why">
+        <div class="sec-tag"><span class="n">01</span> Start from zero</div>
+        <h2>Why a channel needs a backup</h2>
+        <p class="col">masqueradarr never stores a stream URL. It stores a pointer and <strong>resolves the real stream the moment you press play</strong> (that's the <a href="playlists.html">Playlists</a> story). Usually that works. Sometimes it doesn't: the provider's scrape breaks, its token expires, its edge returns <code>403</code>, or the whole service is down for the evening. The channel is in your playlist, your player asks for it, and nothing arrives.</p>
+        <p class="col">The thing is, <em>that channel is rarely unique</em>. "ESPN" exists on several of the providers masqueradarr aggregates. If one is dark at 8pm, another is very likely fine. A <strong>failover group</strong> is you telling masqueradarr about that fact once, so it can act on it every night without you.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+          <div class="tile">
+            <div class="ic">● the problem</div>
+            <h3>One pointer, one upstream</h3>
+            <p>An ordinary channel resolves through exactly one provider. If that resolve or that fetch fails, the play fails. Your player shows an error and moves on.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● the fact</div>
+            <h3>The same channel, elsewhere</h3>
+            <p>The same broadcast is carried by other providers in your catalog. They have different names, different logos, different guide ids — but the same picture.</p>
+          </div>
+          <div class="tile ts">
+            <div class="ic">● the fix</div>
+            <h3>An ordered line of stand-ins</h3>
+            <p>Name one channel the <strong>parent</strong> and rank the others behind it. On an establish failure the engine walks the line and serves the first one that answers.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">what your viewer sees</div>
+          <p><strong>Nothing.</strong> A group is invisible downstream: your playlist still carries <em>one</em> line for that channel, with the parent's name, number, logo and guide. When a backup is carrying the stream, it is served <strong>under the parent's URL and identity</strong> — the player never learns it switched providers.</p>
+        </div>
+      </section>
+
+      <!-- MODEL ────────────────────────────────────────────────────────── -->
+      <section id="model">
+        <div class="sec-tag"><span class="n">02</span> The group</div>
+        <h2>One parent, ordered children</h2>
+        <p class="col">A <strong>failover group</strong> is not a new collection — it's three fields written onto the channel rows you already have in <code>playlistchannels</code>. Every member of a group is an ordinary channel that has been given a role.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● exactly one</span>
+            <h3>The <span class="k-accent"><code>parent</code></span></h3>
+            <p>The channel the world sees. It is the one exported to your <code>.m3u</code>, the one your player requests, and the <strong>owner of the group's EPG identity</strong>. Everything about the group — its name, number, logo, guide link — is the parent's.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● one or more, ranked</span>
+            <h3>The <span class="k-ts"><code>child</code></span>ren</h3>
+            <p>Silent backups, tried in order. Each is <strong>hidden from every export</strong>, <strong>inherits the parent's guide link</strong>, and keeps its own provider for routing — so a child can come from a completely different service than its parent.</p>
+          </div>
+        </div>
+        <div class="panel scroll" style="margin-top:16px;">
+          <table>
+            <thead>
+              <tr><th>Field on the channel row</th><th>Values</th><th class="h-accent">What it means</th></tr>
+            </thead>
+            <tbody>
+              <tr><td><code>failoverGroupId</code></td><td>opaque id, or <code>null</code></td><td>Which group this channel belongs to. <code>null</code> = ungrouped. Never derived from the parent, so swapping the parent doesn't churn it.</td></tr>
+              <tr><td><code>failoverRole</code></td><td><code>parent</code> · <code>child</code> · <code>null</code></td><td>The role within the group. Exactly one <code>parent</code> per group.</td></tr>
+              <tr><td><code>failoverOrder</code></td><td><code>0…N-1</code>, or <code>null</code></td><td>A child's position in the line. Lower is tried first. <code>null</code> on the parent.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="aha">
+          <div class="lbl">the four invariants</div>
+          <p>A group has <strong>exactly one parent and at least one child</strong> — anything else is degenerate and gets disbanded automatically. A channel belongs to <strong>at most one group</strong>. A group lives <strong>entirely inside one playlist</strong> — there is no such thing as a cross-playlist group. And these three fields are <strong>operator-owned</strong>: no sync ever writes them, so a group survives a re-sync untouched.</p>
+        </div>
+      </section>
+
+      <!-- CONTRACT ─────────────────────────────────────────────────────── -->
+      <section id="contract">
+        <div class="sec-tag"><span class="n">03</span> The contract</div>
+        <h2>What a group changes — and what it doesn't</h2>
+        <p class="col">Grouping is a <em>publishing</em> decision as much as a resilience one. The moment you save a group, its children leave your published catalog.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> a group is one exported line <span class="rt">select · group · store · export · play</span></div>
+          <div class="scroll">
+            <div class="cfgflow">
+              <div class="stage"><div class="t">Select</div><div class="v">2+ channels</div><small>one real-world channel, several providers</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">Group</div><div class="v">pick a parent</div><small>drag the rest into priority order</small></div>
+              <div class="arr">→</div>
+              <div class="stage warn"><div class="t">Store</div><div class="v">three fields</div><small>groupId · role · order — on the channel rows</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">Export</div><div class="v">one .m3u line</div><small>the parent only · one guide channel</small></div>
+              <div class="arr">→</div>
+              <div class="stage ts"><div class="t">Play</div><div class="v">walk on failure</div><small>first live child wins, silently</small></div>
+            </div>
+          </div>
+        </div>
+        <ul class="col" style="margin-top:16px;">
+          <li><strong>One line out, always.</strong> The composed <code>.m3u</code> and its XMLTV guide contain the parent and nothing else. Children are filtered out of <em>every</em> export surface — the Global M3U, per-user exports, and per-playlist custom exports all run through the same filter.</li>
+          <li><strong>Children stay fully visible in the app.</strong> They remain in the playlist detail view, nested under their parent and badged <span class="k-ts"><code>child</code></span>. Hiding them from a file is not the same as deleting them.</li>
+          <li><strong>Children are still health-probed.</strong> The scheduled channel probe keeps testing hidden children on their own, so a <strong>dead backup shows up as dead before failover ever needs it</strong>. Failover can never mask a dead parent as healthy either — the probe always resolves each channel itself.</li>
+          <li><strong>Status is still the governor.</strong> A <code>Disabled</code> child is <strong>skipped</strong> at failover. A <code>Disabled</code> <em>parent</em> hides the whole group from exports — nothing about that channel ships until you re-enable it.</li>
+          <li><strong>The guide identity is the parent's.</strong> On save, every child's <code>tvg_id</code> and EPG link are overwritten with the parent's. That is what keeps the exported line coherent no matter which member is actually serving.</li>
+        </ul>
+      </section>
+
+      <!-- WALKTHROUGH ──────────────────────────────────────────────────── -->
+      <section id="walkthrough">
+        <div class="sec-tag"><span class="n">04</span> Walkthrough</div>
+        <h2>Build a cross-provider group, step by step</h2>
+        <p class="col">The payoff of failover is a backup on a <em>different</em> provider — if all your backups sit behind the upstream that just died, you have gained nothing. A group lives inside a single playlist, and a built-in playlist only ever holds one provider's channels. So the first job is to <strong>gather the candidates into one custom playlist</strong>. That's what <strong>Create</strong> and <strong>Append</strong> are for.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> gather → group <span class="rt">two providers, one channel, one group</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">Playlists → provider A → detail</div><div class="act">Pick your primary and clone it out</div><div class="note">Select the channel you want to keep (checkbox, or <code>Ctrl</code>/<code>Cmd</code>+click a row). Hit <strong>Create</strong> in the selection toolbar and name a new custom playlist. <span class="branch">this becomes the clone that hosts the group</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">Playlists → provider B → detail</div><div class="act">Append the same channel from another provider</div><div class="note">Find the equivalent channel, select it, and hit <strong>Append</strong> — choosing the clone you just made. Repeat for each backup provider you want in the line.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">Playlists → your clone → detail</div><div class="act">Select every member of the group</div><div class="note">Tick the checkbox on each one. <code>Ctrl</code>/<code>Cmd</code>+<code>Shift</code>+click range-selects. A <strong>“{n} selected”</strong> pill appears with the selection toolbar.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Selection toolbar → Group</div><div class="act">Open the group modal</div><div class="note">The <strong>Group</strong> button (chain icon) opens <strong>New failover group</strong>. Its banner restates the deal: the parent is exported and served; children are hidden, inherit the parent's EPG link, and are tried in order.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">The modal</div><div class="act">Name the parent, rank the children</div><div class="note">The first selected channel is proposed as <strong>Parent</strong>. To promote a different one, hit <strong>Set parent</strong> on its row — the old parent demotes into the child list in place. Then drag the rows under <strong>Children · failover order</strong> by their grip. Position <code>1</code> is tried first.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">Save group</div><div class="act">The group is live</div><div class="note">Children inherit the parent's guide link, drop out of the export, and the playlist recomposes. A toast confirms: <em>“Failover group saved · N backup(s) behind …”</em>. <span class="branch ts">nothing else to configure — failover is on by default</span></div></div></div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">two selection gotchas</div>
+          <p>A <strong>plain click</strong> on a row when two or more are already selected opens the <em>bulk edit drawer</em>, not the group modal — build your selection with checkboxes or modifier-clicks. And while the <strong>Group</strong> button lights up at one selected channel, <strong>Save group</strong> stays disabled until you have a parent <em>and</em> at least one child; the modal will tell you so: <em>“Select at least two channels — one parent plus one or more backups.”</em></p>
+        </div>
+        <div class="shots" style="margin-top:16px;">
+          <figure class="shot wide"><img src="../img/screenshots/v2-playlists-02.png" alt="Playlist detail view — the channel table where channels are selected and grouped" loading="lazy"><figcaption><span class="dot"></span> Playlist detail · select channels here, then <strong>Group</strong></figcaption></figure>
+        </div>
+      </section>
+
+      <!-- MANAGE ───────────────────────────────────────────────────────── -->
+      <section id="manage">
+        <div class="sec-tag"><span class="n">05</span> Managing a group</div>
+        <h2>Living with it afterwards</h2>
+        <p class="col">Once saved, the group becomes a small tree in the playlist's channel list: the parent, then its children indented beneath it with a <code>└</code> connector, in failover order.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● reading the list</span>
+            <h3>Pills and a collapse arrow</h3>
+            <p>A parent carries a <span class="k-accent"><code>parent</code></span> pill and a <strong>“{n} backup(s)”</strong> count, plus a chevron that collapses its children out of the way. Each child carries a <span class="k-ts"><code>child</code></span> pill. The same pills follow the channel into the grid view, the channel drawer, Channel Mapping and Active Streams.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● changing it</span>
+            <h3>The Group actions menu</h3>
+            <p>Every parent row has a waffle menu with <strong>Edit group</strong> (reopens the modal, back-filled with the whole group) and <strong>Disband group</strong>. Inside the modal you can re-drag the order, <strong>Set parent</strong> to promote a child, or add members by re-selecting a wider set before opening it.</p>
+          </div>
+        </div>
+        <h3 style="margin-top:22px;">The rules the UI enforces for you</h3>
+        <div class="col">
+          <ul>
+            <li><strong>A child's guide link is read-only.</strong> In the channel drawer a child's <strong>TVG-ID</strong> field is disabled and labelled <em>· inherited</em>, with the hint <em>“Inherited from the group parent — edit the parent's EPG link instead.”</em> The server refuses a direct write with <code>409 failover_child_epg_locked</code>. Channel Mapping won't let you select a child, and <strong>auto-match skips children entirely</strong>.</li>
+            <li><strong>Editing the parent's guide link cascades.</strong> Relink the parent — in the drawer, on the Mapping screen, or via a bulk edit — and every child is updated in the same request. Open screens update live; you don't need to re-sync or reopen anything.</li>
+            <li><strong>A channel already in another group is handled, not rejected.</strong> Pull a foreign <em>child</em> into a new group and it's badged <strong>“will be moved”</strong> — on save it changes hands and its old group is repaired. Pull in a foreign <em>parent</em> and <strong>Save is blocked</strong>: <em>“… already heads another failover group — disband that group first.”</em></li>
+            <li><strong>Everything else about a child stays editable.</strong> Rename it, renumber it, change its group-title, disable it. Only its EPG identity is owned by the parent.</li>
+            <li><strong>A group can never go headless.</strong> Any prune or delete that removes the parent — or the last child — <strong>auto-disbands</strong> the group. It never promotes a child in its place, because that would silently change which stream is the exported one.</li>
+          </ul>
+        </div>
+        <div class="note-block">
+          <div class="lbl">disband is immediate</div>
+          <p><strong>Disband group</strong> has no confirmation dialog — from the modal footer or the row menu, it fires at once. It is not destructive: members simply lose the grouping, <strong>keep the guide link they inherited</strong>, and the children re-enter the export as ordinary channels. But the ordering and the parent choice are gone; rebuilding means re-selecting and re-dragging.</p>
+        </div>
+      </section>
+
+      <!-- PLAY TIME ────────────────────────────────────────────────────── -->
+      <section id="playtime">
+        <div class="sec-tag"><span class="n">06</span> At play time</div>
+        <h2>What happens when the parent dies</h2>
+        <p class="col">Failover is an <strong>establish-time</strong> mechanism. It fires when a stream <em>fails to start</em>, not mid-picture. The Rust data plane keeps a per-stream cursor — an <em>attempt</em> number — and asks Node's resolve seam for that attempt's candidate. Attempt <code>0</code> is the channel itself; attempt <code>N</code> is its Nth <strong>Active</strong> child.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> the failover walk <span class="rt">rust data plane ⇄ node resolve seam</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">attempt = 0</div><div class="act">Try the channel itself</div><div class="note">Byte-for-byte the ordinary path — the parent's own adapter resolves the stream, with the full retry-and-backoff budget. <span class="branch ts">identical to an ungrouped channel · no extra database work</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">establish fails</div><div class="act">Decide whether to walk</div><div class="note"><span class="branch risk">resolve failed — dead scrape, expired token</span> <span class="branch risk">transport failure after the retry budget</span> <span class="branch warn">a definitive 4xx / 5xx — only if you opt in</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">attempt = 1, 2, …</div><div class="act">Walk the children in order</div><div class="note">Each candidate is resolved through <strong>its own provider's adapter</strong> — its own headers, its own SSRF allow-set. Backups get <strong>one shot, no backoff</strong>, so a three-deep group still establishes inside a player's manifest timeout.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">the seam replies</div><div class="act">Three possible answers</div><div class="note"><span class="branch ts">200 · a grant — serve it</span> <span class="branch warn">502 · this one died, try the next</span> <span class="branch risk">410 · nothing left, stop walking</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">first candidate to answer 2xx</div><div class="act">Serve it under the parent's identity</div><div class="note">Same URL, same channel name, same guide. Active Streams badges the session <strong>failover → &lt;child&gt;</strong> so <em>you</em> know, even though the viewer doesn't.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">stick on the winner</div><div class="act">Pin the cursor for the session</div><div class="note">The stream never walks back to the dead parent mid-play. The pin releases only after the stream sits idle — playback stopped — for about five minutes, and the next play starts from the parent again. <span class="branch">only a 2xx keeps the pin; every other exit resets it</span></div></div></div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">why a backup from another provider is safe</div>
+          <p>The data plane caches one shared <strong>policy</strong> — headers, relabel rules, allowed hosts — per provider. A child from a different service could have clobbered its parent provider's policy for every other stream in flight. It can't: the grant names the <em>serving candidate's</em> provider, and the policy is filed under <strong>that</strong> key. A <code>dlhd</code> parent backed by a <code>pluto</code> child never disturbs <code>dlhd</code>'s other viewers.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">bounded on purpose</div>
+          <p>The walk is capped at <strong>8 attempts</strong> and wraps back to the parent <strong>once</strong> — so a stale pin can never spin. An ungrouped channel costs exactly one extra question to the seam (answered <code>410</code> immediately, from a partial index) before it fails the way it always has.</p>
+        </div>
+      </section>
+
+      <!-- KNOBS ────────────────────────────────────────────────────────── -->
+      <section id="knobs">
+        <div class="sec-tag"><span class="n">07</span> The two switches</div>
+        <h2>Settings → Advanced → Video proxy engine</h2>
+        <p class="col">Both live in the <code>proxyconfigs</code> subsystem alongside the rest of the engine's knobs, so both can be set globally <em>or</em> overridden for a single playlist from its drawer. The panel auto-saves — there is no Save button. (Full detail on the two tiers is on the <a href="proxy-engine.html#tuning">Video proxy engine</a> page.)</p>
+        <div class="pair">
+          <div class="tile ts">
+            <div class="ic">● failover groups · default ON</div>
+            <h3><code>failoverEnabled</code></h3>
+            <p>“When a channel's stream fails to establish, fall through to its configured failover backups in order.” On by default, because <strong>configuring a group is the real opt-in</strong> — an ungrouped channel behaves identically either way. Turn it off to make every channel fail like an ungrouped one, without disbanding anything.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● failover on upstream error · default OFF</div>
+            <h3><code>failoverOnDefiniteError</code></h3>
+            <p>“Also treat a definitive upstream error response (404 / 403 / 5xx — normally passed through to the player) as a failover trigger.” Off by default because it changes long-standing pass-through semantics. Turn it on when a provider answers <em>politely</em> with a <code>403</code> rather than simply going dark.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">reading the difference</div>
+          <p>With the second switch <strong>off</strong>, a provider that returns a clean <code>403</code> is a deliberate answer — masqueradarr forwards it verbatim and your player shows the error. With it <strong>on</strong>, that <code>403</code> becomes just another reason to try the next backup, and only the <em>last</em> definitive answer is forwarded if every candidate refuses.</p>
+        </div>
+      </section>
+
+      <!-- RULES ────────────────────────────────────────────────────────── -->
+      <section id="rules">
+        <div class="sec-tag"><span class="n">08</span> The rules</div>
+        <h2>What you can and cannot do</h2>
+        <p class="col">One habit matters more than all the others, and the UI will happily let you get it wrong.</p>
+        <div class="pair">
+          <div class="fcard ts">
+            <span class="badge">● do this</span>
+            <h3>Group inside a custom playlist</h3>
+            <p>Clone your primary channel into a new custom playlist, <strong>Append</strong> its equivalents from other providers, and build the group there. The clone's channels each remember their own <code>origin</code>, so a single group can span <code>dlhd</code>, <code>pluto</code>, <code>tubi</code> — whatever you have.</p>
+            <p>The playlist is Custom-endpoint, so it publishes at its own path with its own guide, and hiding the children affects nothing but that playlist.</p>
+          </div>
+          <div class="fcard risk">
+            <span class="badge">● don't do this</span>
+            <h3>Group inside a built-in playlist</h3>
+            <p>The <strong>Group</strong> button works on a <strong>(Default)</strong> source playlist, but you should not use it there. A group built on a built-in is fragile, changes what everyone else receives, and can't give you the one thing failover is for.</p>
+            <p>It is allowed rather than blocked because the machinery is generic — not because it's a good idea.</p>
+          </div>
+        </div>
+        <h3 style="margin-top:22px;">Five reasons, concretely</h3>
+        <div class="col">
+          <ul>
+            <li><strong>A built-in holds one provider's channels.</strong> Every “backup” you can pick shares the upstream that just died. Cross-provider redundancy is only reachable by <strong>Append</strong>-ing into a clone — that is the whole point of the walkthrough above.</li>
+            <li><strong>Built-ins re-sync from the live provider.</strong> Your group survives the upsert, but any sync that <em>prunes</em> the parent (or the last child) because the provider renamed or dropped it will <strong>auto-disband the group</strong>. Groups quietly evaporate over time, and nothing tells you.</li>
+            <li><strong>Built-ins are Global-endpoint.</strong> Hiding a child removes it from the consolidated Global M3U for <em>every</em> user of that playlist, not just you.</li>
+            <li><strong>Cloning does not carry the group.</strong> Clone copies deliberately start ungrouped — the three fields are stripped. So the group you built on a built-in never transfers into the custom playlist you eventually want.</li>
+            <li><strong>Reset wipes it.</strong> A source playlist's <strong>Reset</strong> deletes and rebuilds its channel rows from scratch. The group goes with them.</li>
+          </ul>
+        </div>
+        <div class="note-block">
+          <div class="lbl">and one that isn't a matter of taste</div>
+          <p>The in-app player requests a channel without naming a playlist. When that happens the resolver prefers the <strong>canonical source-playlist row</strong> over any clone copy of the same stream. So a group left behind on a built-in will <strong>shadow</strong> the group you built on your clone, for in-app playback of that channel. Clean up stray built-in groups.</p>
+        </div>
+        <div class="panel scroll" style="margin-top:18px;">
+          <table>
+            <thead>
+              <tr><th>Can you…</th><th>Answer</th><th class="h-accent">Why</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Back a parent with a child from a different provider</td><td><span class="em-ts">Yes</span></td><td>The child resolves through its own adapter under its own policy key.</td></tr>
+              <tr><td>Group channels from two different playlists</td><td><span style="color:var(--risk)">No</span></td><td>A group lives inside one playlist. Bring them together with <strong>Append</strong> first.</td></tr>
+              <tr><td>Put one channel in two groups</td><td><span style="color:var(--risk)">No</span></td><td>Membership is a single field on the row.</td></tr>
+              <tr><td>Pull in a channel that <em>heads</em> another group</td><td><span style="color:var(--risk)">No</span> <span style="color:var(--text-3)">— 409</span></td><td>It would leave that group headless. Disband it first.</td></tr>
+              <tr><td>Pull in a channel that is a <em>child</em> of another group</td><td><span class="em-ts">Yes</span></td><td>Badged <strong>“will be moved”</strong>; it changes hands and the donor group is repaired.</td></tr>
+              <tr><td>Build the group on a clone / custom playlist</td><td><span class="em-ts">Yes</span> <span style="color:var(--text-3)">— do this</span></td><td>Stable, isolated, and the only way to mix providers.</td></tr>
+              <tr><td>Build the group on a built-in (Default) playlist</td><td><span style="color:var(--cfg)">Possible</span> <span style="color:var(--text-3)">— don't</span></td><td>Same-provider only, disbanded by prunes, and it changes the Global M3U.</td></tr>
+              <tr><td>Edit a child's TVG-ID / EPG link</td><td><span style="color:var(--risk)">No</span> <span style="color:var(--text-3)">— 409</span></td><td>Inherited from the parent. Edit the parent; it cascades.</td></tr>
+              <tr><td>Rename, renumber or disable a child</td><td><span class="em-ts">Yes</span></td><td>Only the guide identity is owned by the parent.</td></tr>
+              <tr><td>Keep a <code>Disabled</code> child in the group</td><td><span class="em-ts">Yes</span></td><td>It is simply skipped at failover, and re-enters the line when re-enabled.</td></tr>
+              <tr><td>Disable the parent</td><td><span style="color:var(--cfg)">Careful</span></td><td>The whole group leaves the export until it's re-enabled. The modal warns you.</td></tr>
+              <tr><td>Reorder the children after the fact</td><td><span class="em-ts">Yes</span></td><td><strong>Edit group</strong> → drag → <strong>Save group</strong>. No EPG cascade; order only.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- LIMITS ───────────────────────────────────────────────────────── -->
+      <section id="limits">
+        <div class="sec-tag"><span class="n">09</span> Honest scope</div>
+        <h2>Known limits</h2>
+        <p class="col">Failover is deliberately narrow. It makes a channel <em>start</em>; it does not make a channel <em>unbreakable</em>.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+          <div class="tile">
+            <div class="ic">● establish-time only</div>
+            <h3>No mid-segment splice</h3>
+            <p>A parent that dies <em>while you're watching</em> is caught on the player's next manifest refetch, not instantly. Seamless mid-stream splicing is a future enhancement.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● raw TS</div>
+            <h3>Coarser trigger</h3>
+            <p>In a continuous raw-TS session, failover triggers on a playlist-refresh failure rather than a per-segment gap. The cursor is kept alive across the swap.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● HDHomeRun</div>
+            <h3>Not a usable backup</h3>
+            <p>HDHomeRun channels still can't be served (TS→HLS remux is pending), so an HDHomeRun child will always be walked past.</p>
+          </div>
+          <div class="tile">
+            <div class="ic">● clone-hosted children</div>
+            <h3>Health via propagation</h3>
+            <p>A child living in a clone gets its health from the probe propagating along its <code>origin</code>, not from a direct sweep of the clone.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">watching it work</div>
+          <p>Two places tell you a group is earning its keep: <strong>Active Streams</strong> badges a failed-over session <code>failover → &lt;child&gt;</code> with the backup's position, and the dedicated <strong><code>failover</code></strong> log category records the whole lineage — Node names the parent and playlist, the Rust engine carries the session id. Both are gated by the single <strong>log level</strong> on Settings. See <a href="operations.html#logs">Operations</a>.</p>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Failover groups (channel backups)</span>
+          <span class="ref"><b>services/failover.ts</b> · cascade &amp; reconcile</span>
+          <span class="ref"><b>proxy/src/proxy.rs</b> · <code>failover_walk</code></span>
+          <span class="ref">next → <b>Sources &amp; adapters</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · playlist failover</span>
+        <span>next → sources &amp; adapters</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

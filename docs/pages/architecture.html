@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>architecture</b> · 09 <span class="rule"></span> under the hood</div>
+        <div class="eyebrow"><b>architecture</b> · 10 <span class="rule"></span> under the hood</div>
         <h1>Two packages, <span class="em">one image</span></h1>
         <p class="lede">A reference for how masqueradarr is built: the two-package layout, the container topology, the load-bearing boot order, the REST + WebSocket surface, the two Docker images, and what's still on the roadmap.</p>
       </header>
@@ -121,8 +121,8 @@
         </div>
         <div class="col">
           <ul>
-            <li><strong>Sources adapter framework</strong> — a source-agnostic core (sync → normalize → dedupe → resolve) with ~17 adapters plus proxy-only <code>direct</code> / <code>hdhomerun</code> sources. See <a href="sources.html">Sources</a>.</li>
-            <li><strong>Channel model</strong> — a pristine <code>sourcechannels</code> reference projected into an editable <code>playlistchannels</code>; edits survive re-syncs. See <a href="playlists.html">Playlists</a>.</li>
+            <li><strong>Sources adapter framework</strong> — a source-agnostic core (sync → normalize → dedupe → resolve) with ~17 adapters plus proxy-only <code>direct</code> / <code>hdhomerun</code> / <code>local</code> sources. See <a href="sources.html">Sources</a>.</li>
+            <li><strong>Channel model</strong> — a pristine <code>sourcechannels</code> reference projected into an editable <code>playlistchannels</code>; edits survive re-syncs. Channels can be grouped into <a href="failover.html">failover groups</a> — one parent, ordered backups. See <a href="playlists.html">Playlists</a>.</li>
             <li><strong>EPG + scheduler</strong> — multiple ingesters behind one sync path, driven by a <code>croner</code> scheduler over <code>cronjobs</code>. See <a href="epg.html">EPG</a>.</li>
             <li><strong>Video proxy engine</strong> — the remux-free Rust data plane. See <a href="proxy-engine.html">Video proxy engine</a>.</li>
           </ul>
@@ -204,7 +204,8 @@
             <h3>Working now</h3>
             <ul>
               <li>Resolve-on-demand catalog + ~17 adapters</li>
-              <li>Rust HLS + raw-TS proxy (retry, failover, buffer)</li>
+              <li>Rust HLS + raw-TS proxy (retry, mirror rotation, buffer)</li>
+              <li>Failover groups — ordered channel backups, cross-provider</li>
               <li>Users, roles, tokenized M3U / XMLTV export</li>
               <li>Live telemetry, logs, scheduler, backup / restore</li>
             </ul>
@@ -214,7 +215,7 @@
             <h3>Designed / pending</h3>
             <ul>
               <li>Remux / transcode (HDHomeRun TS→HLS) — no <code>ffmpeg</code> yet</li>
-              <li>In-app player byte playback (derivation + UI in place)</li>
+              <li>Seamless mid-stream failover splice (today: establish-time)</li>
               <li>HDHomeRun-tuner &amp; Xtream-panel emulation</li>
               <li><code>?fmt=ts</code> per-request override; <code>segmentCacheTtlSec</code></li>
             </ul>

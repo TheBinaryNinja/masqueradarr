@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <title>Operations — masqueradarr docs</title>
-<meta name="description" content="Operating masqueradarr: Active Streams, History/Metrics, live system stats, the 13 log categories, the croner scheduler and cronjobs, and full-system backup / restore / maintenance.">
+<meta name="description" content="Operating masqueradarr: Active Streams, History/Metrics, live system stats, the 14 log categories, the croner scheduler and cronjobs, and full-system backup / restore / maintenance.">
 <link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
 <link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Operations — masqueradarr">
-<meta property="og:description" content="Active Streams, History/Metrics, system stats, the 13 log categories, the scheduler, and backup/restore.">
+<meta property="og:description" content="Active Streams, History/Metrics, system stats, the 14 log categories, the scheduler, and backup/restore.">
 <meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>operations</b> · 08 <span class="rule"></span> observe &amp; maintain</div>
+        <div class="eyebrow"><b>operations</b> · 09 <span class="rule"></span> observe &amp; maintain</div>
         <h1>Watch it, schedule it, <span class="em">back it up</span></h1>
         <p class="lede">Everything you need to run masqueradarr day-to-day: live streaming telemetry, historical QoE analytics, system stats, categorized logs, the automatic scheduler, and full-system backup / restore.</p>
       </header>
@@ -75,6 +75,10 @@
         <div class="aha">
           <div class="lbl">reading health</div>
           <p>A <strong>healthy</strong> session shows a steady bitrate and climbing uptime. A session flagged <strong>failing</strong> is one the server couldn't keep fed — worth investigating, and it drives the live pulse dot next to Active Streams in the sidebar. An <strong>empty screen is normal</strong> when nobody is watching. To investigate: note the channel + source, open <strong>View logs</strong> filtered to that source, and cross-check the channel on its Playlist detail.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">a session carried by a backup</div>
+          <p>When a channel's own upstream failed and one of its <a href="failover.html">failover</a> backups is carrying the stream, the session is badged <code>failover → &lt;child&gt;</code>, and its detail panel names the backup's position in the line. The parent may simultaneously show as <em>probe-dead</em> on its playlist — that is coherent, not a contradiction: the probe tests each channel on its own, while the session is being served by a stand-in.</p>
         </div>
       </section>
 
@@ -103,9 +107,9 @@
 
       <!-- LOGS ─────────────────────────────────────────────────────────── -->
       <section id="logs">
-        <div class="sec-tag"><span class="n">04</span> Logs · 13 categories</div>
+        <div class="sec-tag"><span class="n">04</span> Logs · 14 categories</div>
         <h2>MongoDB-backed application logs</h2>
-        <p class="col">Every <code>[tag] msg</code> the server logs is persisted to the <code>Log</code> model (14-day TTL) via an injected sink, and fanned out to a live <strong>"View logs"</strong> drawer (<code>/api/logs</code> REST + <code>/api/logs-stream</code> WebSocket, admin-only). A tag→category map derives one of <strong>13 categories</strong>, at three levels — <strong>info · warn · error</strong>.</p>
+        <p class="col">Every <code>[tag] msg</code> the server logs is persisted to the <code>Log</code> model (14-day TTL) via an injected sink, and fanned out to a live <strong>"View logs"</strong> drawer (<code>/api/logs</code> REST + <code>/api/logs-stream</code> WebSocket, admin-only). A tag→category map derives one of <strong>14 categories</strong>, at three levels — <strong>info · warn · error</strong>.</p>
         <div class="refs" style="margin-bottom:6px;">
           <span class="ref"><b>dashboard</b></span>
           <span class="ref"><b>active</b></span>
@@ -120,10 +124,11 @@
           <span class="ref"><b>core</b></span>
           <span class="ref"><b>mongodb</b></span>
           <span class="ref" style="border-color:var(--ts-line);color:var(--ts-hi)"><b>proxy</b></span>
+          <span class="ref" style="border-color:var(--ts-line);color:var(--ts-hi)"><b>failover</b></span>
         </div>
         <div class="aha">
-          <div class="lbl">the 13th category</div>
-          <p><code>proxy</code> holds the Rust data-plane's full resolve→fetch→rewrite→serve lineage, ingested over the log seam (<code>POST /api/internal/log</code>) — persisted without a console re-print, since the sidecar already printed to its inherited stdout. The single <code>logLevel</code> (1|2|3) knob on Settings gates verbosity for every subsystem, Node and Rust alike, live with no restart.</p>
+          <div class="lbl">the two cross-boundary categories</div>
+          <p><code>proxy</code> holds the Rust data-plane's full resolve→fetch→rewrite→serve lineage, ingested over the log seam (<code>POST /api/internal/log</code>) — persisted without a console re-print, since the sidecar already printed to its inherited stdout. <code>failover</code> is the newest, and the other one written from <em>both</em> planes: Node records group saves, EPG cascades, auto-disbands and exhausted chains (naming the parent and its playlist); Rust records the walk itself (carrying the session id). See <a href="failover.html">Playlist Failover</a>. The single <code>logLevel</code> (1|2|3) knob on Settings gates verbosity for every subsystem, Node and Rust alike, live with no restart.</p>
         </div>
       </section>
 
@@ -161,7 +166,7 @@
         </div>
         <div class="refs">
           <span class="ref"><b>README</b> · Observability · Scheduling · Backup &amp; restore</span>
-          <span class="ref"><b>logs</b> skill · the 13 categories · the log seam</span>
+          <span class="ref"><b>logs</b> skill · the 14 categories · the log seam</span>
           <span class="ref"><b>src/docs</b> · active-streams · history-metrics · settings</span>
           <span class="ref">next → <b>Architecture</b></span>
         </div>

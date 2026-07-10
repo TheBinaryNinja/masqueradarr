@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>sources &amp; adapters</b> · 04 <span class="rule"></span> the pluggable core</div>
+        <div class="eyebrow"><b>sources &amp; adapters</b> · 05 <span class="rule"></span> the pluggable core</div>
         <h1>One adapter file, <span class="em">zero</span> core branches</h1>
         <p class="lede">Every provider — ~17 of them, plus your own imports — plugs into the same source-agnostic core through one contract. The generic pipeline never branches per source; every difference lives in the adapter object.</p>
       </header>
@@ -141,6 +141,7 @@
                   <div class="tx-leaf"><div class="id">tcl</div><div class="nm">TCL TV+</div><div class="d"><code>format-stream-url</code> → 1-hop POST; category schedule + batched detail.</div></div>
                   <div class="tx-leaf"><div class="id">pluto</div><div class="nm">Pluto TV</div><div class="d"><code>pluto://region/id</code> → cached region boot + URL construct; per-region timelines. Gracenote crosswalk wired.</div></div>
                   <div class="tx-leaf"><div class="id">roku</div><div class="nm">The Roku Channel</div><div class="d"><code>roku://id</code> → cached session boot + playId resolve; content-proxy fanout guide.</div></div>
+                  <div class="tx-leaf"><div class="id">plex</div><div class="nm">Plex Live TV</div><div class="d"><code>plex://compoundId</code> → anonymous JWT (no credentials) → signed <code>library/parts</code> master minted per play. Own per-channel grid self-EPG. Gracenote crosswalk wired.</div></div>
                 </div>
               </div>
 
@@ -171,7 +172,7 @@
       <section id="table">
         <div class="sec-tag"><span class="n">03</span> Key properties, at a glance</div>
         <h2>The resolve / EPG matrix</h2>
-        <p class="col">The same 19 adapters, sorted by how they resolve a stream and where their guide data comes from.</p>
+        <p class="col">The same 20 adapters, sorted by how they resolve a stream and where their guide data comes from.</p>
         <div class="panel scroll">
           <table>
             <thead>
@@ -190,6 +191,7 @@
               <tr><td>tcl</td><td>—</td><td><code>format-stream-url</code> → POST</td><td>yes</td><td>—</td></tr>
               <tr><td>pluto</td><td>—</td><td><code>pluto://</code> → region boot</td><td>yes</td><td>yes (wired)</td></tr>
               <tr><td>roku</td><td>—</td><td><code>roku://</code> → session + playId</td><td>yes</td><td>—</td></tr>
+              <tr><td>plex</td><td>—</td><td><code>plex://</code> → anon JWT + signed master</td><td>yes (grid)</td><td>yes (wired)</td></tr>
               <tr><td>samsung</td><td>—</td><td>jmp2.uk redirect</td><td>yes</td><td>yes (wired)</td></tr>
               <tr><td>lg</td><td>—</td><td><code>{MACRO}</code> fill per play</td><td>yes</td><td>—</td></tr>
               <tr><td>whale</td><td>—</td><td>macro fill per play</td><td>yes</td><td>—</td></tr>

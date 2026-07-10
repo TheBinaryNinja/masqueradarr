@@ -59,9 +59,9 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>video proxy engine</b> · 06 <span class="rule"></span> how bytes actually move</div>
+        <div class="eyebrow"><b>video proxy engine</b> · 07 <span class="rule"></span> how bytes actually move</div>
         <h1>The <span class="em">remux-free</span> Rust data plane</h1>
-        <p class="lede">The old always-on ffmpeg engine is gone, replaced by a durable Rust sidecar (<code>masq-proxy</code>) that resolves each stream on demand and pipes it — with retry, mirror failover and read-ahead buffering — to the player. Node stays the brains; Rust moves the muscle.</p>
+        <p class="lede">The old always-on ffmpeg engine is gone, replaced by a durable Rust sidecar (<code>masq-proxy</code>) that resolves each stream on demand and pipes it — with retry, mirror rotation, failover groups and read-ahead buffering — to the player. Node stays the brains; Rust moves the muscle.</p>
       </header>
 
       <!-- TWO PLANES #5 ────────────────────────────────────────────────── -->
@@ -105,7 +105,7 @@
           <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> /api/internal/* · shared-secret seams</div>
           <div class="planes" style="padding-bottom:6px;">
             <div class="seam-list" style="grid-column:1/-1;">
-              <div class="seam-row"><div class="path">resolve → grant</div><div class="d">Rust asks Node to resolve a stream; Node runs the adapter and returns a per-stream grant (<code>masterUrl</code>, <code>upstreamHeaders</code>, <code>allowHosts</code>, relabel, resolved <code>proxyConfig</code>) that Rust replays for the whole stream.</div></div>
+              <div class="seam-row"><div class="path">resolve → grant</div><div class="d">Rust asks Node to resolve a stream; Node runs the adapter and returns a per-stream grant (<code>masterUrl</code>, <code>upstreamHeaders</code>, <code>allowHosts</code>, relabel, resolved <code>proxyConfig</code>) that Rust replays for the whole stream. The request carries an <code>attempt</code> number — <code>0</code> is the channel itself, <code>N</code> is its Nth failover child — and the grant names the serving candidate's <code>policySource</code>. A <code>410 failover_exhausted</code> ends the walk.</div></div>
               <div class="seam-row"><div class="path">telemetry · batched</div><div class="d">Rust measures the true byte edge and reports batched viewer / byte / phase / close events; Node stays the telemetry authority.</div></div>
               <div class="seam-row"><div class="path">log · batched</div><div class="d">Rust ships level-gated, request-tagged engine logs into the dedicated <code>proxy</code> log category — the same "View logs" drawer.</div></div>
               <div class="seam-row"><div class="path">authorize · edge only</div><div class="d">The per-request stream-token check when Rust owns the public socket (edge mode, below).</div></div>
@@ -126,7 +126,7 @@
             <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">streamGate</div><div class="act">Check access first</div><div class="note">Valid token? enabled? (for a non-admin) is this source in the user's allow-list? <span class="branch risk">denials are plain text so a media player surfaces them</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">proxyRelay → 127.0.0.1:8787</div><div class="act">Relay to the sidecar</div><div class="note">On allow, Node relays to Rust and injects the client identity it can see (IP, UA, username) plus the shared secret.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Rust · ENTRY or HOP?</div><div class="act">Resolve once, reuse after</div><div class="note"><span class="branch">ENTRY → resolve seam → grant + masterUrl</span> <span class="branch ts">HOP → reuse cached policy</span> The first request resolves; child requests (variant playlists, segments, keys) replay the grant.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">fetch upstream</div><div class="act">Fetch with durability</div><div class="note">Retry <code>502</code>/<code>503</code>/<code>504</code> with bounded backoff; a dead master forces a fresh resolve → mirror failover.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">fetch upstream</div><div class="act">Fetch with durability</div><div class="note">Retry <code>502</code>/<code>503</code>/<code>504</code> with bounded backoff; a dead master forces a fresh resolve → mirror rotation. <span class="branch warn">still won't establish → walk the channel's failover children, attempt=1,2,… until one answers or the seam replies 410 failover_exhausted</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">manifest or segment?</div><div class="act">Rewrite or pipe</div><div class="note"><span class="branch">manifest → rewrite child URIs, re-embed token + pl, grow the SSRF allow-set</span> <span class="branch ts">segment → relabel + pipe through a bounded read-ahead buffer</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">→ Player</div><div class="act">Bytes out</div><div class="note">Nothing upstream is ever exposed to the player directly.</div></div></div>
           </div>
@@ -215,8 +215,9 @@
         <div class="sec-tag"><span class="n">05</span> Durability</div>
         <h2>Keeping a stream alive on flaky upstreams</h2>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
-          <div class="tile"><div class="ic">● retry</div><h3>Transient failures</h3><p>Transport errors and <code>502</code>/<code>503</code>/<code>504</code> retry with bounded backoff; definitive <code>4xx</code>/<code>5xx</code> are forwarded verbatim.</p></div>
-          <div class="tile"><div class="ic">● mirror failover</div><h3>Rotate mid-stream</h3><p>A dead resolved master forces a <strong>fresh resolve</strong>, driving dlhd / dami to re-probe and rotate to a live mirror without dropping the viewer.</p></div>
+          <div class="tile"><div class="ic">● retry</div><h3>Transient failures</h3><p>Transport errors and <code>502</code>/<code>503</code>/<code>504</code> retry with bounded backoff; definitive <code>4xx</code>/<code>5xx</code> are forwarded verbatim (unless <code>failoverOnDefiniteError</code> routes them into the walk).</p></div>
+          <div class="tile"><div class="ic">● mirror rotation</div><h3>Rotate within one provider</h3><p>A dead resolved master forces a <strong>fresh resolve</strong>, driving dlhd / dami to re-probe and rotate to a live mirror without dropping the viewer. Same channel, same provider.</p></div>
+          <div class="tile ts"><div class="ic">● failover groups</div><h3>Fall through to a backup</h3><p>When a channel has configured <strong>backups</strong> and still won't establish, the engine walks its ordered children (<code>attempt=1,2,…</code> against the resolve seam) and serves the first live one <strong>under the parent's identity</strong>, then sticks to it for the session. Backups may be on other providers. See <a href="failover.html">Playlist Failover</a>.</p></div>
           <div class="tile"><div class="ic">● stall detection</div><h3>Clean truncation</h3><p>An idle read timeout (<code>readTimeoutMs</code>) turns a silent upstream into a clean end instead of a hang.</p></div>
           <div class="tile"><div class="ic">● read-ahead buffer</div><h3>Smooth jitter</h3><p>A bounded in-memory buffer (<code>bufferSizeKb</code>) smooths jitter and fixes the chunked / no-Content-Length byte undercount that used to fake buffering.</p></div>
           <div class="tile"><div class="ic">● batched telemetry</div><h3>Off the hot path</h3><p>Events are coalesced and posted off the byte path, so reporting never blocks the stream.</p></div>
@@ -237,9 +238,16 @@
               <tr><td>connectTimeoutMs, maxRedirects</td><td><span class="em-ts">live</span></td><td>Per-config upstream HTTP client (cached in Rust).</td></tr>
               <tr><td>readTimeoutMs, bufferSizeKb</td><td><span class="em-ts">live</span></td><td>Per-stream stall timeout + read-ahead buffer size.</td></tr>
               <tr><td>outputFormat (<code>hls</code> | <code>ts</code>)</td><td><span class="em-ts">live</span></td><td>Distribution shape (<code>ts</code> = continuous MPEG-TS, external mount only).</td></tr>
+              <tr><td>streamInfRedux</td><td><span class="em-ts">live</span></td><td>Opt-in (default <strong>off</strong>) non-destructive reorder of the HLS master so the first <code>#EXT-X-STREAM-INF</code> lands inside a strict player's manifest probe window. External mount only; off = byte-identical output.</td></tr>
+              <tr><td>failoverEnabled</td><td><span class="em-ts">live</span></td><td>Walk a channel's ordered failover children on an establish failure. Default <strong>on</strong> — configuring a group is the real opt-in.</td></tr>
+              <tr><td>failoverOnDefiniteError</td><td><span class="em-ts">live</span></td><td>Also treat a definitive upstream <code>4xx</code>/<code>5xx</code> as a failover trigger. Default <strong>off</strong> — it changes forward-verbatim semantics.</td></tr>
               <tr><td>segmentCacheTtlSec</td><td style="color:var(--text-3)">reserved</td><td>Shipped in the grant, not yet enforced.</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="aha">
+          <div class="lbl">STREAM-INF Redux, in one line</div>
+          <p>Some players (VLC among them) only peek at the first few kilobytes of an HLS master before deciding it isn't video. When a source pads its master with long comments or many audio renditions, the first <code>#EXT-X-STREAM-INF</code> can fall outside that window. <code>streamInfRedux</code> <strong>reorders</strong> the master — moving the marker in, changing nothing else and deleting nothing — so a strict player recognizes the stream.</p>
         </div>
       </section>
 

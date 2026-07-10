@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>epg &amp; guide data</b> · 05 <span class="rule"></span> the guide subsystem</div>
+        <div class="eyebrow"><b>epg &amp; guide data</b> · 06 <span class="rule"></span> the guide subsystem</div>
         <h1>Guide data — <span class="em">what's on</span>, and when</h1>
         <p class="lede">An EPG source registers one guide provider; a sync writes its channels and programs. Channel Mapping links them to your channels, and a compose weaves the guide into your playlist's <code>.m3u</code> — as its XMLTV sibling.</p>
       </header>
@@ -139,6 +139,10 @@
         <div class="shots" style="margin-top:16px;">
           <figure class="shot"><img src="../img/screenshots/v2-epg-sources-01.png" alt="EPG Sources list" loading="lazy"><figcaption><span class="dot"></span> EPG Sources · guide providers</figcaption></figure>
           <figure class="shot"><img src="../img/screenshots/v2-epg-sources-02.png" alt="EPG Source detail" loading="lazy"><figcaption><span class="dot"></span> Detail · channels &amp; programs</figcaption></figure>
+        </div>
+        <div class="aha">
+          <div class="lbl">failover children don't get linked here</div>
+          <p>A channel that is a <span class="k-ts"><code>child</code></span> of a <a href="failover.html">failover group</a> <strong>inherits its parent's guide link</strong>. Mapping badges it, won't let you select it, and <strong>auto-match skips it</strong>; a direct write is refused with <code>409 failover_child_epg_locked</code>. Link the <span class="k-accent"><code>parent</code></span> instead — the change cascades to every child in the same request.</p>
         </div>
       </section>
 

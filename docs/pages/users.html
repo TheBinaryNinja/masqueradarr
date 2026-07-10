@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>users &amp; access</b> · 07 <span class="rule"></span> auth &amp; entitlements</div>
+        <div class="eyebrow"><b>users &amp; access</b> · 08 <span class="rule"></span> auth &amp; entitlements</div>
         <h1>One identity, <span class="em">two tokens</span></h1>
         <p class="lede">masqueradarr has real authentication — scrypt users, two roles, and a per-user access list. The trick that makes tokenized playlists work is a deliberate split between a session token and a stream token.</p>
       </header>
@@ -133,13 +133,37 @@
         </div>
         <div class="aha">
           <div class="lbl">the in-app preview</div>
-          <p>A standard user doesn't need an external app to check a channel — the Dashboard has a built-in <strong>preview player</strong> beside the channel list. <span style="color:var(--text-3)">(In-app byte playback is being rebuilt on the new engine; the derivation and UI are in place.)</span></p>
+          <p>A standard user doesn't need an external app to check a channel — the Dashboard has a built-in <strong>preview player</strong> beside the channel list, playing the same proxied HLS stream an external client would get.</p>
+        </div>
+      </section>
+
+      <!-- ASSIGNING ────────────────────────────────────────────────────── -->
+      <section id="assigning">
+        <div class="sec-tag"><span class="n">05</span> Assigning &amp; sharing</div>
+        <h2>Two modals, one per playlist row</h2>
+        <p class="col">You grant and you share from the same place — a playlist's row menu on the <strong>Playlists</strong> screen — rather than editing a user's list of playlist ids.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● grant</span>
+            <h3>Assign access</h3>
+            <p>A searchable checklist of every user against <em>this</em> playlist — tick to grant, untick to revoke. Admins appear already granted and locked, because an admin always holds every playlist.</p>
+            <p>Opened on the <strong>Global</strong> row it grants the whole <strong>Global union</strong> instead: the same cross-access across every Global-endpoint playlist at once.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● share</span>
+            <h3>Get access</h3>
+            <p>The mirror image — a dense table of <em>every</em> user's published URLs for this playlist: their personal <code>.m3u</code> and XMLTV guide links, ready to copy and hand over. On the Global row it lists the shared Global URLs.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">where a user finds their own links</div>
+          <p>The same URLs are rendered as grouped <strong>Published URLs</strong> cards — one card per playlist, each with an <strong>M3U</strong> row and an <strong>EPG / Guide</strong> row, both with a copy button. A user sees them on their own Dashboard; an admin sees the header-only version inside <strong>Users → Edit → Playlist Access</strong>, which doubles as a read-out of exactly what that account holds.</p>
         </div>
       </section>
 
       <!-- ONBOARD ──────────────────────────────────────────────────────── -->
       <section id="onboard">
-        <div class="sec-tag"><span class="n">05</span> Onboarding a viewer</div>
+        <div class="sec-tag"><span class="n">06</span> Onboarding a viewer</div>
         <h2>From new account to working URL</h2>
         <div class="panel">
           <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> add → grant → share</div>

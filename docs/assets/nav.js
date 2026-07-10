@@ -20,17 +20,18 @@ window.MASQ_NAV = [
     label: "Core concepts",
     links: [
       { ix: "03", title: "Playlists", href: "pages/playlists.html" },
-      { ix: "04", title: "Sources & adapters", href: "pages/sources.html" },
-      { ix: "05", title: "EPG & guide data", href: "pages/epg.html" },
-      { ix: "06", title: "Video proxy engine", href: "pages/proxy-engine.html" },
+      { ix: "04", title: "Playlist Failover", href: "pages/failover.html" },
+      { ix: "05", title: "Sources & adapters", href: "pages/sources.html" },
+      { ix: "06", title: "EPG & guide data", href: "pages/epg.html" },
+      { ix: "07", title: "Video proxy engine", href: "pages/proxy-engine.html" },
     ],
   },
   {
     label: "Operate",
     links: [
-      { ix: "07", title: "Users & access", href: "pages/users.html" },
-      { ix: "08", title: "Operations", href: "pages/operations.html" },
-      { ix: "09", title: "Architecture", href: "pages/architecture.html" },
+      { ix: "08", title: "Users & access", href: "pages/users.html" },
+      { ix: "09", title: "Operations", href: "pages/operations.html" },
+      { ix: "10", title: "Architecture", href: "pages/architecture.html" },
     ],
   },
 ];
