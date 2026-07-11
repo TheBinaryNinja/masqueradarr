@@ -1,6 +1,6 @@
 # Day-one Setup (Admin)
 
-Welcome to **TVApp2** — a self-hosted IPTV aggregator. It pulls M3U playlists and EPG guide data from
+Welcome — this is a self-hosted IPTV aggregator. It pulls M3U playlists and EPG guide data from
 online IPTV services, lets you curate and remap them, and re-publishes clean, stream-ready playlists +
 guide data to your own players and to the users you create.
 
@@ -27,7 +27,8 @@ as you connect sources.
 4. **Sync now.** On the playlist, run **Sync now**. This fetches the live catalog and populates its
    channels. Until you do this, the playlist shows zero channels everywhere.
 5. **Add EPG (guide) sources.** Go to **EPG Sources → Add EPG Source** to bring in program guide data
-   (Gracenote or EPG-PW). Sync them the same way.
+   (Gracenote, EPG-PW, Jesmann, an XML upload, a remote URL, or a playlist-bound guide). Sync them the same
+   way.
 6. **Map channels to the guide.** Open **Channel Mapping** to link your playlist channels to the EPG
    channels so each channel shows the right "now/next" program information.
 7. **Create users.** In **Users**, add the people who will consume your streams. Set each one's
@@ -35,20 +36,20 @@ as you connect sources.
    their own published, token-protected playlist URL.
 8. **(Optional) Schedule refreshes.** On a playlist or EPG source, open its schedule to have the app
    re-sync automatically on an interval, so your catalog and guide stay fresh without manual syncs.
-9. **(CRITICAL) Assign allowed playlists to each user.** Creating a user is **not** enough — you must
-   then grant that account which playlists it may use, on the **Users** screen (open the user's edit
-   drawer). There are two controls:
-   - **Allowed Global Playlist** — a single checkbox that grants the whole Global line-up.
-   - **Allowed Custom Playlists** — a checklist for granting individual Clone / custom playlists.
+9. **(CRITICAL) Grant each user access to playlists.** Creating a user is **not** enough — you must then
+   grant that account which playlists it may use. Access is assigned **per playlist, on the Playlists
+   screen**: open a playlist row's menu, choose **Assign access**, and toggle on the users who should get
+   it. Granting a **Global** playlist grants the **entire Global line-up at once** (they share one combined
+   subscription); granting a **custom** playlist grants just that one. To hand a user their ready-made
+   links, use **Get access** from the same menu.
 
-   These map to the account's per-user access lists (`allowedPlaylists` / `allowedCustomPlaylists`) and
-   decide three things at once for that user: which playlists appear on **their** Dashboard, what their
-   published M3U URL actually contains, and which channels their personal **stream token** is allowed to
-   play. **A standard user with nothing granted sees an empty Dashboard, gets a channel-less M3U, and
+   Access decides three things at once for that user: which playlists appear on **their** Dashboard, what
+   their published M3U URL actually contains, and which channels their personal **stream token** is allowed
+   to play. **A standard user with nothing granted sees an empty Dashboard, gets a channel-less M3U, and
    cannot stream anything** — so this step is what turns a new account into a working one.
 
-   > **Note:** This applies only to **user**-role accounts. The **admin** role bypasses these lists and
-   > always sees and streams every playlist, so you don't need to grant an admin anything here.
+   > **Note:** This applies only to **user**-role accounts. The **admin** role bypasses access lists and
+   > always sees and streams every playlist, so you don't need to grant an admin anything.
 
 ## Where context comes from
 
@@ -56,4 +57,9 @@ Most screens show **live** data the moment it exists and nothing before that. If
 the usual cause is "this source hasn't been synced yet." Run a sync and the panels fill in.
 
 > **Tip:** The **View logs** button in the sidebar opens a live, filterable log of everything the
-> server is doing — invaluable while you're first wiring up sources.
+> server is doing — invaluable while you're first wiring up sources. As an admin you also get a **search
+> box in the top bar** that looks across playlists, channels, and EPG sources and jumps you straight to a
+> match.
+
+Once channels are synced, you can file them into **groups** and give the important ones **failover
+backups** — see **Channels, Groups & Failover** for the full channel-editing workflow.

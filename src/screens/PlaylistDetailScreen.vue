@@ -16,7 +16,7 @@ import ProgressBar from '../components/ProgressBar.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import GroupConfigModal from '../components/GroupConfigModal.vue';
-import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, renameGroup as apiRenameGroup, deleteGroup as apiDeleteGroup, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
+import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
 import { bus } from '../composables/bus';
@@ -48,8 +48,10 @@ const m3uLabel = computed(() => playlistScheduleLabel(playlist.value.id, 'playli
 // A "clone" is a user-composed custom playlist (Playlist row with source==='clone'). Per the clone-from
 // rule it can't be cloned/appended FROM, so the Create/Append actions are hidden on its detail screen.
 const isClone = computed(() => playlist.value.source === 'clone');
-// Clones carry interval 'none' → no Sync/Compose schedule chips, Custom endpoint only (see PlaylistStatusDrawer).
-// Case-insensitive so a pre-normalization 'None' row still hides the chips before the boot migration runs.
+// Clones carry interval 'none' → no Sync schedule chip, Custom endpoint only (see PlaylistStatusDrawer). They
+// DO get a Compose-m3u schedule though, so the M3U chip is shown for a clone regardless of `noSchedule` (its
+// label reads 'manual' until a schedule is set). Case-insensitive so a pre-normalization 'None' row still hides
+// the Sync chip before the boot migration runs.
 const noSchedule = computed(() => (playlist.value.interval ?? '').toLowerCase() === 'none');
 // Custom-type playlists with a LIVE upstream "Sync" can re-fetch: 'url' (the stored remoteUrl m3u),
 // 'hdhomerun' (the device lineup), and 'local' (a Local Now market re-fetch). 'file'/legacy 'import' have no
@@ -187,11 +189,13 @@ onMounted(() => {
   bus.on('tvapp:auth-changed', onAuthChanged);
   bus.on('tvapp:failover-cascade', onFailoverCascade);
   bus.on('tvapp:channels-deleted', onChannelsDeleted);
+  bus.on('tvapp:group-changed', onGroupChanged);
 });
 onBeforeUnmount(() => {
   bus.off('tvapp:auth-changed', onAuthChanged);
   bus.off('tvapp:failover-cascade', onFailoverCascade);
   bus.off('tvapp:channels-deleted', onChannelsDeleted);
+  bus.off('tvapp:group-changed', onGroupChanged);
   if (flashTimer) clearTimeout(flashTimer);
 });
 
@@ -330,27 +334,39 @@ function selectRange(toId: string) {
   selected.value = n;
 }
 
-async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean }) {
-  if (!payload.status && !payload.group && !payload.clearEpg) {
+async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null }) {
+  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined) {
     bulkOpen.value = false;
     return;
   }
   const ids = selected.value;
   const n = ids.size;
   const targets = channels.value.filter((c) => ids.has(c.id));
+  const supportsPlayer = (c: Channel) => ['dlhd', 'dami'].includes(c.origin ?? c.source);
   // The persisted PUT body: status/group pass through; clearEpg unlinks the 2-factor EPG link (tvg_id + epg
-  // → null) and flips epgState to 'unmatched' (mirrors DELETE /api/epg-sources/:id's unlink).
+  // → null) and flips epgState to 'unmatched' (mirrors DELETE /api/epg-sources/:id's unlink). playerPref sets
+  // the DaddyLive player override (null = Auto/inherit); it's stripped per-channel below for non-DaddyLive sources.
   const body: Record<string, unknown> = {};
   if (payload.status) body.status = payload.status;
   if (payload.group) body.group = payload.group;
   if (payload.clearEpg) { body.tvg_id = null; body.epg = null; body.epgState = 'unmatched'; }
+  if (payload.playerPref !== undefined) body.playerPref = payload.playerPref;
   // Failover CHILDREN mirror their parent's EPG — the server rejects an EPG write on them with a 409 that
   // discards the WHOLE patch. Strip the clearEpg keys from a child's body (its link follows the parent),
   // and skip its PUT entirely when nothing else changed.
   const bodyFor = (c: Channel): Record<string, unknown> => {
-    if (!payload.clearEpg || c.failoverRole !== 'child') return body;
-    const { tvg_id: _t, epg: _e, epgState: _s, ...rest } = body;
-    return rest;
+    let b = body;
+    if (payload.clearEpg && c.failoverRole === 'child') {
+      const { tvg_id: _t, epg: _e, epgState: _s, ...rest } = b;
+      b = rest;
+    }
+    // playerPref only means anything on DaddyLive-family channels — strip it elsewhere so a mixed selection
+    // doesn't store a dead field (and a channel with nothing else to change is skipped below).
+    if (payload.playerPref !== undefined && !supportsPlayer(c)) {
+      const { playerPref: _p, ...rest } = b;
+      b = rest;
+    }
+    return b;
   };
   // Persist each channel edit (PUT /api/playlists/<source>/channels/<id>), then update locally.
   await Promise.all(
@@ -373,6 +389,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
           ...(payload.clearEpg && c.failoverRole !== 'child'
             ? { tvg_id: null, epg: null, epgState: 'unmatched' as const }
             : {}),
+          ...(payload.playerPref !== undefined && supportsPlayer(c) ? { playerPref: payload.playerPref } : {}),
         }
       : c
   );
@@ -380,37 +397,32 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   if (payload.status) parts.push(`status → ${payload.status}`);
   if (payload.group) parts.push(`group → ${payload.group}`);
   if (payload.clearEpg) parts.push('EPG match removed');
+  if (payload.playerPref !== undefined) parts.push(`player → ${payload.playerPref === null ? 'Auto' : payload.playerPref}`);
   banner({ text: `Updated ${n} channel${n === 1 ? '' : 's'} · ${parts.join(', ')}`, tone: 'good', icon: 'edit' });
   bulkOpen.value = false;
   selected.value = new Set();
 }
 
-// Delete a group across the WHOLE playlist (bulk-editor "Manage groups"). One backend route clears the group
-// on every member channel (group → null) and drops the registry entry; here we patch the LOCAL channel list
-// to match (the data-layer wrapper already patched the global CHANNELS union + the registry store). The
-// channels stay — only their group assignment is cleared. Spans channels beyond the current selection.
-async function onDeleteGroup(name: string) {
-  const n = channels.value.filter((c) => c.group === name).length;
-  try {
-    await apiDeleteGroup(props.id, name);
-    channels.value = channels.value.map((c) => (c.group === name ? { ...c, group: null } : c));
-    if (group.value === name) group.value = 'all';
-    banner({ text: `Deleted group "${name}"${n ? ` from ${n} channel${n === 1 ? '' : 's'}` : ''}`, tone: 'good', icon: 'trash' });
-  } catch (e) {
-    banner({ text: `Delete group failed: ${(e as Error).message}`, tone: 'bad', icon: 'warn' });
-  }
-}
-
-// Rename a group across the WHOLE playlist (bulk-editor "Manage groups"). The backend relabels every member
-// channel; patch the LOCAL list to match (the wrapper handled CHANNELS + the registry store).
-async function onRenameGroup({ oldName, newName }: { oldName: string; newName: string }) {
-  try {
-    await apiRenameGroup(props.id, oldName, newName);
-    channels.value = channels.value.map((c) => (c.group === oldName ? { ...c, group: newName } : c));
-    if (group.value === oldName) group.value = newName;
-    banner({ text: `Renamed group "${oldName}" → "${newName}"`, tone: 'good', icon: 'edit' });
-  } catch (e) {
-    banner({ text: `Rename failed: ${(e as Error).message}`, tone: 'bad', icon: 'warn' });
+// A group was renamed/deleted across the WHOLE playlist via the shared GroupManager — either the bulk editor
+// (rendered on this screen) or the App-level single-channel drawer (over this screen). GroupManager already
+// ran the data-layer op (which patched the global CHANNELS union + the registry store); patch this screen's
+// LOCAL channel list to match and fix the active group filter so the table + filter stay coherent without a
+// refetch. Deleting keeps the channels — only their group assignment is cleared.
+function onGroupChanged(
+  p:
+    | { source: string; kind: 'rename'; oldName: string; newName: string }
+    | { source: string; kind: 'delete'; name: string },
+) {
+  if (p.source !== props.id) return;
+  if (p.kind === 'rename') {
+    channels.value = channels.value.map((c) => (c.group === p.oldName ? { ...c, group: p.newName } : c));
+    if (group.value === p.oldName) group.value = p.newName;
+    banner({ text: `Renamed group "${p.oldName}" → "${p.newName}"`, tone: 'good', icon: 'edit' });
+  } else {
+    const n = channels.value.filter((c) => c.group === p.name).length;
+    channels.value = channels.value.map((c) => (c.group === p.name ? { ...c, group: null } : c));
+    if (group.value === p.name) group.value = 'all';
+    banner({ text: `Deleted group "${p.name}"${n ? ` from ${n} channel${n === 1 ? '' : 's'}` : ''}`, tone: 'good', icon: 'trash' });
   }
 }
 
@@ -784,7 +796,7 @@ async function doAppend() {
             {{ playlist.state !== false ? 'Active' : 'Inactive' }}
           </Pill>
           <Pill v-if="!noSchedule" tone="cyan"><Icon name="refresh" :size="10" />Sync: {{ scheduleLabel }}</Pill>
-          <Pill v-if="!noSchedule" tone="cyan"><Icon name="file" :size="10" />M3U: {{ m3uLabel }}</Pill>
+          <Pill v-if="!noSchedule || isClone" tone="cyan"><Icon name="file" :size="10" />M3U: {{ m3uLabel }}</Pill>
           <Pill :tone="playlist.endpoint === 'custom' ? 'warn' : 'good'">
             <Icon :name="playlist.endpoint === 'custom' ? 'file' : 'globe'" :size="10" />
             {{ playlist.endpoint === 'custom' ? 'custom' : 'global' }}
@@ -1152,8 +1164,6 @@ async function doAppend() {
       @close="bulkOpen = false"
       @apply="applyBulk"
       @delete-channels="onDeleteChannels"
-      @rename-group="onRenameGroup"
-      @delete-group="onDeleteGroup"
     />
 
     <PlaylistStatusDrawer

@@ -107,7 +107,8 @@ async function runJob(id: string): Promise<void> {
       case 'playlist-m3u':
         // Playlist Compose-m3u schedule — a distinct targetType (own _id namespace) so a playlist can sync
         // + compose on independent cadences. Recomposes the playlist's stream-ready m3u export (the same
-        // work as the manual POST /api/playlists/:id/compose). targetId is the (Default) source playlist id.
+        // work as the manual POST /api/playlists/:id/compose). targetId is the playlist id (a Default source
+        // playlist's id === source; a clone/custom import uses its own id — a clone is compose-only, no sync).
         await composeM3u(doc.targetId);
         break;
       case 'backup':

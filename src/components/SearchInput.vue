@@ -5,7 +5,9 @@ import Icon from './Icon.vue';
 // (ms, default 0 = off → emit on every keystroke, the instant-filter contract every existing consumer
 // relies on). When > 0 the displayed text is held in a local model so typing stays responsive while the
 // `change` emit is deferred — the EPG screens use this; the other five pass no debounce and are unchanged.
-const props = defineProps<{ value: string; placeholder?: string; width?: number; debounce?: number }>();
+// `width` is a number (px) for the fixed-width filter boxes, or a CSS length string (e.g. '100%',
+// 'min(480px, 90vw)') for the topbar global search that fills its responsive container.
+const props = defineProps<{ value: string; placeholder?: string; width?: number | string; debounce?: number }>();
 const emit = defineEmits<{ (e: 'change', v: string): void }>();
 
 const local = ref(props.value);
@@ -36,7 +38,7 @@ function clear() {
 }
 </script>
 <template>
-  <div class="input search-input" :style="{ width: (props.width || 260) + 'px' }">
+  <div class="input search-input" :style="{ width: props.width == null ? '260px' : typeof props.width === 'number' ? props.width + 'px' : props.width }">
     <Icon name="search" :size="14" />
     <input :value="local" :placeholder="placeholder || 'Search'" @input="onInput" />
     <button v-if="local" type="button" class="search-clear" title="Clear" @click="clear">

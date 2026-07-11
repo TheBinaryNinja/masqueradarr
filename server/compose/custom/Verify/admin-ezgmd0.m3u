@@ -1,0 +1,5 @@
+#EXTM3U x-tvg-url="http://localhost:3000/custom/Verify/epg/playlist.xml"
+#EXTINF:-1 tvg-name="Verify Channel One" group-title="Verify",Verify Channel One
+http://localhost:3000/api/ext/v1/direct/http%3A%2F%2F127.0.0.1%3A9999%2Fone%2Fstream.m3u8?token=ddabf2ebf5f41e0eb7d3dde203c936ba&pl=Verify
+#EXTINF:-1 tvg-name="Verify Channel Two" group-title="Verify",Verify Channel Two
+http://localhost:3000/api/ext/v1/direct/http%3A%2F%2F127.0.0.1%3A9999%2Ftwo%2Fstream.m3u8?token=ddabf2ebf5f41e0eb7d3dde203c936ba&pl=Verify

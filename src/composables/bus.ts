@@ -24,5 +24,12 @@ type Events = {
   // holding a LOCAL channel list (PlaylistDetailScreen) drops the rows without a refetch. `source` is the
   // owning playlist id; `ids` are the deleted channel ids.
   'tvapp:channels-deleted': { source: string; ids: string[] };
+  // A first-class group was renamed/deleted across a whole playlist via the shared GroupManager (bulk editor
+  // or the App-level single-channel drawer). data.ts already patched the global CHANNELS union + the
+  // GROUPS_BY_PLAYLIST registry; this lets a screen holding a LOCAL channel list (PlaylistDetailScreen)
+  // relabel/clear its rows and fix its active group filter without a refetch. Emitted only on success.
+  'tvapp:group-changed':
+    | { source: string; kind: 'rename'; oldName: string; newName: string }
+    | { source: string; kind: 'delete'; name: string };
 };
 export const bus = mitt<Events>();

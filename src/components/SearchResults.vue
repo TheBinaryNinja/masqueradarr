@@ -79,8 +79,8 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 .sr-panel {
   position: absolute;
   top: calc(100% + 8px);
-  right: 0;
-  width: min(480px, 90vw);
+  left: 0;
+  right: 0;                 /* stretch to the .topbar-search container so it matches the input width */
   max-height: 66vh;
   overflow-y: auto;
   z-index: 91;

@@ -5,7 +5,8 @@ import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import Segmented from './Segmented.vue';
 import GroupPicker from './GroupPicker.vue';
-import { GROUPS_BY_PLAYLIST, createGroup, type Channel, type GroupDef } from '../data';
+import GroupManager from './GroupManager.vue';
+import { type Channel } from '../data';
 
 const props = defineProps<{
   channels: Channel[]; // the SELECTED channels being bulk-edited
@@ -14,12 +15,10 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'close'): void;
   // status/group/clearEpg apply to the SELECTED channels; clearEpg unlinks the 2-factor EPG link.
-  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean }): void;
+  // playerPref sets the DaddyLive player override (null = clear → inherit the source default).
+  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null }): void;
   // Hard-delete the selected channels (tombstoned server-side; the parent patches its local list).
   (e: 'deleteChannels', ids: string[]): void;
-  // Whole-playlist group management (immediate) — the parent runs the data-layer op + patches its local list.
-  (e: 'renameGroup', payload: { oldName: string; newName: string }): void;
-  (e: 'deleteGroup', name: string): void;
 }>();
 
 const statusVal = ref<string>('');
@@ -27,6 +26,10 @@ const statusVal = ref<string>('');
 // shared GroupPicker (same registry the single-channel editor uses).
 const groupVal = ref<string>('');
 const clearEpg = ref(false);
+// DaddyLive-family (dlhd/dami) player override for the selection. '' = leave unchanged; 0 = Auto (clear the
+// override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
+const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd', 'dami'].includes(c.origin ?? c.source)));
+const playerVal = ref<number | ''>('');
 
 const statusMixed = computed(() => new Set(props.channels.map((c) => c.status)).size > 1);
 const groupMixed = computed(() => new Set(props.channels.map((c) => c.group)).size > 1);
@@ -35,9 +38,6 @@ const commonGroup = computed(() => (groupMixed.value ? '' : (props.channels[0]?.
 
 // How many selected channels currently carry an EPG link (the clear-EPG target count).
 const linkedCount = computed(() => props.channels.filter((c) => c.epg != null || c.tvg_id != null).length);
-
-// The playlist's group registry (shared store) — backs both the assign picker and the Manage panel below.
-const registry = computed<GroupDef[]>(() => GROUPS_BY_PLAYLIST.value[props.playlistId] ?? []);
 
 const unchangedLabel = computed(() =>
   groupMixed.value
@@ -50,49 +50,14 @@ function setStatus(v: string) {
 }
 
 function apply() {
-  const payload: { status?: string; group?: string; clearEpg?: boolean } = {};
+  const payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null } = {};
   if (statusVal.value && statusVal.value !== commonStatus.value) payload.status = statusVal.value;
   if (groupVal.value && groupVal.value !== commonGroup.value) payload.group = groupVal.value;
   if (clearEpg.value) payload.clearEpg = true;
+  // 0 = Auto → clear the override (null); a specific 1..6 is sent verbatim. '' leaves it untouched.
+  if (playerVal.value !== '') payload.playerPref = playerVal.value === 0 ? null : playerVal.value;
   emit('apply', payload);
   emit('close');
-}
-
-// ── Manage groups (whole-playlist, immediate — not tied to the Apply-to-selection flow) ──
-const renaming = ref<string | null>(null); // the group name currently being renamed (inline)
-const renameVal = ref('');
-function startRename(g: GroupDef) {
-  renaming.value = g.name;
-  renameVal.value = g.name;
-}
-function commitRename() {
-  const oldName = renaming.value;
-  const newName = renameVal.value.trim();
-  renaming.value = null;
-  if (!oldName || !newName || newName === oldName) return;
-  emit('renameGroup', { oldName, newName });
-}
-const confirmDeleteGroup = ref<string | null>(null); // the group name pending a delete confirm
-function doDeleteGroup(name: string) {
-  confirmDeleteGroup.value = null;
-  emit('deleteGroup', name);
-}
-
-// Create an EMPTY group (persists with zero channels) — the explicit "add a group" affordance.
-const newGroupName = ref('');
-const creatingGroup = ref(false);
-async function addEmptyGroup() {
-  const name = newGroupName.value.trim();
-  if (!name || creatingGroup.value) return;
-  creatingGroup.value = true;
-  try {
-    await createGroup(props.playlistId, name);
-    newGroupName.value = '';
-  } catch {
-    // A duplicate / error leaves the registry as-is; the list below reflects the true state.
-  } finally {
-    creatingGroup.value = false;
-  }
 }
 
 // ── Delete channels (destructive, two-step confirm) ──
@@ -173,6 +138,27 @@ function doDeleteChannels() {
           </div>
         </div>
 
+        <!-- DaddyLive-family only: bulk-set the preferred upstream player for the selected channels. -->
+        <div v-if="supportsPlayer" class="form-row">
+          <div class="field-lbl">Player source</div>
+          <div class="select fill">
+            <select v-model.number="playerVal">
+              <option value="">Leave unchanged</option>
+              <option :value="0">Auto (inherit source default)</option>
+              <option :value="1">Player 1</option>
+              <option :value="2">Player 2</option>
+              <option :value="3">Player 3</option>
+              <option :value="4">Player 4</option>
+              <option :value="5">Player 5</option>
+              <option :value="6">Player 6</option>
+            </select>
+          </div>
+          <div v-if="playerVal !== ''" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            The selected DaddyLive channels will prefer
+            <b style="color: var(--accent-hi);">{{ playerVal === 0 ? 'Auto (source default)' : `Player ${playerVal}` }}</b>.
+          </div>
+        </div>
+
         <div class="form-row">
           <div class="field-lbl">EPG match</div>
           <label class="row" style="gap: 10px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 8px; cursor: pointer;"
@@ -202,48 +188,8 @@ function doDeleteChannels() {
 
         <div class="divider" />
 
-        <!-- Manage the playlist's groups (immediate, whole-playlist). Same registry the assign picker above and
-             the single-channel editor read — rename/delete/add here reflect everywhere. -->
-        <div class="form-row">
-          <div class="field-lbl">Manage groups</div>
-          <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 8px;">
-            Rename or delete a group across the <b>whole playlist</b>, or add an empty group. Deleting keeps the
-            channels — only their group assignment is cleared.
-          </div>
-
-          <div v-if="registry.length" class="grp-list">
-            <div v-for="g in registry" :key="g.name" class="grp-row">
-              <template v-if="renaming === g.name">
-                <div class="input" style="flex: 1;">
-                  <input v-model="renameVal" @keydown.enter.prevent="commitRename" @keydown.esc="renaming = null" />
-                </div>
-                <Btn variant="ghost" size="sm" icon="check" title="Save" @click="commitRename" />
-                <Btn variant="ghost" size="sm" icon="x" title="Cancel" @click="renaming = null" />
-              </template>
-              <template v-else-if="confirmDeleteGroup === g.name">
-                <span style="flex: 1; font-size: var(--fs-sm);">Delete <b>{{ g.name }}</b>?</span>
-                <Btn variant="ghost" size="sm" @click="confirmDeleteGroup = null">Cancel</Btn>
-                <button class="btn ghost danger" @click="doDeleteGroup(g.name)">
-                  <Icon name="trash" :size="14" />Delete
-                </button>
-              </template>
-              <template v-else>
-                <span style="flex: 1; font-weight: 500; font-size: var(--fs-sm);">{{ g.name }}</span>
-                <Pill tone="cyan">{{ g.channels ?? 0 }}</Pill>
-                <Btn variant="ghost" size="sm" icon="edit" title="Rename" @click="startRename(g)" />
-                <Btn variant="ghost" size="sm" icon="trash" title="Delete group" @click="confirmDeleteGroup = g.name" />
-              </template>
-            </div>
-          </div>
-          <div v-else class="muted" style="font-size: var(--fs-xs);">No groups yet.</div>
-
-          <div class="input" style="margin-top: 8px;">
-            <Icon name="plus" :size="14" />
-            <input v-model="newGroupName" placeholder="Add an empty group…"
-                   @keydown.enter.prevent="addEmptyGroup" />
-            <Btn v-if="newGroupName.trim()" variant="ghost" size="sm" :disabled="creatingGroup" @click="addEmptyGroup">Add</Btn>
-          </div>
-        </div>
+        <!-- Manage the playlist's groups (immediate, whole-playlist) — shared with the single-channel editor. -->
+        <GroupManager :playlist-id="playlistId" />
 
         <div class="divider" />
 
@@ -281,20 +227,3 @@ function doDeleteChannels() {
     </div>
   </div>
 </template>
-
-<style scoped>
-.grp-list {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-.grp-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  background: var(--bg-2);
-}
-</style>

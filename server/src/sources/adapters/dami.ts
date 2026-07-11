@@ -33,7 +33,7 @@ import {
 } from './dlhd/config.js';
 import { resolveStreamUrl } from './dlhd/resolveStream.js';
 import { getResolution, ensureMirror, reprobeMirror } from './dlhd/mirrorDirectory.js';
-import type { SourceAdapter, ArtifactType } from '../types.js';
+import type { SourceAdapter, ArtifactType, ResolveStreamOptions } from '../types.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
 
 // Build the dami self-EPG from the live-events API, upsert the 'dami' EpgSource, and self-link the still-
@@ -117,6 +117,9 @@ const damiAdapter: SourceAdapter = {
   },
 
   // ── stream resolution (delegated to dlhd's DaddyLive resolver) ───────────────────
+  // Same DaddyLive Player 1..N selection + fallback as dlhd (shared resolver): operator-preferred player,
+  // per-channel override, fall back through the rest. See dlhd/resolveStream.ts.
+  playerSelectable: true,
   isEntryUrl(url: string) {
     try {
       const u = new URL(url);
@@ -125,14 +128,14 @@ const damiAdapter: SourceAdapter = {
       return false;
     }
   },
-  async resolveStream(entryUrl: string) {
+  async resolveStream(entryUrl: string, opts?: ResolveStreamOptions) {
     // Identical 3-hop DaddyLive resolve + mirror-failover as dlhd (same upstream + leaf modules). A
     // connection-level failure means the active mirror is unreachable — force a re-probe and retry once.
     const looksUnreachable = (msg: string): boolean =>
       /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|UND_ERR/i.test(msg);
     try {
       await ensureMirror();
-      const { masterUrl } = await resolveStreamUrl(entryUrl);
+      const { masterUrl } = await resolveStreamUrl(entryUrl, opts);
       return { masterUrl };
     } catch (err) {
       const msg = (err as Error).message;
@@ -143,7 +146,7 @@ const damiAdapter: SourceAdapter = {
       const res = await reprobeMirror().catch(() => null);
       if (res && !res.degraded) {
         try {
-          const { masterUrl } = await resolveStreamUrl(entryUrl);
+          const { masterUrl } = await resolveStreamUrl(entryUrl, opts);
           if (res.chosen !== deadBase) logger.ok('dami', `mirror failover: ${deadBase} → ${res.chosen}`);
           return { masterUrl };
         } catch (retryErr) {

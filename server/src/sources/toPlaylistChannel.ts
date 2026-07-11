@@ -56,6 +56,7 @@ export function toPlaylistChannelDoc(src: SourceChannelDoc): PlaylistChannelDoc 
     failoverGroupId: null, // ungrouped at seed — failover groups are operator-configured post-sync
     failoverRole: null,
     failoverOrder: null,
+    playerPref: null, // no per-channel player override at seed — inherits the source-wide default (Settings.dlhdPlayer)
     stream: {
       initials: initialsFor(src.name),
       isPlayable: src.isPlayable,

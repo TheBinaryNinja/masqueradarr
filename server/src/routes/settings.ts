@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { Settings, SETTINGS_ID, type SettingsDoc } from '../models/Settings.js';
 import { envDefaults, toRuntimeSettings, toExternalPatch } from '../settings/translate.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
+import { applyDlhdPlayerFromSettings } from '../settings/applyDlhdPlayer.js';
 import { cascadePlaylistUrls } from './playlists.js';
 import { logger } from '../sources/core/logger.js';
 
@@ -75,6 +76,16 @@ settingsRouter.put('/', async (req, res, next) => {
         await applyDnsFromSettings('update');
       } catch (err) {
         logger.error('settings', `dns re-apply after settings update failed (continuing): ${(err as Error).message}`);
+      }
+    }
+
+    // Push the source-wide DaddyLive default player into the dlhd resolver's cache so it takes effect live
+    // (next stream start), no restart. Best-effort — a cache-sync hiccup must not fail the write.
+    if ('dlhdPlayer' in $set) {
+      try {
+        await applyDlhdPlayerFromSettings('update');
+      } catch (err) {
+        logger.error('settings', `dlhd player default re-apply failed (continuing): ${(err as Error).message}`);
       }
     }
 

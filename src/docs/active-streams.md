@@ -24,6 +24,9 @@ An **empty screen is normal** when nobody is watching — it does not indicate a
 - A session flagged as failing (the "bad" state) is one the server couldn't keep fed — these are the
   ones worth investigating. They also drive the live pulse dot next to **Active Streams** in the
   sidebar.
+- A session shows a **failover → {backup name}** badge while it's running on one of the channel's backups.
+  If a channel's main stream fails, the server **silently switches to a backup** and keeps the viewer
+  watching; a healthy session on its primary stream shows no such badge (see **Channels, Groups & Failover**).
 
 ## How to investigate a problem stream
 

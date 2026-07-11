@@ -38,6 +38,7 @@ import { systemStatsRouter } from './routes/systemStats.js';
 import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
+import { applyDlhdPlayerFromSettings } from './settings/applyDlhdPlayer.js';
 import { logger } from './sources/core/logger.js';
 import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
@@ -91,6 +92,14 @@ async function main() {
     await applyDnsFromSettings('mongo');
   } catch (err) {
     logger.error('startup', `dns settings apply error (continuing): ${(err as Error).message}`);
+  }
+
+  // Seed the dlhd resolver's cached source-wide default player from the persisted settings, so a value set
+  // before a restart is honored without waiting for the next Settings save. Non-fatal (defaults to Auto).
+  try {
+    await applyDlhdPlayerFromSettings('mongo');
+  } catch (err) {
+    logger.error('startup', `dlhd player default apply error (continuing): ${(err as Error).message}`);
   }
 
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler

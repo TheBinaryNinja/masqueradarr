@@ -576,6 +576,16 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
         $set[key] = body[key];
       }
     }
+    // playerPref: preferred upstream player for playerSelectable sources (dlhd/dami). A 1-based integer, or
+    // null to clear it (inherit the source-wide default). Numeric, so it can't ride the string loop above. An
+    // out-of-range pick is accepted but clamps to the lead player at resolve time (resolveStream.ts).
+    if (body.playerPref !== undefined) {
+      const v = body.playerPref;
+      if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 12)) {
+        return res.status(400).json({ error: 'playerPref (integer 1..12 | null) required' });
+      }
+      $set.playerPref = v;
+    }
     // Live stream.* fields persisted by the channel drawer while open: realtime phase, resolution, playability.
     if (body.stream !== undefined) {
       if (typeof body.stream !== 'object' || body.stream === null) {
@@ -607,7 +617,7 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
     if (!Object.keys($set).length) {
       return res.status(400).json({
         error:
-          'no editable fields provided (status, tvg_name, group, channelNo, streamEntryUrl, tvg_id, epg, epgState, stream.*)',
+          'no editable fields provided (status, tvg_name, group, channelNo, streamEntryUrl, tvg_id, epg, epgState, playerPref, stream.*)',
       });
     }
     // Failover-group EPG authority: a CHILD mirrors its parent's EPG identity (services/failover.ts), so

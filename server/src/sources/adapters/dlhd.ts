@@ -31,7 +31,7 @@ import {
 import { parseChannels } from './dlhd/parseDirectory.js';
 import { resolveStreamUrl } from './dlhd/resolveStream.js';
 import { getResolution, ensureMirror, reprobeMirror } from './dlhd/mirrorDirectory.js';
-import type { SourceAdapter, ArtifactType } from '../types.js';
+import type { SourceAdapter, ArtifactType, ResolveStreamOptions } from '../types.js';
 import type { DlhdRawChannel } from './dlhd/parseDirectory.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
 
@@ -167,6 +167,9 @@ const dlhdAdapter: SourceAdapter = {
   },
 
   // ── stream resolution ────────────────────────────────────────────────────────────
+  // DaddyLive offers Player 1..N per channel (redundant embeds of the one feed) → the operator can prefer one
+  // (source default + per-channel override) and resolveStream falls back through the rest. See resolveStream.ts.
+  playerSelectable: true,
   isEntryUrl(url: string) {
     try {
       const u = new URL(url);
@@ -175,14 +178,14 @@ const dlhdAdapter: SourceAdapter = {
       return false;
     }
   },
-  async resolveStream(entryUrl: string) {
+  async resolveStream(entryUrl: string, opts?: ResolveStreamOptions) {
     // A connection-level failure means the active mirror is unreachable (dlhd domains rotate / get
     // sinkholed) — distinct from a clean "not live" (no player iframe / no signed master in the page).
     const looksUnreachable = (msg: string): boolean =>
       /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|UND_ERR/i.test(msg);
     try {
       await ensureMirror();
-      const { masterUrl } = await resolveStreamUrl(entryUrl); // 3-hop scrape; seeds the dynamic allowlist
+      const { masterUrl } = await resolveStreamUrl(entryUrl, opts); // 3-hop scrape; seeds the dynamic allowlist
       return { masterUrl };
     } catch (err) {
       const msg = (err as Error).message;
@@ -196,7 +199,7 @@ const dlhdAdapter: SourceAdapter = {
       const res = await reprobeMirror().catch(() => null);
       if (res && !res.degraded) {
         try {
-          const { masterUrl } = await resolveStreamUrl(entryUrl);
+          const { masterUrl } = await resolveStreamUrl(entryUrl, opts);
           if (res.chosen !== deadBase) logger.ok('dlhd', `mirror failover: ${deadBase} → ${res.chosen}`);
           return { masterUrl };
         } catch (retryErr) {

@@ -40,6 +40,11 @@ export interface PlaylistChannelDoc {
   failoverGroupId?: string | null; // opaque shared key (crypto.randomUUID()); null = ungrouped. Stable across parent swaps.
   failoverRole?: 'parent' | 'child' | null; // exactly one parent per group (route-enforced, no unique index)
   failoverOrder?: number | null; // child ordinal 0..N-1; null on parent/ungrouped. Gaps harmless (resolution sorts).
+  // Operator's preferred upstream "player" for sources that expose several (adapter.playerSelectable — dlhd/dami's
+  // DaddyLive Player 1..N). 1-based; null/absent = inherit the source-wide default (Settings.dlhdPlayer). Read at
+  // resolve time by the seam (buildGrant) and honored+failed-over by the adapter's resolveStream. OPTIONAL — older
+  // docs lack it (treat undefined as null). $setOnInsert-only, like the failover fields, so it survives re-sync.
+  playerPref?: number | null;
   stream: {
     initials: string | null;
     isPlayable: boolean;
@@ -70,6 +75,7 @@ const PlaylistChannelSchema = new Schema<PlaylistChannelDoc>(
     failoverGroupId: { type: String, default: null },
     failoverRole: { type: String, default: null }, // 'parent' | 'child' | null
     failoverOrder: { type: Number, default: null },
+    playerPref: { type: Number, default: null }, // preferred upstream player (1-based) for playerSelectable sources; null = inherit source default
     // Nested object (not a subdocument) → Mongoose adds no `stream._id`.
     stream: {
       initials: { type: String, default: null },

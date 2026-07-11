@@ -77,6 +77,21 @@ function mergeUpstreamHeaders(
   return out;
 }
 
+// Read a channel's per-channel player OVERRIDE (for playerSelectable sources — dlhd/dami). Returns the 1-based
+// preference, or 0 when unset (the adapter's resolveStream then falls back to the cached source-wide default).
+// Mirrors buildFailoverGrant's reverse lookup: exact by (streamEntryUrl, pl) when the composed M3U stamped ?pl,
+// else a DETERMINISTIC no-pl fallback (canonical source-playlist doc, then the lexically-first clone copy). One
+// indexed read at stream start, called ONLY for playerSelectable sources, so the generic hot path is untouched.
+async function channelPlayerPref(source: string, url: string, pl?: string): Promise<number> {
+  const proj = { playerPref: 1, _id: 0 };
+  const ch = pl
+    ? await PlaylistChannel.findOne({ streamEntryUrl: url, source: pl }, proj).lean()
+    : ((await PlaylistChannel.findOne({ streamEntryUrl: url, source, origin: null }, proj).lean()) ??
+      (await PlaylistChannel.findOne({ streamEntryUrl: url, origin: source }, proj).sort({ source: 1 }).lean()));
+  const pref = ch?.playerPref;
+  return typeof pref === 'number' && pref > 0 ? pref : 0;
+}
+
 /**
  * Build the per-stream grant.
  *
@@ -106,7 +121,12 @@ export async function buildGrant(
   try {
     if (adapter.isEntryUrl(url)) {
       isEntry = true;
-      const resolved = await adapter.resolveStream(url);
+      // playerSelectable sources (dlhd/dami): read the per-channel player override; resolveStream applies the
+      // source-wide default when it's 0/unset, and falls back through the other players on failure.
+      const opts = adapter.playerSelectable
+        ? { player: await channelPlayerPref(source, url, pl) }
+        : undefined;
+      const resolved = await adapter.resolveStream(url, opts);
       target = resolved.masterUrl;
     }
   } catch (err) {
@@ -223,7 +243,13 @@ async function buildFailoverGrant(
   try {
     if (candAdapter.isEntryUrl(target)) {
       isEntry = true;
-      target = (await candAdapter.resolveStream(target)).masterUrl;
+      // Honor the failover child's OWN player override (playerSelectable sources); cand is already loaded, so
+      // no extra read. resolveStream falls back to the source default (0/unset) + the other players on failure.
+      const opts =
+        candAdapter.playerSelectable && typeof cand.playerPref === 'number' && cand.playerPref > 0
+          ? { player: cand.playerPref }
+          : undefined;
+      target = (await candAdapter.resolveStream(target, opts)).masterUrl;
     }
   } catch (err) {
     // This backup couldn't resolve its stream; the 502 advances the data plane to the next candidate.

@@ -18,6 +18,14 @@ export const timezone = ref('America/New_York');
 // offset, not this. See server/src/settings/zoneOffset.ts.
 export const offset = ref('+0000');
 export const darkMode = ref(true);
+// Which in-app player the channel slide-out renders: 'inapp' (default) or 'debug' (the diagnostic HUD with a
+// live hls.js status readout + event log). Global operator toggle; persisted on the Settings singleton like
+// any other field. Consumed by ChannelPlayer.vue to pick which player component to mount.
+export const videoPlayer = ref<'inapp' | 'debug'>('inapp');
+// Source-wide default DaddyLive (dlhd/dami) player for channels without a per-channel override: 0 = Auto (use
+// Player 1, falling back to the rest on failure), 1..N = prefer that player. Persisted on the Settings
+// singleton; the server caches it into the dlhd resolver. A per-channel override (ChannelDrawer) wins over it.
+export const dlhdPlayer = ref(0);
 export const epgPath = ref('/_global/epg/playlist.xml');
 // Outbound-fetch DNS: comma-separated resolver IP(s) (blank => OS resolver). Persists like any other field;
 // the server re-applies it to the live undici dispatcher on save (server/src/dns.ts via settings/applyDns.ts).
@@ -66,6 +74,8 @@ export async function loadSettings(): Promise<void> {
       timezone: string;
       offset: string;
       darkMode: boolean;
+      videoPlayer: 'inapp' | 'debug';
+      dlhdPlayer: number;
       nameservers: string | null;
       logLevel: number;
       maxmindAccountId: string | null;
@@ -77,6 +87,8 @@ export async function loadSettings(): Promise<void> {
     if (typeof s.timezone === 'string') timezone.value = s.timezone;
     if (typeof s.offset === 'string') offset.value = s.offset;
     if (typeof s.darkMode === 'boolean') darkMode.value = s.darkMode;
+    if (s.videoPlayer === 'inapp' || s.videoPlayer === 'debug') videoPlayer.value = s.videoPlayer;
+    if (typeof s.dlhdPlayer === 'number') dlhdPlayer.value = s.dlhdPlayer;
     if (s.nameservers !== undefined) nameservers.value = s.nameservers ?? '';
     if (typeof s.logLevel === 'number') logLevel.value = s.logLevel;
     if (s.maxmindAccountId !== undefined) maxmindAccountId.value = s.maxmindAccountId ?? '';
@@ -124,6 +136,8 @@ watch(displayName, (v) => persist({ displayName: v }));
 watch(domain, (v) => persist({ domain: v }));
 watch(timezone, (v) => persist({ timezone: v }));
 watch(darkMode, (v) => persist({ darkMode: v }));
+watch(videoPlayer, (v) => persist({ videoPlayer: v }));
+watch(dlhdPlayer, (v) => persist({ dlhdPlayer: v }));
 watch(nameservers, (v) => persist({ nameservers: v.trim() === '' ? null : v.trim() }));
 watch(logLevel, (v) => persist({ logLevel: v }));
 watch(maxmindAccountId, (v) => persist({ maxmindAccountId: v.trim() === '' ? null : v.trim() }));

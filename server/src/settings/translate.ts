@@ -49,6 +49,9 @@ export function envDefaults(): SettingsData {
     // for the EPG sync stamp; re-derived on every timezone save in toExternalPatch.
     offset: zoneOffsetString(timezone),
     darkMode: true,
+    videoPlayer: process.env.VIDEO_PLAYER === 'debug' ? 'debug' : 'inapp',
+    // Source-wide default DaddyLive player (0 = Auto). Seedable from DLHD_PLAYER; clamped to a non-negative int.
+    dlhdPlayer: Math.max(0, Math.trunc(Number(process.env.DLHD_PLAYER)) || 0),
     // nameservers: hardcoded first-provision default (no longer env-derived — the NAMESERVER env was
     // dropped). 8.8.8.8,8.8.4.4 (Google public DNS) is written into the singleton on first insert so a
     // working outbound-fetch resolver is ALWAYS present out of the box; the operator edits it on the
@@ -74,6 +77,8 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     timezone: doc.timezone,
     offset: doc.offset ?? '+0000', // derived from timezone; surfaced read-only to the SPA
     darkMode: doc.darkMode,
+    videoPlayer: doc.videoPlayer === 'debug' ? 'debug' : 'inapp',
+    dlhdPlayer: typeof doc.dlhdPlayer === 'number' ? doc.dlhdPlayer : 0, // source-wide default DaddyLive player (0 = Auto)
     nameservers: doc.nameservers ?? null, // not secret — returned verbatim for the Settings UI
     logLevel: typeof doc.logLevel === 'number' ? doc.logLevel : 2,
     maxmindAccountId: doc.maxmindAccountId ?? null,
@@ -116,6 +121,22 @@ export function toExternalPatch(body: unknown): PatchResult {
       }
       $set[key] = v;
     }
+  }
+  // videoPlayer: which in-app player the channel slide-out renders. Enum 'inapp' | 'debug' (default 'inapp').
+  if (b.videoPlayer !== undefined) {
+    if (b.videoPlayer !== 'inapp' && b.videoPlayer !== 'debug') {
+      return { ok: false, error: "videoPlayer ('inapp' or 'debug') required" };
+    }
+    $set.videoPlayer = b.videoPlayer as 'inapp' | 'debug';
+  }
+  // dlhdPlayer: source-wide default DaddyLive player. 0 = Auto; 1..N selects a specific player. A generous
+  // upper bound (out-of-range clamps to the lead player at resolve time, so the cap only bounds the dropdown).
+  if (b.dlhdPlayer !== undefined) {
+    const v = b.dlhdPlayer;
+    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 12) {
+      return { ok: false, error: 'dlhdPlayer (integer 0..12; 0 = Auto) required' };
+    }
+    $set.dlhdPlayer = v;
   }
   // nameservers: optional comma-separated resolver IP(s). null or '' clears it (stored null → OS resolver);
   // a non-empty string must be a comma list of valid IPs (isIP), else 400 — a bad value never reaches dns.ts.

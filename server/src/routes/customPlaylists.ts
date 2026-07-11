@@ -293,9 +293,15 @@ export async function cascadeDeleteCustomPlaylist(id: string, url: string): Prom
   await EpgSource.deleteOne({ id });
   await EpgChannel.deleteMany({ source: id });
   await Program.deleteMany({ source: id });
-  const jobId = cronjobId('playlist', id);
-  removeCronjob(jobId);
-  await Cronjob.deleteOne({ _id: jobId });
+  // Drop BOTH scheduled jobs this playlist could own — the live-sync ('playlist') and the compose-m3u
+  // ('playlist-m3u', now schedulable for clones too). Leaving the compose job behind would orphan it: it would
+  // keep ticking composeM3u(id), which throws 'unknown_playlist' every fire. Mirrors the built-in delete
+  // cascade in routes/playlists.ts.
+  for (const targetType of ['playlist', 'playlist-m3u'] as const) {
+    const jobId = cronjobId(targetType, id);
+    removeCronjob(jobId);
+    await Cronjob.deleteOne({ _id: jobId });
+  }
   await ProxyConfig.deleteOne({ _id: `app_${id}` }); // its Custom proxy override (if any) — keyed by the clone/playlist id (=== ?pl)
   await pruneCustomFile(url).catch((err) =>
     logger.warn('m3u', `prune after playlist delete failed: ${(err as Error).message}`),

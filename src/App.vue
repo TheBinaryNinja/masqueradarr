@@ -334,7 +334,7 @@ onBeforeUnmount(() => {
           <span class="topbar-spacer" />
         </template>
         <div v-if="currentUser?.role === 'admin'" class="topbar-search">
-          <SearchInput :value="searchQ" :debounce="1500" :width="300"
+          <SearchInput :value="searchQ" :debounce="1500" width="100%"
                        placeholder="Search everything…" @change="onSearch" />
           <SearchResults v-if="searchOpen" :results="searchResults" :loading="searching"
                          :query="searchQ" @select="onSearchSelect" @close="closeSearch" />
@@ -390,10 +390,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* Anchors the absolute-positioned SearchResults dropdown directly under the topbar search box. */
+/* Absolutely centers the search box in the topbar (dead-center on every screen, independent of the
+   title/crumb on the left and the Docs/theme/Add cluster on the right). Also anchors the
+   absolute-positioned SearchResults dropdown directly under the box. */
 .topbar-search {
-  position: relative;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(480px, 90vw);  /* the shared width: the input fills it, the results panel stretches to it */
   display: flex;
   align-items: center;
+  z-index: 1;               /* keep the centered box above the flex siblings if they ever meet */
 }
 </style>

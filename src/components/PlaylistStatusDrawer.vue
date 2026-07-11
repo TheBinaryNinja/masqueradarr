@@ -16,8 +16,10 @@ const emit = defineEmits<{ (e: 'close'): void; (e: 'updated', patch: Partial<Pla
 
 const baseDomain = computed(() => domain.value.replace(/\/$/, ''));
 
-// A "clone" (user-composed custom playlist, source==='clone') is custom-endpoint only and has no sync/compose
-// schedule (interval 'none'): the global endpoint option and the schedule builders are hidden for it.
+// A "clone" (user-composed custom playlist, source==='clone') is custom-endpoint only and has NO live upstream,
+// so its Sync schedule is hidden and its `interval` stays 'none'. It DOES get a Compose-m3u schedule, though —
+// composeM3u recomposes its editable channel copies (the automatic twin of the manual "Compose m3u"); see
+// canComposeSchedule below. The global endpoint option stays hidden for a clone (custom-only).
 const isClone = computed(() => props.playlist.source === 'clone');
 
 // ── Per-playlist (Custom) proxy config (CFG/UICFG) ─────────────────────────────────────────────────────
@@ -52,13 +54,12 @@ onMounted(async () => {
 //     manual "Sync now").
 //   • Compose m3u — targetType 'playlist-m3u'; the scheduler recomposes the playlist's stream-ready m3u
 //     export (the same work as the manual "Compose m3u" — mirrors the EPG-XML compose schedule).
-// Which playlists can be scheduled, and against WHAT cron targetId:
+// Which playlists can be SYNC-scheduled (cronTarget), and against WHAT cron targetId:
 //   • A (Default) SOURCE playlist (registry-backed; id === source) → its source/id (syncLive + composeM3u).
 //   • A custom playlist WITH a live upstream — 'url' (re-fetch the stored remoteUrl) or 'hdhomerun' (re-fetch
 //     the device lineup) → its own playlist id (the custom-playlists sync + composeM3u both key by id).
-//   • A clone (source==='clone'), a static 'file' import, or a source-unset (legacy/mock) playlist → NO cron
-//     target (nothing to live-sync). This guard hides the schedule builders (canSchedule → false) and makes
-//     saveSchedule() early-return without writing cron jobs.
+//   • A clone (source==='clone'), a static 'file' import, or a source-unset (legacy/mock) playlist → NO SYNC
+//     target (nothing to live-sync). This hides the Sync builder (canSchedule → false).
 // The cron targetId is the playlist ID for every schedulable playlist (for a source playlist id === source,
 // so syncLive/composeM3u still receive the source id; for a custom playlist the scheduler resolves its type).
 // The custom-playlist source TYPE TAGs ('clone'/'file'/'url'/'hdhomerun'/'local'/legacy 'import') discriminate
@@ -75,14 +76,23 @@ const cronTarget = computed<string | null>(() => {
   return props.playlist.id;
 });
 const canSchedule = computed(() => !!cronTarget.value);
+
+// Compose-m3u is schedulable for a SUPERSET of the sync-schedulable playlists: every sync-schedulable playlist
+// PLUS a clone. A clone has no live upstream to sync, but it DOES produce a stream-ready m3u export from its
+// editable channel copies, so composeM3u(id) is meaningful — the automatic twin of the manual "Compose m3u".
+// A static 'file' import or a source-unset legacy row still gets no compose schedule (nothing to recompose on a
+// cadence). The compose cron keys by the playlist id, same as the sync cron.
+const composeTarget = computed<string | null>(() => cronTarget.value ?? (isClone.value ? props.playlist.id : null));
+const canComposeSchedule = computed(() => !!composeTarget.value);
+
 const existingJob = computed<CronJob | null>(() =>
   cronTarget.value
     ? CRON_JOBS.value.find((j) => j.targetType === 'playlist' && j.targetId === cronTarget.value) || null
     : null,
 );
 const existingM3uJob = computed<CronJob | null>(() =>
-  cronTarget.value
-    ? CRON_JOBS.value.find((j) => j.targetType === 'playlist-m3u' && j.targetId === cronTarget.value) || null
+  composeTarget.value
+    ? CRON_JOBS.value.find((j) => j.targetType === 'playlist-m3u' && j.targetId === composeTarget.value) || null
     : null,
 );
 
@@ -161,28 +171,34 @@ async function putOrDeleteJob(targetType: string, target: string, isAuto: boolea
 // Persist both schedules, mirror the friendly sync label onto the playlist row, then refresh the store.
 // Returns true on success; on failure sets `error` and returns false so the caller keeps the drawer open.
 async function saveSchedule(): Promise<boolean> {
-  const target = cronTarget.value;
-  if (!target) return true; // source-less playlist — nothing to schedule
+  const syncTarget = cronTarget.value;
+  const composeTgt = composeTarget.value;
+  if (!syncTarget && !composeTgt) return true; // nothing schedulable (e.g. a static 'file' import)
   error.value = '';
   saving.value = true;
   try {
-    await putOrDeleteJob('playlist', target, isAuto.value, cron.value, freq);
-    await putOrDeleteJob('playlist-m3u', target, m3uIsAuto.value, m3uCron.value, m3uFreq);
+    // The sync + compose jobs are independent docs (own _id per targetType), so each is written only when its
+    // target applies. A clone has just a compose target (no upstream to sync) → only the 'playlist-m3u' job.
+    if (syncTarget) await putOrDeleteJob('playlist', syncTarget, isAuto.value, cron.value, freq);
+    if (composeTgt) await putOrDeleteJob('playlist-m3u', composeTgt, m3uIsAuto.value, m3uCron.value, m3uFreq);
     // Mirror the friendly sync-schedule label + auto flag onto the playlist row (the EPG posture) so the
-    // stored interval stays accurate. The chip derives live from the cron job, but the persisted field is
-    // the document-of-record other consumers read; the source sync no longer owns/clobbers it.
-    const patch: Partial<Playlist> = {
-      interval: isAuto.value ? summarizeFrequency(freq, cron.value) : 'manual',
-      auto: isAuto.value,
-    };
-    const res = await fetch(`/api/playlists/${encodeURIComponent(props.playlist.id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(patch),
-    });
-    if (!res.ok) throw new Error('playlist update failed');
+    // stored interval stays accurate — ONLY when a sync schedule applies. A clone is compose-only and carries
+    // interval 'none'; it has no sync cadence to mirror, so its row field is left untouched. The compose chip
+    // derives live from the cron job (reloadCronjobs below refreshes it), so no playlist patch is needed for it.
+    if (syncTarget) {
+      const patch: Partial<Playlist> = {
+        interval: isAuto.value ? summarizeFrequency(freq, cron.value) : 'manual',
+        auto: isAuto.value,
+      };
+      const res = await fetch(`/api/playlists/${encodeURIComponent(props.playlist.id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(patch),
+      });
+      if (!res.ok) throw new Error('playlist update failed');
+      emit('updated', patch);
+    }
     await reloadCronjobs();
-    emit('updated', patch);
     return true;
   } catch {
     error.value = 'Could not save the schedule — please try again.';
@@ -350,15 +366,19 @@ function onCustomPath(v: string) {
           </div>
         </div>
 
-        <!-- ② Sync schedule (+ the paired Compose-m3u schedule) — the shared FrequencyBuilder, same as the
-             EPG source Edit drawer. Only source-backed playlists can be scheduled (clones/source-unset have
-             nothing to do). -->
+        <!-- ② Sync schedule — the shared FrequencyBuilder, same as the EPG source Edit drawer. Only playlists
+             with a live upstream to re-fetch can be sync-scheduled (a source-backed playlist, or a
+             'url'/'hdhomerun'/'local' custom import). A clone / static 'file' import has nothing to sync. -->
         <template v-if="canSchedule">
           <div class="divider" />
           <FrequencyBuilder :freq="freq" v-model:auto="isAuto" v-model:rawCron="rawCron"
                             label="Sync schedule" icon="refresh"
                             manualHint="Synced manually only. Switch to Automatic to refresh this playlist on a schedule." />
+        </template>
 
+        <!-- ②b Compose-m3u schedule — the automatic twin of the manual "Compose m3u". Shown for every
+             sync-schedulable playlist PLUS a clone (no upstream, but it still recomposes its m3u export). -->
+        <template v-if="canComposeSchedule">
           <div class="divider" />
           <FrequencyBuilder :freq="m3uFreq" v-model:auto="m3uIsAuto" v-model:rawCron="m3uRawCron"
                             label="Compose m3u" icon="file"

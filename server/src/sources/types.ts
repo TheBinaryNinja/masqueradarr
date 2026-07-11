@@ -68,6 +68,13 @@ export interface SourceProxy {
   classifyArtifact(url: string): ArtifactType;
 }
 
+// Per-resolve options threaded from the resolve seam (buildGrant) into resolveStream. Only `playerSelectable`
+// sources read it; kept minimal + provider-agnostic (a numeric player index) so the generic core stays neutral.
+export interface ResolveStreamOptions {
+  /** Preferred upstream player (1-based; 0/undefined = Auto). Resolved from the per-channel pref → source default. */
+  player?: number;
+}
+
 export interface SourceAdapter {
   id: string;
   label: string;
@@ -103,10 +110,20 @@ export interface SourceAdapter {
   builtinMeta?: BuiltinPlaylistMeta;
   /** Optional runtime provenance (dlhd: active mirror + probes). Absent → manifest statusUrl null. */
   status?: () => unknown | Promise<unknown>;
+  /**
+   * Opt-in: this source exposes multiple interchangeable upstream "players" per channel that the operator can
+   * PREFER (a source-wide default + per-channel override, honored + failed-over by resolveStream via opts.player).
+   * dlhd/dami set this (DaddyLive's Player 1..N). Absent/false ⇒ the resolve seam never reads a player pref and
+   * the SPA hides the picker. Purely a capability flag; the resolution logic lives in the adapter.
+   */
+  playerSelectable?: boolean;
   /** Does this URL need server-side resolution before proxying? (dulo/common: false; dlhd: watch.php) */
   isEntryUrl(url: string): boolean;
-  /** Entry URL → { masterUrl }. dulo/common: identity; dlhd: 3-hop scrape. */
-  resolveStream(entryUrl: string): Promise<{ masterUrl: string }>;
+  /**
+   * Entry URL → { masterUrl }. dulo/common: identity; dlhd: 3-hop scrape. `opts.player` (1-based; 0/undefined
+   * = Auto) is honored only by `playerSelectable` sources; others ignore it (a 1-arg impl still satisfies this).
+   */
+  resolveStream(entryUrl: string, opts?: ResolveStreamOptions): Promise<{ masterUrl: string }>;
   proxy: SourceProxy;
   /**
    * Optional post-sync side-effect, called by syncLive AFTER both channel stores are upserted/pruned.
