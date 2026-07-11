@@ -6,7 +6,7 @@ import Pill from './Pill.vue';
 import Toggle from './Toggle.vue';
 import FrequencyBuilder from './FrequencyBuilder.vue';
 import ProxyConfigPanel from './ProxyConfigPanel.vue';
-import { type Channel, type Playlist, type CronFrequency, type CronJob, CRON_JOBS, reloadCronjobs } from '../data';
+import { type Channel, type Playlist, type CronFrequency, type CronJob, CRON_JOBS, reloadCronjobs, reloadPlaylists } from '../data';
 import { domain, timezone } from '../composables/useSettings';
 import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/useSchedule';
 import { customConfigExists, createCustomFromDefault, deleteCustomConfig } from '../composables/useProxyConfig';
@@ -264,7 +264,14 @@ async function save(patch: Partial<Playlist>): Promise<void> {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
     });
-    if (res.ok) emit('updated', patch);
+    if (res.ok) {
+      emit('updated', patch); // instant optimistic feedback for the parent's own bound row
+      // The server CANONICALIZES `url` for the effective endpoint (bare domain for Global, <domain>/<path>
+      // for Custom) and reconciles the on-disk exports. Re-pull the shared PLAYLISTS store so every screen
+      // derived from it (list, detail header, Dashboard, Users copyable URLs) shows the canonical value
+      // without a full page reload — and no manual Compose. Non-fatal.
+      void reloadPlaylists();
+    }
   } catch {
     /* best-effort; the UI keeps the optimistic local value */
   }

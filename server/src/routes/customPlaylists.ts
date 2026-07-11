@@ -8,6 +8,7 @@ import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath, CUSTOM_PLAYLIST_TYPES } from '../m3u/paths.js';
 import { logger } from '../sources/core/logger.js';
 import { reconcileFailoverGroups } from '../services/failover.js';
+import { reconcileGroupRegistry } from '../services/groups.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
 import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from './import.js';
@@ -182,6 +183,8 @@ customPlaylistsRouter.post('/', async (req, res, next) => {
       isAuthenticated: false,
       lastSync: now,
     });
+    // Build the first-class group registry from the copied channels' groups.
+    await reconcileGroupRegistry(id);
 
     // Auto-grant the new clone to every admin (Custom endpoint → allowedCustomPlaylists). Best-effort —
     // non-fatal; admins still pass the role bypass in the meantime. (compose already treats admin as
@@ -230,9 +233,10 @@ customPlaylistsRouter.put('/:id', async (req, res, next) => {
     const channels = (await PlaylistChannel.find({ source: clone.id }, { group: 1 }).lean()) as Array<{
       group: string | null;
     }>;
-    clone.groups = groupCount(channels);
     clone.lastSync = new Date().toISOString();
     await clone.save();
+    // Union-only registry reconcile owns Playlist.groups (preserves operator-created empty groups).
+    await reconcileGroupRegistry(clone.id);
 
     await composeM3u(clone.id).catch((err) =>
       logger.warn('m3u', `compose after clone update failed: ${(err as Error).message}`),

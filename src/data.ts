@@ -538,6 +538,96 @@ export async function disbandFailoverGroup(source: string, groupId: string): Pro
   );
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Channel groups — the first-class, persisted group registry per playlist (server: Playlist.groupDefs +
+// /api/playlists/:id/groups). The shared GroupPicker + the bulk "Manage groups" panel read GROUPS_BY_PLAYLIST
+// so a group created in ONE editor immediately appears in the other. Rename/delete also patch the global
+// CHANNELS union so the Mapping / EPG-detail screens don't show a stale group label.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface GroupDef {
+  name: string;
+  order: number;
+  channels?: number; // live member count (present on GET; absent on create/rename/delete responses is fine)
+}
+
+// Registry keyed by playlist id. Populated on demand by reloadGroups(playlistId).
+export const GROUPS_BY_PLAYLIST: Ref<Record<string, GroupDef[]>> = ref({});
+
+function setGroups(playlistId: string, defs: GroupDef[]): void {
+  GROUPS_BY_PLAYLIST.value = { ...GROUPS_BY_PLAYLIST.value, [playlistId]: defs };
+}
+
+export async function reloadGroups(playlistId: string): Promise<GroupDef[]> {
+  const defs = await getJson<GroupDef[]>(`/api/playlists/${encodeURIComponent(playlistId)}/groups`);
+  setGroups(playlistId, defs);
+  return defs;
+}
+
+// Create an EMPTY group (persists with zero channels). Returns the refreshed registry.
+export async function createGroup(playlistId: string, name: string): Promise<GroupDef[]> {
+  const res = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}/groups`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `create group failed: ${res.status}`);
+  }
+  const defs = (await res.json()) as GroupDef[];
+  setGroups(playlistId, defs);
+  return defs;
+}
+
+// Rename a group across the whole playlist (relabels every member channel). Patches the global CHANNELS union.
+export async function renameGroup(playlistId: string, oldName: string, newName: string): Promise<GroupDef[]> {
+  const res = await fetch(
+    `/api/playlists/${encodeURIComponent(playlistId)}/groups/${encodeURIComponent(oldName)}`,
+    { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: newName }) },
+  );
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `rename group failed: ${res.status}`);
+  }
+  const defs = (await res.json()) as GroupDef[];
+  setGroups(playlistId, defs);
+  CHANNELS.value = CHANNELS.value.map((c) =>
+    c.source === playlistId && c.group === oldName ? { ...c, group: newName } : c,
+  );
+  return defs;
+}
+
+// Delete a group (clears it on every member channel; the channels stay). Patches the global CHANNELS union.
+export async function deleteGroup(playlistId: string, name: string): Promise<GroupDef[]> {
+  const res = await fetch(
+    `/api/playlists/${encodeURIComponent(playlistId)}/groups/${encodeURIComponent(name)}`,
+    { method: 'DELETE' },
+  );
+  if (!res.ok) throw new Error(`delete group failed: ${res.status}`);
+  const defs = (await res.json()) as GroupDef[];
+  setGroups(playlistId, defs);
+  CHANNELS.value = CHANNELS.value.map((c) =>
+    c.source === playlistId && c.group === name ? { ...c, group: null } : c,
+  );
+  return defs;
+}
+
+// Hard-delete channels (tombstoned server-side so a re-sync won't re-add them). Removes them from the global
+// CHANNELS union; the caller (detail screen) also patches its own local list. Returns the deleted count.
+export async function deleteChannels(playlistId: string, ids: string[]): Promise<number> {
+  const res = await fetch(`/api/playlists/${encodeURIComponent(playlistId)}/channels/delete`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ids }),
+  });
+  if (!res.ok) throw new Error(`delete channels failed: ${res.status}`);
+  const body = (await res.json().catch(() => ({}))) as { deleted?: number };
+  const dead = new Set(ids);
+  CHANNELS.value = CHANNELS.value.filter((c) => !dead.has(c.id));
+  return body.deleted ?? 0;
+}
+
 // Re-fetch the custom (clone) playlists after a create/append/delete so the shared store + the append
 // dropdown reflect Mongo without re-running the whole bootstrap.
 export async function reloadCustomPlaylists(): Promise<void> {

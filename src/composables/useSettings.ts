@@ -1,5 +1,6 @@
 import { ref, computed, watch, nextTick } from 'vue';
 import { useTweaks } from './useTweaks';
+import { reloadPlaylists } from '../data';
 
 // Operator settings the SPA shares with the server. Persisted fields are hydrated once from
 // GET /api/settings (loadSettings) and PUT back, debounced, on edit. epgPath stays SPA-local
@@ -102,11 +103,20 @@ function persist(patch: Record<string, unknown>): void {
   saveTimer = setTimeout(() => {
     const body = pending;
     pending = {};
+    const changedDomain = 'domain' in body;
     fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
-    }).catch(() => undefined);
+    })
+      .then((res) => {
+        // A domain change cascades server-side into every playlist's persisted `url` (HOSTED AT). Re-pull the
+        // canonical rows into the shared PLAYLISTS store so the copyable custom-playlist / guide URLs on the
+        // Dashboard + Users screens (derived from it via usePublishedUrls) update live — no page reload, and
+        // no manual Compose (the server already recomposed the on-disk files in the same cascade).
+        if (res.ok && changedDomain) void reloadPlaylists();
+      })
+      .catch(() => undefined);
   }, 500);
 }
 

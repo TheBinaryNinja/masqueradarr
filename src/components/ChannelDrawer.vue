@@ -8,8 +8,9 @@ import ChannelLogo from './ChannelLogo.vue';
 import Segmented from './Segmented.vue';
 import HlsPlayer from './HlsPlayer.vue';
 import LivelineChart from './LivelineChart.vue';
+import GroupPicker from './GroupPicker.vue';
 import { useStreamStats } from '../composables/useStreamStats';
-import { ACTIVE_STREAMS, CHANNELS, GROUPS, PLAYLISTS, appPlayerProxyPath, type Channel, type StreamProbe } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, type Channel, type StreamProbe } from '../data';
 import { bus } from '../composables/bus';
 
 const props = defineProps<{ ch: Channel }>();
@@ -83,6 +84,22 @@ function save() {
   }
   if (Object.keys(patch).length) putChannel(patch);
   emit('close');
+}
+
+// Hard-delete this single channel (two-step confirm). Tombstoned server-side (survives re-sync); the bus
+// event lets an open PlaylistDetailScreen drop the row from its LOCAL list without a refetch. Mirrors the
+// bulk editor's "Delete N channels" for single-channel parity.
+const confirmRemove = ref(false);
+async function removeChannel() {
+  const { source, id } = props.ch;
+  if (!source) return;
+  try {
+    await deleteChannels(source, [id]);
+    bus.emit('tvapp:channels-deleted', { source, ids: [id] });
+    emit('close');
+  } catch {
+    confirmRemove.value = false;
+  }
 }
 
 // Live HLS resolution → persist stream.res when it actually changes (drawer open).
@@ -162,6 +179,7 @@ watch(
     group.value = props.ch.group ?? '';
     tvgId.value = props.ch.tvg_id ?? '';
     streamUrl.value = props.ch.streamEntryUrl ?? '';
+    confirmRemove.value = false;
   },
 );
 
@@ -297,20 +315,26 @@ onBeforeUnmount(() => {
           </div>
           <div class="form-row">
             <div class="field-lbl">Group</div>
-            <div class="select">
-              <select v-model="group">
-                <option v-if="group && !GROUPS.includes(group)" :value="group">{{ group }}</option>
-                <option v-for="g in GROUPS" :key="g" :value="g">{{ g }}</option>
-              </select>
-            </div>
+            <GroupPicker v-model="group" :playlist-id="ch.source" allow-create />
           </div>
         </div>
 
         <div class="row" style="margin-top: 6px;">
-          <Btn variant="ghost" icon="trash"><span style="color: var(--bad);">Remove</span></Btn>
-          <span class="spacer" />
-          <Btn variant="ghost" @click="emit('close')">Cancel</Btn>
-          <Btn variant="primary" icon="check" @click="save">Save changes</Btn>
+          <template v-if="confirmRemove">
+            <Icon name="warn" :size="15" style="color: var(--bad);" />
+            <span style="font-size: var(--fs-sm); font-weight: 600;">Delete this channel?</span>
+            <span class="spacer" />
+            <Btn variant="ghost" size="sm" @click="confirmRemove = false">Cancel</Btn>
+            <button class="btn ghost danger" @click="removeChannel">
+              <Icon name="trash" :size="14" />Delete
+            </button>
+          </template>
+          <template v-else>
+            <Btn variant="ghost" icon="trash" @click="confirmRemove = true"><span style="color: var(--bad);">Remove</span></Btn>
+            <span class="spacer" />
+            <Btn variant="ghost" @click="emit('close')">Cancel</Btn>
+            <Btn variant="primary" icon="check" @click="save">Save changes</Btn>
+          </template>
         </div>
       </div>
     </div>

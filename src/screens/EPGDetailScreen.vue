@@ -100,7 +100,14 @@ const HOUR_MS = 3_600_000;
 const now = ref(Date.now());
 function tick() { now.value = Date.now(); }
 let id: number | null = null;
-onMounted(() => { tick(); id = window.setInterval(tick, 60000); });
+onMounted(() => {
+  tick();
+  id = window.setInterval(tick, 60000);
+  // `epg` is a find() over the shared EPG_SOURCES store; the screen mounts fresh on every nav-in, so re-pull
+  // the store here — otherwise a scheduled sync or an edit elsewhere leaves this header row's channels /
+  // programs / lastSync / success-fail counts stale until a full page reload.
+  void reloadEpgSources();
+});
 onBeforeUnmount(() => { if (id) clearInterval(id); });
 
 // The timeline is a ROLLING window anchored at "now" (not the calendar day): LEAD_HOURS of recent past at the

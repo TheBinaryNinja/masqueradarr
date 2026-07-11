@@ -55,6 +55,22 @@ const PlaylistSchema = new Schema(
     // lifecycle (PlaylistAuthState.save → Playlist write-back); $setOnInsert false on first provision so a
     // re-sync never clobbers the live value. The playlistauths doc remains the authority.
     isAuthenticated: { type: Boolean, required: true, default: false },
+    // Tombstone set of PlaylistChannel `_id`s the operator hard-deleted via the bulk-delete route
+    // (POST /:id/channels/delete). The sync/import re-insert paths ($setOnInsert upserts off the live
+    // upstream listing) consult this and SKIP tombstoned ids, so a deleted channel that is still present
+    // upstream is never resurrected on the next sync (services/tombstones.ts). Cleared wholesale by
+    // resetSource (Restore Defaults = clean slate).
+    deletedChannelIds: { type: [String], default: [] },
+    // Persisted per-playlist channel-group registry — the source of truth for the group taxonomy so a group
+    // can exist with ZERO channels (create/rename/delete are real operations, not just a side effect of
+    // editing the free-text PlaylistChannel.group string). `order` is a UI ordinal only (compose still sorts
+    // groups alphabetically). Reconciled union-only on every sync (services/groups.ts reconcileGroupRegistry
+    // NEVER removes a name — that is how operator-created empty groups survive a re-sync). The scalar
+    // `groups` count above is derived from `groupDefs.length`.
+    groupDefs: {
+      type: [{ name: { type: String, required: true }, order: { type: Number, default: 0 } }],
+      default: [],
+    },
   },
   { versionKey: false },
 );

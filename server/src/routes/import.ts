@@ -17,6 +17,8 @@ import {
 } from '../sources/adapters/hdhomerun/lineup.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
 import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
+import { tombstonedIds } from '../services/tombstones.js';
+import { reconcileGroupRegistry } from '../services/groups.js';
 import { searchCities, detectMarket, LocalNowError } from '../sources/adapters/local/api.js';
 import { Cronjob, cronjobId, type CronFrequency, type CronjobDoc } from '../models/Cronjob.js';
 import { applyCronjob } from '../scheduler/index.js';
@@ -78,12 +80,16 @@ function toImportChannel(e: ParsedM3uEntry, importId: string): PlaylistChannelDo
 // fields ($setOnInsert) are written once and preserved. De-dupes repeated URLs within the file by _id.
 async function upsertImportChannels(entries: ParsedM3uEntry[], importId: string): Promise<void> {
   if (!entries.length) return;
+  // Tombstone gate: never re-insert a channel the operator hard-deleted (survives re-sync). Its id still
+  // joins `seen` so the caller's prune (syncUrlPlaylist $nin liveIds) treats it as accounted-for.
+  const dead = await tombstonedIds(importId);
   const seen = new Set<string>();
   const ops: unknown[] = [];
   for (const e of entries) {
     const pc = toImportChannel(e, importId);
     if (seen.has(pc._id)) continue;
     seen.add(pc._id);
+    if (dead.has(pc._id)) continue;
     ops.push({
       updateOne: {
         filter: { _id: pc._id },
@@ -119,6 +125,7 @@ async function upsertImportChannels(entries: ParsedM3uEntry[], importId: string)
       },
     });
   }
+  if (!ops.length) return;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await PlaylistChannel.bulkWrite(ops as any[]);
 }
@@ -157,8 +164,9 @@ export async function syncUrlPlaylist(id: string): Promise<{ channels: number; g
   const channels = (await PlaylistChannel.find({ source: id }, { group: 1 }).lean()) as Array<{
     group: string | null;
   }>;
-  const groups = groupCount(channels);
-  await Playlist.updateOne({ id }, { $set: { groups, lastSync: new Date().toISOString() } });
+  await Playlist.updateOne({ id }, { $set: { lastSync: new Date().toISOString() } });
+  // Union-only registry reconcile owns Playlist.groups (preserves operator-created empty groups).
+  const groups = (await reconcileGroupRegistry(id)).length;
 
   await composeM3u(id).catch((err) =>
     logger.warn('m3u', `compose after remote-url sync failed: ${(err as Error).message}`),
@@ -275,6 +283,8 @@ importRouter.post('/m3u', async (req, res, next) => {
       // can re-fetch from it; a file (inline content) upload has no re-fetchable source → explicit null.
       remoteUrl: tag === 'url' ? (typeof body.url === 'string' ? body.url.trim() : null) : null,
     });
+    // Build the first-class group registry from the imported channels' groups.
+    await reconcileGroupRegistry(id);
 
     // Auto-grant the new import to every admin (Custom endpoint → allowedCustomPlaylists). Best-effort —
     // non-fatal; admins still pass the role bypass in the meantime.

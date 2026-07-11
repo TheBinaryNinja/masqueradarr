@@ -12,7 +12,7 @@
 // per-step progress bar, which matches the "process each playlist" intent.)
 
 import { ref } from 'vue';
-import { reloadEpgSources, type Playlist } from '../data';
+import { reloadEpgSources, reloadChannels, type Playlist } from '../data';
 
 export interface GlobalActionResult {
   total: number;
@@ -63,8 +63,10 @@ async function syncAllGlobal(): Promise<GlobalActionResult> {
     }
     // A source sync's afterSync hook can create/refresh EPG sources (dlhd/tubi self-EPG + crosswalk links),
     // so re-surface the EPG store here — otherwise the EPG Sources screen shows stale (empty on a fresh
-    // instance) data until a full browser refresh. Non-fatal: a refresh failure must not fail the sync.
-    await reloadEpgSources().catch(() => {});
+    // instance) data until a full browser refresh. Also re-pull the global CHANNELS union so the synced
+    // channels land on the Channels/Mapping screens + the EPG detail's linked-channel list (the screen
+    // callers refresh the PLAYLISTS store for counts/status). Non-fatal: a refresh must not fail the sync.
+    await Promise.all([reloadEpgSources().catch(() => {}), reloadChannels().catch(() => {})]);
     return { total: targets.length, failed };
   } finally {
     syncingGlobal.value = false;

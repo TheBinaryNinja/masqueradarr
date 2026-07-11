@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
 import Icon from '../components/Icon.vue';
 import Btn from '../components/Btn.vue';
@@ -7,7 +7,7 @@ import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
 import SearchInput from '../components/SearchInput.vue';
 import EpgSyncModal from '../components/EpgSyncModal.vue';
-import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources } from '../data';
+import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources, reloadEpgSources } from '../data';
 import { useToast } from '../composables/useToast';
 import { useEpgActions } from '../composables/useEpgActions';
 
@@ -15,6 +15,11 @@ const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
 const toast = useToast();
 const { syncingAllEpg, syncAllEpg } = useEpgActions();
+
+// The list renders straight off the shared EPG_SOURCES store (no local copy), so a scheduled sync or an
+// edit made elsewhere only surfaces if we re-pull on entry. Refetch on mount — the screen mounts fresh on
+// every nav-in (no <keep-alive>), matching the Playlists screen so moving between them always shows truth.
+onMounted(() => { void reloadEpgSources(); });
 
 // ── Sync all ───────────────────────────────────────────────────────────────
 // Open the progress modal, which kicks this thunk: a linear (one-at-a-time) sync of every non-playlist-bound

@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { ref, computed, inject, watch, watchEffect, onMounted, onBeforeUnmount } from 'vue';
-import { useRouter } from 'vue-router';
+import { ref, computed, inject, watch, watchEffect, nextTick, onMounted, onBeforeUnmount } from 'vue';
+import { useRouter, useRoute } from 'vue-router';
 import Icon from '../components/Icon.vue';
 import Btn from '../components/Btn.vue';
 import Pill from '../components/Pill.vue';
@@ -16,13 +16,14 @@ import ProgressBar from '../components/ProgressBar.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import GroupConfigModal from '../components/GroupConfigModal.vue';
-import { GROUPS, CUSTOM_PLAYLISTS, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, disbandFailoverGroup, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
+import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, renameGroup as apiRenameGroup, deleteGroup as apiDeleteGroup, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
 import { bus } from '../composables/bus';
 
 const { banner } = useToast();
 const router = useRouter();
+const route = useRoute();
 const { syncingGlobal, composingGlobal, globalSyncProgress, globalComposeProgress, syncAllGlobal, composeAllGlobal } = usePlaylistActions();
 
 const props = defineProps<{ id: string }>();
@@ -32,8 +33,11 @@ const PLACEHOLDER: Playlist = {
   id: '', name: '…', url: '', channels: 0, groups: 0,
   lastSync: '', status: 'good', auto: false, interval: '',
 };
-const playlistRef = ref<Playlist>(PLACEHOLDER);
-const playlist = computed(() => playlistRef.value);
+// The header row is derived from the shared PLAYLISTS store — the SAME source of truth the list, Dashboard,
+// nav count, and Users copyable URLs read — so an edit (this screen or the status drawer), a scheduled sync,
+// or a domain change surfaces here without a full page reload. The channel LIST below stays a local fetch
+// (per-playlist detail, not held in the shared store). reload() refreshes both.
+const playlist = computed<Playlist>(() => PLAYLISTS.value.find((p) => p.id === props.id) ?? PLACEHOLDER);
 
 // Live human-readable schedule labels, derived from the playlist's two cron jobs (never the stored
 // interval): targetType 'playlist' = Sync schedule, 'playlist-m3u' = Compose-m3u schedule. Each reads
@@ -139,15 +143,13 @@ const channels = ref<Channel[]>([]);
 // channel list is displayed it should start on Active).
 watch(() => props.id, () => { stateFilter.value = 'Active'; });
 
-watchEffect(async () => {
-  const id = props.id;
-  if (!id) return;
-  const [pRes, cRes] = await Promise.all([
-    fetch(`/api/playlists/${encodeURIComponent(id)}`),
-    fetch(`/api/playlists/${encodeURIComponent(id)}/channels`),
-  ]);
-  if (pRes.ok) playlistRef.value = await pRes.json();
-  if (cRes.ok) channels.value = await cRes.json();
+// Nav-in load: refresh the shared playlist store (fresh header row) + THIS playlist's channel list. Re-runs
+// whenever the route id changes (tracked via props.id here); reload() writes only the store + channels, so it
+// never re-triggers this effect.
+watchEffect(() => {
+  if (!props.id) return;
+  void reload();
+  void reloadGroups(props.id).catch(() => {});
 });
 const customAction = ref<null | 'create' | 'append'>(null);
 const customPlaylists = ref<CustomPlaylist[]>([]);
@@ -156,17 +158,12 @@ const bulkOpen = ref(false);
 const statusOpen = ref(false);
 const lastSelectedId = ref<string | null>(null);
 
-// Merge a persisted playlist edit (from the status drawer's PUT) into the local view.
-function onPlaylistUpdated(patch: Partial<Playlist>) {
-  playlistRef.value = { ...playlistRef.value, ...patch };
-}
-
-// A dulo sign-in/out on Settings flips this playlist's isAuthenticated server-side — re-read the row so
-// the header auth badge updates without a manual refresh.
+// A dulo sign-in/out on Settings flips this playlist's isAuthenticated server-side — re-pull the shared
+// store so the header auth badge (derived from it) updates without a manual refresh. (A drawer edit is
+// handled by the drawer's own save() → reloadPlaylists, so this screen needs no @updated listener.)
 async function onAuthChanged() {
   if (!props.id) return;
-  const res = await fetch(`/api/playlists/${encodeURIComponent(props.id)}`);
-  if (res.ok) playlistRef.value = await res.json();
+  await reloadPlaylists();
 }
 // A parent's EPG edit in the App-level ChannelDrawer cascaded to its children server-side — merge the
 // returned children into this screen's LOCAL list so the group stays coherent without a refetch.
@@ -175,14 +172,64 @@ function onFailoverCascade(p: { source: string; children: Channel[] }) {
   const byId = new Map(p.children.map((k) => [k.id, k]));
   channels.value = channels.value.map((c) => byId.get(c.id) ?? c);
 }
+// A single channel was hard-deleted in the App-level ChannelDrawer's Remove — drop it from the LOCAL list.
+function onChannelsDeleted(p: { source: string; ids: string[] }) {
+  if (p.source !== props.id || !p.ids.length) return;
+  const dead = new Set(p.ids);
+  channels.value = channels.value.filter((c) => !dead.has(c.id));
+  if (selected.value.size) {
+    const n = new Set(selected.value);
+    for (const id of p.ids) n.delete(id);
+    selected.value = n;
+  }
+}
 onMounted(() => {
   bus.on('tvapp:auth-changed', onAuthChanged);
   bus.on('tvapp:failover-cascade', onFailoverCascade);
+  bus.on('tvapp:channels-deleted', onChannelsDeleted);
 });
 onBeforeUnmount(() => {
   bus.off('tvapp:auth-changed', onAuthChanged);
   bus.off('tvapp:failover-cascade', onFailoverCascade);
+  bus.off('tvapp:channels-deleted', onChannelsDeleted);
+  if (flashTimer) clearTimeout(flashTimer);
 });
+
+// ── Deep-link focus: global search lands here with ?focus=<channelId>. Scroll the row into view + flash it.
+// The row that carries the transient .flash highlight (a dedicated ref, NOT the `selected` set, so focusing
+// never arms the bulk toolbar).
+const focusId = ref<string | null>(null);
+let flashTimer: number | null = null;
+
+function focusChannel(id: string) {
+  const ch = channels.value.find((c) => c.id === id);
+  if (!ch) return;
+  // Relax the filters so the target actually renders — the list defaults to Active, and a group/search filter
+  // could otherwise hide it (filteredView filters on stateFilter + group + search).
+  group.value = 'all';
+  search.value = '';
+  stateFilter.value = ch.status as 'Active' | 'Disabled';
+  void nextTick(() => {
+    const el = document.querySelector(`[data-channel-id="${id}"]`);
+    el?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    focusId.value = id;
+    if (flashTimer) clearTimeout(flashTimer);
+    flashTimer = window.setTimeout(() => { focusId.value = null; }, 2200);
+  });
+}
+
+// Fire once the channels have loaded (the watch tracks both the query and the local list), then clear the
+// query so a refresh / back-nav doesn't re-trigger the flash.
+watch(
+  [() => route.query.focus, channels],
+  ([f]) => {
+    const id = typeof f === 'string' ? f : Array.isArray(f) ? f[0] : null;
+    if (!id || !channels.value.some((c) => c.id === id)) return;
+    focusChannel(id);
+    void router.replace({ query: {} });
+  },
+  { immediate: true },
+);
 
 // ── Failover group modal + tree ───────────────────────────────────────────
 const groupOpen = ref(false);
@@ -338,26 +385,47 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   selected.value = new Set();
 }
 
-// Delete a group across the WHOLE playlist: clear the group on every channel currently in it (the channels
-// stay, only their group is removed). Persisted per-channel, then updated locally. Spans channels beyond
-// the current selection, which is why the drawer delegates it here.
-async function deleteGroup(g: string) {
-  const targets = channels.value.filter((c) => c.group === g);
-  const n = targets.length;
-  if (!n) { bulkOpen.value = false; return; }
-  await Promise.all(
-    targets.map((c) =>
-      fetch(`/api/playlists/${encodeURIComponent(c.source)}/channels/${encodeURIComponent(c.id)}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ group: null }),
-      }).catch(() => undefined),
-    ),
-  );
-  channels.value = channels.value.map((c) => (c.group === g ? { ...c, group: null } : c));
-  // If the group filter was pinned to the now-deleted group, reset it so the list isn't filtered to nothing.
-  if (group.value === g) group.value = 'all';
-  banner({ text: `Deleted group "${g}" from ${n} channel${n === 1 ? '' : 's'}`, tone: 'good', icon: 'trash' });
+// Delete a group across the WHOLE playlist (bulk-editor "Manage groups"). One backend route clears the group
+// on every member channel (group → null) and drops the registry entry; here we patch the LOCAL channel list
+// to match (the data-layer wrapper already patched the global CHANNELS union + the registry store). The
+// channels stay — only their group assignment is cleared. Spans channels beyond the current selection.
+async function onDeleteGroup(name: string) {
+  const n = channels.value.filter((c) => c.group === name).length;
+  try {
+    await apiDeleteGroup(props.id, name);
+    channels.value = channels.value.map((c) => (c.group === name ? { ...c, group: null } : c));
+    if (group.value === name) group.value = 'all';
+    banner({ text: `Deleted group "${name}"${n ? ` from ${n} channel${n === 1 ? '' : 's'}` : ''}`, tone: 'good', icon: 'trash' });
+  } catch (e) {
+    banner({ text: `Delete group failed: ${(e as Error).message}`, tone: 'bad', icon: 'warn' });
+  }
+}
+
+// Rename a group across the WHOLE playlist (bulk-editor "Manage groups"). The backend relabels every member
+// channel; patch the LOCAL list to match (the wrapper handled CHANNELS + the registry store).
+async function onRenameGroup({ oldName, newName }: { oldName: string; newName: string }) {
+  try {
+    await apiRenameGroup(props.id, oldName, newName);
+    channels.value = channels.value.map((c) => (c.group === oldName ? { ...c, group: newName } : c));
+    if (group.value === oldName) group.value = newName;
+    banner({ text: `Renamed group "${oldName}" → "${newName}"`, tone: 'good', icon: 'edit' });
+  } catch (e) {
+    banner({ text: `Rename failed: ${(e as Error).message}`, tone: 'bad', icon: 'warn' });
+  }
+}
+
+// Hard-delete the selected channels (bulk-editor "Delete N channels"). Tombstoned server-side so a re-sync
+// won't re-add them; patch the LOCAL list, clear the selection, close the drawer.
+async function onDeleteChannels(ids: string[]) {
+  if (!ids.length) { bulkOpen.value = false; return; }
+  try {
+    await apiDeleteChannels(props.id, ids);
+    const dead = new Set(ids);
+    channels.value = channels.value.filter((c) => !dead.has(c.id));
+    banner({ text: `Deleted ${ids.length} channel${ids.length === 1 ? '' : 's'}`, tone: 'good', icon: 'trash' });
+  } catch (e) {
+    banner({ text: `Delete failed: ${(e as Error).message}`, tone: 'bad', icon: 'warn' });
+  }
   bulkOpen.value = false;
   selected.value = new Set();
 }
@@ -369,11 +437,12 @@ const syncing = ref(false);
 const playlistSource = computed(() => playlist.value.source ?? null);
 
 async function reload() {
-  const [pRes, cRes] = await Promise.all([
-    fetch(`/api/playlists/${encodeURIComponent(props.id)}`),
+  // Header row via the shared store (reloadPlaylists → /api/playlists); the channel list is this playlist's
+  // own fetch (not held in the shared store). Run both together.
+  const [, cRes] = await Promise.all([
+    reloadPlaylists(),
     fetch(`/api/playlists/${encodeURIComponent(props.id)}/channels`),
   ]);
-  if (pRes.ok) playlistRef.value = await pRes.json();
   if (cRes.ok) channels.value = await cRes.json();
 }
 // Returns { failed } (the playlist name when the sync errored) so the sync-mode PlaylistOpModal can settle
@@ -597,11 +666,13 @@ const activeCount = computed(() => channels.value.filter((c) => c.status === 'Ac
 const disabledCount = computed(() => channels.value.filter((c) => c.status === 'Disabled').length);
 const totalCount = computed(() => channels.value.length);
 
-// Group filter options derive from the loaded channels (source playlists use the source's own group
-// taxonomy, e.g. dulo categories), falling back to the canonical GROUPS when none are loaded.
+// Group filter options — the first-class group registry (GROUPS_BY_PLAYLIST) unioned with any group name
+// present on a loaded channel (a belt-and-suspenders safety net for a channel whose group predates a registry
+// reconcile). Empty groups (zero channels) DO appear here, which is the point of the registry.
 const groupOptions = computed(() => {
-  const s = new Set(channels.value.map((c) => c.group).filter(Boolean));
-  return s.size ? [...s].sort() : GROUPS;
+  const s = new Set<string>((GROUPS_BY_PLAYLIST.value[props.id] ?? []).map((g) => g.name));
+  for (const c of channels.value) if (c.group) s.add(c.group);
+  return [...s].sort();
 });
 
 function toggleSel(id: string) {
@@ -777,7 +848,7 @@ async function doAppend() {
           <Btn v-if="!isClone" variant="primary" size="sm" icon="plus" @click="openCreate">Create</Btn>
           <Btn v-if="!isClone" variant="ghost" size="sm" icon="playlist" @click="openAppend">Append</Btn>
           <span class="tbar-sep" aria-hidden="true" />
-          <Btn variant="ghost" size="sm" icon="trash">Delete</Btn>
+          <Btn variant="ghost" size="sm" icon="edit" title="Bulk edit, manage groups, delete" @click="bulkOpen = true">Edit</Btn>
           <Btn variant="ghost" size="sm" @click="selected = new Set()">Clear</Btn>
         </template>
         <template v-else>
@@ -811,7 +882,7 @@ async function doAppend() {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="c in filtered" :key="c.id" :class="{ selected: selected.has(c.id), 'ch-child-row': filteredView.nestedIds.has(c.id) }" @click="onRowClick(c, $event)">
+          <tr v-for="c in filtered" :key="c.id" :data-channel-id="c.id" :class="{ selected: selected.has(c.id), 'ch-child-row': filteredView.nestedIds.has(c.id), flash: focusId === c.id }" @click="onRowClick(c, $event)">
             <td @click.stop>
               <Checkbox :on="selected.has(c.id)" @change="toggleSel(c.id)" />
             </td>
@@ -880,7 +951,7 @@ async function doAppend() {
       </table>
 
       <div v-else-if="view === 'grid' && filtered.length" class="ch-grid">
-        <div v-for="c in filtered" :key="c.id" :class="['ch-card', { selected: selected.has(c.id), 'ch-card-child': filteredView.nestedIds.has(c.id), 'ch-card-parent': filteredView.childCounts.has(c.id) }]" @click="onRowClick(c, $event)">
+        <div v-for="c in filtered" :key="c.id" :data-channel-id="c.id" :class="['ch-card', { selected: selected.has(c.id), 'ch-card-child': filteredView.nestedIds.has(c.id), 'ch-card-parent': filteredView.childCounts.has(c.id), flash: focusId === c.id }]" @click="onRowClick(c, $event)">
           <div class="cbx-pos">
             <Checkbox :on="selected.has(c.id)" @change="toggleSel(c.id)" />
           </div>
@@ -1077,17 +1148,18 @@ async function doAppend() {
     <ChannelBulkDrawer
       v-if="bulkOpen"
       :channels="selectedChannels"
-      :groups="groupOptions"
+      :playlist-id="props.id"
       @close="bulkOpen = false"
       @apply="applyBulk"
-      @delete-group="deleteGroup"
+      @delete-channels="onDeleteChannels"
+      @rename-group="onRenameGroup"
+      @delete-group="onDeleteGroup"
     />
 
     <PlaylistStatusDrawer
       v-if="statusOpen"
       :playlist="playlist"
       :channels="channels"
-      @updated="onPlaylistUpdated"
       @close="statusOpen = false"
     />
 
@@ -1187,3 +1259,18 @@ async function doAppend() {
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Transient highlight when a global-search result deep-links to a channel row/card (pulse, then cleared). */
+.flash {
+  animation: mq-row-flash 2.2s ease-out;
+}
+.ch-card.flash {
+  box-shadow: inset 0 0 0 2px var(--accent-hi);
+}
+@keyframes mq-row-flash {
+  0%, 25% { background: var(--accent-soft); }
+  100% { background: transparent; }
+}
+</style>
+

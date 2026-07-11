@@ -7,6 +7,7 @@ import { publicDir, composeDir } from './paths.js';
 import { connect, disconnect } from './db.js';
 import { healthRouter } from './routes/health.js';
 import { playlistsRouter } from './routes/playlists.js';
+import { searchRouter } from './routes/search.js';
 import { epgSourcesRouter } from './routes/epgSources.js';
 import { channelsRouter } from './routes/channels.js';
 import { activeStreamsRouter } from './routes/activeStreams.js';
@@ -173,13 +174,15 @@ async function main() {
     '/api/system',
     '/api/probe',
     '/api/proxy-configs', // durable video-engine knobs — headerOverrides can hold an upstream secret, so ALL methods are admin-only
-    '/api/sources'
+    '/api/sources',
+    '/api/search' // global cross-resource search (topbar) — whole feature is admin-only
   ];
   for (const routePath of adminOnlyRoutes) {
     app.use(routePath, requireAdmin);
   }
 
   app.use('/api/playlists', playlistsRouter);
+  app.use('/api/search', searchRouter);
   app.use('/api/epg-sources', epgSourcesRouter);
   app.use('/api/channels', channelsRouter);
   app.use('/api/active-streams', activeStreamsRouter);

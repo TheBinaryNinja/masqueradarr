@@ -13,6 +13,8 @@ import { composeM3u } from '../../../m3u/compose.js';
 import { logoColorFor, initialsFor } from '../../toPlaylistChannel.js';
 import { logger } from '../../core/logger.js';
 import { reconcileFailoverGroups } from '../../../services/failover.js';
+import { tombstonedIds } from '../../../services/tombstones.js';
+import { reconcileGroupRegistry } from '../../../services/groups.js';
 import { fetchDiscover, fetchLineup, type HdhrLineupEntry } from './lineup.js';
 
 export const HDHR_SOURCE = 'hdhomerun'; // Playlist.source TYPE TAG (channels keyed by the playlist id, like 'clone'/'import')
@@ -54,12 +56,16 @@ function toHdhrChannel(e: HdhrLineupEntry, importId: string): PlaylistChannelDoc
 // fields ($setOnInsert) are written once and PRESERVED across re-syncs. Then PRUNE channels that vanished
 // from the lineup (a survivor keeps its edits; a removed channel is dropped) — mirrors syncLive's prune.
 async function upsertHdhrChannels(entries: HdhrLineupEntry[], importId: string): Promise<void> {
+  // Tombstone gate: never re-insert an operator-deleted channel; its id still joins `seen` so the prune
+  // below ($nin [...seen]) treats it as accounted-for.
+  const dead = await tombstonedIds(importId);
   const seen = new Set<string>();
   const ops: unknown[] = [];
   for (const e of entries) {
     const pc = toHdhrChannel(e, importId);
     if (seen.has(pc._id)) continue;
     seen.add(pc._id);
+    if (dead.has(pc._id)) continue;
     ops.push({
       updateOne: {
         filter: { _id: pc._id },
@@ -127,14 +133,14 @@ export async function syncHdhrPlaylist(id: string): Promise<{ channels: number; 
   const channels = (await PlaylistChannel.find({ source: id }, { group: 1 }).lean()) as Array<{
     group: string | null;
   }>;
-  const groups = new Set(channels.map((c) => c.group).filter((g): g is string => g != null)).size;
+  // Union-only registry reconcile owns Playlist.groups (preserves operator-created empty groups).
+  const groups = (await reconcileGroupRegistry(id)).length;
   await Playlist.updateOne(
     { id },
     {
       $set: {
         deviceTunerCount: disc.tunerCount,
         deviceName: disc.friendlyName,
-        groups,
         lastSync: new Date().toISOString(),
       },
     },
