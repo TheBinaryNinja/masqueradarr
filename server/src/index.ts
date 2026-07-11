@@ -7,6 +7,7 @@ import { publicDir, composeDir } from './paths.js';
 import { connect, disconnect } from './db.js';
 import { healthRouter } from './routes/health.js';
 import { playlistsRouter } from './routes/playlists.js';
+import { searchRouter } from './routes/search.js';
 import { epgSourcesRouter } from './routes/epgSources.js';
 import { channelsRouter } from './routes/channels.js';
 import { activeStreamsRouter } from './routes/activeStreams.js';
@@ -37,6 +38,7 @@ import { systemStatsRouter } from './routes/systemStats.js';
 import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
+import { applyDlhdPlayerFromSettings } from './settings/applyDlhdPlayer.js';
 import { logger } from './sources/core/logger.js';
 import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
@@ -90,6 +92,14 @@ async function main() {
     await applyDnsFromSettings('mongo');
   } catch (err) {
     logger.error('startup', `dns settings apply error (continuing): ${(err as Error).message}`);
+  }
+
+  // Seed the dlhd resolver's cached source-wide default player from the persisted settings, so a value set
+  // before a restart is honored without waiting for the next Settings save. Non-fatal (defaults to Auto).
+  try {
+    await applyDlhdPlayerFromSettings('mongo');
+  } catch (err) {
+    logger.error('startup', `dlhd player default apply error (continuing): ${(err as Error).message}`);
   }
 
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler
@@ -173,13 +183,15 @@ async function main() {
     '/api/system',
     '/api/probe',
     '/api/proxy-configs', // durable video-engine knobs — headerOverrides can hold an upstream secret, so ALL methods are admin-only
-    '/api/sources'
+    '/api/sources',
+    '/api/search' // global cross-resource search (topbar) — whole feature is admin-only
   ];
   for (const routePath of adminOnlyRoutes) {
     app.use(routePath, requireAdmin);
   }
 
   app.use('/api/playlists', playlistsRouter);
+  app.use('/api/search', searchRouter);
   app.use('/api/epg-sources', epgSourcesRouter);
   app.use('/api/channels', channelsRouter);
   app.use('/api/active-streams', activeStreamsRouter);

@@ -8,6 +8,7 @@ import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 import { normalizeEndpointPath, isReservedEndpointPath, CUSTOM_PLAYLIST_TYPES } from '../m3u/paths.js';
 import { logger } from '../sources/core/logger.js';
 import { reconcileFailoverGroups } from '../services/failover.js';
+import { reconcileGroupRegistry } from '../services/groups.js';
 import { syncHdhrPlaylist, HDHR_SOURCE } from '../sources/adapters/hdhomerun/import.js';
 import { syncLocalPlaylist, LOCAL_SOURCE } from '../sources/adapters/local/import.js';
 import { syncUrlPlaylist } from './import.js';
@@ -182,6 +183,8 @@ customPlaylistsRouter.post('/', async (req, res, next) => {
       isAuthenticated: false,
       lastSync: now,
     });
+    // Build the first-class group registry from the copied channels' groups.
+    await reconcileGroupRegistry(id);
 
     // Auto-grant the new clone to every admin (Custom endpoint → allowedCustomPlaylists). Best-effort —
     // non-fatal; admins still pass the role bypass in the meantime. (compose already treats admin as
@@ -230,9 +233,10 @@ customPlaylistsRouter.put('/:id', async (req, res, next) => {
     const channels = (await PlaylistChannel.find({ source: clone.id }, { group: 1 }).lean()) as Array<{
       group: string | null;
     }>;
-    clone.groups = groupCount(channels);
     clone.lastSync = new Date().toISOString();
     await clone.save();
+    // Union-only registry reconcile owns Playlist.groups (preserves operator-created empty groups).
+    await reconcileGroupRegistry(clone.id);
 
     await composeM3u(clone.id).catch((err) =>
       logger.warn('m3u', `compose after clone update failed: ${(err as Error).message}`),
@@ -289,9 +293,15 @@ export async function cascadeDeleteCustomPlaylist(id: string, url: string): Prom
   await EpgSource.deleteOne({ id });
   await EpgChannel.deleteMany({ source: id });
   await Program.deleteMany({ source: id });
-  const jobId = cronjobId('playlist', id);
-  removeCronjob(jobId);
-  await Cronjob.deleteOne({ _id: jobId });
+  // Drop BOTH scheduled jobs this playlist could own — the live-sync ('playlist') and the compose-m3u
+  // ('playlist-m3u', now schedulable for clones too). Leaving the compose job behind would orphan it: it would
+  // keep ticking composeM3u(id), which throws 'unknown_playlist' every fire. Mirrors the built-in delete
+  // cascade in routes/playlists.ts.
+  for (const targetType of ['playlist', 'playlist-m3u'] as const) {
+    const jobId = cronjobId(targetType, id);
+    removeCronjob(jobId);
+    await Cronjob.deleteOne({ _id: jobId });
+  }
   await ProxyConfig.deleteOne({ _id: `app_${id}` }); // its Custom proxy override (if any) — keyed by the clone/playlist id (=== ?pl)
   await pruneCustomFile(url).catch((err) =>
     logger.warn('m3u', `prune after playlist delete failed: ${(err as Error).message}`),

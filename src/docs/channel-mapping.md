@@ -27,6 +27,8 @@ names and identifiers; they're suggestions, not automatic links — you confirm 
   shows program data in the published guide and its **Unmatched** count on the Dashboard drops.
 - **Many-to-one linking** — several playlist channels can point at the same EPG channel (useful when
   the same network appears in multiple playlists).
+- **Failover backups inherit** — if a channel has failover backups, map only the **parent**; its backup
+  children automatically carry the parent's guide identity, so there's no need to map each one.
 - **Source filters / search / A–Z bars** — purely to help you find the right pair faster; they don't
   change any data.
 

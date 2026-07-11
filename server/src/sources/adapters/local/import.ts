@@ -13,6 +13,8 @@ import { composeM3u } from '../../../m3u/compose.js';
 import { logoColorFor, initialsFor } from '../../toPlaylistChannel.js';
 import { logger } from '../../core/logger.js';
 import { reconcileFailoverGroups } from '../../../services/failover.js';
+import { tombstonedIds } from '../../../services/tombstones.js';
+import { reconcileGroupRegistry } from '../../../services/groups.js';
 import { resolveProgramOffset } from '../../../settings/programOffset.js';
 import { writeLocalEpg, upsertLocalEpgSource } from '../../../epg/local.js';
 import { fetchMarket, selectChannels, type LocalRawChannel } from './api.js';
@@ -70,12 +72,16 @@ function toLocalChannel(ch: LocalRawChannel, id: string, playlistId: string): Pl
 // routing/display fields go in $set (refreshed each sync); user-editable fields ($setOnInsert) are written
 // once and PRESERVED across re-syncs. Then PRUNE channels that vanished from the market (survivors keep edits).
 async function upsertLocalChannels(selected: Array<{ ch: LocalRawChannel; id: string }>, playlistId: string): Promise<void> {
+  // Tombstone gate: never re-insert an operator-deleted channel; its id still joins `seen` so the prune
+  // below ($nin [...seen]) treats it as accounted-for.
+  const dead = await tombstonedIds(playlistId);
   const seen = new Set<string>();
   const ops: unknown[] = [];
   for (const { ch, id } of selected) {
     const pc = toLocalChannel(ch, id, playlistId);
     if (seen.has(pc._id)) continue;
     seen.add(pc._id);
+    if (dead.has(pc._id)) continue;
     ops.push({
       updateOne: {
         filter: { _id: pc._id },
@@ -153,8 +159,9 @@ export async function syncLocalPlaylist(id: string): Promise<{ channels: number;
   const linked = ops.length ? (await PlaylistChannel.bulkWrite(ops, { ordered: false })).modifiedCount ?? 0 : 0;
 
   const channels = (await PlaylistChannel.find({ source: id }, { group: 1 }).lean()) as Array<{ group: string | null }>;
-  const groups = new Set(channels.map((c) => c.group).filter((g): g is string => g != null)).size;
-  await Playlist.updateOne({ id }, { $set: { groups, lastSync: new Date().toISOString() } });
+  await Playlist.updateOne({ id }, { $set: { lastSync: new Date().toISOString() } });
+  // Union-only registry reconcile owns Playlist.groups (preserves operator-created empty groups).
+  const groups = (await reconcileGroupRegistry(id)).length;
 
   await composeM3u(id).catch((err) => logger.warn('m3u', `compose after local sync failed: ${(err as Error).message}`));
   logger.info(

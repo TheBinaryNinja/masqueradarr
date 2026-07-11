@@ -6,10 +6,12 @@ import Pill from './Pill.vue';
 import StatusDot from './StatusDot.vue';
 import ChannelLogo from './ChannelLogo.vue';
 import Segmented from './Segmented.vue';
-import HlsPlayer from './HlsPlayer.vue';
+import ChannelPlayer from './ChannelPlayer.vue';
 import LivelineChart from './LivelineChart.vue';
+import GroupPicker from './GroupPicker.vue';
+import GroupManager from './GroupManager.vue';
 import { useStreamStats } from '../composables/useStreamStats';
-import { ACTIVE_STREAMS, CHANNELS, GROUPS, PLAYLISTS, appPlayerProxyPath, type Channel, type StreamProbe } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, type Channel, type StreamProbe } from '../data';
 import { bus } from '../composables/bus';
 
 const props = defineProps<{ ch: Channel }>();
@@ -27,10 +29,16 @@ const channelNo = ref(props.ch.channelNo ?? '');
 const group = ref(props.ch.group ?? '');
 const tvgId = ref(props.ch.tvg_id ?? '');
 const streamUrl = ref(props.ch.streamEntryUrl ?? '');
+// DaddyLive-family sources (dlhd/dami) expose several interchangeable upstream "players" per channel; the
+// picker below lets the operator prefer one for THIS channel (0 = Auto → inherit the source-wide default).
+const player = ref(props.ch.playerPref ?? 0);
 
 // A failover CHILD mirrors its parent's EPG identity (the server rejects direct EPG edits on it with
 // 409 failover_child_epg_locked), so the TVG-ID field is locked with an "inherited" hint.
 const isFailoverChild = computed(() => props.ch.failoverRole === 'child');
+// Only DaddyLive-family channels carry selectable players — route on the proxy source (origin ?? source),
+// the same key the stream URL is built from, so a clone copy is judged by its real provider.
+const supportsPlayer = computed(() => ['dlhd', 'dami'].includes(props.ch.origin ?? props.ch.source));
 
 // Persist an edit to this channel via PUT /api/playlists/<source>/channels/<id>, then reflect it locally
 // so the open lists update. (Channels are keyed by deterministic id; source === the (Default) playlist id.)
@@ -81,8 +89,29 @@ function save() {
     patch.epg = null;
     patch.epgState = 'unmatched';
   }
+  // DaddyLive player override (playerSelectable sources only). 0 = Auto → send null to clear it (inherit the
+  // source-wide default). Compared against the stored pref so an unchanged Auto never sends a needless patch.
+  if (supportsPlayer.value && (player.value || null) !== (props.ch.playerPref ?? null)) {
+    patch.playerPref = player.value || null;
+  }
   if (Object.keys(patch).length) putChannel(patch);
   emit('close');
+}
+
+// Hard-delete this single channel (two-step confirm). Tombstoned server-side (survives re-sync); the bus
+// event lets an open PlaylistDetailScreen drop the row from its LOCAL list without a refetch. Mirrors the
+// bulk editor's "Delete N channels" for single-channel parity.
+const confirmRemove = ref(false);
+async function removeChannel() {
+  const { source, id } = props.ch;
+  if (!source) return;
+  try {
+    await deleteChannels(source, [id]);
+    bus.emit('tvapp:channels-deleted', { source, ids: [id] });
+    emit('close');
+  } catch {
+    confirmRemove.value = false;
+  }
 }
 
 // Live HLS resolution → persist stream.res when it actually changes (drawer open).
@@ -162,6 +191,8 @@ watch(
     group.value = props.ch.group ?? '';
     tvgId.value = props.ch.tvg_id ?? '';
     streamUrl.value = props.ch.streamEntryUrl ?? '';
+    player.value = props.ch.playerPref ?? 0;
+    confirmRemove.value = false;
   },
 );
 
@@ -193,7 +224,7 @@ onBeforeUnmount(() => {
         <!-- Source-playlist channels stream live through the proxy; legacy mock channels keep the
              non-functional placeholder. -->
         <div class="player chd-player" v-if="ch.streamEntryUrl" style="overflow: hidden;">
-          <HlsPlayer :src="appPlayerProxyPath(ch)" @resolution="onResolution" />
+          <ChannelPlayer :src="appPlayerProxyPath(ch)" @resolution="onResolution" />
         </div>
         <div class="player chd-player" v-else>
           <div class="stripes" />
@@ -297,20 +328,52 @@ onBeforeUnmount(() => {
           </div>
           <div class="form-row">
             <div class="field-lbl">Group</div>
-            <div class="select">
-              <select v-model="group">
-                <option v-if="group && !GROUPS.includes(group)" :value="group">{{ group }}</option>
-                <option v-for="g in GROUPS" :key="g" :value="g">{{ g }}</option>
-              </select>
-            </div>
+            <GroupPicker v-model="group" :playlist-id="ch.source" allow-create />
           </div>
         </div>
 
+        <!-- DaddyLive-family only: pick which upstream player this channel prefers (redundant feeds of the
+             same stream). Auto follows the source-wide default; a specific player still falls back on failure. -->
+        <div v-if="supportsPlayer" class="form-row">
+          <div class="field-lbl">Player source</div>
+          <div class="select fill">
+            <select v-model.number="player">
+              <option :value="0">Auto — use the default, fall back if it’s down</option>
+              <option :value="1">Player 1</option>
+              <option :value="2">Player 2</option>
+              <option :value="3">Player 3</option>
+              <option :value="4">Player 4</option>
+              <option :value="5">Player 5</option>
+              <option :value="6">Player 6</option>
+            </select>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Which DaddyLive player to prefer for this channel; it falls back to the others if that one is down.
+            “Auto” follows the source default (Settings → DaddyLive Player Source).
+          </div>
+        </div>
+
+        <div class="divider" />
+
+        <!-- Whole-playlist group management (rename / delete / add-empty) — shared with the bulk editor. -->
+        <GroupManager :playlist-id="ch.source" />
+
         <div class="row" style="margin-top: 6px;">
-          <Btn variant="ghost" icon="trash"><span style="color: var(--bad);">Remove</span></Btn>
-          <span class="spacer" />
-          <Btn variant="ghost" @click="emit('close')">Cancel</Btn>
-          <Btn variant="primary" icon="check" @click="save">Save changes</Btn>
+          <template v-if="confirmRemove">
+            <Icon name="warn" :size="15" style="color: var(--bad);" />
+            <span style="font-size: var(--fs-sm); font-weight: 600;">Delete this channel?</span>
+            <span class="spacer" />
+            <Btn variant="ghost" size="sm" @click="confirmRemove = false">Cancel</Btn>
+            <button class="btn ghost danger" @click="removeChannel">
+              <Icon name="trash" :size="14" />Delete
+            </button>
+          </template>
+          <template v-else>
+            <Btn variant="ghost" icon="trash" @click="confirmRemove = true"><span style="color: var(--bad);">Remove</span></Btn>
+            <span class="spacer" />
+            <Btn variant="ghost" @click="emit('close')">Cancel</Btn>
+            <Btn variant="primary" icon="check" @click="save">Save changes</Btn>
+          </template>
         </div>
       </div>
     </div>

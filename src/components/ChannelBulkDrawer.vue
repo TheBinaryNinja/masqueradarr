@@ -4,29 +4,32 @@ import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import Segmented from './Segmented.vue';
+import GroupPicker from './GroupPicker.vue';
+import GroupManager from './GroupManager.vue';
 import { type Channel } from '../data';
 
 const props = defineProps<{
   channels: Channel[]; // the SELECTED channels being bulk-edited
-  groups: string[]; // every group present across the whole playlist (the delete/assign source of truth)
+  playlistId: string; // owning playlist id — the group-registry key
 }>();
 const emit = defineEmits<{
   (e: 'close'): void;
   // status/group/clearEpg apply to the SELECTED channels; clearEpg unlinks the 2-factor EPG link.
-  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean }): void;
-  // Delete a group across the WHOLE playlist (clears the group on every channel that has it). Handled by
-  // the parent because it spans channels beyond the current selection.
-  (e: 'deleteGroup', group: string): void;
+  // playerPref sets the DaddyLive player override (null = clear → inherit the source default).
+  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null }): void;
+  // Hard-delete the selected channels (tombstoned server-side; the parent patches its local list).
+  (e: 'deleteChannels', ids: string[]): void;
 }>();
 
 const statusVal = ref<string>('');
+// The group to assign to the SELECTION ('' = leave unchanged). A first-class group, chosen/created via the
+// shared GroupPicker (same registry the single-channel editor uses).
 const groupVal = ref<string>('');
-// New-group entry: a free-text name. When non-empty it takes precedence over the existing-group dropdown.
-const newGroup = ref<string>('');
-// Clear-EPG toggle: unlink the selected channels' EPG match (tvg_id/epg → null, epgState → unmatched).
 const clearEpg = ref(false);
-// Delete-group confirmation state.
-const confirmGroup = ref<string>('');
+// DaddyLive-family (dlhd/dami) player override for the selection. '' = leave unchanged; 0 = Auto (clear the
+// override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
+const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd', 'dami'].includes(c.origin ?? c.source)));
+const playerVal = ref<number | ''>('');
 
 const statusMixed = computed(() => new Set(props.channels.map((c) => c.status)).size > 1);
 const groupMixed = computed(() => new Set(props.channels.map((c) => c.group)).size > 1);
@@ -36,28 +39,32 @@ const commonGroup = computed(() => (groupMixed.value ? '' : (props.channels[0]?.
 // How many selected channels currently carry an EPG link (the clear-EPG target count).
 const linkedCount = computed(() => props.channels.filter((c) => c.epg != null || c.tvg_id != null).length);
 
-// The effective group to assign: a typed new group wins over the dropdown selection.
-const effectiveGroup = computed(() => newGroup.value.trim() || groupVal.value);
+const unchangedLabel = computed(() =>
+  groupMixed.value
+    ? 'Leave unchanged (mixed)'
+    : `Leave unchanged${commonGroup.value ? ` (${commonGroup.value})` : ''}`,
+);
 
 function setStatus(v: string) {
   statusVal.value = v;
 }
 
 function apply() {
-  const payload: { status?: string; group?: string; clearEpg?: boolean } = {};
+  const payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null } = {};
   if (statusVal.value && statusVal.value !== commonStatus.value) payload.status = statusVal.value;
-  const g = effectiveGroup.value;
-  if (g && g !== commonGroup.value) payload.group = g;
+  if (groupVal.value && groupVal.value !== commonGroup.value) payload.group = groupVal.value;
   if (clearEpg.value) payload.clearEpg = true;
+  // 0 = Auto → clear the override (null); a specific 1..6 is sent verbatim. '' leaves it untouched.
+  if (playerVal.value !== '') payload.playerPref = playerVal.value === 0 ? null : playerVal.value;
   emit('apply', payload);
   emit('close');
 }
 
-function deleteGroup() {
-  if (!confirmGroup.value) return;
-  emit('deleteGroup', confirmGroup.value);
-  confirmGroup.value = '';
-  emit('close');
+// ── Delete channels (destructive, two-step confirm) ──
+const confirmDeleteChannels = ref(false);
+function doDeleteChannels() {
+  confirmDeleteChannels.value = false;
+  emit('deleteChannels', props.channels.map((c) => c.id));
 }
 </script>
 
@@ -117,26 +124,38 @@ function deleteGroup() {
           </div>
         </div>
 
+        <!-- Assign the selection to a group. The picker reads the SAME registry the Manage panel edits and the
+             single-channel editor uses, so the taxonomy is one shared, persisted set. -->
         <div class="form-row">
           <div class="field-lbl">
             Group
             <span v-if="groupMixed" class="muted" style="font-size: var(--fs-xs); margin-left: 6px;">· mixed — leave unchanged</span>
           </div>
-          <div class="select">
-            <select v-model="groupVal" :disabled="!!newGroup.trim()">
-              <option value="">{{ groupMixed ? 'Leave unchanged (mixed)' : `Leave unchanged (${commonGroup})` }}</option>
-              <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
+          <GroupPicker v-model="groupVal" :playlist-id="playlistId" allow-create allow-unchanged :unchanged-label="unchangedLabel" />
+          <div v-if="groupVal" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            The selected channels will be assigned to
+            <b style="color: var(--accent-hi);">{{ groupVal }}</b>.
+          </div>
+        </div>
+
+        <!-- DaddyLive-family only: bulk-set the preferred upstream player for the selected channels. -->
+        <div v-if="supportsPlayer" class="form-row">
+          <div class="field-lbl">Player source</div>
+          <div class="select fill">
+            <select v-model.number="playerVal">
+              <option value="">Leave unchanged</option>
+              <option :value="0">Auto (inherit source default)</option>
+              <option :value="1">Player 1</option>
+              <option :value="2">Player 2</option>
+              <option :value="3">Player 3</option>
+              <option :value="4">Player 4</option>
+              <option :value="5">Player 5</option>
+              <option :value="6">Player 6</option>
             </select>
           </div>
-          <!-- Add a brand-new group: typing here assigns the selected channels to a group that need not
-               already exist. A non-empty value takes precedence over the dropdown above. -->
-          <div class="input" style="margin-top: 8px;">
-            <Icon name="plus" :size="14" />
-            <input v-model="newGroup" placeholder="…or type a new group name" />
-          </div>
-          <div v-if="newGroup.trim()" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            Selected channels will be moved to the new group
-            <b style="color: var(--accent-hi);">{{ newGroup.trim() }}</b>.
+          <div v-if="playerVal !== ''" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            The selected DaddyLive channels will prefer
+            <b style="color: var(--accent-hi);">{{ playerVal === 0 ? 'Auto (source default)' : `Player ${playerVal}` }}</b>.
           </div>
         </div>
 
@@ -169,37 +188,39 @@ function deleteGroup() {
 
         <div class="divider" />
 
-        <!-- Delete a group across the WHOLE playlist (not just the selection). Two-step: pick a group, then
-             confirm in the caution panel below. -->
-        <div class="form-row">
-          <div class="field-lbl" style="color: var(--bad);">Delete a group</div>
-          <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 8px;">
-            Removes the group from <b>every</b> channel in this playlist (the channels are kept, only their
-            group is cleared). This cannot be undone.
-          </div>
-          <div class="select">
-            <select v-model="confirmGroup">
-              <option value="">Choose a group to delete…</option>
-              <option v-for="g in groups" :key="g" :value="g">{{ g }}</option>
-            </select>
-          </div>
-        </div>
+        <!-- Manage the playlist's groups (immediate, whole-playlist) — shared with the single-channel editor. -->
+        <GroupManager :playlist-id="playlistId" />
 
-        <div v-if="confirmGroup" style="border: 1px solid var(--bad); border-radius: 10px; padding: 12px 14px; background: var(--accent-soft); margin-top: 8px;">
-          <div class="row" style="gap: 8px; margin-bottom: 8px;">
-            <span style="color: var(--bad);"><Icon name="warn" :size="15" /></span>
-            <span style="font-weight: 600; font-size: var(--fs-sm);">Delete group "{{ confirmGroup }}"?</span>
-          </div>
-          <div class="muted" style="font-size: var(--fs-xs); line-height: 1.5;">
-            This clears the group on every channel currently in <b>{{ confirmGroup }}</b> across the whole
-            playlist. The channels remain; only their group assignment is removed.
-          </div>
-          <div class="row" style="gap: 8px; margin-top: 10px;">
-            <span class="spacer" />
-            <Btn variant="ghost" size="sm" @click="confirmGroup = ''">Cancel</Btn>
-            <button class="btn ghost danger" @click="deleteGroup">
-              <Icon name="trash" :size="14" />Delete group
+        <div class="divider" />
+
+        <!-- Delete the SELECTED channels (destructive, tombstoned so a re-sync won't re-add them). -->
+        <div class="form-row">
+          <div class="field-lbl" style="color: var(--bad);">Delete channels</div>
+          <div v-if="!confirmDeleteChannels" class="row">
+            <div class="muted" style="font-size: var(--fs-xs); flex: 1;">
+              Permanently removes the {{ channels.length }} selected channel{{ channels.length === 1 ? '' : 's' }}.
+              A later source sync will not re-add them.
+            </div>
+            <button class="btn ghost danger" @click="confirmDeleteChannels = true">
+              <Icon name="trash" :size="14" />Delete {{ channels.length }}
             </button>
+          </div>
+          <div v-else style="border: 1px solid var(--bad); border-radius: 10px; padding: 12px 14px; background: var(--accent-soft);">
+            <div class="row" style="gap: 8px; margin-bottom: 8px;">
+              <span style="color: var(--bad);"><Icon name="warn" :size="15" /></span>
+              <span style="font-weight: 600; font-size: var(--fs-sm);">Delete {{ channels.length }} channel{{ channels.length === 1 ? '' : 's' }}?</span>
+            </div>
+            <div class="muted" style="font-size: var(--fs-xs); line-height: 1.5;">
+              This cannot be undone. The channels are removed and tombstoned so a re-sync will not restore them
+              (use Restore Defaults to bring them back).
+            </div>
+            <div class="row" style="gap: 8px; margin-top: 10px;">
+              <span class="spacer" />
+              <Btn variant="ghost" size="sm" @click="confirmDeleteChannels = false">Cancel</Btn>
+              <button class="btn ghost danger" @click="doDeleteChannels">
+                <Icon name="trash" :size="14" />Delete channels
+              </button>
+            </div>
           </div>
         </div>
       </div>

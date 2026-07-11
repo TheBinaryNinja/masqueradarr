@@ -7,7 +7,15 @@
 // first observed value for a job is *seeded* (not toasted) so executions that happened before the page
 // loaded never produce a stale toast. Wired in App.vue (start onMounted / stop onBeforeUnmount).
 
-import { CRON_JOBS, EPG_SOURCES, reloadCronjobs, type CronJob } from '../data';
+import {
+  CRON_JOBS,
+  EPG_SOURCES,
+  reloadCronjobs,
+  reloadEpgSources,
+  reloadPlaylists,
+  reloadChannels,
+  type CronJob,
+} from '../data';
 import { pushToast } from './useToast';
 
 const POLL_MS = 15000;
@@ -30,7 +38,15 @@ function labelFor(j: CronJob): string {
 
 // Diff the current jobs against `seen`. `emit=false` only seeds (used for whatever is already loaded /
 // the first poll) so historical runs don't toast; `emit=true` raises a toast on every advance after that.
+//
+// A scheduled run writes fresh state straight to Mongo with NO client push, so on a real (emit=true) advance
+// we ALSO re-surface the matching shared store — otherwise the open EPG Sources / Playlists screen (and the
+// Dashboard/nav counts derived from the same stores) show stale data until a full page reload. Deduped so
+// several jobs of one kind advancing in a single poll trigger just one refetch. This covers SCHEDULED runs
+// only; a manual sync refreshes via its own action handler (usePlaylistActions/useEpgActions).
 function reconcile(jobs: CronJob[], emit: boolean): void {
+  let refetchEpg = false;
+  let refetchPlaylists = false;
   for (const j of jobs) {
     if (!j.lastRun) continue;
     const key = jobKey(j);
@@ -42,6 +58,9 @@ function reconcile(jobs: CronJob[], emit: boolean): void {
     if (prev === j.lastRun) continue; // no new execution
     seen.set(key, j.lastRun);
     if (!emit) continue;
+    // Flag the store this run touched (success OR failure — a failed sync still flips status/failCount).
+    if (j.targetType === 'epg-source') refetchEpg = true;
+    else if (j.targetType === 'playlist' || j.targetType === 'playlist-m3u') refetchPlaylists = true;
     const ok = j.lastStatus === 'success';
     pushToast({
       position: 'lower-right',
@@ -49,6 +68,13 @@ function reconcile(jobs: CronJob[], emit: boolean): void {
       title: ok ? 'Scheduled sync complete' : 'Scheduled sync failed',
       text: ok ? labelFor(j) : `${labelFor(j)} · ${j.lastError ?? 'error'}`,
     });
+  }
+  // Fire once per kind after the diff. Only when a job actually advanced (not on the 15s idle poll), so the
+  // per-playlist channel-union rebuild in reloadChannels runs at most once per completed sync. Non-fatal.
+  if (refetchEpg) reloadEpgSources().catch(() => {});
+  if (refetchPlaylists) {
+    reloadPlaylists().catch(() => {});
+    reloadChannels().catch(() => {});
   }
 }
 

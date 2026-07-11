@@ -12,6 +12,7 @@ import dashboardUser from './dashboard-user.md?raw';
 import activeStreams from './active-streams.md?raw';
 import historyMetrics from './history-metrics.md?raw';
 import playlists from './playlists.md?raw';
+import channelsGroups from './channels-groups.md?raw';
 import epgSources from './epg-sources.md?raw';
 import channelMapping from './channel-mapping.md?raw';
 import users from './users.md?raw';
@@ -44,6 +45,7 @@ export const DOC_SECTIONS: DocSection[] = [
   { id: 'active-streams', title: 'Active Streams', group: 'Screens', routeNames: ['active'], role: 'admin', body: activeStreams },
   { id: 'history-metrics', title: 'History / Metrics', group: 'Screens', routeNames: ['history'], role: 'admin', body: historyMetrics },
   { id: 'playlists', title: 'Playlists', group: 'Screens', routeNames: ['playlists', 'playlist'], role: 'admin', body: playlists },
+  { id: 'channels-groups', title: 'Channels, Groups & Failover', group: 'Screens', role: 'admin', body: channelsGroups },
   { id: 'epg-sources', title: 'EPG Sources', group: 'Screens', routeNames: ['epg-sources', 'epg-detail'], role: 'admin', body: epgSources },
   { id: 'channel-mapping', title: 'Channel Mapping', group: 'Screens', routeNames: ['mapping'], role: 'admin', body: channelMapping },
   { id: 'users', title: 'Users', group: 'Screens', routeNames: ['users'], role: 'admin', body: users },

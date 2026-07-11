@@ -24,10 +24,16 @@ have been synced. The Activity panel is **real-time telemetry**: sessions appear
 starts pulling a stream and clear when it stops. An empty Activity panel simply means nobody is
 watching at this moment.
 
+> **Tip:** Screens keep themselves current — data reloads when you navigate to a screen and again when a
+> scheduled sync advances — so the numbers stay fresh without a manual refresh.
+
 ## Key controls and where they lead
 
 - **Add playlist** (top-right of the header on this screen) — opens the Add Playlist flow. New sources
   show up immediately in the Playlists panel and on the **Playlists** screen.
+- **Global search** (top bar) — as an admin you have a search box in the top bar that spans playlists,
+  channels, and EPG sources. Pick a result to jump straight to it; choosing a channel scrolls to and
+  briefly highlights its row on the playlist detail screen.
 - **View all / Add** buttons on the Playlists and EPG panels — jump to the full **Playlists** or
   **EPG Sources** screens, where the real management happens.
 - Clicking a playlist or EPG source row opens its detail screen.

@@ -11,11 +11,11 @@ import { Cronjob, cronjobId } from '../models/Cronjob.js';
 import { removeCronjob } from '../scheduler/index.js';
 import { AuthRequest, requireAdmin } from '../middleware/auth.js';
 import { composeM3u, composeGlobal, pruneCustomFile, reconcilePlaylistExport, recomposeAllExports } from '../m3u/compose.js';
-import { groupCount } from './customPlaylists.js';
 import { normalizeEndpointPath, isReservedEndpointPath, isCustomPlaylistType } from '../m3u/paths.js';
 import { cascadeDeleteCustomPlaylist } from './customPlaylists.js';
 import { cascadeDeleteEpgSource } from './epgSources.js';
 import { cascadeFailoverEpg, reconcileFailoverGroups, inheritedEpgState } from '../services/failover.js';
+import { reconcileGroupRegistry, groupsWithCounts } from '../services/groups.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { logger } from '../sources/core/logger.js';
 import { logMilestone, logTrace } from '../logs/tier.js';
@@ -364,13 +364,9 @@ async function cascadeDeleteBuiltinPlaylist(p: {
     await reconcileFailoverGroups(cloneId).catch((err: Error) =>
       logger.warn('m3u', `failover reconcile after clone prune (${cloneId}) failed: ${err.message}`),
     );
-    const remaining = (await PlaylistChannel.find({ source: cloneId }, { group: 1 }).lean()) as Array<{
-      group: string | null;
-    }>;
-    await Playlist.updateOne(
-      { id: cloneId },
-      { $set: { groups: groupCount(remaining), lastSync: new Date().toISOString() } },
-    );
+    await Playlist.updateOne({ id: cloneId }, { $set: { lastSync: new Date().toISOString() } });
+    // Union-only registry reconcile owns Playlist.groups (preserves operator-created empty groups).
+    await reconcileGroupRegistry(cloneId);
     await composeM3u(cloneId).catch((err) =>
       logger.warn('m3u', `compose after clone prune (${cloneId}) failed: ${(err as Error).message}`),
     );
@@ -580,6 +576,16 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
         $set[key] = body[key];
       }
     }
+    // playerPref: preferred upstream player for playerSelectable sources (dlhd/dami). A 1-based integer, or
+    // null to clear it (inherit the source-wide default). Numeric, so it can't ride the string loop above. An
+    // out-of-range pick is accepted but clamps to the lead player at resolve time (resolveStream.ts).
+    if (body.playerPref !== undefined) {
+      const v = body.playerPref;
+      if (v !== null && (typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v > 12)) {
+        return res.status(400).json({ error: 'playerPref (integer 1..12 | null) required' });
+      }
+      $set.playerPref = v;
+    }
     // Live stream.* fields persisted by the channel drawer while open: realtime phase, resolution, playability.
     if (body.stream !== undefined) {
       if (typeof body.stream !== 'object' || body.stream === null) {
@@ -611,7 +617,7 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
     if (!Object.keys($set).length) {
       return res.status(400).json({
         error:
-          'no editable fields provided (status, tvg_name, group, channelNo, streamEntryUrl, tvg_id, epg, epgState, stream.*)',
+          'no editable fields provided (status, tvg_name, group, channelNo, streamEntryUrl, tvg_id, epg, epgState, playerPref, stream.*)',
       });
     }
     // Failover-group EPG authority: a CHILD mirrors its parent's EPG identity (services/failover.ts), so
@@ -670,6 +676,141 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
       return res.json({ ...doc, _cascadedChildren: children });
     }
     res.json(doc);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/playlists/:id/channels/delete — hard-delete the given channels AND tombstone their ids so a later
+// source sync (which re-inserts every still-upstream channel via $setOnInsert) never resurrects them
+// (services/tombstones.ts consults Playlist.deletedChannelIds). The tombstone set is cleared only by Restore
+// Defaults (resetSource). Deleting a failover parent / last child disbands the degenerate group
+// (reconcileFailoverGroups); survivors keep their inherited EPG. Recomposes the exports (best-effort).
+// Body { ids: string[] }. requireAdmin (the router is not admin-gated at the mount).
+playlistsRouter.post('/:id/channels/delete', requireAdmin, async (req, res, next) => {
+  try {
+    const source = String(req.params.id);
+    const ids: unknown = req.body?.ids;
+    if (!Array.isArray(ids) || ids.length < 1 || ids.some((c) => typeof c !== 'string' || !c)) {
+      return res.status(400).json({ error: 'ids (non-empty string[]) required' });
+    }
+    const strIds = ids as string[];
+    const r = await PlaylistChannel.deleteMany({ source, _id: { $in: strIds } });
+    // Tombstone every requested id (even ones that matched nothing this call — a future re-sync must still
+    // never re-add them). $addToSet de-dupes against prior deletions.
+    await Playlist.updateOne({ id: source }, { $addToSet: { deletedChannelIds: { $each: strIds } } });
+    // Deleting a parent or the last child leaves a degenerate failover group — auto-disband (survivors keep
+    // inherited EPG). Non-fatal, mirrors the prune reconcile.
+    await reconcileFailoverGroups(source).catch((err: Error) =>
+      logger.warn('failover', `[${source}] reconcile after channel delete failed (continuing): ${err.message}`),
+    );
+    // The group registry is union-only, so deleting channels never removes a group name (empty groups persist
+    // as first-class). This only refreshes the derived Playlist.groups count.
+    await reconcileGroupRegistry(source).catch((err) =>
+      logger.warn('playlists', `[${source}] group reconcile after channel delete failed: ${(err as Error).message}`),
+    );
+    composeM3u(source).catch((err) =>
+      logger.warn('m3u', `compose after channel delete (${source}) failed: ${(err as Error).message}`),
+    );
+    logMilestone('playlists', `deleted ${r.deletedCount ?? 0} channel(s) on ${source}`);
+    res.json({ deleted: r.deletedCount ?? 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Channel groups — the first-class, persisted group registry (Playlist.groupDefs, services/groups.ts). A
+// group is a NAME + UI `order` that can exist with ZERO channels; channel MEMBERSHIP is the free-text
+// PlaylistChannel.group string. These routes are the managed CRUD the SPA's shared GroupPicker + bulk
+// "Manage groups" panel drive. Admin-gated inline (the router isn't admin-gated at the mount). Rename/delete
+// rewrite channel group labels → recompose; creating an EMPTY group has no export impact → no recompose.
+// Compose sorts groups ALPHABETICALLY (m3u/compose.ts), so `order` is a UI ordinal only.
+// ---------------------------------------------------------------------------------------------------------
+
+// GET /api/playlists/:id/groups — the registry with a live per-group channel count (empty groups report 0).
+// Reconciles on read, which self-heals a legacy playlist whose registry predates this feature.
+playlistsRouter.get('/:id/groups', requireAdmin, async (req, res, next) => {
+  try {
+    res.json(await groupsWithCounts(String(req.params.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// POST /api/playlists/:id/groups — create an EMPTY group (no channel assigned). Dedupes case-insensitively
+// against the registry. No recompose (an empty group changes no export). Body { name }.
+playlistsRouter.post('/:id/groups', requireAdmin, async (req, res, next) => {
+  try {
+    const source = String(req.params.id);
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!name) return res.status(400).json({ error: 'name (non-empty string) required' });
+    const pl = (await Playlist.findOne({ id: source }, { groupDefs: 1, _id: 0 }).lean()) as
+      | { groupDefs?: Array<{ name: string; order: number }> }
+      | null;
+    if (!pl) return res.status(404).json({ error: 'not_found' });
+    const defs = pl.groupDefs ?? [];
+    if (defs.some((g) => g.name.toLowerCase() === name.toLowerCase())) {
+      return res.status(409).json({ error: 'group_exists' });
+    }
+    const order = defs.reduce((m, g) => Math.max(m, g.order ?? 0), -1) + 1;
+    await Playlist.updateOne(
+      { id: source },
+      { $push: { groupDefs: { name, order } }, $set: { groups: defs.length + 1 } },
+    );
+    res.status(201).json(await groupsWithCounts(source));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// PUT /api/playlists/:id/groups/:name — rename a group: relabel every member channel (group old → new) and
+// rewrite the registry entry in place (keeping its order, so oldName does NOT linger as an empty group).
+// Rejects a collision with an existing name. Recomposes (EXTINF group-title changed). Body { name: newName }.
+playlistsRouter.put('/:id/groups/:name', requireAdmin, async (req, res, next) => {
+  try {
+    const source = String(req.params.id);
+    const oldName = String(req.params.name);
+    const newName = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!newName) return res.status(400).json({ error: 'name (non-empty string) required' });
+    const pl = (await Playlist.findOne({ id: source }, { groupDefs: 1, _id: 0 }).lean()) as
+      | { groupDefs?: Array<{ name: string; order: number }> }
+      | null;
+    if (!pl) return res.status(404).json({ error: 'not_found' });
+    const defs = pl.groupDefs ?? [];
+    if (
+      newName.toLowerCase() !== oldName.toLowerCase() &&
+      defs.some((g) => g.name.toLowerCase() === newName.toLowerCase())
+    ) {
+      return res.status(409).json({ error: 'group_exists' });
+    }
+    await PlaylistChannel.updateMany({ source, group: oldName }, { $set: { group: newName } });
+    const renamed = defs.map((g) => (g.name === oldName ? { name: newName, order: g.order } : g));
+    await Playlist.updateOne({ id: source }, { $set: { groupDefs: renamed } });
+    await reconcileGroupRegistry(source);
+    composeM3u(source).catch((err) =>
+      logger.warn('m3u', `compose after group rename (${source}) failed: ${(err as Error).message}`),
+    );
+    res.json(await groupsWithCounts(source));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// DELETE /api/playlists/:id/groups/:name — remove a group: clear it on every member channel (group → null;
+// the channels stay) and drop the registry entry. The ONLY path that removes a name (sync reconcile never
+// does). Recomposes.
+playlistsRouter.delete('/:id/groups/:name', requireAdmin, async (req, res, next) => {
+  try {
+    const source = String(req.params.id);
+    const name = String(req.params.name);
+    await PlaylistChannel.updateMany({ source, group: name }, { $set: { group: null } });
+    await Playlist.updateOne({ id: source }, { $pull: { groupDefs: { name } } });
+    await reconcileGroupRegistry(source);
+    composeM3u(source).catch((err) =>
+      logger.warn('m3u', `compose after group delete (${source}) failed: ${(err as Error).message}`),
+    );
+    res.json(await groupsWithCounts(source));
   } catch (err) {
     next(err);
   }

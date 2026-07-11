@@ -9,7 +9,7 @@ import AssignAccessModal from '../components/AssignAccessModal.vue';
 import GetAccessModal from '../components/GetAccessModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
-import { reloadEpgSources, type Playlist, type Channel } from '../data';
+import { PLAYLISTS, reloadEpgSources, reloadPlaylists, type Playlist, type Channel } from '../data';
 import { bus } from '../composables/bus';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions } from '../composables/usePlaylistActions';
@@ -20,17 +20,16 @@ const router = useRouter();
 const { banner } = useToast();
 const { syncingGlobal, composingGlobal, syncAllGlobal, composeAllGlobal } = usePlaylistActions();
 
-const playlists = ref<Playlist[]>([]);
-async function reloadList(): Promise<void> {
-  const res = await fetch('/api/playlists');
-  if (res.ok) playlists.value = await res.json();
-}
+// The list renders straight off the shared PLAYLISTS store — the single source of truth the Dashboard, nav
+// count, and Users copyable URLs also read — so a sync/edit here or a scheduled sync elsewhere stays
+// coherent everywhere with no local copy to drift. reloadPlaylists() re-pulls /api/playlists into the store.
+const playlists = computed(() => PLAYLISTS.value);
 onMounted(() => {
-  void reloadList();
+  void reloadPlaylists();
   // A sign-in/out on Settings flips a playlist's isAuthenticated — re-read so the badge updates live.
-  bus.on('tvapp:auth-changed', reloadList);
+  bus.on('tvapp:auth-changed', reloadPlaylists);
 });
-onBeforeUnmount(() => bus.off('tvapp:auth-changed', reloadList));
+onBeforeUnmount(() => bus.off('tvapp:auth-changed', reloadPlaylists));
 
 // Per-row actions mirror the detail header (Sync / Compose / Edit). In-flight state is tracked per
 // playlist id (Sets) so one row's request never disables or spins the others.
@@ -54,9 +53,9 @@ async function syncRow(p: Playlist): Promise<OpRunResult> {
         : await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const result = await res.json();
-    // Reload the local playlist list AND the shared EPG store — a source sync's afterSync hook can
+    // Reload the shared playlist store AND the shared EPG store — a source sync's afterSync hook can
     // create/refresh EPG sources (dlhd/tubi self-EPG), which otherwise stay invisible until a page refresh.
-    await Promise.all([reloadList(), reloadEpgSources().catch(() => {})]);
+    await Promise.all([reloadPlaylists(), reloadEpgSources().catch(() => {})]);
     // The custom-playlists sync returns { channels }; the source sync returns { count } — read either.
     const cnt = result.count ?? result.channels ?? '';
     banner({ text: `Synced ${cnt} channels${result.live === false ? ' (snapshot)' : ''}`.trim(), tone: 'good', icon: 'sync' });
@@ -133,7 +132,7 @@ const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
 async function onSyncGlobal(): Promise<OpRunResult> {
   if (syncingGlobal.value) return { failed: [] };
   const { total, failed } = await syncAllGlobal();
-  await reloadList();
+  await reloadPlaylists();
   if (failed.length) banner({ text: `Synced ${total - failed.length}/${total} global playlists · failed: ${failed.join(', ')}`, tone: 'warn', icon: 'warn' });
   else banner({ text: `Synced ${total} global playlist${total === 1 ? '' : 's'}`, tone: 'good', icon: 'sync' });
   return { failed };
@@ -206,12 +205,11 @@ function rowMenuItems(p: Playlist): RowActionItem[] {
 const assignAccessPlaylist = ref<Playlist | null>(null);
 const getAccessPlaylist = ref<Playlist | null>(null);
 
-// Merge a persisted edit (drawer PUT) back into the matching list row — no full refetch needed.
+// Keep the drawer's own bound row in step with each optimistic edit; the list rows and every other screen
+// update via the shared PLAYLISTS store, which the drawer's save() re-pulls (canonical) after the PUT.
 function onPlaylistUpdated(patch: Partial<Playlist>): void {
-  const id = editPlaylist.value?.id;
-  if (!id) return;
-  playlists.value = playlists.value.map((p) => p.id === id ? { ...p, ...patch } : p);
-  editPlaylist.value = { ...editPlaylist.value!, ...patch };
+  if (!editPlaylist.value) return;
+  editPlaylist.value = { ...editPlaylist.value, ...patch };
 }
 </script>
 

@@ -55,6 +55,28 @@ export const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
+// The "PLAYER 1..N" buttons on a channel's watch.php page are the SAME channel id served under several path
+// prefixes on the active mirror — observed live (dlhd): watch.php?id=N renders one <button data-url> per
+// player, in this DOM order: /stream/, /cast/, /watch/, /plus/, /casting/, /player/ (Player 1..6). Each such
+// page then embeds the usual single /premiumtv/daddy<n>.php player, so selecting a player is just swapping
+// the hop-1 path prefix. This is the LAST-KNOWN order used as a fallback; resolveStream.ts prefers the live
+// data-url list parsed from watch.php (self-healing if the site reorders/renames), and Player 1 (/stream/) is
+// byte-identical to the pre-feature single path. Index i (0-based) here == "Player i+1" in the UI.
+export const PLAYER_PREFIXES = ['stream', 'cast', 'watch', 'plus', 'casting', 'player'] as const;
+
+// The source-wide DEFAULT player (0 = Auto/first; 1..N = a specific player) for every dlhd/dami channel that
+// carries no per-channel override. Cached module-level (like _base) so the hot resolve path reads it with NO
+// DB hit; refreshed from the Settings singleton at boot + on every settings save (settings/applyDlhdPlayer.ts).
+let _playerDefault = 0;
+/** The source-wide default player index (0 = Auto). Read at resolve time by the resolve seam. */
+export function getPlayerDefault(): number {
+  return _playerDefault;
+}
+/** Set the source-wide default player (called from the settings cascade). Coerces to a non-negative int. */
+export function setPlayerDefault(n: number): void {
+  _playerDefault = Number.isInteger(n) && n > 0 ? n : 0;
+}
+
 // SSRF allowlist for the stream proxy: registrable domains we permit fetching as upstream stream hosts.
 // Seeded with the currently-known rotating dlhd domains; override/extend with env
 // DLHD_UPSTREAM_ALLOW="a.top,b.shop". The mirror's own host is always allowed (added below + on every

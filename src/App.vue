@@ -12,6 +12,9 @@ import AddSourceModal from './components/AddSourceModal.vue';
 import AddEpgSourceModal from './components/AddEpgSourceModal.vue';
 import LogsDrawer from './components/LogsDrawer.vue';
 import DocsDrawer from './components/DocsDrawer.vue';
+import SearchInput from './components/SearchInput.vue';
+import SearchResults from './components/SearchResults.vue';
+import { runSearch, type SearchResponse, type SearchRow } from './composables/useSearch';
 import ToastBanner from './components/ToastBanner.vue';
 import ToastUpperRight from './components/ToastUpperRight.vue';
 import ToastLowerRight from './components/ToastLowerRight.vue';
@@ -45,7 +48,57 @@ function onScreenScroll() {
 watch(() => route.fullPath, () => {
   if (screenEl.value) screenEl.value.scrollTop = 0;
   stuck.value = false;
+  closeSearch();
 });
+
+// ── Global search (topbar, admin-only) ──────────────────────────────────
+// Debounced 1.5s by SearchInput; the results dropdown deep-links to the matched resource on click. A channel
+// / EPG-channel result carries a `?focus=<id>` so the detail screen scrolls to + flashes the row.
+const searchQ = ref('');
+const searchResults = ref<SearchResponse | null>(null);
+const searchOpen = ref(false);
+const searching = ref(false);
+let searchSeq = 0;
+
+async function onSearch(v: string) {
+  searchQ.value = v;
+  const q = v.trim();
+  if (q.length < 2) {
+    searchResults.value = null;
+    searchOpen.value = false;
+    searching.value = false;
+    return;
+  }
+  const seq = ++searchSeq;
+  searching.value = true;
+  searchOpen.value = true;
+  try {
+    const r = await runSearch(q);
+    if (seq === searchSeq) searchResults.value = r; // ignore a stale response beaten by a newer query
+  } catch {
+    if (seq === searchSeq) searchResults.value = { groups: [], topLevel: { playlists: [], epgSources: [] } };
+  } finally {
+    if (seq === searchSeq) searching.value = false;
+  }
+}
+
+function closeSearch() {
+  searchOpen.value = false;
+}
+
+function onSearchSelect(row: SearchRow) {
+  if (row.type === 'playlist') router.push(`/playlists/${encodeURIComponent(row.id)}`);
+  else if (row.type === 'epg-source') router.push(`/epg-sources/${encodeURIComponent(row.id)}`);
+  else if (row.type === 'channel' && row.playlistId)
+    router.push({ path: `/playlists/${encodeURIComponent(row.playlistId)}`, query: { focus: row.id } });
+  else if (row.type === 'epg-channel' && row.epgSourceId)
+    router.push(`/epg-sources/${encodeURIComponent(row.epgSourceId)}`);
+  // Clear the box + close the panel (the SearchInput adopts the reset `value` via its watch).
+  searchQ.value = '';
+  searchResults.value = null;
+  searchOpen.value = false;
+  channel.value = null;
+}
 
 // Cross-screen UI state
 const channel = ref<Channel | null>(null);
@@ -280,6 +333,12 @@ onBeforeUnmount(() => {
           </span>
           <span class="topbar-spacer" />
         </template>
+        <div v-if="currentUser?.role === 'admin'" class="topbar-search">
+          <SearchInput :value="searchQ" :debounce="1500" width="100%"
+                       placeholder="Search everything…" @change="onSearch" />
+          <SearchResults v-if="searchOpen" :results="searchResults" :loading="searching"
+                         :query="searchQ" @select="onSearchSelect" @close="closeSearch" />
+        </div>
         <Btn variant="ghost" size="sm" icon="book" title="Documentation"
              @click="docsSection = undefined; docsOpen = true">Docs</Btn>
         <button class="theme-toggle"
@@ -329,3 +388,18 @@ onBeforeUnmount(() => {
     </TweaksPanel>
   </div>
 </template>
+
+<style scoped>
+/* Absolutely centers the search box in the topbar (dead-center on every screen, independent of the
+   title/crumb on the left and the Docs/theme/Add cluster on the right). Also anchors the
+   absolute-positioned SearchResults dropdown directly under the box. */
+.topbar-search {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(480px, 90vw);  /* the shared width: the input fills it, the results panel stretches to it */
+  display: flex;
+  align-items: center;
+  z-index: 1;               /* keep the centered box above the flex siblings if they ever meet */
+}
+</style>

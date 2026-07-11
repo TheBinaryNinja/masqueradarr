@@ -26,6 +26,13 @@ import { Schema, model } from 'mongoose';
 //                    screens. The license key is a SECRET: never returned by the API (the GET /api/settings
 //                    read is public) — translate.ts redacts it to a `maxmindLicenseKeySet` boolean.
 //   - user         — placeholder for per-user settings (populated later; stored as an opaque object).
+//   - videoPlayer  — which in-app player the channel slide-out renders: 'inapp' (default) or 'debug' (a
+//                    diagnostic HUD with a live hls.js status readout + event log). Global operator toggle,
+//                    edited on the Settings screen; consumed only by the SPA.
+//   - dlhdPlayer   — source-wide DEFAULT upstream player for DaddyLive (dlhd/dami) channels that expose several
+//                    (0 = Auto/first; 1..N = a specific player). A per-channel override (PlaylistChannel.playerPref)
+//                    wins over it. Cached into the dlhd resolver at boot + on every save (settings/applyDlhdPlayer.ts)
+//                    so the hot resolve path reads it with no DB hit.
 // (Per-source sync/auto-match is governed by the cronjobs scheduler, not by a global settings flag.)
 // These are APP settings (persisted in Mongo); they are distinct from infra config
 // (mongoUri/port/logLevel in config.json via MASQUERADARR_CONFIG — see config.ts). First-boot values are seeded
@@ -41,6 +48,8 @@ export interface SettingsDoc {
   timezone: string;
   offset: string; // DST-aware UTC offset ('±HHMM') derived from `timezone` on save; stamped onto programs + emitted in the guide
   darkMode: boolean;
+  videoPlayer: 'inapp' | 'debug'; // which in-app player the channel slide-out renders ('inapp' default; 'debug' = diagnostic HUD)
+  dlhdPlayer: number; // source-wide default DaddyLive player (0 = Auto/first; 1..N) for dlhd/dami channels without a per-channel override
   nameservers: string | null; // comma-separated outbound-fetch resolver IP(s); null/blank = OS resolver (DEFAULT_NAMESERVERS 8.8.8.8,8.8.4.4 seeds first boot)
   logLevel: number; // GLOBAL 1|2|3 log verbosity — app + Rust proxy engine (default 2; formerly dnsLogLevel)
   maxmindAccountId: string | null; // MaxMind GeoLite2 web-service account id (null = geo disabled)
@@ -59,6 +68,8 @@ const SettingsSchema = new Schema<SettingsDoc>(
     timezone: { type: String, required: true, default: 'America/New_York' },
     offset: { type: String, required: true, default: '+0000' },
     darkMode: { type: Boolean, required: true, default: true },
+    videoPlayer: { type: String, required: true, default: 'inapp' },
+    dlhdPlayer: { type: Number, required: true, default: 0 }, // 0 = Auto; 1..N = source-wide default DaddyLive player
     nameservers: { type: String, default: null },
     logLevel: { type: Number, required: true, default: 2 },
     maxmindAccountId: { type: String, default: null },

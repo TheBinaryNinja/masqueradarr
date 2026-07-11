@@ -7,7 +7,7 @@ import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
 import PlaylistRow from '../components/PlaylistRow.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
-import HlsPlayer from '../components/HlsPlayer.vue';
+import VidstackPlayer from '../components/VidstackPlayer.vue';
 import PublishedUrlGroups from '../components/PublishedUrlGroups.vue';
 import LivelineChart from '../components/LivelineChart.vue';
 import { PLAYLISTS, EPG_SOURCES, CHANNELS, ACTIVE_STREAMS, VIEW_SESSIONS, SYSTEM_STATS, epgMetaChips, formatSyncTime, reloadPlaylists, reloadViewSessions, appPlayerProxyPath, playlistScheduleLabel } from '../data';
@@ -590,7 +590,9 @@ onBeforeUnmount(() => {
       <div>
         <div v-if="selectedChannel" class="card flush" style="height: 100%; display: flex; flex-direction: column;">
           <div class="player chd-player" style="aspect-ratio: 16/9; background: #000; border-radius: 8px 8px 0 0; overflow: hidden; position: relative;">
-            <HlsPlayer :src="selectedChannelProxyPath" />
+            <!-- :key forces a clean unmount→remount per channel (fires player.destroy(), fresh gate generation) —
+                 parity with the keyed drawer path; avoids the un-keyed live src-swap that compounded stalls. -->
+            <VidstackPlayer :key="selectedChannelProxyPath" :src="selectedChannelProxyPath" />
           </div>
           <div style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
             <div style="display: flex; justify-content: space-between; align-items: center;">

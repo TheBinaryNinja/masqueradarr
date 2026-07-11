@@ -15,7 +15,7 @@ import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
 import {
   displayName, domain, epgPath,
-  timezone, darkMode,
+  timezone, darkMode, videoPlayer, dlhdPlayer,
   nameservers, logLevel,
   maxmindAccountId, maxmindLicenseKeySet,
   saveMaxmindLicenseKey, clearMaxmindLicenseKey,
@@ -413,6 +413,36 @@ async function fireReset() {
         v-model="nameservers"
         placeholder="e.g. 1.1.1.1, 8.8.8.8"
         mono />
+    </div>
+
+    <div class="card" v-if="activeTab === 'general'">
+      <h3 class="section-title">In-app Video Player</h3>
+      <SettingsRow label="Player"
+        hint="Which player the channel slide-out uses. “Debug” swaps in a diagnostic player with a live hls.js status readout + event log for troubleshooting playback.">
+        <template #right>
+          <Segmented :value="videoPlayer" @change="(v) => videoPlayer = v as any"
+            :options="[{ value: 'inapp', label: 'In-app video player' }, { value: 'debug', label: 'Debug video player' }]" />
+        </template>
+      </SettingsRow>
+    </div>
+
+    <div class="card" v-if="activeTab === 'general'">
+      <h3 class="section-title">DaddyLive Player Source</h3>
+      <SettingsRow label="Default player"
+        hint="DaddyLive (and Dami.TV) offer several interchangeable players per channel — redundant feeds of the same stream. This is the default for every such channel; “Auto” uses Player 1 and falls back to the others if it’s down. You can override it per channel in the channel editor.">
+        <template #right>
+          <Segmented :value="String(dlhdPlayer)" @change="(v) => dlhdPlayer = Number(v)"
+            :options="[
+              { value: '0', label: 'Auto' },
+              { value: '1', label: '1' },
+              { value: '2', label: '2' },
+              { value: '3', label: '3' },
+              { value: '4', label: '4' },
+              { value: '5', label: '5' },
+              { value: '6', label: '6' },
+            ]" />
+        </template>
+      </SettingsRow>
     </div>
 
     <div class="card" v-if="activeTab === 'advanced'">

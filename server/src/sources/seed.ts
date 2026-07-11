@@ -25,6 +25,8 @@ import { seedProxyConfig } from '../proxyconfig/seed.js';
 import { envDefaults } from '../settings/translate.js';
 import { toPlaylistChannelDoc } from './toPlaylistChannel.js';
 import { reconcileFailoverGroups } from '../services/failover.js';
+import { tombstonedIds } from '../services/tombstones.js';
+import { reconcileGroupRegistry } from '../services/groups.js';
 import type { SourceAdapter } from './types.js';
 
 // A (Default)/Global playlist is no longer "hosted" at a single canonical file — the m3u compose writes
@@ -240,7 +242,11 @@ async function upsertChannels(docs: SourceChannelDoc[]): Promise<void> {
 // edits go with it — the channel is gone); a full reset (Restore Defaults) rebuilds from scratch.
 async function upsertPlaylistChannels(docs: SourceChannelDoc[]): Promise<void> {
   if (!docs.length) return;
-  const ops = docs.map((d) => {
+  // Tombstone gate: a channel the operator hard-deleted (Playlist.deletedChannelIds) must NOT be re-inserted
+  // by this $setOnInsert upsert, even though it is still present in the live upstream listing. Its id stays
+  // in the prune's live set (see syncLive) so the prune never churns it. Cleared by resetSource.
+  const dead = await tombstonedIds(docs[0].source);
+  const ops = docs.filter((d) => !dead.has(d._id)).map((d) => {
     const pc = toPlaylistChannelDoc(d);
     // First-sync default disable (e.g. dlhd "18+"): flip the seeded status BEFORE it goes into
     // $setOnInsert. Re-syncs never re-evaluate this (status isn't in $set), so user Enable/Disable wins.
@@ -273,6 +279,8 @@ async function upsertPlaylistChannels(docs: SourceChannelDoc[]): Promise<void> {
             failoverGroupId: pc.failoverGroupId,
             failoverRole: pc.failoverRole,
             failoverOrder: pc.failoverOrder,
+            // Operator-owned player preference — written-once null, NEVER $set (survives re-sync), like failover.
+            playerPref: pc.playerPref,
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             // Written-once null; the live probe (set by the proxy sink) is preserved across re-syncs.
@@ -283,6 +291,7 @@ async function upsertPlaylistChannels(docs: SourceChannelDoc[]): Promise<void> {
       },
     };
   });
+  if (!ops.length) return;
   await bulkWriteChannels(PlaylistChannel, ops, 'playlistchannels', docs[0]?.source ?? 'unknown');
 }
 
@@ -406,6 +415,8 @@ export async function resetSource(
   if (!adapter) throw new Error(`unknown source: ${id}`);
   await SourceChannel.deleteMany({ source: id });
   await PlaylistChannel.deleteMany({ source: id });
+  // Restore Defaults is a clean slate — drop the tombstones so re-fetched channels are NOT suppressed.
+  await Playlist.updateOne({ id }, { $set: { deletedChannelIds: [] } });
   logger.info('seed', `[${id}] cleared channels — re-syncing from upstream`);
   return syncLive(id);
 }
@@ -447,6 +458,11 @@ export async function syncLive(
     lastSync: new Date().toISOString(),
     status: result.live ? 'good' : 'warn',
   });
+  // Reconcile the first-class group registry against the now-current channel set (union-only: preserves any
+  // operator-created empty groups, backfills newly-seen group names). Owns the authoritative Playlist.groups.
+  await reconcileGroupRegistry(id).catch((err) =>
+    logger.warn('seed', `[${id}] group registry reconcile failed (continuing): ${(err as Error).message}`),
+  );
 
   // Source-agnostic post-sync hook: a source that bundles more than streamable channels (tubi: its own
   // EPG + the self-link of its playlistchannels to that guide) does that work here, off the SAME listing
