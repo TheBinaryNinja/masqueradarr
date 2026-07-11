@@ -22,6 +22,7 @@ let ctx: CanvasRenderingContext2D | null = null;
 let remoteW = 1280;
 let remoteH = 800;
 let lastMove = 0;
+let closing = false; // set when WE tear down, so ws.onclose can tell an intentional close from a drop
 
 const tone = computed(() => {
   switch (state.value) {
@@ -147,9 +148,19 @@ onMounted(() => {
       message.value = 'could not reach the login service';
     }
   };
+  ws.onclose = () => {
+    // Before this handler, a mid-session drop left the last frame frozen on the canvas while the label
+    // still read "ready". Surface the disconnect instead — unless we tore down on purpose, or the capture
+    // already succeeded (the server closes the socket right after emitting `captured`).
+    if (closing || state.value === 'captured') return;
+    const wasConnecting = state.value === 'connecting';
+    state.value = 'error';
+    message.value = wasConnecting ? 'could not reach the login service' : 'connection lost — reopen to continue';
+  };
 });
 
 onBeforeUnmount(() => {
+  closing = true;
   try {
     send({ type: 'close' });
     ws?.close();

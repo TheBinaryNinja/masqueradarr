@@ -7,7 +7,7 @@
 // the server intercepts the session and stores only the tokens (never a password), refreshing them
 // automatically. A paste-the-session textarea remains as a no-stream fallback.
 
-import { ref, computed, onMounted } from 'vue';
+import { ref, computed, onMounted, onUnmounted } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Pill from './Pill.vue';
@@ -19,8 +19,11 @@ interface DuloStatus {
   signedIn: boolean;
   status: string;
   deviceActive: boolean;
+  deviceBound: boolean;
   deviceName: string | null;
   expiresAt: number | null;
+  sharedFamily: boolean;
+  refreshBackoffUntil: number | null;
   blockReason: string | null;
   lastError: string | null;
   updatedAt: string | null;
@@ -32,6 +35,22 @@ const busy = ref(false);
 const loginOpen = ref(false);
 const pasteOpen = ref(false);
 const pasteText = ref('');
+const now = ref(Date.now()); // ticks so the token countdown stays live without a refetch
+let poll: ReturnType<typeof setInterval> | null = null;
+
+// Browser-handoff pairing (the durable Google/social path).
+interface Pairing {
+  code: string;
+  expiresAt: number;
+  callbackUrl: string;
+  duloUrl: string;
+  bookmarklet: string;
+  snippet: string;
+}
+const pairing = ref<Pairing | null>(null);
+const pairFound = ref(false);
+const advancedOpen = ref(false);
+let pairPoll: ReturnType<typeof setInterval> | null = null;
 
 const tone = computed(() => {
   const s = status.value?.status;
@@ -53,11 +72,72 @@ const statusLabel = computed(() => {
 
 function fmtExpiry(ms: number | null): string {
   if (!ms) return '';
-  const diff = ms - Date.now();
-  if (diff <= 0) return 'token expired';
+  const diff = ms - now.value;
+  // The server refreshes lazily (within 60s of expiry, or on the next play), so an elapsed token is normal
+  // and auto-recovers — say "refreshing on next use" rather than alarming "expired".
+  if (diff <= 0) return 'refreshing on next use';
   const mins = Math.round(diff / 60000);
   if (mins < 60) return `token valid ~${mins}m`;
   return `token valid ~${Math.round(mins / 60)}h`;
+}
+
+// A recent transient refresh failure is backing off — a soft, self-healing state (not a hard re-auth).
+const refreshing = computed(() => {
+  const u = status.value?.refreshBackoffUntil;
+  return !!u && u > now.value;
+});
+// dulo is single-active-device: another device can evict our slot (device_mismatch). Offer a one-click
+// reclaim when we're signed in but no longer hold the device.
+const deviceNeedsReactivate = computed(() => !!status.value?.signedIn && !status.value?.deviceBound);
+
+const pairCountdown = computed(() => {
+  if (!pairing.value) return '';
+  const s = Math.max(0, Math.round((pairing.value.expiresAt - now.value) / 1000));
+  return `code expires in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+});
+
+// Mint a pairing code + bookmarklet, then poll fast until the user's browser hands the session back.
+async function startPairing() {
+  error.value = null;
+  pairFound.value = false;
+  advancedOpen.value = false;
+  try {
+    const res = await fetch('/api/sources/dulo/auth/pair', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    pairing.value = (await res.json()) as Pairing;
+  } catch (e) {
+    error.value = `Could not start pairing: ${(e as Error).message}`;
+    return;
+  }
+  if (pairPoll) clearInterval(pairPoll);
+  pairPoll = setInterval(async () => {
+    now.value = Date.now();
+    if (pairing.value && now.value > pairing.value.expiresAt) {
+      stopPairing();
+      error.value = 'Pairing code expired — click “Pair with my browser” for a fresh one.';
+      return;
+    }
+    await refresh();
+    if (status.value?.signedIn) {
+      pairFound.value = true;
+      bus.emit('tvapp:auth-changed', { source: 'dulo' });
+      setTimeout(stopPairing, 1400); // let the success state show, then collapse to Connected
+    }
+  }, 2500);
+}
+function stopPairing() {
+  if (pairPoll) {
+    clearInterval(pairPoll);
+    pairPoll = null;
+  }
+  pairing.value = null;
+}
+async function copyText(t: string) {
+  try {
+    await navigator.clipboard.writeText(t);
+  } catch {
+    /* clipboard blocked — the draggable link / visible snippet is the fallback */
+  }
 }
 
 async function refresh() {
@@ -118,11 +198,35 @@ function submitPaste() {
     error.value = 'No access_token found in the pasted session.';
     return;
   }
+  // Carry EVERYTHING the blob offers (previously we dropped supabaseUrl/anonKey/device fields, which broke
+  // later refresh). The server also derives supabaseUrl from the JWT and falls back to the committed public
+  // anon key, so refresh stays durable even when the blob omits them. Send this browser's UA for coherence.
   submit({
     accessToken: sess.access_token,
     refreshToken: sess.refresh_token ?? null,
-    expiresAt: sess.expires_at ?? null,
+    expiresAt: sess.expires_at ?? sess.expiresAt ?? null,
+    supabaseUrl: sess.supabaseUrl ?? parsed?.supabaseUrl ?? null,
+    anonKey: sess.anonKey ?? parsed?.anonKey ?? null,
+    deviceFingerprint: sess.deviceFingerprint ?? parsed?.deviceFingerprint ?? null,
+    deviceId: sess.deviceId ?? parsed?.deviceId ?? null,
+    deviceName: sess.deviceName ?? parsed?.deviceName ?? null,
+    userAgent: navigator.userAgent,
   });
+}
+
+async function reactivateDevice() {
+  busy.value = true;
+  error.value = null;
+  try {
+    const res = await fetch('/api/sources/dulo/reactivate-device', { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    status.value = (await res.json()) as DuloStatus;
+    bus.emit('tvapp:auth-changed', { source: 'dulo' });
+  } catch (e) {
+    error.value = (e as Error).message;
+  } finally {
+    busy.value = false;
+  }
 }
 
 async function signOut() {
@@ -138,6 +242,19 @@ async function signOut() {
 
 onMounted(() => {
   refresh();
+  // Keep the panel live: re-read status + tick the countdown every 30s and whenever the window refocuses,
+  // so an auto-refresh / device eviction / re-auth surfaces without a manual reload.
+  poll = setInterval(() => {
+    now.value = Date.now();
+    void refresh();
+  }, 30_000);
+  window.addEventListener('focus', refresh);
+});
+
+onUnmounted(() => {
+  if (poll) clearInterval(poll);
+  if (pairPoll) clearInterval(pairPoll);
+  window.removeEventListener('focus', refresh);
 });
 </script>
 
@@ -167,27 +284,32 @@ onMounted(() => {
           device: <b style="color: var(--text-1);">{{ status.deviceName }}</b>
         </span>
         <span v-if="status.expiresAt" class="muted" style="font-size: var(--fs-xs);">· {{ fmtExpiry(status.expiresAt) }}</span>
+        <span v-if="refreshing" class="muted" style="font-size: var(--fs-xs); color: var(--warn, var(--text-2));">· reconnecting…</span>
       </div>
       <div v-if="status.blockReason" class="row" style="gap: 8px; padding: 8px 10px; background: var(--bg-2); border-radius: 8px; align-items: flex-start;">
         <span style="color: var(--bad); margin-top: 1px;"><Icon name="x" :size="13" /></span>
         <span style="font-size: var(--fs-xs); color: var(--text-1);">{{ status.blockReason }}</span>
       </div>
+      <!-- dulo allows one active Live-TV device; if another device evicted us, reclaim the slot in one click. -->
+      <div v-if="deviceNeedsReactivate" class="row" style="gap: 8px; align-items: center; flex-wrap: wrap;">
+        <span class="muted" style="font-size: var(--fs-xs);">This device isn't holding the dulo Live&nbsp;TV slot.</span>
+        <Btn variant="ghost" size="sm" icon="refresh" :disabled="busy" @click="reactivateDevice">Re-activate device</Btn>
+      </div>
       <div class="row" style="gap: 8px;">
-        <Btn variant="ghost" icon="refresh" :disabled="busy" @click="loginOpen = true">Re-authenticate</Btn>
+        <Btn variant="ghost" icon="refresh" :disabled="busy || !!pairing" @click="startPairing">Re-authenticate</Btn>
         <Btn variant="ghost" icon="trash" :disabled="busy" @click="signOut"><span style="color: var(--bad);">Sign out</span></Btn>
       </div>
     </div>
 
     <!-- Connect flow -->
     <div v-else class="col" style="gap: 12px;">
-      <ol style="margin: 0; padding-left: 18px; font-size: var(--fs-sm); color: var(--text-1); line-height: 1.7;">
-        <li>Click <b>Sign in to dulo</b> — a secure browser opens right here on dulo.tv's login page.</li>
-        <li>Sign in with your dulo account (email or a social provider). Your password goes only to dulo.</li>
-        <li>TVApp2 captures the session automatically and connects — only tokens are stored, never a password.</li>
-      </ol>
+      <div class="muted" style="font-size: var(--fs-sm); color: var(--text-1); line-height: 1.6;">
+        Sign in with <b>your own browser</b> — where Google &amp; Discord work normally — then hand the session
+        back with one click. This is the most reliable way to connect a social account.
+      </div>
 
       <div class="row" style="gap: 8px; flex-wrap: wrap; align-items: center;">
-        <Btn variant="primary" icon="globe" :disabled="busy" @click="loginOpen = true">Sign in to dulo</Btn>
+        <Btn variant="primary" icon="globe" :disabled="busy || !!pairing" @click="startPairing">Pair with my browser</Btn>
         <Btn variant="ghost" size="sm" @click="pasteOpen = !pasteOpen">
           {{ pasteOpen ? 'Hide manual paste' : 'Paste session' }}
         </Btn>
@@ -195,15 +317,53 @@ onMounted(() => {
 
       <div v-if="pasteOpen" class="col" style="gap: 8px;">
         <div class="muted" style="font-size: var(--fs-xs);">
-          Fallback (use this if Google won't sign you in inside the streamed browser): sign in on dulo.tv in
-          your own browser, then open DevTools → Application → Local Storage → copy the value of the key
-          starting with <code class="mono">amri-</code> (any key whose value contains
-          <code class="mono">access_token</code>) and paste it here.
+          Manual alternative: sign in on dulo.tv in your own browser, then open DevTools → Application → Local
+          Storage → copy the value of the key starting with <code class="mono">amri-</code> (any key whose value
+          contains <code class="mono">access_token</code>) and paste it here.
         </div>
         <textarea v-model="pasteText" rows="4" placeholder='{"access_token":"…","refresh_token":"…","expires_at":…}'
                   class="input mono" style="width: 100%; font-size: 11px; padding: 8px; resize: vertical;" />
         <div class="row"><Btn variant="primary" icon="check" :disabled="busy || !pasteText" @click="submitPaste">Connect with pasted session</Btn></div>
       </div>
+
+      <!-- Advanced: the server-streamed browser, demoted (Google usually blocks it; kept for email/other logins). -->
+      <div class="col" style="gap: 8px; border-top: 1px solid var(--border, var(--bg-2)); padding-top: 10px;">
+        <button class="linklike muted" style="font-size: var(--fs-xs); background: none; border: none; padding: 0; cursor: pointer; text-align: left;" @click="advancedOpen = !advancedOpen">
+          {{ advancedOpen ? '▾' : '▸' }} Advanced: streamed sign-in
+        </button>
+        <div v-if="advancedOpen" class="col" style="gap: 8px;">
+          <div class="muted" style="font-size: var(--fs-xs);">
+            Runs a browser on the server and screencasts it here. Google typically blocks automated browsers, so
+            prefer <b>Pair with my browser</b> above — this is kept for email or other providers.
+          </div>
+          <div class="row"><Btn variant="ghost" size="sm" icon="globe" :disabled="busy" @click="loginOpen = true">Use streamed sign-in</Btn></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Shared pairing panel — visible in both connected (re-auth) and not-connected states. -->
+    <div v-if="pairing" class="col" style="gap: 10px; margin-top: 12px; padding: 12px; background: var(--bg-2); border-radius: 10px;">
+      <div class="row" style="align-items: center; gap: 8px;">
+        <StatusDot :status="pairFound ? 'good' : 'idle'" :pulse="!pairFound" />
+        <b style="font-size: var(--fs-sm);">{{ pairFound ? 'Connected!' : 'Waiting for your browser…' }}</b>
+        <span class="spacer" style="flex: 1;" />
+        <span v-if="!pairFound" class="muted" style="font-size: var(--fs-xs);">{{ pairCountdown }}</span>
+        <Btn variant="ghost" size="sm" icon="x" @click="stopPairing" />
+      </div>
+      <ol v-if="!pairFound" style="margin: 0; padding-left: 18px; font-size: var(--fs-sm); color: var(--text-1); line-height: 1.8;">
+        <li>
+          Drag this to your bookmarks bar:
+          <a :href="pairing.bookmarklet" class="mono" draggable="true" style="color: var(--accent, var(--text-0)); text-decoration: underline; cursor: grab;" @click.prevent>↧ Connect dulo → masqueradarr</a>
+          <Btn variant="ghost" size="sm" @click="copyText(pairing.bookmarklet)">copy</Btn>
+        </li>
+        <li><a :href="pairing.duloUrl" target="_blank" rel="noopener" style="color: var(--accent, var(--text-0));">Open dulo.tv</a> and sign in (Google / Discord work in your own browser).</li>
+        <li>
+          On dulo.tv, click that bookmark.
+          <span class="muted">No bookmarks bar?</span>
+          <Btn variant="ghost" size="sm" @click="copyText(pairing.snippet)">Copy console snippet</Btn>
+          <span class="muted">and paste it into DevTools → Console.</span>
+        </li>
+      </ol>
     </div>
 
     <div v-if="error" class="row" style="gap: 8px; margin-top: 10px; padding: 8px 10px; background: var(--bg-2); border-radius: 8px; align-items: flex-start;">

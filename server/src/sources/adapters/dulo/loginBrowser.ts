@@ -472,7 +472,21 @@ class DuloLoginBrowser {
       clearTimeout(session.deviceWait);
       session.deviceWait = null;
     }
-    const payload: CapturePayload = { ...session.pendingToken, ...(session.deviceCapture ?? {}) };
+    // Record the real browser UA so the server-side dulo API calls stay coherent with the captured session
+    // (kills the stale hardcoded-UA mismatch). origin:'streamed' = a dedicated throwaway context with its own
+    // refresh-token family (not shared with a user tab).
+    let userAgent: string | null = null;
+    try {
+      userAgent = session.page ? await session.page.evaluate(() => navigator.userAgent) : null;
+    } catch {
+      /* page gone — the server default UA is used */
+    }
+    const payload: CapturePayload = {
+      ...session.pendingToken,
+      ...(session.deviceCapture ?? {}),
+      userAgent,
+      origin: 'streamed',
+    };
     try {
       const status = await duloAuth.signIn(payload);
       const how = session.deviceCapture?.deviceFingerprint ? 'with device identity' : 'token-only';
@@ -517,9 +531,9 @@ class DuloLoginBrowser {
       return; // page navigating/closed — try again next tick
     }
     if (found) {
-      // No anonKey/supabaseUrl available from localStorage — signIn derives the base from the JWT `iss` and
-      // falls back to DULO_SUPABASE_ANON_KEY for the anon key (refresh may need a later re-capture; the
-      // network path above carries the anonKey on a fresh sign-in, which is the common case).
+      // No anonKey/supabaseUrl from localStorage — signIn derives the base from the JWT `iss` and resolves the
+      // anon key from the committed public default (auth.ts resolveAnonKey), so refresh stays durable even on
+      // this already-signed-in path (previously this path produced an un-refreshable session).
       await this.onTokenCaptured(session, { ...found, supabaseUrl: null, anonKey: null });
     }
   }

@@ -27,6 +27,10 @@ export interface PlaylistAuthDoc {
   deviceFingerprint: string; // stable id we generate once and register with the source
   deviceId: string | null; // id returned by activate-device
   deviceName: string | null; // label shown in the source's device list
+  deviceBound: boolean; // true once activate-device succeeded and this device holds the account slot
+  userAgent: string | null; // the UA captured at sign-in; replayed on every server-side API call for coherence
+  sharedFamily: boolean; // true when the session shares a refresh-token family with the user's own tab
+  refreshBackoffUntil: number | null; // ms epoch; skip refresh attempts until then (transient-failure backoff)
   status: string; // 'signed_out' | 'active' | 'reauth_required' | 'blocked' | 'error'
   blockReason: string | null; // access-status block.reason (no subscription / evicted by another session)
   lastError: string | null;
@@ -46,6 +50,10 @@ const PlaylistAuthSchema = new Schema<PlaylistAuthDoc>(
     deviceFingerprint: { type: String, required: true },
     deviceId: { type: String, default: null },
     deviceName: { type: String, default: null },
+    deviceBound: { type: Boolean, default: false },
+    userAgent: { type: String, default: null },
+    sharedFamily: { type: Boolean, default: false },
+    refreshBackoffUntil: { type: Number, default: null },
     status: { type: String, required: true, default: 'signed_out' },
     blockReason: { type: String, default: null },
     lastError: { type: String, default: null },

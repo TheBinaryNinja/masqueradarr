@@ -21,6 +21,8 @@ import { DEFAULT_BUILTIN_META } from '../sources/types.js';
 import { createMetrics, snapshotOne, type Metrics } from '../sources/core/metrics.js';
 import { syncLive, resetSource, ensureShellRow } from '../sources/seed.js';
 import { duloAuth } from '../sources/adapters/dulo/auth.js';
+import { duloPairing, buildBookmarklet, buildSnippet } from '../sources/adapters/dulo/pairing.js';
+import type { Request, Response } from 'express';
 import { Playlist } from '../models/Playlist.js';
 import { grantPlaylistToAdmins } from '../security/adminAccess.js';
 
@@ -121,13 +123,15 @@ sourcesRouter.post('/api/sources/:id/provision', async (req, res, next) => {
 // password (see sources/adapters/dulo/auth.ts). Read auth state via GET /api/sources/dulo/status.
 sourcesRouter.post('/api/sources/dulo/auth', async (req, res, next) => {
   try {
-    const { accessToken, refreshToken, expiresAt, supabaseUrl, anonKey, deviceFingerprint, deviceId, deviceName } =
+    const { accessToken, refreshToken, expiresAt, supabaseUrl, anonKey, deviceFingerprint, deviceId, deviceName, userAgent } =
       req.body ?? {};
     if (typeof accessToken !== 'string' || !accessToken) {
       return res.status(400).json({ error: 'accessToken (string) required' });
     }
-    // Device identity is optional here (the streamed login is the primary capture path); thread it through
-    // when a paste payload happens to carry it so playback matches dulo's binding (see auth.ts CapturePayload).
+    // Device identity is optional here (dulo enforces single-active-device, not client attestation, so the
+    // server re-activates its own fingerprint — see auth.ts). Record the capturing browser's UA (from the
+    // payload, else this request's UA — same browser that holds the dulo session) and flag origin:'paste'
+    // so the session is treated as sharing the user's own refresh-token family.
     const status = await duloAuth.signIn({
       accessToken,
       refreshToken,
@@ -137,8 +141,88 @@ sourcesRouter.post('/api/sources/dulo/auth', async (req, res, next) => {
       deviceFingerprint,
       deviceId,
       deviceName,
+      userAgent: (typeof userAgent === 'string' && userAgent) || req.get('user-agent') || null,
+      origin: 'paste',
     });
     res.status(201).json(status);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Reclaim dulo's single Live-TV device slot without a full re-sign-in (recovers a `device_mismatch` after
+// another device evicted us). Admin-only via the /api/sources prefix.
+sourcesRouter.post('/api/sources/dulo/reactivate-device', async (_req, res, next) => {
+  try {
+    res.json(await duloAuth.reactivateDevice());
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── dulo browser-handoff pairing (the durable Google/social path) ─────────────
+// Social IdPs block sign-in inside any automated/embedded browser, so the user signs in with their OWN real
+// browser and a one-click bookmarklet POSTs the captured session back to the code-gated callback below.
+// Admin-only (the /api/sources prefix) — mints the pairing artifacts for the SPA to render.
+sourcesRouter.post('/api/sources/dulo/auth/pair', (req, res) => {
+  const { code, expiresAt } = duloPairing.mint();
+  // The URL the admin's browser is currently using to reach masqueradarr === where the bookmarklet must POST
+  // (same browser runs both). Honor reverse-proxy forwarding headers so an https front door isn't mislabeled.
+  const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim() || req.protocol;
+  const host = (req.headers['x-forwarded-host'] as string | undefined) || req.get('host') || '';
+  const base = `${proto}://${host}`;
+  const callbackUrl = `${base}/api/dulo/callback`;
+  res.json({
+    code,
+    expiresAt,
+    callbackUrl,
+    duloUrl: 'https://dulo.tv',
+    bookmarklet: buildBookmarklet(code, callbackUrl),
+    snippet: buildSnippet(code, callbackUrl),
+  });
+});
+
+// Cross-origin CORS for the callback: the bookmarklet runs on dulo.tv and POSTs here. No cookies/credentials
+// are used (the pairing code is the bearer), so echoing the Origin is safe.
+function setPairCors(req: Request, res: Response): void {
+  res.setHeader('Access-Control-Allow-Origin', (req.headers.origin as string) || '*');
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.setHeader('Access-Control-Max-Age', '600');
+}
+
+// The pairing CALLBACK. Deliberately NOT under /api/sources → it escapes the admin gate (an anonymous user's
+// own browser must reach it); it is gated instead by the single-use, short-TTL pairing code. `authenticate`
+// still runs (non-blocking) but the bookmarklet sends no token, so req.user stays undefined — fine.
+sourcesRouter.options('/api/dulo/callback', (req, res) => {
+  setPairCors(req, res);
+  res.status(204).end();
+});
+sourcesRouter.post('/api/dulo/callback', async (req, res, next) => {
+  setPairCors(req, res);
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const code = typeof body.code === 'string' ? body.code : '';
+    if (!duloPairing.consume(code)) {
+      return res.status(403).json({ error: 'invalid_or_expired_pairing_code' });
+    }
+    if (typeof body.accessToken !== 'string' || !body.accessToken) {
+      return res.status(400).json({ error: 'accessToken (string) required' });
+    }
+    const status = await duloAuth.signIn({
+      accessToken: body.accessToken,
+      refreshToken: (body.refreshToken as string | null) ?? null,
+      expiresAt: (body.expiresAt as number | null) ?? null,
+      supabaseUrl: (body.supabaseUrl as string | null) ?? null,
+      anonKey: (body.anonKey as string | null) ?? null,
+      deviceFingerprint: (body.deviceFingerprint as string | null) ?? null,
+      deviceId: (body.deviceId as string | null) ?? null,
+      deviceName: (body.deviceName as string | null) ?? null,
+      userAgent: typeof body.userAgent === 'string' ? body.userAgent : null,
+      origin: 'handoff',
+    });
+    res.status(201).json({ ok: true, status });
   } catch (err) {
     next(err);
   }

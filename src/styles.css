@@ -136,8 +136,8 @@
 [data-theme="light"] .src-ico.builtin.epg-builtin,
 [data-theme="light"] .sched-ico.builtin.epg-builtin {
   background: var(--bg-3);
-  border-color: oklch(0.48 0.17 150 / 0.3);
-  box-shadow: inset 0 0 0 1px oklch(0.48 0.17 150 / 0.15), 0 0 18px oklch(0.48 0.17 150 / 0.18);
+  border: 1.5px solid oklch(0.48 0.17 150 / 0.55);
+  box-shadow: inset 0 0 0 1px oklch(0.48 0.17 150 / 0.15), 0 0 9px oklch(0.48 0.17 150 / 0.10);
 }
 
 /* ── Reset / base ─────────────────────────────────────────────── */
@@ -2768,20 +2768,20 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .src-ico.builtin.epg-builtin {
   background: linear-gradient(135deg, oklch(0.28 0.08 150), oklch(0.22 0.08 150));
   color: var(--good);
-  border-color: oklch(0.78 0.16 150 / 0.35);
-  box-shadow: inset 0 0 0 1px oklch(0.78 0.16 150 / 0.2), 0 0 18px oklch(0.78 0.16 150 / 0.2);
+  border: 1.5px solid oklch(0.78 0.16 150 / 0.6);
+  box-shadow: inset 0 0 0 1px oklch(0.78 0.16 150 / 0.2), 0 0 9px oklch(0.78 0.16 150 / 0.10);
 }
 
 /* Green glow for the EPG Sources brand icon, applied consistently to every instance: the nav entry
    glyph (.epg-glow lands on the svg.ico itself) and the .src-ico tiles on the EPG list + detail
    screens (.epg-glow lands on the wrapper, so the inner glyph gets the drop-shadow + the tile gets a
    soft halo). Keeps the existing green scheme — mirrors the --good glow tokens used by .epg-builtin. */
-svg.ico.epg-glow { filter: drop-shadow(0 0 6px oklch(0.78 0.16 150 / 0.55)); }
-.src-ico.epg-glow { box-shadow: 0 0 16px oklch(0.78 0.16 150 / 0.22); }
-.src-ico.epg-glow .ico { filter: drop-shadow(0 0 5px oklch(0.78 0.16 150 / 0.5)); }
-[data-theme="light"] svg.ico.epg-glow { filter: drop-shadow(0 0 6px oklch(0.48 0.17 150 / 0.5)); }
-[data-theme="light"] .src-ico.epg-glow { box-shadow: 0 0 16px oklch(0.48 0.17 150 / 0.22); }
-[data-theme="light"] .src-ico.epg-glow .ico { filter: drop-shadow(0 0 5px oklch(0.48 0.17 150 / 0.45)); }
+svg.ico.epg-glow { filter: drop-shadow(0 0 3px oklch(0.78 0.16 150 / 0.28)); }
+.src-ico.epg-glow { box-shadow: 0 0 8px oklch(0.78 0.16 150 / 0.10); border: 1.5px solid oklch(0.78 0.16 150 / 0.5); }
+.src-ico.epg-glow .ico { filter: drop-shadow(0 0 3px oklch(0.78 0.16 150 / 0.28)); }
+[data-theme="light"] svg.ico.epg-glow { filter: drop-shadow(0 0 3px oklch(0.48 0.17 150 / 0.25)); }
+[data-theme="light"] .src-ico.epg-glow { box-shadow: 0 0 8px oklch(0.48 0.17 150 / 0.10); border: 1.5px solid oklch(0.48 0.17 150 / 0.5); }
+[data-theme="light"] .src-ico.epg-glow .ico { filter: drop-shadow(0 0 3px oklch(0.48 0.17 150 / 0.25)); }
 
 /* Utility */
 .row { display: flex; align-items: center; gap: 10px; }
