@@ -56,6 +56,96 @@ export const MAX_XMLTV_BYTES = 256 * 1024 * 1024;
 // Human label for the cap, derived from the constant so the limit lives in exactly one place.
 const MAX_XMLTV_LABEL = `${Math.round(MAX_XMLTV_BYTES / 1024 / 1024)} MB`;
 
+// Fetch phase-scoped timeouts (the streaming download previously had NONE — only undici's 300 s defaults, so a
+// hung connect stalled for minutes and surfaced as the catch-all "could not fetch"). These guard CONNECT/TTFB
+// and mid-stream STALLS; total wall-clock stays bounded by MAX_ELAPSED_MS. A huge but steadily progressing
+// guide is NEVER aborted — the idle guard fires only on ZERO bytes for IDLE_TIMEOUT_MS.
+const CONNECT_TIMEOUT_MS = 20_000;
+const IDLE_TIMEOUT_MS = 60_000;
+
+// ──────────────────────────────────────────────────────────────────────
+// Error classification — turn ANY ingest failure into a categorized, safe-to-display { code, message } so the
+// route can log the REAL cause (with stack) and the Add-EPG modal can show WHY it failed (DNS vs HTTP vs TLS
+// vs timeout vs parse vs DB) instead of the old catch-all "could not fetch the XMLTV file". The message is
+// built ONLY from error codes / HTTP status / short reasons — NEVER the source URL (some providers carry a
+// token in the path/query). Full stacks go to the server log's meta, not the wire.
+// ──────────────────────────────────────────────────────────────────────
+
+export type XmltvErrorCode =
+  | 'xmltv_unreachable' // DNS / TCP connect / socket reset (DEFAULT — back-compat with the old single code)
+  | 'xmltv_http' // HTTP non-2xx (carries status)
+  | 'xmltv_tls' // TLS / certificate
+  | 'xmltv_timeout' // connect / idle stall / total wall-clock cap
+  | 'xmltv_parse' // saxes / malformed XML
+  | 'xmltv_db' // insertMany / deleteMany (Mongo)
+  | 'xmltv_too_large'; // MAX_PROGRAMMES runaway guard
+
+// A tagged ingest error. `status` rides for the HTTP case so the classifier can render "HTTP <status>".
+export class XmltvIngestError extends Error {
+  constructor(
+    readonly code: XmltvErrorCode,
+    message: string,
+    readonly status?: number,
+  ) {
+    super(message);
+    this.name = 'XmltvIngestError';
+  }
+}
+
+// Node/undici put the real errno on err.code and, for fetch(), on err.cause.code (a TypeError wraps the
+// transport error). c-ares resolver failures (from dns.ts) arrive as ENOTFOUND/ESERVFAIL/…; a fetch abort is a
+// DOMException named 'AbortError'. Walk the whole cause chain (+ AggregateError.errors) collecting every code.
+function errCodeChain(err: unknown): string[] {
+  const codes: string[] = [];
+  let cur = err as { code?: unknown; name?: unknown; cause?: unknown; errors?: unknown } | null | undefined;
+  for (let depth = 0; cur && depth < 8; depth++) {
+    if (typeof cur.code === 'string') codes.push(cur.code);
+    if (cur.name === 'AbortError' || cur.name === 'TimeoutError') codes.push('AbortError');
+    if (Array.isArray(cur.errors)) {
+      for (const e of cur.errors) {
+        const c = (e as { code?: unknown })?.code;
+        if (typeof c === 'string') codes.push(c);
+      }
+    }
+    cur = cur.cause as typeof cur;
+  }
+  return codes;
+}
+
+const TIMEOUT_CODES = new Set(['UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT', 'ETIMEDOUT', 'ETIMEOUT', 'AbortError']);
+const DNS_CONNECT_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ESERVFAIL', 'EREFUSED', 'ENODATA', 'ECONNREFUSED', 'ECONNRESET', 'EHOSTUNREACH', 'ENETUNREACH', 'EPIPE', 'UND_ERR_SOCKET']);
+
+// Truncate + strip any URL from a free-text error message before it can reach the client.
+function safeReason(msg: string | undefined): string {
+  return (msg ?? '').replace(/https?:\/\/\S+/gi, '<url>').replace(/\s+/g, ' ').trim().slice(0, 200) || 'unknown error';
+}
+
+// Map ANY thrown value → a categorized code + a short, URL-free message. Already-tagged XmltvIngestErrors pass
+// their own code straight through; everything else is bucketed by its errno code chain (timeout → TLS → DNS/
+// connect), defaulting to xmltv_unreachable so the message stays back-compatible for a plain fetch failure.
+export function classifyXmltvError(err: unknown): { code: XmltvErrorCode; message: string } {
+  if (err instanceof XmltvIngestError) {
+    return { code: err.code, message: err.status ? `HTTP ${err.status}` : safeReason(err.message) };
+  }
+  const codes = errCodeChain(err);
+  const firstCode = codes[0];
+  if (codes.some((c) => TIMEOUT_CODES.has(c))) return { code: 'xmltv_timeout', message: firstCode || 'timed out' };
+  if (codes.some((c) => c.startsWith('ERR_TLS') || c.startsWith('ERR_SSL') || c.includes('CERT') || c.includes('SSL'))) {
+    return { code: 'xmltv_tls', message: firstCode || 'TLS error' };
+  }
+  if (codes.some((c) => DNS_CONNECT_CODES.has(c))) return { code: 'xmltv_unreachable', message: firstCode || 'unreachable' };
+  return { code: 'xmltv_unreachable', message: firstCode || safeReason((err as Error)?.message) };
+}
+
+// Run a Mongo write, tagging any failure as xmltv_db (unless it is already a tagged ingest error).
+async function xmltvDbOp<T>(fn: () => Promise<T>): Promise<T> {
+  try {
+    return await fn();
+  } catch (e) {
+    throw e instanceof XmltvIngestError ? e : new XmltvIngestError('xmltv_db', (e as Error).message);
+  }
+}
+
 // Decode a raw XMLTV UPLOAD body (an in-memory buffer) → its text. Transparently gunzips a gzip body (magic
 // bytes 1f 8b) — uploads ship gzipped — capping the decompressed output at MAX_XMLTV_BYTES (a gzip-bomb
 // guard: gunzipSync's maxOutputLength throws before allocating past the ceiling). A non-gzip body is decoded
@@ -486,14 +576,14 @@ export async function streamXmltvToEpg(
   let seenProgrammes = 0;
 
   // Clear the source up front, then stream-replace. (Partial-on-failure: documented in the module header.)
-  await Program.deleteMany({ source: sourceId });
-  await EpgChannel.deleteMany({ source: sourceId });
+  await xmltvDbOp(() => Program.deleteMany({ source: sourceId }));
+  await xmltvDbOp(() => EpgChannel.deleteMany({ source: sourceId }));
 
   const flush = async (): Promise<void> => {
     if (!pending.length) return;
     const batch = pending;
     pending = [];
-    await Program.insertMany(batch, { ordered: false });
+    await xmltvDbOp(() => Program.insertMany(batch, { ordered: false }));
     writtenPrograms += batch.length;
     onBatch?.(); // progress hook — fired after each programme batch lands (the caller computes the %)
   };
@@ -506,7 +596,7 @@ export async function streamXmltvToEpg(
     (p) => {
       seenProgrammes++;
       if (seenProgrammes > MAX_PROGRAMMES) {
-        throw new Error(`xmltv stream aborted: exceeded ${MAX_PROGRAMMES.toLocaleString()} programmes`);
+        throw new XmltvIngestError('xmltv_too_large', `exceeded ${MAX_PROGRAMMES.toLocaleString()} programmes`);
       }
       const doc = buildProgram(p, sourceId, offset);
       if (doc) pending.push(doc);
@@ -518,24 +608,32 @@ export async function streamXmltvToEpg(
   stream.setEncoding('utf-8');
   for await (const chunk of stream as AsyncIterable<string>) {
     if (Date.now() - startedAt > MAX_ELAPSED_MS) {
-      throw new Error(`xmltv stream aborted: exceeded ${Math.round(MAX_ELAPSED_MS / 60000)} min time limit`);
+      throw new XmltvIngestError('xmltv_timeout', `exceeded ${Math.round(MAX_ELAPSED_MS / 60000)} min time limit`);
     }
-    reader.write(chunk);
+    try {
+      reader.write(chunk);
+    } catch (e) {
+      throw e instanceof XmltvIngestError ? e : new XmltvIngestError('xmltv_parse', (e as Error).message);
+    }
     while (pending.length >= PROGRAMME_BATCH) {
       // Drain a full batch (the SAX callback may have queued several batches' worth in one chunk).
       const batch = pending.slice(0, PROGRAMME_BATCH);
       pending = pending.slice(PROGRAMME_BATCH);
-      await Program.insertMany(batch, { ordered: false });
+      await xmltvDbOp(() => Program.insertMany(batch, { ordered: false }));
       writtenPrograms += batch.length;
       onBatch?.(); // progress hook — % is read off the live byte counter by the caller
     }
   }
-  reader.end();
+  try {
+    reader.end();
+  } catch (e) {
+    throw e instanceof XmltvIngestError ? e : new XmltvIngestError('xmltv_parse', (e as Error).message);
+  }
   await flush();
 
   // Insert the accumulated channels last (de-duped, far fewer than programmes).
   const channelDocs = [...channelById.values()];
-  if (channelDocs.length) await EpgChannel.insertMany(channelDocs, { ordered: false });
+  if (channelDocs.length) await xmltvDbOp(() => EpgChannel.insertMany(channelDocs, { ordered: false }));
 
   return { channels: channelDocs.length, programs: writtenPrograms };
 }
@@ -679,22 +777,38 @@ export async function fetchXmltvStream(url: string): Promise<XmltvStream> {
   const candidates = xmltvGzCandidates(url);
   let res: Response | null = null;
   let lastErr: Error | null = null;
+  // One AbortController backs BOTH the connect/TTFB guard (below) and the idle guard on the live stream; the
+  // successful candidate's controller + timer carry over past the loop so the peek is still connect-guarded.
+  let ctrl: AbortController | null = null;
+  let connectTimer: ReturnType<typeof setTimeout> | null = null;
+  let aborted: 'connect' | 'idle' | null = null;
   for (let i = 0; i < candidates.length; i++) {
     const candidate = candidates[i];
+    const c = new AbortController();
+    const t = setTimeout(() => {
+      aborted = 'connect';
+      c.abort();
+    }, CONNECT_TIMEOUT_MS);
     try {
-      const r = await fetch(candidate, { headers: XMLTV_HEADERS, redirect: 'follow' });
+      const r = await fetch(candidate, { headers: XMLTV_HEADERS, redirect: 'follow', signal: c.signal });
       if (r.ok) {
         res = r;
+        ctrl = c;
+        connectTimer = t; // cleared right after the first-chunk peek below
         break;
       }
-      // Drain a non-OK body so the socket can be reused; record the failure.
+      // Drain a non-OK body so the socket can be reused; record the failure (carries the HTTP status).
+      clearTimeout(t);
       await r.body?.cancel().catch(() => {});
-      lastErr = new Error(`xmltv fetch: HTTP ${r.status}`);
+      lastErr = new XmltvIngestError('xmltv_http', `HTTP ${r.status}`, r.status);
     } catch (err) {
-      lastErr = new Error(`xmltv fetch failed: ${(err as Error).message}`);
+      clearTimeout(t);
+      // Preserve the ORIGINAL undici error (its .code/.cause drive classifyXmltvError); tag a connect-abort.
+      lastErr = aborted === 'connect' ? new XmltvIngestError('xmltv_timeout', 'connect timeout') : (err as Error);
+      aborted = null;
     }
   }
-  if (!res || !res.body) throw lastErr ?? new Error('xmltv fetch failed: no response body');
+  if (!res || !res.body) throw lastErr ?? new XmltvIngestError('xmltv_unreachable', 'no response body');
 
   // Content-Length of the chosen transfer (null when chunked / unset → progress degrades to phase-only).
   const lenHeader = Number(res.headers.get('content-length'));
@@ -706,27 +820,67 @@ export async function fetchXmltvStream(url: string): Promise<XmltvStream> {
   // some serve `.xml.gz` with NO Content-Encoding (fetch does NOT auto-decode → bytes are still gzip-framed →
   // we gunzip); some set `Content-Encoding: gzip` (undici DOES auto-decode → bytes are already plain XML → we
   // stream raw). Sniffing the wire bytes after any undici auto-decode handles both without double-decoding.
-  const head = (await raw[Symbol.asyncIterator]().next()) as IteratorResult<Buffer>;
-  const firstChunk: Buffer = head.done ? Buffer.alloc(0) : head.value;
+  let firstChunk: Buffer;
+  let firstDone: boolean;
+  try {
+    const head = (await raw[Symbol.asyncIterator]().next()) as IteratorResult<Buffer>;
+    firstDone = !!head.done;
+    firstChunk = head.done ? Buffer.alloc(0) : head.value;
+  } catch (err) {
+    // Abort during TTFB (connect timer fired after headers arrived) or a transport error before the first byte.
+    if (aborted === 'connect') throw new XmltvIngestError('xmltv_timeout', 'connect timeout');
+    throw err;
+  } finally {
+    if (connectTimer) clearTimeout(connectTimer); // headers + first byte are in hand — connect phase is over
+  }
   const looksGz = firstChunk.length > 1 && firstChunk[0] === 0x1f && firstChunk[1] === 0x8b;
 
   // Re-prepend the peeked chunk, then optionally gunzip. Build a fresh Readable that yields the head then the
   // rest of the source so no bytes are lost. Count COMPRESSED bytes as the generator is PULLED (backpressure
   // keeps it within one highWaterMark of actual consumption), so bytesRead() tracks download/parse progress.
+  // An IDLE guard re-arms on every pulled chunk: a stall (zero bytes for IDLE_TIMEOUT_MS) aborts the fetch.
   let bytesRead = 0;
-  const recombined = Readable.from((async function* () {
-    if (!head.done) {
-      bytesRead += firstChunk.length;
-      yield firstChunk;
-    }
-    for await (const c of raw) {
-      const buf = c as Buffer;
-      bytesRead += buf.length;
-      yield buf;
-    }
-  })());
+  const recombined = Readable.from(
+    (async function* () {
+      let idle = setTimeout(() => {
+        aborted = 'idle';
+        ctrl?.abort();
+      }, IDLE_TIMEOUT_MS);
+      try {
+        if (!firstDone) {
+          bytesRead += firstChunk.length;
+          yield firstChunk;
+        }
+        for await (const chunk of raw) {
+          clearTimeout(idle);
+          idle = setTimeout(() => {
+            aborted = 'idle';
+            ctrl?.abort();
+          }, IDLE_TIMEOUT_MS);
+          const buf = chunk as Buffer;
+          bytesRead += buf.length;
+          yield buf;
+        }
+      } catch (err) {
+        if (aborted === 'idle') throw new XmltvIngestError('xmltv_timeout', 'stalled transfer');
+        throw err;
+      } finally {
+        clearTimeout(idle);
+      }
+    })(),
+  );
 
-  const stream = looksGz ? recombined.pipe(createGunzip()) : recombined;
+  // Pipe through gunzip when framed. Forward a source error onto the gunzip so a mid-stream abort/network error
+  // reaches the consumer's `for await` — Node's .pipe() does NOT propagate source errors, so without this an
+  // unhandled 'error' event would crash the process (verified).
+  let stream: Readable;
+  if (looksGz) {
+    const gunzip = createGunzip();
+    recombined.on('error', (e) => gunzip.destroy(e));
+    stream = recombined.pipe(gunzip);
+  } else {
+    stream = recombined;
+  }
   return { stream, totalBytes, bytesRead: () => bytesRead };
 }
 
