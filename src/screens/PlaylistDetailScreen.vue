@@ -342,7 +342,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   const ids = selected.value;
   const n = ids.size;
   const targets = channels.value.filter((c) => ids.has(c.id));
-  const supportsPlayer = (c: Channel) => ['dlhd', 'dami'].includes(c.origin ?? c.source);
+  const supportsPlayer = (c: Channel) => ['dlhd'].includes(c.origin ?? c.source);
   // The persisted PUT body: status/group pass through; clearEpg unlinks the 2-factor EPG link (tvg_id + epg
   // → null) and flips epgState to 'unmatched' (mirrors DELETE /api/epg-sources/:id's unlink). playerPref sets
   // the DaddyLive player override (null = Auto/inherit); it's stripped per-channel below for non-DaddyLive sources.

@@ -429,7 +429,7 @@ async function fireReset() {
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">DaddyLive Player Source</h3>
       <SettingsRow label="Default player"
-        hint="DaddyLive (and Dami.TV) offer several interchangeable players per channel — redundant feeds of the same stream. This is the default for every such channel; “Auto” uses Player 1 and falls back to the others if it’s down. You can override it per channel in the channel editor.">
+        hint="DaddyLive offers several interchangeable players per channel — redundant feeds of the same stream. This is the default for every such channel; “Auto” uses Player 1 and falls back to the others if it’s down. You can override it per channel in the channel editor.">
         <template #right>
           <Segmented :value="String(dlhdPlayer)" @change="(v) => dlhdPlayer = Number(v)"
             :options="[

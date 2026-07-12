@@ -22,7 +22,7 @@ export const darkMode = ref(true);
 // live hls.js status readout + event log). Global operator toggle; persisted on the Settings singleton like
 // any other field. Consumed by ChannelPlayer.vue to pick which player component to mount.
 export const videoPlayer = ref<'inapp' | 'debug'>('inapp');
-// Source-wide default DaddyLive (dlhd/dami) player for channels without a per-channel override: 0 = Auto (use
+// Source-wide default DaddyLive (dlhd) player for channels without a per-channel override: 0 = Auto (use
 // Player 1, falling back to the rest on failure), 1..N = prefer that player. Persisted on the Settings
 // singleton; the server caches it into the dlhd resolver. A per-channel override (ChannelDrawer) wins over it.
 export const dlhdPlayer = ref(0);

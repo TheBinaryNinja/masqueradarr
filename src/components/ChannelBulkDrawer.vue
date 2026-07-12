@@ -26,9 +26,9 @@ const statusVal = ref<string>('');
 // shared GroupPicker (same registry the single-channel editor uses).
 const groupVal = ref<string>('');
 const clearEpg = ref(false);
-// DaddyLive-family (dlhd/dami) player override for the selection. '' = leave unchanged; 0 = Auto (clear the
+// DaddyLive-family (dlhd) player override for the selection. '' = leave unchanged; 0 = Auto (clear the
 // override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
-const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd', 'dami'].includes(c.origin ?? c.source)));
+const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd'].includes(c.origin ?? c.source)));
 const playerVal = ref<number | ''>('');
 
 const statusMixed = computed(() => new Set(props.channels.map((c) => c.status)).size > 1);

@@ -465,7 +465,6 @@ All adapters implement the `SourceAdapter` contract (`server/src/sources/types.t
 | `local` | Local Now | — | Sentinel → rotating CDN | — | — |
 | `dulo` | dulo.tv | session | `dulo://` sentinel → playbackUrl | — | yes |
 | `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape | yes | yes |
-| `dami` | Dami.TV | — | dlhd resolveStream (shared) | yes | yes |
 | `tubi` | Tubi.TV | — | `tubi://` → Tubi API | yes (inline) | — |
 | `xumo` | Xumo Play | — | broadcast.json → 3-hop API | yes | — |
 | `stirr` | STIRR | — | `/playable` → 1-hop POST | yes | — |
@@ -721,7 +720,7 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
 - **Retry** — transient upstream failures (transport errors + `502` / `503` / `504`) are retried with bounded
   backoff; definitive `4xx` / `5xx` are forwarded verbatim (unless `failoverOnDefiniteError` routes them into
   the failover walk below).
-- **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd / dami to re-probe and
+- **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd to re-probe and
   rotate to a live mirror mid-stream.
 - **Failover groups** — when a channel has configured backups and its stream still won't establish, the
   engine walks the ordered children (`attempt=1,2,…` against the resolve seam) and serves the first live
