@@ -721,16 +721,6 @@ function livePr(c: Channel) {
               </div>
             </div>
           </div>
-
-          <div class="row" style="gap: 8px;">
-            <Btn v-if="progState(viewing.prog) === 'upcoming'" variant="primary" icon="add">Set reminder</Btn>
-            <Btn v-if="progState(viewing.prog) === 'live'" variant="primary" icon="play">Watch live</Btn>
-            <Btn v-if="progState(viewing.prog) === 'past'" variant="ghost" icon="refresh">Check catch-up</Btn>
-            <Btn variant="ghost" icon="tv">Open channel</Btn>
-            <Btn variant="ghost" icon="epg">Channel guide</Btn>
-            <span class="spacer" />
-            <Btn variant="ghost" icon="more" />
-          </div>
         </div>
       </div>
     </div>
