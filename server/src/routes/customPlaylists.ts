@@ -90,10 +90,11 @@ async function copyChannelsInto(cloneId: string, originIds: string[]): Promise<v
   if (!originals.length) return;
   const ops = originals.map((o) => {
     const copyId = `${cloneId}:${o._id}`;
-    // Strip the immutable _id (set from the filter on insert), the id mirror (re-derived below), and the
+    // Strip the immutable _id (set from the filter on insert), the id mirror (re-derived below), the
     // failover group fields (groups are source-scoped — a copy must start ungrouped, not carry a stale
-    // cross-source failoverGroupId / a parentless partial group into the clone).
-    const { _id: _drop, id: _dropId, failoverGroupId: _fg, failoverRole: _fr, failoverOrder: _fo, ...rest } = o;
+    // cross-source failoverGroupId / a parentless partial group into the clone), and the origTvgId
+    // snapshot (a clone is ungrouped; it must not inherit another channel's pre-failover tvg_id).
+    const { _id: _drop, id: _dropId, failoverGroupId: _fg, failoverRole: _fr, failoverOrder: _fo, origTvgId: _ot, ...rest } = o;
     return {
       updateOne: {
         filter: { _id: copyId },

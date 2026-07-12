@@ -40,6 +40,12 @@ export interface PlaylistChannelDoc {
   failoverGroupId?: string | null; // opaque shared key (crypto.randomUUID()); null = ungrouped. Stable across parent swaps.
   failoverRole?: 'parent' | 'child' | null; // exactly one parent per group (route-enforced, no unique index)
   failoverOrder?: number | null; // child ordinal 0..N-1; null on parent/ungrouped. Gaps harmless (resolution sorts).
+  // Pre-failover snapshot of this channel's OWN tvg_id (EPG link factor 1). Captured write-once the first
+  // time the channel joins a group (parent or child, via the /failover-groups routes); restored to tvg_id
+  // and REMOVED when the channel leaves the group. ABSENT = never grouped (the write-once sentinel) —
+  // distinct from a stored null (its original tvg_id was unlinked). Never in a $set/$setOnInsert bucket,
+  // so it rides re-sync untouched. See services/failover.ts failoverDisbandUpdate for the restore.
+  origTvgId?: string | null;
   // Operator's preferred upstream "player" for sources that expose several (adapter.playerSelectable — dlhd/dami's
   // DaddyLive Player 1..N). 1-based; null/absent = inherit the source-wide default (Settings.dlhdPlayer). Read at
   // resolve time by the seam (buildGrant) and honored+failed-over by the adapter's resolveStream. OPTIONAL — older
@@ -75,6 +81,9 @@ const PlaylistChannelSchema = new Schema<PlaylistChannelDoc>(
     failoverGroupId: { type: String, default: null },
     failoverRole: { type: String, default: null }, // 'parent' | 'child' | null
     failoverOrder: { type: Number, default: null },
+    // Pre-failover tvg_id snapshot (see the interface). Intentionally NO `default`: the field must be
+    // ABSENT until captured so `$type:'missing'` / `=== undefined` reliably means "never snapshotted".
+    origTvgId: { type: String },
     playerPref: { type: Number, default: null }, // preferred upstream player (1-based) for playerSelectable sources; null = inherit source default
     // Nested object (not a subdocument) → Mongoose adds no `stream._id`.
     stream: {

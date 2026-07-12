@@ -40,12 +40,13 @@ function envInt(raw: string | undefined, def: number, min: number, max: number):
 
 // ENV -> external. Defaults for the (Default) singleton — seeded on first boot and used as the GET/resolve
 // fallback. Only the two LIVE-in-P2 knobs read an env var (so an operator can pin the data-plane client at
-// provision); the deferred knobs default to their inert null/'hls' values.
+// provision); bufferSizeKb ships a real out-of-box value (≈16 read-ahead chunks — the Rust plane splits it
+// into ~64 KiB chunks); the remaining unwired knobs default to their inert null/'hls' values.
 export function envDefaults(): ProxyConfigData {
   return {
     connectTimeoutMs: envInt(process.env.PROXY_CONNECT_TIMEOUT_MS, 15000, 100, 120000),
     readTimeoutMs: null,
-    bufferSizeKb: null,
+    bufferSizeKb: 1024,
     maxRedirects: envInt(process.env.PROXY_MAX_REDIRECTS, 10, 0, 50),
     headerOverrides: {},
     outputFormat: 'hls',

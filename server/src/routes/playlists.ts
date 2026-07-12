@@ -14,7 +14,12 @@ import { composeM3u, composeGlobal, pruneCustomFile, reconcilePlaylistExport, re
 import { normalizeEndpointPath, isReservedEndpointPath, isCustomPlaylistType } from '../m3u/paths.js';
 import { cascadeDeleteCustomPlaylist } from './customPlaylists.js';
 import { cascadeDeleteEpgSource } from './epgSources.js';
-import { cascadeFailoverEpg, reconcileFailoverGroups, inheritedEpgState } from '../services/failover.js';
+import {
+  cascadeFailoverEpg,
+  reconcileFailoverGroups,
+  inheritedEpgState,
+  failoverDisbandUpdate,
+} from '../services/failover.js';
 import { reconcileGroupRegistry, groupsWithCounts } from '../services/groups.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { logger } from '../sources/core/logger.js';
@@ -685,7 +690,7 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
 // source sync (which re-inserts every still-upstream channel via $setOnInsert) never resurrects them
 // (services/tombstones.ts consults Playlist.deletedChannelIds). The tombstone set is cleared only by Restore
 // Defaults (resetSource). Deleting a failover parent / last child disbands the degenerate group
-// (reconcileFailoverGroups); survivors keep their inherited EPG. Recomposes the exports (best-effort).
+// (reconcileFailoverGroups); survivors get their original tvg_id back (epg inherited). Recomposes the exports.
 // Body { ids: string[] }. requireAdmin (the router is not admin-gated at the mount).
 playlistsRouter.post('/:id/channels/delete', requireAdmin, async (req, res, next) => {
   try {
@@ -699,8 +704,8 @@ playlistsRouter.post('/:id/channels/delete', requireAdmin, async (req, res, next
     // Tombstone every requested id (even ones that matched nothing this call — a future re-sync must still
     // never re-add them). $addToSet de-dupes against prior deletions.
     await Playlist.updateOne({ id: source }, { $addToSet: { deletedChannelIds: { $each: strIds } } });
-    // Deleting a parent or the last child leaves a degenerate failover group — auto-disband (survivors keep
-    // inherited EPG). Non-fatal, mirrors the prune reconcile.
+    // Deleting a parent or the last child leaves a degenerate failover group — auto-disband (survivors get
+    // their original tvg_id back, epg inherited). Non-fatal, mirrors the prune reconcile.
     await reconcileFailoverGroups(source).catch((err: Error) =>
       logger.warn('failover', `[${source}] reconcile after channel delete failed (continuing): ${err.message}`),
     );
@@ -896,25 +901,35 @@ playlistsRouter.put('/:id/failover-groups', requireAdmin, async (req, res, next)
     const ops: Parameters<typeof PlaylistChannel.bulkWrite>[0] = [
       {
         updateMany: {
+          // Members that left this group are un-grouped AND get their original tvg_id restored — a child
+          // dropped during a group edit is a disband from that channel's POV. Shared with the DELETE route.
           filter: { source, failoverGroupId: groupId, _id: { $nin: memberIds } },
-          update: { $set: { failoverGroupId: null, failoverRole: null, failoverOrder: null } },
+          update: failoverDisbandUpdate,
         },
       },
-      ...(childIds as string[]).map((cid, i) => ({
-        updateOne: {
-          filter: { _id: cid, source },
-          update: {
-            $set: {
-              failoverGroupId: groupId,
-              failoverRole: 'child',
-              failoverOrder: i,
-              tvg_id: parent.tvg_id,
-              epg: parent.epg,
-              epgState: inheritedState,
+      ...(childIds as string[]).map((cid, i) => {
+        const cur = byId.get(cid)!;
+        return {
+          updateOne: {
+            filter: { _id: cid, source },
+            update: {
+              $set: {
+                failoverGroupId: groupId,
+                failoverRole: 'child',
+                failoverOrder: i,
+                tvg_id: parent.tvg_id,
+                epg: parent.epg,
+                epgState: inheritedState,
+                // Write-once capture of the child's OWN tvg_id before it's overwritten just above.
+                // `undefined` (lean → field missing) = never snapshotted → capture now; a present value
+                // (incl. null) is preserved so re-saves / reorders / parent↔child swaps never overwrite
+                // the true original with an already-inherited value.
+                ...(cur.origTvgId === undefined ? { origTvgId: cur.tvg_id ?? null } : {}),
+              },
             },
           },
-        },
-      })),
+        };
+      }),
       {
         updateOne: {
           filter: { _id: parentId, source },
@@ -927,6 +942,9 @@ playlistsRouter.put('/:id/failover-groups', requireAdmin, async (req, res, next)
               // sync writers would re-link it directly (no cascade) and diverge it from its children.
               // inheritedEpgState is 'matched'/'unmatched' (never null), a no-op for a linked parent.
               epgState: inheritedState,
+              // Record the parent's original tvg_id too (write-once). Harmless — restore ignores parents —
+              // but it pre-seeds the true original should this channel later become a child (parent swap).
+              ...(parent.origTvgId === undefined ? { origTvgId: parent.tvg_id ?? null } : {}),
             },
           },
         },
@@ -1024,19 +1042,17 @@ playlistsRouter.put('/:id/failover-groups/:groupId/reorder', requireAdmin, async
   }
 });
 
-// DELETE /api/playlists/:id/failover-groups/:groupId — disband. Members lose the grouping but KEEP the
-// inherited EPG identity (clearing a link is the explicit unlink action, not a side effect). Children
-// re-enter the export, so recompose. 404 for an unknown group; 204 on success.
+// DELETE /api/playlists/:id/failover-groups/:groupId — disband. Members lose the grouping; each former
+// CHILD's tvg_id is restored to its pre-failover original (failoverDisbandUpdate), though its epg/epgState
+// stay inherited (the scalar snapshot restores only the id — the parent's epg source lingers until the
+// operator remaps). Children re-enter the export, so recompose. 404 for an unknown group; 204 on success.
 playlistsRouter.delete('/:id/failover-groups/:groupId', requireAdmin, async (req, res, next) => {
   try {
     const source = String(req.params.id);
     const groupId = String(req.params.groupId);
-    const r = await PlaylistChannel.updateMany(
-      { source, failoverGroupId: groupId },
-      { $set: { failoverGroupId: null, failoverRole: null, failoverOrder: null } },
-    );
+    const r = await PlaylistChannel.updateMany({ source, failoverGroupId: groupId }, failoverDisbandUpdate);
     if (r.matchedCount === 0) return res.status(404).json({ error: 'not_found' });
-    // Milestone (≥2): the group was disbanded (members keep inherited EPG, lose only the grouping).
+    // Milestone (≥2): the group was disbanded (former children get their original tvg_id back; epg inherited).
     logMilestone('failover', `group ${groupId} disbanded on ${source} (${r.matchedCount} member(s))`);
     composeM3u(source).catch((err) =>
       logger.warn('m3u', `compose after failover-group disband (${source}) failed: ${(err as Error).message}`),
