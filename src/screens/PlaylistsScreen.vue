@@ -7,12 +7,13 @@ import PlaylistRow from '../components/PlaylistRow.vue';
 import PlaylistStatusDrawer from '../components/PlaylistStatusDrawer.vue';
 import AssignAccessModal from '../components/AssignAccessModal.vue';
 import GetAccessModal from '../components/GetAccessModal.vue';
+import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import { PLAYLISTS, reloadEpgSources, reloadPlaylists, type Playlist, type Channel } from '../data';
 import { bus } from '../composables/bus';
 import { useToast } from '../composables/useToast';
-import { usePlaylistActions } from '../composables/usePlaylistActions';
+import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
 import { isAdmin } from '../composables/useAuth';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
@@ -44,13 +45,10 @@ async function syncRow(p: Playlist): Promise<OpRunResult> {
   syncingIds.value = new Set(syncingIds.value).add(p.id);
   let ok = true;
   try {
-    // Custom-type playlists with a live upstream re-sync via the custom-playlists route: 'hdhomerun' re-fetches
-    // the device lineup, 'url' re-fetches the stored remoteUrl m3u. A Default source playlist syncs via the
-    // registry source route. (Mirrors PlaylistDetailScreen.syncNow so both entry points converge on one path.)
-    const res =
-      src === 'hdhomerun' || src === 'url' || src === 'local'
-        ? await fetch(`/api/custom-playlists/${encodeURIComponent(p.id)}/sync`, { method: 'POST' })
-        : await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
+    // Route by TYPE via the shared syncRequestUrl: a custom import with a live upstream ('url'/'hdhomerun'/
+    // 'local') re-syncs via the custom-playlists route; a Default source playlist via its registry source
+    // route. Endpoint-independent — a built-in stays syncable when set Custom, a 'url' when set Global.
+    const res = await fetch(syncRequestUrl(p), { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const result = await res.json();
     // Reload the shared playlist store AND the shared EPG store — a source sync's afterSync hook can
@@ -84,15 +82,11 @@ async function composeRow(p: Playlist): Promise<void> {
   }
 }
 
-// Global cohort: "Sync Global" / "Compose Global" on a Global row fan out across EVERY Global playlist
-// (shared singleton state, so all Global buttons disable together and all Global rows show one bar).
-// Custom rows keep the per-id behavior above. `isCustom` selects which busy source a row reads.
-const isCustom = (p: Playlist): boolean => p.endpoint === 'custom';
-// Only custom types with a LIVE upstream that "Sync" can re-fetch surface a Sync action: 'url' (the stored
-// remoteUrl m3u), 'hdhomerun' (the device lineup), and 'local' (a Local Now market re-fetch). 'file'/legacy
-// 'import'/'clone' have no upstream, so a Sync there would only ever 500 — they show Compose only.
-const SYNCABLE_CUSTOM = new Set(['url', 'hdhomerun', 'local']);
-const isSyncableCustom = (p: Playlist): boolean => !!p.source && SYNCABLE_CUSTOM.has(p.source);
+// Scope (endpoint) and upstream-capability (type) are the two orthogonal axes the row menu gates on; both
+// predicates are imported from usePlaylistActions so the list, the detail header, and the Global cohort
+// fan-out share ONE definition (hasLiveUpstream / isGlobalScope). "Sync Global" / "Compose Global" on a
+// Global row fan out across EVERY Global playlist via the shared singleton (all Global buttons disable
+// together and all Global rows show one bar).
 
 // Op preview modal — clicking "Sync" / "Sync Global" / "Compose" / "Compose Global" no longer fires the op
 // silently; it opens the shared PlaylistOpModal. In 'sync' mode it shows the scoped playlist list + each
@@ -171,31 +165,32 @@ function toggleMenu(id: string): void {
 
 function rowMenuItems(p: Playlist): RowActionItem[] {
   const items: RowActionItem[] = [];
-  if (p.source && !isCustom(p)) {
-    // Individual sync of THIS global playlist (syncRow's else branch → POST /api/sources/:source/sync, since a
-    // global playlist has id === source), shown ALONGSIDE the cohort-wide Sync Global. Distinct 'sync-one' key
-    // so its :key never collides with the 'sync' (Sync Global) item.
-    items.push({ key: 'sync-one', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
-    items.push({ key: 'sync', icon: 'refresh', label: syncingGlobal.value ? 'Syncing…' : 'Sync Global', disabled: syncingGlobal.value, run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); } });
-    items.push({ key: 'compose', icon: 'file', label: composingGlobal.value ? 'Composing…' : 'Compose Global', disabled: composingGlobal.value, run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); } });
-  } else if (p.source === 'clone') {
-    items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
-  } else if (p.source) {
-    // Other custom types (url/hdhomerun/file/legacy import). Only 'url'/'hdhomerun' have a live upstream to
-    // sync; 'file'/'import' have none, so they show Compose only (like a clone) — a Sync would only ever 500.
-    if (isSyncableCustom(p)) {
-      items.push({ key: 'sync', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
+  if (p.source) {
+    // Two orthogonal axes. Sync availability follows TYPE (a live upstream), independent of scope — its key is
+    // 'sync-one' so it never collides with the 'sync' (Sync Global) item on a Global row.
+    if (hasLiveUpstream(p)) {
+      items.push({ key: 'sync-one', icon: 'refresh', label: syncingIds.value.has(p.id) ? 'Syncing…' : 'Sync', disabled: syncingIds.value.has(p.id), run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncRow(p)); } });
     }
-    items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
+    // Scope follows ENDPOINT. Global → the cohort-wide Sync Global / Compose Global (fan out across every
+    // Global playlist via the shared singleton). Custom → this playlist's standalone Compose.
+    if (isGlobalScope(p)) {
+      items.push({ key: 'sync', icon: 'refresh', label: syncingGlobal.value ? 'Syncing…' : 'Sync Global', disabled: syncingGlobal.value, run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); } });
+      items.push({ key: 'compose', icon: 'file', label: composingGlobal.value ? 'Composing…' : 'Compose Global', disabled: composingGlobal.value, run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); } });
+    } else {
+      items.push({ key: 'compose', icon: 'file', label: composingIds.value.has(p.id) ? 'Composing…' : 'Compose', disabled: composingIds.value.has(p.id), run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeRow(p)); } });
+    }
   }
   // Admin-only per-playlist access surfaces, scoped to THIS playlist. `run` only sets a screen-level ref — the
-  // modals are rendered by the screen (the menu unmounts on select). A global row's Assign/Get shows the shared
-  // Global-union access/URLs; a custom row shows its own.
+  // modals are rendered by the screen (the menu unmounts on select). A Global row's Assign/Get shows the shared
+  // Global-union access/URLs; a Custom row shows its own.
   if (isAdmin.value) {
     items.push({ key: 'assign', icon: 'lock', label: 'Assign access', run: () => { assignAccessPlaylist.value = p; } });
     items.push({ key: 'getaccess', icon: 'link', label: 'Get access', run: () => { getAccessPlaylist.value = p; } });
   }
   items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { void editRow(p); } });
+  // Delete — impact-aware confirm (a built-in shows an affected-areas report before the cascade). Same
+  // DELETE /api/playlists/:id path the detail uses; the row disappears when the shared PLAYLISTS store reloads.
+  items.push({ key: 'delete', icon: 'trash', label: 'Delete', danger: true, run: () => { deletePlaylistRow.value = p; } });
   return items;
 }
 
@@ -204,6 +199,10 @@ function rowMenuItems(p: Playlist): RowActionItem[] {
 // shared USERS singleton, so changes here and on the Users screen stay in lockstep.
 const assignAccessPlaylist = ref<Playlist | null>(null);
 const getAccessPlaylist = ref<Playlist | null>(null);
+// Impact-aware delete confirm, scoped to the row whose waffle opened it (null = closed). Rendered by the
+// screen (the menu unmounts on select); the shared DeletePlaylistModal owns the DELETE + store reloads, so
+// the row drops out on success with no extra work here.
+const deletePlaylistRow = ref<Playlist | null>(null);
 
 // Keep the drawer's own bound row in step with each optimistic edit; the list rows and every other screen
 // update via the shared PLAYLISTS store, which the drawer's save() re-pulls (canonical) after the PUT.
@@ -255,6 +254,7 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
 
     <AssignAccessModal v-if="assignAccessPlaylist" :playlist="assignAccessPlaylist" @close="assignAccessPlaylist = null" />
     <GetAccessModal v-if="getAccessPlaylist" :playlist="getAccessPlaylist" @close="getAccessPlaylist = null" />
+    <DeletePlaylistModal v-if="deletePlaylistRow" :playlist="deletePlaylistRow" @close="deletePlaylistRow = null" @deleted="deletePlaylistRow = null" />
 
     <PlaylistOpModal
       v-if="opOpen && opScope && opRun"
