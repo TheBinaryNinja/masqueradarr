@@ -29,7 +29,7 @@ const channelNo = ref(props.ch.channelNo ?? '');
 const group = ref(props.ch.group ?? '');
 const tvgId = ref(props.ch.tvg_id ?? '');
 const streamUrl = ref(props.ch.streamEntryUrl ?? '');
-// DaddyLive-family sources (dlhd/dami) expose several interchangeable upstream "players" per channel; the
+// DaddyLive-family sources (dlhd) expose several interchangeable upstream "players" per channel; the
 // picker below lets the operator prefer one for THIS channel (0 = Auto → inherit the source-wide default).
 const player = ref(props.ch.playerPref ?? 0);
 
@@ -38,7 +38,7 @@ const player = ref(props.ch.playerPref ?? 0);
 const isFailoverChild = computed(() => props.ch.failoverRole === 'child');
 // Only DaddyLive-family channels carry selectable players — route on the proxy source (origin ?? source),
 // the same key the stream URL is built from, so a clone copy is judged by its real provider.
-const supportsPlayer = computed(() => ['dlhd', 'dami'].includes(props.ch.origin ?? props.ch.source));
+const supportsPlayer = computed(() => ['dlhd'].includes(props.ch.origin ?? props.ch.source));
 
 // Persist an edit to this channel via PUT /api/playlists/<source>/channels/<id>, then reflect it locally
 // so the open lists update. (Channels are keyed by deterministic id; source === the (Default) playlist id.)

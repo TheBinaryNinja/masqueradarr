@@ -108,7 +108,7 @@ export interface Channel {
   failoverGroupId?: string | null; // failover group key; null/undefined = ungrouped (older docs lack the fields)
   failoverRole?: 'parent' | 'child' | null; // 'child' rows are export-hidden backups; EPG is inherited from the parent
   failoverOrder?: number | null; // child ordinal within the group
-  playerPref?: number | null; // preferred upstream player (1-based) for playerSelectable sources (dlhd/dami); null = inherit source default
+  playerPref?: number | null; // preferred upstream player (1-based) for playerSelectable sources (dlhd); null = inherit source default
   stream: {
     initials: string | null;
     isPlayable: boolean;
@@ -768,7 +768,7 @@ const EPG_META_FIELDS: { key: keyof EpgSource; label: string }[] = [
   { key: 'postalCode', label: 'postalCode' },
 ];
 // Pretty display label for the lowercase EPG source-KIND discriminator. The stored/compared value is
-// lowercase ('gracenote'/'epg-pw'/'jesmann'/'tubi'/'dlhd'/'dami'/'xml file'/'remote url') — this maps the
+// lowercase ('gracenote'/'epg-pw'/'jesmann'/'tubi'/'dlhd'/'xml file'/'remote url') — this maps the
 // proper-name providers back to their brand casing for the UI (the SOURCE chip, etc.); unknown kinds pass
 // through verbatim. Case-insensitive so a legacy capitalized row still renders the brand label pre-migration.
 const EPG_SOURCE_LABELS: Record<string, string> = {
@@ -777,7 +777,6 @@ const EPG_SOURCE_LABELS: Record<string, string> = {
   jesmann: 'Jesmann',
   tubi: 'tubi',
   dlhd: 'dlhd',
-  dami: 'dami',
   'xml file': 'xml file',
   'remote url': 'remote url',
 };

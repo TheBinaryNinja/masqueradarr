@@ -405,8 +405,6 @@ topology({
       label: 'SCRAPE-BASED', color: G.scrape, desc: 'catalog from HTML / a rotating mirror · resolution via multi-hop scrape',
       items: [
         A('dlhd', 'DaddyLive', ['scraped rotating-mirror HTML', 'watch.php?id → 3-hop Referer', 'segments disguised img / pdf'], ['SELF-EPG', 'XWALK', '18+ OFF'], G.scrape),
-        A('dami', 'Dami.TV', ['own catalog · /papi/api/streams', '~878 ch · ISO country groups', 'reuses dlhd resolveStream'], ['SELF-EPG', 'XWALK'], G.scrape),
-        N('Hard dependency', ['dami leans on dlhd’s mirror', 'and resolve leaves — the two', 'can never be forked apart']),
       ],
     },
     {

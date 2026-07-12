@@ -18,7 +18,6 @@ import {
 import { fetchRegionChannels, fetchChannelXml, mapEventsToPrograms, todayYmd } from './epgpw.js';
 import { syncTubiEpg } from './tubi.js';
 import { syncDlhdEpg } from './dlhd.js';
-import { syncDamiEpg } from './dami.js';
 import { syncSamsungEpg } from './samsung.js';
 import { syncVizioEpg } from './vizio.js';
 import { syncLgEpg } from './lg.js';
@@ -207,10 +206,6 @@ export async function syncEpgSource(
       // per-source replace. EPG-ONLY: channel self-links are owned by the dlhd playlist afterSync hook (the
       // extra channelIds field is ignored here). See epg/dlhd.ts.
       counts = await syncDlhdEpg(src.id, offset);
-    } else if (kind === 'dami') {
-      // dami builds its guide from dami-tv.pro's documented live-events API (/papi/api/streams) — live-only,
-      // per-source replace. EPG-ONLY: channel self-links are owned by the dami playlist afterSync hook. See epg/dami.ts.
-      counts = await syncDamiEpg(src.id, offset);
     } else if (kind === 'samsung') {
       // samsung builds its guide from Matt Huisman's per-region XMLTV mirror — live-only, per-source replace.
       // EPG-ONLY: channel self-links are owned by the samsung playlist afterSync hook. See epg/samsung.ts.
@@ -276,7 +271,7 @@ export async function syncEpgSource(
       // sources are NOT synced here: a static upload has nothing to re-fetch, so it re-imports via POST /:id/upload.)
       counts = await syncXmltvUrl(src.id, src.url, offset);
     } else {
-      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / dami / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / tcl / pluto / roku / plex / local / remote url / jesmann sources: ${id}`);
+      throw new Error(`sync supported only for gracenote / epg-pw / tubi / dlhd / samsung / vizio / lg / vidaa / whale / xumo / freelivesports / distro / stirr / tcl / pluto / roku / plex / local / remote url / jesmann sources: ${id}`);
     }
   } catch (err) {
     await EpgSource.updateOne({ id: src.id }, { $set: { status: 'error' }, $inc: { syncFailCount: 1 } });
