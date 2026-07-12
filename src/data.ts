@@ -481,6 +481,25 @@ function patchChannelsStore(members: Channel[]): void {
   CHANNELS.value = CHANNELS.value.map((c) => byId.get(c.id) ?? c);
 }
 
+// Mirror the server's failoverDisbandUpdate (server/src/services/failover.ts) on the client: transform a
+// channel that is LEAVING its failover group into its ungrouped form. A former CHILD gets its own
+// pre-failover tvg_id back from the write-once `origTvgId` snapshot — a present snapshot (even null) wins,
+// matching the server's `$type != 'missing'` gate; a parent / un-snapshotted member keeps its live id.
+// Then clear the three group fields and drop the consumed snapshot (the server $$REMOVEs it; it's
+// re-captured on a later re-group). Every local un-group patch reuses this so the row's tvg_id updates in
+// place — no page refresh needed to surface the restored id (the DELETE/PUT never echo it back).
+export function disbandChannelLocal(c: Channel): Channel {
+  const restoreTvgId = c.failoverRole === 'child' && c.origTvgId !== undefined;
+  return {
+    ...c,
+    ...(restoreTvgId ? { tvg_id: c.origTvgId ?? null } : {}),
+    failoverGroupId: null,
+    failoverRole: null,
+    failoverOrder: null,
+    origTvgId: undefined,
+  };
+}
+
 // Create/replace a failover group. Non-optimistic (the save is a multi-doc cascade — children inherit the
 // parent's EPG identity server-side); await, then merge the returned members. Rows the save dropped FROM
 // this group get their grouping cleared here too; rows of a DONOR group a moved foreign child came from
@@ -501,10 +520,11 @@ export async function saveFailoverGroup(
   }
   const result = (await res.json()) as FailoverGroupResult;
   const memberIds = new Set([result.parent.id, ...result.children.map((c) => c.id)]);
+  // A member the save dropped from this group is a disband from that channel's POV — the server restored
+  // its original tvg_id (same failoverDisbandUpdate), so mirror the full un-group locally, not just the
+  // grouping clear.
   CHANNELS.value = CHANNELS.value.map((c) =>
-    c.failoverGroupId === result.groupId && !memberIds.has(c.id)
-      ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null }
-      : c,
+    c.failoverGroupId === result.groupId && !memberIds.has(c.id) ? disbandChannelLocal(c) : c,
   );
   patchChannelsStore([result.parent, ...result.children]);
   return result;
@@ -528,16 +548,13 @@ export async function reorderGroupChildren(
   return result;
 }
 
-// Disband a group. Members keep their inherited EPG (clearing it is the explicit unlink action); the
-// screen re-reads/merges its local list — here we just clear the grouping in the global union.
+// Disband a group. Each former CHILD gets its own pre-failover tvg_id restored (disbandChannelLocal
+// mirrors the server) while keeping its inherited EPG (clearing the link is the explicit unlink action);
+// the screen re-reads/merges its local list — here we patch the grouping + restored id in the global union.
 export async function disbandFailoverGroup(source: string, groupId: string): Promise<void> {
   const res = await fetch(`/api/playlists/${source}/failover-groups/${groupId}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 404) throw new Error(`failover disband failed: ${res.status}`);
-  CHANNELS.value = CHANNELS.value.map((c) =>
-    c.failoverGroupId === groupId
-      ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null }
-      : c,
-  );
+  CHANNELS.value = CHANNELS.value.map((c) => (c.failoverGroupId === groupId ? disbandChannelLocal(c) : c));
 }
 
 // ──────────────────────────────────────────────────────────────────────

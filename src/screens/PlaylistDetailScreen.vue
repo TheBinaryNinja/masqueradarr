@@ -19,7 +19,7 @@ import GroupConfigModal from '../components/GroupConfigModal.vue';
 import AssignAccessModal from '../components/AssignAccessModal.vue';
 import GetAccessModal from '../components/GetAccessModal.vue';
 import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
-import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
+import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, disbandChannelLocal, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
 import { isAdmin } from '../composables/useAuth';
@@ -212,12 +212,11 @@ function onGroupSaved(r: FailoverGroupResult) {
   // this authoritative refetch reconciles everything else.
   void reload();
 }
-// Local patch shared by the modal's Disband and the per-row "Disband group": clear the three failover
-// fields on every member of the group and drop any stale collapsed-state for it.
+// Local patch shared by the modal's Disband and the per-row "Disband group": un-group every member of the
+// group (disbandChannelLocal mirrors the server — a former child's original tvg_id is restored in place, so
+// the row updates without a refresh) and drop any stale collapsed-state for it.
 function applyDisbandLocal(gid: string) {
-  channels.value = channels.value.map((c) =>
-    c.failoverGroupId === gid ? { ...c, failoverGroupId: null, failoverRole: null, failoverOrder: null } : c,
-  );
+  channels.value = channels.value.map((c) => (c.failoverGroupId === gid ? disbandChannelLocal(c) : c));
   if (collapsedGroups.value.has(gid)) {
     const n = new Set(collapsedGroups.value);
     n.delete(gid);
