@@ -24,14 +24,38 @@ const composingGlobal = ref(false);
 const globalSyncProgress = ref(0); // 0..1
 const globalComposeProgress = ref(0); // 0..1
 
-// The single source of truth for the Global SYNC cohort: a playlist is a Global sync target iff it is hosted
-// on the Global endpoint (endpoint === 'global', the same canonical "Global" test usePublishedUrls' member
-// split uses). The sync run thunk (syncAllGlobal, below) and the sync modal's displayed list
-// (PlaylistOpModal → syncTargets) BOTH consume this exact predicate, so the operation and its preview can
-// never diverge. Deliberately endpoint-driven: a clone hosted as Global IS included; a source playlist
-// somehow not on the Global endpoint is NOT.
-export function isGlobalSyncTarget(p: Playlist): boolean {
+// ── Scope / type predicates — the two orthogonal axes the Playlists menus gate on ──────────────────────
+// Scope is the `endpoint` field ALONE, decoupled from source type: a built-in set Custom is Custom; a 'url'
+// import set Global is Global. Global playlists merge into the shared per-user union (composeGlobal); Custom
+// ones are standalone files (composeCustom).
+export function isGlobalScope(p: Playlist): boolean {
   return p.endpoint === 'global';
+}
+// A playlist "has a live upstream" — i.e. Sync can re-fetch its channels — purely by TYPE, independent of
+// scope: a registry-backed built-in (Default source), or a custom import whose type carries a re-fetchable
+// upstream ('url' = the stored remoteUrl m3u, 'hdhomerun' = the device lineup, 'local' = a Local Now market
+// re-fetch). A 'clone'/'file'/legacy 'import'/source-less row has none → it is Compose-only at any endpoint.
+const SYNCABLE_CUSTOM = new Set(['url', 'hdhomerun', 'local']);
+export function hasLiveUpstream(p: Playlist): boolean {
+  return p.builtin === true || SYNCABLE_CUSTOM.has(p.source ?? '');
+}
+// The correct single-playlist Sync route, chosen BY TYPE (never by scope): a custom import with a live
+// upstream re-syncs via the custom-playlists route (keyed by playlist id); a Default source playlist syncs
+// via its registry source route (id === source). Shared by syncRow/syncNow AND the syncAllGlobal cohort
+// fan-out so all three route identically — the old hardcoded /api/sources/:source/sync 404'd for a
+// 'url'/'hdhomerun'/'local' import hosted on the Global endpoint.
+export function syncRequestUrl(p: Playlist): string {
+  return SYNCABLE_CUSTOM.has(p.source ?? '')
+    ? `/api/custom-playlists/${encodeURIComponent(p.id)}/sync`
+    : `/api/sources/${encodeURIComponent(p.source ?? '')}/sync`;
+}
+// The single source of truth for the Global SYNC cohort: hosted on the Global endpoint AND actually
+// syncable. The run thunk (syncAllGlobal, below) and the sync modal's preview list (PlaylistOpModal →
+// syncTargets) BOTH consume this exact predicate, so the operation and its preview can never diverge.
+// Non-syncable Global members (a 'file' import flipped to Global) are correctly excluded — Sync Global
+// skips them rather than 404ing on /api/sources/file/sync.
+export function isGlobalSyncTarget(p: Playlist): boolean {
+  return isGlobalScope(p) && hasLiveUpstream(p);
 }
 
 // Fetch the live playlist set and filter it with the given predicate. Fetched live (not the PLAYLISTS store)
@@ -53,7 +77,7 @@ async function syncAllGlobal(): Promise<GlobalActionResult> {
     let done = 0;
     for (const p of targets) {
       try {
-        const res = await fetch(`/api/sources/${encodeURIComponent(p.source!)}/sync`, { method: 'POST' });
+        const res = await fetch(syncRequestUrl(p), { method: 'POST' });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
       } catch {
         failed.push(p.name);
@@ -80,9 +104,10 @@ async function composeAllGlobal(): Promise<GlobalActionResult> {
   globalComposeProgress.value = 0;
   const failed: string[] = [];
   try {
-    // Compose keeps its established union filter (source-backed, not Custom) so this change does not regress
-    // Global compose; only the Sync cohort moves to the explicit endpoint === 'global' predicate.
-    const targets = await globalTargets((p) => Boolean(p.source) && p.endpoint !== 'custom');
+    // Compose targets every source-backed Global playlist (composeGlobal rebuilds the whole per-user union
+    // server-side regardless, but iterating per playlist gives an honest per-step bar). Uses the same
+    // isGlobalScope test as the Sync cohort so the two never drift on an absent-endpoint edge.
+    const targets = await globalTargets((p) => Boolean(p.source) && isGlobalScope(p));
     let done = 0;
     for (const p of targets) {
       try {

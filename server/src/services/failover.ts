@@ -22,6 +22,30 @@ export function inheritedEpgState(snap: FailoverEpgSnapshot): 'matched' | 'unmat
   return snap.epgState ?? 'unmatched';
 }
 
+// Shared "leave a failover group" update — the ONE definition used by every un-group path (explicit
+// disband, a member dropped during a group edit, and reconcile's auto-disband below) so they stay
+// consistent. A 2-stage aggregation-pipeline update (stage 1 MUST read failoverRole BEFORE stage 2
+// clears it):
+//  1. Restore ONLY a child's own tvg_id from its write-once origTvgId snapshot. Parents are never
+//     overwritten by failover, so their live tvg_id is authoritative — never revert a deliberate
+//     post-group parent EPG edit. Skip when origTvgId is ABSENT ($type:'missing') — a pre-feature group
+//     or never-snapshotted member keeps its inherited tvg_id (today's behavior; no data loss).
+//  2. Clear the three group fields and REMOVE origTvgId (absence = re-capturable on a later re-group).
+export const failoverDisbandUpdate = [
+  {
+    $set: {
+      tvg_id: {
+        $cond: [
+          { $and: [{ $eq: ['$failoverRole', 'child'] }, { $ne: [{ $type: '$origTvgId' }, 'missing'] }] },
+          '$origTvgId',
+          '$tvg_id',
+        ],
+      },
+    },
+  },
+  { $set: { failoverGroupId: null, failoverRole: null, failoverOrder: null, origTvgId: '$$REMOVE' } },
+];
+
 // Mirror the parent's EPG identity onto every child of the group. Pass `parentSnapshot` when the caller
 // already holds the parent's post-write values (the edit route); omit it to load the group's parent (no
 // parent → no-op). Returns the updated children (failoverOrder-sorted, _id-less — the same verbatim shape
@@ -58,8 +82,9 @@ export async function cascadeFailoverEpg(
 
 // Disband every degenerate group on a source: a group whose parent vanished (pruned/deleted), whose last
 // child left, or that somehow ended up with two parents (bulkWrite is not transactional — this is the
-// repair path). Members keep their inherited EPG (clearing it is the explicit unlink action); they only
-// lose the grouping. Cheap (one indexed find + at most one updateMany); callers wrap it non-fatal.
+// repair path). Survivors are un-grouped via failoverDisbandUpdate — each former child's tvg_id is
+// restored to its original (epg/epgState stay inherited). Cheap (one indexed find + at most one
+// updateMany); callers wrap it non-fatal.
 export async function reconcileFailoverGroups(source: string): Promise<void> {
   const members = await PlaylistChannel.find(
     { source, failoverGroupId: { $type: 'string' } },
@@ -82,7 +107,7 @@ export async function reconcileFailoverGroups(source: string): Promise<void> {
   if (!degenerate.length) return;
   await PlaylistChannel.updateMany(
     { source, failoverGroupId: { $in: degenerate } },
-    { $set: { failoverGroupId: null, failoverRole: null, failoverOrder: null } },
+    failoverDisbandUpdate,
   );
   // Milestone (≥2): a group self-healed away (parent pruned, last child left, or a race left two parents).
   logMilestone('failover', `disbanded ${degenerate.length} degenerate failover group(s) on ${source}`);

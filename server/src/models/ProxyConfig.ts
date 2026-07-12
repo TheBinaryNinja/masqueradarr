@@ -44,7 +44,7 @@ export interface ProxyConfigDoc {
   _id: string; // 'app' (Default) or 'app_<playlistId>' (Custom per-playlist override)
   connectTimeoutMs: number; // upstream connect-handshake timeout (ms). LIVE in P2.
   readTimeoutMs: number | null; // idle/read timeout (ms); null = none. LIVE (P3.1/RSL).
-  bufferSizeKb: number | null; // bounded upstream→client buffer (KiB); null = unbounded. LIVE (P3.1/RSL).
+  bufferSizeKb: number | null; // bounded upstream→client read-ahead buffer (KiB); null = minimal pipeline. LIVE (P3.1/RSL).
   maxRedirects: number; // upstream redirect-follow cap. LIVE in P2.
   headerOverrides: Record<string, string>; // operator upstream-header overrides; merged into the grant. LIVE in P2.
   outputFormat: string; // distribution shape 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount). LIVE (P3.2/DST); enc/fMP4→HLS.
@@ -62,7 +62,7 @@ const ProxyConfigSchema = new Schema<ProxyConfigDoc>(
     _id: { type: String, required: true },
     connectTimeoutMs: { type: Number, required: true, default: 15000 },
     readTimeoutMs: { type: Number, default: null },
-    bufferSizeKb: { type: Number, default: null },
+    bufferSizeKb: { type: Number, default: 1024 }, // envDefaults() is the operative seed; kept in sync here
     maxRedirects: { type: Number, required: true, default: 10 },
     headerOverrides: { type: Schema.Types.Mixed, default: {} },
     outputFormat: { type: String, required: true, default: 'hls' },

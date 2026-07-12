@@ -16,9 +16,13 @@ import ProgressBar from '../components/ProgressBar.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import GroupConfigModal from '../components/GroupConfigModal.vue';
+import AssignAccessModal from '../components/AssignAccessModal.vue';
+import GetAccessModal from '../components/GetAccessModal.vue';
+import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
 import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
-import { usePlaylistActions } from '../composables/usePlaylistActions';
+import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
+import { isAdmin } from '../composables/useAuth';
 import { bus } from '../composables/bus';
 
 const { banner } = useToast();
@@ -53,80 +57,23 @@ const isClone = computed(() => playlist.value.source === 'clone');
 // label reads 'manual' until a schedule is set). Case-insensitive so a pre-normalization 'None' row still hides
 // the Sync chip before the boot migration runs.
 const noSchedule = computed(() => (playlist.value.interval ?? '').toLowerCase() === 'none');
-// Custom-type playlists with a LIVE upstream "Sync" can re-fetch: 'url' (the stored remoteUrl m3u),
-// 'hdhomerun' (the device lineup), and 'local' (a Local Now market re-fetch). 'file'/legacy 'import' have no
-// upstream, so the header Sync button is suppressed for them (it would only ever 500) — they keep Compose only.
-const isSyncableCustom = computed(() => {
-  const s = playlist.value.source;
-  return s === 'url' || s === 'hdhomerun' || s === 'local';
-});
+// Sync availability (a live upstream) and scope (global vs custom) are gated via the shared hasLiveUpstream /
+// isGlobalScope predicates from usePlaylistActions — the same definitions the list and the Global cohort
+// fan-out use, so a built-in stays syncable when set Custom and a 'url' import when set Global.
 
-// Delete a playlist — BOTH user-composed (clone/import) AND built-in (Default) source playlists are now
-// deletable. The backend cascades: a clone drops its channels + per-user m3u files + access-list refs; a
-// built-in additionally prunes its copies out of every clone (by `origin`) and removes its playlist-bound
-// EPG source. For a built-in we first fetch a real affected-areas report (GET /:id/delete-impact) and show it
-// in the confirm modal so the operator sees exactly what is removed before confirming.
-interface DeleteImpact {
-  playlist: { id: string; name: string; channels: number };
-  affectedClones: { id: string; name: string; channelsRemoved: number }[];
-  boundEpgSource: { id: string; name: string } | null;
+// Delete a playlist — the impact-aware confirm now lives in the shared DeletePlaylistModal (a built-in first
+// fetches + shows a real affected-areas report; a custom playlist shows the generic checklist). The modal
+// owns the DELETE cascade + store reloads and emits `deleted`; we then leave the (now-gone) detail for the
+// list. Extracted so the Playlists list carries the identical impact-aware confirm.
+const deleteOpen = ref(false);
+function onDeleted(): void {
+  deleteOpen.value = false;
+  router.push('/playlists');
 }
-const confirmDelete = ref(false);
-const deleting = ref(false);
-const impact = ref<DeleteImpact | null>(null);
-const impactLoading = ref(false);
-const impactError = ref(false);
-
-// Open the delete confirmation. For a built-in, fetch the affected-areas report first (a brief spinner in the
-// modal while it loads); a clone uses the generic checklist (no impact fetch). A failed/non-ok preview is
-// surfaced (impactError + a toast) and the modal renders an explicit "preview unavailable" notice — the
-// Delete button stays gated so the operator can never confirm the destructive cascade blind.
-async function openDelete() {
-  impact.value = null;
-  impactError.value = false;
-  confirmDelete.value = true;
-  if (!playlist.value.builtin) return;
-  impactLoading.value = true;
-  try {
-    const res = await fetch(`/api/playlists/${encodeURIComponent(playlist.value.id)}/delete-impact`);
-    if (res.ok) impact.value = await res.json();
-    else impactError.value = true; // a non-ok (400/403/404) never enters catch — flag it here
-  } catch {
-    impactError.value = true;
-  } finally {
-    impactLoading.value = false;
-    if (impactError.value) {
-      banner({ text: 'Could not calculate affected areas', tone: 'bad', icon: 'warn' });
-    }
-  }
-}
-
-async function deletePlaylist() {
-  const p = playlist.value;
-  if (!p.id || deleting.value) return;
-  deleting.value = true;
-  const name = p.name;
-  const wasBuiltin = !!p.builtin;
-  try {
-    const res = await fetch(`/api/playlists/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
-    // A built-in delete prunes clone copies + drops a bound EPG source — refresh the channel union and EPG
-    // store too so other screens reflect the cascade without a full reload.
-    await Promise.all([
-      reloadPlaylists(),
-      reloadCustomPlaylists(),
-      wasBuiltin ? reloadChannels().catch(() => {}) : Promise.resolve(),
-      wasBuiltin ? reloadEpgSources().catch(() => {}) : Promise.resolve(),
-    ]);
-    confirmDelete.value = false;
-    banner({ text: `Deleted "${name}"`, tone: 'good', icon: 'trash' });
-    router.push('/playlists');
-  } catch (e) {
-    banner({ text: `Delete failed: ${(e as Error).message}`, tone: 'bad', icon: 'warn' });
-  } finally {
-    deleting.value = false;
-  }
-}
+// Admin-only per-playlist access modals (mirrors the list screen). Booleans since the detail holds one
+// playlist; both take :playlist and branch on its endpoint (shared Global union vs this playlist's custom group).
+const assignAccessOpen = ref(false);
+const getAccessOpen = ref(false);
 
 const view = ref<'table' | 'grid'>('table');
 // State filter (orthogonal to the table/grid view): defaults to Active so a channel list always opens
@@ -466,13 +413,9 @@ async function syncNow(): Promise<OpRunResult> {
   const name = playlist.value.name;
   let ok = true;
   try {
-    // Custom-type playlists with a live upstream re-sync via the custom-playlists route: 'hdhomerun' re-fetches
-    // the device lineup, 'url' re-fetches the stored remoteUrl m3u. A Default source playlist syncs via the
-    // registry source route.
-    const res =
-      src === 'hdhomerun' || src === 'url' || src === 'local'
-        ? await fetch(`/api/custom-playlists/${encodeURIComponent(props.id)}/sync`, { method: 'POST' })
-        : await fetch(`/api/sources/${encodeURIComponent(src)}/sync`, { method: 'POST' });
+    // Route by TYPE via the shared syncRequestUrl (same as the list + Global fan-out): a custom import with a
+    // live upstream re-syncs via the custom-playlists route; a Default source playlist via its registry route.
+    const res = await fetch(syncRequestUrl(playlist.value), { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const result = await res.json();
     // Reload this playlist AND the shared EPG store — a source sync's afterSync hook can create/refresh
@@ -557,52 +500,51 @@ function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResul
   opOpen.value = true;
 }
 
-// Header actions, collapsed into the waffle popover menu. Faithfully ports the former inline button cluster:
-// the Global cohort gets a single Sync + the cohort-wide Sync Global / Compose Global; a clone gets manual
-// Compose m3u; a syncable custom playlist gets Sync (live upstream only) + Compose; Edit and Delete are
-// always present. Each run() calls the same openOpModal / statusOpen / openDelete path the buttons used, so
-// toast / reload / modal behavior is unchanged. The computed recomputes on the inflight refs, so the
-// labels/disabled stay live while the menu is open.
+// Header actions, collapsed into the waffle popover menu — gated on the two orthogonal axes (mirrors the
+// list's rowMenuItems): Sync iff hasLiveUpstream (a built-in or 'url'/'hdhomerun'/'local' import, at ANY
+// endpoint); then Global endpoint → the cohort-wide Sync Global / Compose Global, else → standalone Compose.
+// Assign/Get access (admin) + Edit + Delete are always present. Each run() opens the shared PlaylistOpModal /
+// status drawer / access + delete modals; the computed recomputes on the inflight refs, so the labels/disabled
+// stay live while the menu is open.
 const menuOpen = ref(false);
 const headerMenuItems = computed<RowActionItem[]>(() => {
   const p = playlist.value;
   const items: RowActionItem[] = [];
-  if (playlistSource.value && !isCustom.value) {
-    items.push({
-      key: 'sync', icon: 'refresh', disabled: syncing.value, label: syncing.value ? 'Syncing…' : 'Sync',
-      run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncNow()); },
-    });
-    items.push({
-      key: 'sync-global', icon: 'refresh', disabled: syncingGlobal.value, label: syncingGlobal.value ? 'Syncing…' : 'Sync Global',
-      run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); },
-    });
-    items.push({
-      key: 'compose-global', icon: 'file', disabled: composingGlobal.value, label: composingGlobal.value ? 'Composing…' : 'Compose Global',
-      run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); },
-    });
-  } else if (isClone.value) {
-    items.push({
-      key: 'compose', icon: 'file', disabled: composing.value, label: composing.value ? 'Composing…' : 'Compose m3u',
-      run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeNow()); },
-    });
-  } else if (playlistSource.value) {
-    if (isSyncableCustom.value) {
+  if (playlistSource.value) {
+    // Sync availability follows TYPE (a live upstream), independent of scope.
+    if (hasLiveUpstream(p)) {
       items.push({
         key: 'sync', icon: 'refresh', disabled: syncing.value, label: syncing.value ? 'Syncing…' : 'Sync',
         run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncNow()); },
       });
     }
-    items.push({
-      key: 'compose', icon: 'file', disabled: composing.value, label: composing.value ? 'Composing…' : 'Compose',
-      run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeNow()); },
-    });
+    // Scope follows ENDPOINT: Global → the cohort-wide Sync Global / Compose Global (shared singleton fan-out);
+    // Custom → this playlist's standalone Compose.
+    if (isGlobalScope(p)) {
+      items.push({
+        key: 'sync-global', icon: 'refresh', disabled: syncingGlobal.value, label: syncingGlobal.value ? 'Syncing…' : 'Sync Global',
+        run: () => { openOpModal('sync', { kind: 'global' }, () => onSyncGlobal()); },
+      });
+      items.push({
+        key: 'compose-global', icon: 'file', disabled: composingGlobal.value, label: composingGlobal.value ? 'Composing…' : 'Compose Global',
+        run: () => { openOpModal('compose', { kind: 'global' }, () => onComposeGlobal()); },
+      });
+    } else {
+      items.push({
+        key: 'compose', icon: 'file', disabled: composing.value, label: composing.value ? 'Composing…' : 'Compose',
+        run: () => { openOpModal('compose', { kind: 'custom', id: p.id, name: p.name }, () => composeNow()); },
+      });
+    }
+  }
+  // Admin-only per-playlist access surfaces (mirrors the list). Both modals branch on endpoint internally
+  // (the shared Global-union access/URLs vs this playlist's custom group).
+  if (isAdmin.value) {
+    items.push({ key: 'assign', icon: 'lock', label: 'Assign access', run: () => { assignAccessOpen.value = true; } });
+    items.push({ key: 'getaccess', icon: 'link', label: 'Get access', run: () => { getAccessOpen.value = true; } });
   }
   items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { statusOpen.value = true; } });
   if (p.id) {
-    items.push({
-      key: 'delete', icon: 'trash', label: 'Delete', danger: true, disabled: deleting.value,
-      run: () => { void openDelete(); },
-    });
+    items.push({ key: 'delete', icon: 'trash', label: 'Delete', danger: true, run: () => { deleteOpen.value = true; } });
   }
   return items;
 });
@@ -1181,92 +1123,9 @@ async function doAppend() {
       @close="opOpen = false"
     />
 
-    <!-- Delete confirmation -->
-    <div v-if="confirmDelete" class="modal-bg" @click="deleting || (confirmDelete = false)">
-      <div class="modal" @click.stop style="width: 520px; max-width: 92vw;">
-        <div class="modal-hd">
-          <span style="color: var(--bad);"><Icon name="trash" :size="18" /></span>
-          <h2>Delete playlist?</h2>
-          <span class="spacer" />
-          <Btn variant="ghost" size="sm" icon="x" :disabled="deleting" @click="confirmDelete = false" />
-        </div>
-        <div class="modal-body">
-          <div style="font-size: var(--fs-base); color: var(--text-1); line-height: 1.5;">
-            This permanently removes <strong>{{ playlist.name }}</strong> and everything in it.
-            This cannot be undone.
-          </div>
-
-          <!-- Built-in: real affected-areas summary from GET /:id/delete-impact. -->
-          <template v-if="playlist.builtin">
-            <div v-if="impactLoading" class="row" style="gap: 8px; padding: 12px 0; color: var(--text-2); font-size: var(--fs-sm);">
-              <Icon name="refresh" :size="13" />
-              <span>Calculating affected areas…</span>
-            </div>
-            <template v-else-if="impact">
-              <!-- Playlist Channels -->
-              <div class="impact-block">
-                <div class="impact-hd"><Icon name="list" :size="13" />Playlist Channels</div>
-                <div class="impact-row">
-                  <span class="impact-name">{{ impact.playlist.name }}</span>
-                  <span class="spacer" />
-                  <span class="impact-lbl">Channels Deleted:</span>
-                  <span class="impact-val bad">everything</span>
-                </div>
-                <div v-for="c in impact.affectedClones" :key="c.id" class="impact-row">
-                  <span class="impact-name">{{ c.name }}</span>
-                  <span class="spacer" />
-                  <span class="impact-lbl">Channels Deleted:</span>
-                  <span class="impact-val warn">{{ c.channelsRemoved }}</span>
-                </div>
-                <div v-if="!impact.affectedClones.length" class="impact-row muted" style="font-size: var(--fs-xs);">
-                  No cloned playlists include this source's channels.
-                </div>
-              </div>
-              <!-- Playlist EPG -->
-              <div class="impact-block">
-                <div class="impact-hd"><Icon name="grid" :size="13" />Playlist EPG</div>
-                <div class="impact-row">
-                  <span class="impact-lbl">Playlist-bound:</span>
-                  <span class="spacer" />
-                  <span class="impact-val" :class="impact.boundEpgSource ? 'warn' : 'muted'">
-                    {{ impact.boundEpgSource ? impact.boundEpgSource.name : 'None' }}
-                  </span>
-                </div>
-              </div>
-            </template>
-            <!-- Preview failed (non-ok / network error): no affected-areas data — say so explicitly and keep
-                 the Delete button gated (see modal-ft below) so the cascade is never confirmed blind. -->
-            <div v-else class="impact-block">
-              <div class="impact-row warn" style="gap: 8px;">
-                <Icon name="warn" :size="14" />
-                <span><b>Affected-areas preview unavailable.</b> Could not calculate what this delete will
-                  remove. Close this dialog and try again.</span>
-              </div>
-            </div>
-          </template>
-
-          <!-- Clone / custom: the generic checklist (no impact fetch needed). -->
-          <div v-else style="display: grid; gap: 8px;">
-            <div v-for="it in [
-              { icon: 'list', text: `${channels.length} channel${channels.length === 1 ? '' : 's'} are removed` },
-              { icon: 'file', text: 'Its per-user M3U files + guide sibling are deleted' },
-              { icon: 'tv', text: 'It is removed from every user\'s allowed playlists' },
-            ]" :key="it.text" class="row"
-                 style="gap: 8px; padding: 4px 0; font-size: var(--fs-sm); color: var(--text-1);">
-              <span style="color: var(--text-2);"><Icon :name="it.icon" :size="13" /></span>
-              <span>{{ it.text }}</span>
-            </div>
-          </div>
-        </div>
-        <div class="modal-ft">
-          <span class="spacer" />
-          <Btn variant="ghost" :disabled="deleting" @click="confirmDelete = false">Cancel</Btn>
-          <button class="btn ghost danger" :disabled="deleting || impactLoading || (playlist.builtin && !impact)" @click="deletePlaylist">
-            <Icon name="trash" :size="14" />{{ deleting ? 'Deleting…' : 'Delete playlist' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <AssignAccessModal v-if="assignAccessOpen" :playlist="playlist" @close="assignAccessOpen = false" />
+    <GetAccessModal v-if="getAccessOpen" :playlist="playlist" @close="getAccessOpen = false" />
+    <DeletePlaylistModal v-if="deleteOpen" :playlist="playlist" @close="deleteOpen = false" @deleted="onDeleted" />
   </div>
 </template>
 

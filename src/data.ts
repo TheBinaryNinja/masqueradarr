@@ -108,6 +108,7 @@ export interface Channel {
   failoverGroupId?: string | null; // failover group key; null/undefined = ungrouped (older docs lack the fields)
   failoverRole?: 'parent' | 'child' | null; // 'child' rows are export-hidden backups; EPG is inherited from the parent
   failoverOrder?: number | null; // child ordinal within the group
+  origTvgId?: string | null; // pre-failover snapshot of this channel's own tvg_id (server-managed; SPA never writes it)
   playerPref?: number | null; // preferred upstream player (1-based) for playerSelectable sources (dlhd); null = inherit source default
   stream: {
     initials: string | null;

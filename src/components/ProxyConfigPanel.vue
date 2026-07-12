@@ -41,23 +41,37 @@ function removeHeader(i: number) {
   syncStateFromRows();
 }
 
-// Numeric coercion. Required ints clamp to a floor; reserved knobs accept a blank → null.
-function setNum(field: 'connectTimeoutMs' | 'maxRedirects', raw: string, min: number) {
+// Numeric coercion is split in two so the controlled :value never fights the caret:
+//   · @input  reflects EXACTLY what's typed (no floor clamp) — the old Math.max(min, n) ran per
+//             keystroke, so a leading sub-floor digit snapped the field and blocked multi-digit entry.
+//   · @blur   commits into [min, max] once typing stops (nullable knobs keep blank → null). The ranges
+//             mirror the server gate in server/src/proxyconfig/translate.ts, so the UI never persists a
+//             value the API would 400.
+function setNum(field: 'connectTimeoutMs' | 'maxRedirects', raw: string) {
   const n = Math.round(Number(raw));
-  state[field] = Number.isFinite(n) ? Math.max(min, n) : min;
+  if (Number.isFinite(n)) state[field] = n;
 }
-function setNullableNum(
-  field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheTtlSec',
-  raw: string,
-  min = 0,
-) {
+function setNullableNum(field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheTtlSec', raw: string) {
   const t = raw.trim();
   if (t === '') {
     state[field] = null;
     return;
   }
   const n = Math.round(Number(t));
-  state[field] = Number.isFinite(n) ? Math.max(min, n) : null;
+  if (Number.isFinite(n)) state[field] = n;
+}
+function commitNum(field: 'connectTimeoutMs' | 'maxRedirects', min: number, max: number) {
+  const v = state[field];
+  state[field] = Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : min;
+}
+function commitNullableNum(
+  field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheTtlSec',
+  min: number,
+  max: number,
+) {
+  const v = state[field];
+  if (v == null) return;
+  state[field] = Math.min(max, Math.max(min, v));
 }
 
 onMounted(async () => {
@@ -98,7 +112,8 @@ watch(
           <div class="field-lbl">Connect timeout <span class="mono muted" style="font-weight: 400;">· ms</span></div>
           <div class="input">
             <input type="number" min="100" :value="state.connectTimeoutMs"
-                   @input="setNum('connectTimeoutMs', ($event.target as HTMLInputElement).value, 100)" />
+                   @input="setNum('connectTimeoutMs', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNum('connectTimeoutMs', 100, 120000)" />
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             How long to wait for the upstream connection handshake before giving up.
@@ -108,7 +123,8 @@ watch(
           <div class="field-lbl">Max redirects</div>
           <div class="input">
             <input type="number" min="0" max="50" :value="state.maxRedirects"
-                   @input="setNum('maxRedirects', ($event.target as HTMLInputElement).value, 0)" />
+                   @input="setNum('maxRedirects', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNum('maxRedirects', 0, 50)" />
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             How many upstream redirects to follow when resolving a stream.
@@ -118,7 +134,8 @@ watch(
           <div class="field-lbl">Read timeout <span class="mono muted" style="font-weight: 400;">· ms</span></div>
           <div class="input">
             <input type="number" min="0" :value="state.readTimeoutMs ?? ''" placeholder="none"
-                   @input="setNullableNum('readTimeoutMs', ($event.target as HTMLInputElement).value)" />
+                   @input="setNullableNum('readTimeoutMs', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNullableNum('readTimeoutMs', 0, 600000)" />
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             Stall guard: if the upstream goes silent for this long mid-stream, the segment is dropped + retried.
@@ -129,11 +146,12 @@ watch(
           <div class="field-lbl">Buffer size <span class="mono muted" style="font-weight: 400;">· KiB</span></div>
           <div class="input">
             <input type="number" min="16" :value="state.bufferSizeKb ?? ''" placeholder="minimal"
-                   @input="setNullableNum('bufferSizeKb', ($event.target as HTMLInputElement).value, 16)" />
+                   @input="setNullableNum('bufferSizeKb', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNullableNum('bufferSizeKb', 16, 1048576)" />
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            Read-ahead buffer between the upstream and the viewer that absorbs brief upstream jitter. Blank = a
-            minimal pipeline.
+            Read-ahead buffer that absorbs brief upstream jitter. Allocated in ~64 KiB chunks — under ~128 KiB
+            behaves minimal; ≈512 KiB+ (8+ chunks) is where it meaningfully helps. Blank = minimal pipeline.
           </div>
         </div>
       </div>
@@ -224,7 +242,8 @@ watch(
           <div class="field-lbl">Segment cache TTL <span class="mono muted" style="font-weight: 400;">· s</span></div>
           <div class="input">
             <input type="number" min="0" :value="state.segmentCacheTtlSec ?? ''" placeholder="no-store"
-                   @input="setNullableNum('segmentCacheTtlSec', ($event.target as HTMLInputElement).value)" />
+                   @input="setNullableNum('segmentCacheTtlSec', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNullableNum('segmentCacheTtlSec', 0, 86400)" />
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             Cache fetched segments this long to serve repeat requests without re-fetching.

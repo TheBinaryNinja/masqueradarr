@@ -30,7 +30,7 @@ export function proxyConfigDefaults(): ProxyConfigState {
   return {
     connectTimeoutMs: 15000,
     readTimeoutMs: null,
-    bufferSizeKb: null,
+    bufferSizeKb: 1024, // ≈16 read-ahead chunks (KiB/64); a real jitter buffer out of the box. Clearable → null (minimal).
     maxRedirects: 10,
     headerOverrides: {},
     outputFormat: 'hls',
