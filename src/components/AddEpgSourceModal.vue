@@ -111,7 +111,7 @@ async function finishImport(source: unknown) {
 async function runNdjsonImport(
   input: string,
   init: RequestInit,
-  mapError: (code: unknown) => string,
+  mapError: (code: unknown, message?: unknown) => string,
 ): Promise<unknown> {
   importPhase.value = 'downloading';
   importPercent.value = null;
@@ -121,8 +121,8 @@ async function runNdjsonImport(
   });
   // A pre-stream failure (e.g. a 400 validation / 502 before the NDJSON body opens) arrives as a JSON error.
   if (!res.ok || !res.body) {
-    const code = (await res.json().catch(() => ({}))).error;
-    throw new Error(mapError(code));
+    const body = await res.json().catch(() => ({}));
+    throw new Error(mapError(body.error, body.message));
   }
   // Read the NDJSON stream line by line: phase/percent drive the footer + bar; the done payload carries the
   // created source; an error line yields a mapped failure message thrown after the stream ends.
@@ -140,7 +140,7 @@ async function runNdjsonImport(
       const line = buf.slice(0, nl).trim();
       buf = buf.slice(nl + 1);
       if (!line) continue;
-      let msg: { phase?: string; source?: unknown; percent?: number; error?: unknown };
+      let msg: { phase?: string; source?: unknown; percent?: number; error?: unknown; message?: unknown };
       try {
         msg = JSON.parse(line);
       } catch {
@@ -152,7 +152,7 @@ async function runNdjsonImport(
       } else if (msg.phase === 'done') {
         donePayload = { source: msg.source };
       } else if (msg.phase === 'error') {
-        failMessage = mapError(msg.error);
+        failMessage = mapError(msg.error, msg.message);
       }
     }
   }
@@ -171,9 +171,28 @@ function epgpwErrorMessage(code: unknown): string {
   if (code === 'epgpw_unreachable') return 'Could not reach EPG-PW — please try again.';
   return 'Could not add the source — please try again.';
 }
-function customErrorMessage(code: unknown): string {
-  if (code === 'xmltv_unreachable') return 'Could not fetch the XMLTV file from that URL.';
-  return 'Could not add the source — please try again.';
+// The server now categorizes XMLTV failures (see classifyXmltvError) and rides a short, URL-free `message`
+// (an errno like ENOTFOUND, or "HTTP 403") so the user sees WHY it failed instead of a catch-all.
+function customErrorMessage(code: unknown, message?: unknown): string {
+  const detail = typeof message === 'string' && message ? ` (${message})` : '';
+  switch (code) {
+    case 'xmltv_unreachable':
+      return `Could not reach that URL${detail} — check the address, DNS, and the server's network egress.`;
+    case 'xmltv_http':
+      return `The server rejected the request${detail || ' with an HTTP error'} — the host may be blocking automated downloads.`;
+    case 'xmltv_tls':
+      return `TLS/certificate error contacting the server${detail} — check the server's clock and CA certificates.`;
+    case 'xmltv_timeout':
+      return `Timed out contacting the server${detail} — it may be blocked, unreachable, or too slow.`;
+    case 'xmltv_parse':
+      return `The file downloaded but is not valid XMLTV${detail}.`;
+    case 'xmltv_db':
+      return `The guide downloaded but could not be saved${detail}.`;
+    case 'xmltv_too_large':
+      return `That guide is too large to import${detail}.`;
+    default:
+      return 'Could not add the source — please try again.';
+  }
 }
 
 const jesmannSelectedRegion = computed<JesmannRegion | null>(() => jesmannRegion(jesmannRegionId.value));
@@ -262,11 +281,26 @@ function selectFirstAvailableJesmann() {
 
 // Map a tagged server error code to a friendly message (the precedent in runValidate). Jesmann's only
 // expected failure is an unreachable / temporarily-missing guide.
-function jesmannErrorMessage(code: unknown): string {
-  if (code === 'xmltv_unreachable') {
-    return 'Could not reach epg.jesmann.com — the guide may be temporarily unavailable.';
+function jesmannErrorMessage(code: unknown, message?: unknown): string {
+  const detail = typeof message === 'string' && message ? ` (${message})` : '';
+  switch (code) {
+    case 'xmltv_unreachable':
+      return `Could not reach epg.jesmann.com${detail} — the guide may be temporarily unavailable, or check the server's DNS / network egress.`;
+    case 'xmltv_http':
+      return `epg.jesmann.com rejected the request${detail || ' with an HTTP error'}.`;
+    case 'xmltv_tls':
+      return `TLS/certificate error contacting epg.jesmann.com${detail}.`;
+    case 'xmltv_timeout':
+      return `Timed out contacting epg.jesmann.com${detail} — it may be blocked or unreachable.`;
+    case 'xmltv_parse':
+      return `The guide downloaded but is not valid XMLTV${detail}.`;
+    case 'xmltv_db':
+      return `The guide downloaded but could not be saved${detail}.`;
+    case 'xmltv_too_large':
+      return `That guide is too large to import${detail}.`;
+    default:
+      return 'Could not add the source — please try again.';
   }
-  return 'Could not add the source — please try again.';
 }
 
 // Create a Jesmann source via the shared NDJSON reader so the footer shows the live status + percent
@@ -339,8 +373,8 @@ async function runValidate(init: RequestInit) {
   try {
     const res = await fetch('/api/epg-sources/xmltv/validate', { method: 'POST', ...init });
     if (!res.ok) {
-      const code = (await res.json().catch(() => ({}))).error;
-      throw new Error(code === 'xmltv_unreachable' ? 'Could not fetch the XMLTV file from that URL.' : `HTTP ${res.status}`);
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error ? customErrorMessage(body.error, body.message) : `HTTP ${res.status}`);
     }
     xmltvValid.value = (await res.json()) as XmltvValidation;
   } catch (e) {

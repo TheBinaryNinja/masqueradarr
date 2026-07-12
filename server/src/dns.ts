@@ -24,7 +24,7 @@
 // CONSUMER of it — the DNS trace lines below are gated by the same level the Rust engine's lineage logs are.
 
 import { isIP } from 'node:net';
-import { Resolver } from 'node:dns';
+import { Resolver, lookup as osLookup } from 'node:dns';
 import { setGlobalDispatcher, Agent } from 'undici';
 import { logger } from './sources/core/logger.js';
 import { DEFAULT_NAMESERVERS } from './settings/translate.js';
@@ -68,10 +68,33 @@ function installCustomLookup(servers: string[]): void {
 
     const done = (err: NodeJS.ErrnoException | null, recs: { address: string; family: number }[]): void => {
       if (err) {
-        // Resolver error — always surfaced (independent of log level).
-        logger.error('dns', `${hostname} resolve failed: ${err.message}`);
-        if (wantAll) (callback as LookupAllCb)(err, []);
-        else (callback as LookupOneCb)(err, '', 0);
+        // The configured nameserver(s) failed (blocked egress to 8.8.8.8, SERVFAIL, timeout, …). Fall back to
+        // the OS resolver (getaddrinfo — the same one MongoDB + the ffmpeg/Chromium subprocesses already use),
+        // so a filtered nameserver doesn't silently break EVERY outbound fetch (EPG guides, scrape sources).
+        // Only surface the original error if the OS resolver ALSO fails. Mongo is unaffected — it never uses
+        // this dispatcher — so the "a bad nameserver value can't break the fatal Mongo connect" invariant holds.
+        const onOsFail = (): void => {
+          logger.error('dns', `${hostname} resolve failed (custom + OS resolver): ${err.message}`);
+          if (wantAll) (callback as LookupAllCb)(err, []);
+          else (callback as LookupOneCb)(err, '', 0);
+        };
+        const onOsOk = (osRecs: { address: string; family: number }[]): void => {
+          logger.warn('dns', `${hostname}: custom resolver failed (${err.code ?? err.message}), fell back to OS resolver`);
+          if (wantAll) (callback as LookupAllCb)(null, osRecs);
+          else (callback as LookupOneCb)(null, osRecs[0].address, osRecs[0].family);
+        };
+        // Branch on `all` with a LITERAL so the correct node:dns lookup overload (and callback shape) is picked.
+        if (wantAll) {
+          osLookup(hostname, { family, all: true }, (osErr, addresses) => {
+            if (osErr || !addresses || addresses.length === 0) onOsFail();
+            else onOsOk(addresses.map((a) => ({ address: a.address, family: a.family })));
+          });
+        } else {
+          osLookup(hostname, { family, all: false }, (osErr, address, osFamily) => {
+            if (osErr || !address) onOsFail();
+            else onOsOk([{ address, family: osFamily }]);
+          });
+        }
         return;
       }
       traceResolution(hostname, recs);

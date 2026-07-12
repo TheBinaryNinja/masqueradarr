@@ -23,6 +23,7 @@ import {
   syncXmltvUrl,
   decodeXmltvBody,
   probeXmltvUrls,
+  classifyXmltvError,
   type ImportProgress,
 } from '../epg/xmltvIngest.js';
 import { resolveProgramOffset } from '../settings/programOffset.js';
@@ -135,15 +136,21 @@ function streamNdjson(res: Response, run: (send: (o: unknown) => void) => Promis
 // Run one create flow in EITHER mode off the same `worker`: a streaming caller (request `Accept:
 // application/x-ndjson`) gets phase/percent NDJSON + a `done`/`error` line; everyone else keeps the
 // original blocking JSON response (back-compat). The worker fetches/parses/upserts and returns the created
-// doc, threading the given `progress` sink (a no-op in blocking mode). On a sync failure: streaming emits
-// `{ phase:'error', error: errorCode|'sync_failed' }`; blocking returns `502 { error: errorCode }`, or —
-// when `errorCode` is null (the xml-file upload path) — RETHROWS so the route's catch yields the original
-// 500 (preserving that path's exact prior behavior). `offsetDefaulted` rides inside the `done`/JSON source.
+// doc, threading the given `progress` sink (a no-op in blocking mode). On a sync failure, `opts.classify(err)`
+// buckets it: streaming emits `{ phase:'error', error: code, message? }`; blocking returns `502 { error: code,
+// message? }`; or — when classify returns null (the xml-file upload path) — RETHROWS so the route's catch
+// yields the original 500 (preserving that path's exact prior behavior). The real error + stack are ALWAYS
+// logged either way. `offsetDefaulted` rides inside the `done`/JSON source.
+// Classify a worker failure into a { code, message? } the client can act on, or null to RETHROW (preserving
+// the xml-file upload path's original next(err)/500 behavior). Threaded per create branch so each surfaces its
+// own tagged error instead of the old single fixed code.
+type ErrorClassifier = (err: unknown) => { code: string; message?: string } | null;
+
 async function runCreate(
   req: Request,
   res: Response,
   next: NextFunction,
-  opts: { errorCode: string | null; offsetDefaulted: boolean },
+  opts: { classify: ErrorClassifier; offsetDefaulted: boolean },
   worker: (progress: ImportProgress) => Promise<EpgSourceDoc | null>,
 ): Promise<void> {
   const wantsStream = (req.get('accept') ?? '').includes('application/x-ndjson');
@@ -152,12 +159,17 @@ async function runCreate(
     try {
       doc = await worker(() => {});
     } catch (err) {
-      logger.warn('epg', `epg create sync failed: ${(err as Error).message}`);
-      if (opts.errorCode) {
-        res.status(502).json({ error: opts.errorCode });
+      const cls = opts.classify(err);
+      // ALWAYS log the real cause + stack (the old code only logged a warn message, so the true failure —
+      // DNS / TLS / HTTP status / parse / DB — was invisible). meta.stack persists via the logs sink.
+      logger.error('epg', `epg create failed [${cls?.code ?? 'rethrow'}]: ${(err as Error).message}`, {
+        meta: { code: cls?.code ?? null, stack: (err as Error).stack },
+      });
+      if (cls) {
+        res.status(502).json({ error: cls.code, message: cls.message });
         return;
       }
-      throw err; // null errorCode → preserve the original next(err)/500 path (xml-file upload)
+      throw err; // null classification → preserve the original next(err)/500 path (xml-file upload)
     }
     if (!doc) {
       next(new Error('epg source upsert returned no document'));
@@ -171,8 +183,11 @@ async function runCreate(
     try {
       doc = await worker((ev) => send(ev));
     } catch (err) {
-      logger.warn('epg', `epg create sync failed: ${(err as Error).message}`);
-      send({ phase: 'error', error: opts.errorCode ?? 'sync_failed' });
+      const cls = opts.classify(err);
+      logger.error('epg', `epg create failed [${cls?.code ?? 'sync_failed'}]: ${(err as Error).message}`, {
+        meta: { code: cls?.code ?? null, stack: (err as Error).stack },
+      });
+      send({ phase: 'error', error: cls?.code ?? 'sync_failed', message: cls?.message });
       return;
     }
     if (!doc) {
@@ -431,8 +446,11 @@ epgSourcesRouter.post('/jesmann/create', async (req, res, next) => {
         // onProgress reports a real two-phase status (importing on connect, then byte-based % per batch).
         counts = await syncXmltvUrl(id, url, offset, (ev) => send(ev));
       } catch (err) {
-        logger.warn('epg', `jesmann stream create failed: ${(err as Error).message}`);
-        send({ phase: 'error', error: 'xmltv_unreachable' });
+        const cls = classifyXmltvError(err);
+        logger.error('epg', `jesmann stream create failed [${cls.code}]: ${(err as Error).message}`, {
+          meta: { code: cls.code, stack: (err as Error).stack },
+        });
+        send({ phase: 'error', error: cls.code, message: cls.message });
         return;
       }
       const doc = await upsertXmltvUrlSource({ id, name, url, source: 'jesmann', counts, interval, order });
@@ -483,7 +501,7 @@ epgSourcesRouter.post('/', async (req, res, next) => {
 
       // Fetch + write channels/programs first so a network failure leaves no broken source behind. runCreate
       // streams per-channel % when the client asked for NDJSON, else returns the blocking JSON doc.
-      return await runCreate(req, res, next, { errorCode: 'epgpw_unreachable', offsetDefaulted }, async (progress) => {
+      return await runCreate(req, res, next, { classify: () => ({ code: 'epgpw_unreachable' }), offsetDefaulted }, async (progress) => {
         const counts = await syncEpgpwSource(id, href, offset, progress);
         return (await EpgSource.findOneAndUpdate(
           { id },
@@ -542,8 +560,8 @@ epgSourcesRouter.post('/', async (req, res, next) => {
       const rawFilename = (isRaw ? qstr(q.filename) : typeof b.filename === 'string' ? b.filename : '').trim();
       const filename = rawFilename || `${name}.xml`;
       // The body is already uploaded (no download phase) — emit `importing` immediately, then a programmes-
-      // inserted % as writeXmltvEpg batches the rows. errorCode null preserves this path's prior 500-on-write.
-      return await runCreate(req, res, next, { errorCode: null, offsetDefaulted }, async (progress) => {
+      // inserted % as writeXmltvEpg batches the rows. classify → null preserves this path's prior 500-on-write.
+      return await runCreate(req, res, next, { classify: () => null, offsetDefaulted }, async (progress) => {
         progress({ phase: 'importing' });
         const counts = await writeXmltvEpg(content, id, offset, (pct) => progress({ phase: 'importing', percent: pct }));
         return (await EpgSource.findOneAndUpdate(
@@ -594,7 +612,7 @@ epgSourcesRouter.post('/', async (req, res, next) => {
       const id = `${idPrefix}:${slugify(name)}`;
       const interval = (typeof b.interval === 'string' && b.interval) || 'manual';
       // syncXmltvUrl streams a byte-based % through `progress` (importing on connect, then % per batch).
-      return await runCreate(req, res, next, { errorCode: 'xmltv_unreachable', offsetDefaulted }, async (progress) => {
+      return await runCreate(req, res, next, { classify: classifyXmltvError, offsetDefaulted }, async (progress) => {
         const counts = await syncXmltvUrl(id, url, offset, progress);
         return upsertXmltvUrlSource({ id, name, url, source, counts, interval, order });
       });
@@ -628,7 +646,7 @@ epgSourcesRouter.post('/', async (req, res, next) => {
     // Fetch + write programs first so a WAF/network failure leaves no broken source behind. runCreate streams
     // a per-window % (windows fetched / total) when the client asked for NDJSON, else returns blocking JSON.
     const displayName = provider.name + (provider.location ? ` — ${provider.location}` : '');
-    await runCreate(req, res, next, { errorCode: 'gracenote_unreachable', offsetDefaulted }, async (progress) => {
+    await runCreate(req, res, next, { classify: () => ({ code: 'gracenote_unreachable' }), offsetDefaulted }, async (progress) => {
       const counts = await syncPrograms(id, urlTemplate, offset, progress);
       return (await EpgSource.findOneAndUpdate(
         { id },
@@ -687,14 +705,14 @@ epgSourcesRouter.post('/:id/sync', async (req, res, next) => {
       const { source: doc, offsetDefaulted } = await syncEpgSource(src.id);
       return res.json({ ...doc, offsetDefaulted });
     } catch (err) {
-      logger.error('epg', `sync failed: ${(err as Error).message}`);
-      const code =
-        kind === 'epg-pw'
-          ? 'epgpw_unreachable'
-          : kind === 'remote url' || kind === 'jesmann'
-            ? 'xmltv_unreachable'
-            : 'gracenote_unreachable';
-      return res.status(502).json({ error: code });
+      const cls =
+        kind === 'remote url' || kind === 'jesmann'
+          ? classifyXmltvError(err)
+          : { code: kind === 'epg-pw' ? 'epgpw_unreachable' : 'gracenote_unreachable', message: undefined };
+      logger.error('epg', `sync failed [${cls.code}]: ${(err as Error).message}`, {
+        meta: { code: cls.code, stack: (err as Error).stack },
+      });
+      return res.status(502).json({ error: cls.code, message: cls.message });
     }
   } catch (err) {
     next(err);
@@ -745,8 +763,11 @@ epgSourcesRouter.post('/xmltv/validate', async (req, res, next) => {
       try {
         return res.json(await validateXmltvUrl(url));
       } catch (err) {
-        logger.warn('epg', `xmltv validate fetch failed: ${(err as Error).message}`);
-        return res.status(502).json({ error: 'xmltv_unreachable' });
+        const cls = classifyXmltvError(err);
+        logger.warn('epg', `xmltv validate fetch failed [${cls.code}]: ${(err as Error).message}`, {
+          meta: { code: cls.code },
+        });
+        return res.status(502).json({ error: cls.code, message: cls.message });
       }
     }
     return res.status(400).json({ error: 'content or url (string) required' });
