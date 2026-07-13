@@ -10,7 +10,7 @@ import GetAccessModal from '../components/GetAccessModal.vue';
 import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
-import { PLAYLISTS, reloadEpgSources, reloadPlaylists, setPlaylistPinned, reorderPlaylistPins, reorderPlaylistCategory, type Playlist, type Channel } from '../data';
+import { PLAYLISTS, reloadEpgSources, reloadPlaylists, setPlaylistPinned, reorderPlaylistPins, reorderPlaylistCategory, tagNames, type Playlist, type Channel } from '../data';
 import { bus } from '../composables/bus';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
@@ -105,13 +105,16 @@ function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResul
   opOpen.value = true;
 }
 
-// Search filter — case-insensitive substring across name + source (type). Debounced via the shared
-// SearchInput. The whole list (pinned + type groups) is filtered off this; an empty query passes through.
+// Search filter — case-insensitive substring across name + source (type) + assigned custom tag names.
+// Debounced via the shared SearchInput. The whole list (pinned + type groups) is filtered off this; an empty
+// query passes through.
 const search = ref('');
 const visiblePlaylists = computed<Playlist[]>(() => {
   const q = search.value.trim().toLowerCase();
   if (!q) return playlists.value;
-  return playlists.value.filter((p) => [p.name, p.source].some((v) => (v || '').toLowerCase().includes(q)));
+  return playlists.value.filter((p) =>
+    [p.name, p.source, ...tagNames(p.tags)].some((v) => (v || '').toLowerCase().includes(q)),
+  );
 });
 
 // Rows grouped by source TYPE, headers shown alphabetically (built-in / clone / file / hdhomerun / url, plus

@@ -11,9 +11,10 @@ import Segmented from '../components/Segmented.vue';
 import Stat from '../components/Stat.vue';
 import ScheduleEditorDrawer from '../components/ScheduleEditorDrawer.vue';
 import UploadXmlModal from '../components/UploadXmlModal.vue';
+import TagPicker from '../components/TagPicker.vue';
 import {
   EPG_SOURCES, PLAYLISTS, CHANNELS, CRON_JOBS, EPG_PROGRAMS,
-  epgMetaChips, formatSyncTime, reloadEpgSources, fetchProgramsFor, reloadCronjobs,
+  epgMetaChips, formatSyncTime, reloadEpgSources, fetchProgramsFor, reloadCronjobs, tagNames,
   type Channel, type Program, type CronJob,
 } from '../data';
 import { useTweaks } from '../composables/useTweaks';
@@ -27,6 +28,26 @@ const router = useRouter();
 const toast = useToast();
 
 const epg = computed(() => EPG_SOURCES.value.find((e) => e.id === props.id) || EPG_SOURCES.value[0]);
+
+// ── Custom tags — the EPG source's inline edit (wires the existing PUT /api/epg-sources/:id route). Persisted
+// immediately on change, then re-pull so the shared store (and the row pills on the list) reflect it. ──
+const tags = ref<string[]>([...(epg.value?.tags ?? [])]);
+watch(() => props.id, () => { tags.value = [...(epg.value?.tags ?? [])]; });
+async function saveTags(v: string[]): Promise<void> {
+  tags.value = v;
+  const src = epg.value;
+  if (!src) return;
+  try {
+    const res = await fetch(`/api/epg-sources/${encodeURIComponent(src.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tags: v }),
+    });
+    if (res.ok) void reloadEpgSources();
+  } catch {
+    /* best-effort; the picker keeps the optimistic local value */
+  }
+}
 
 // Custom source kinds: 'xml file' is a one-shot upload (Sync → Upload, no sync schedule); 'remote url' is a
 // re-fetchable XMLTV URL (normal Sync + schedules). See AddEpgSourceModal.vue / restapi.md.
@@ -378,6 +399,7 @@ function livePr(c: Channel) {
           <Pill v-if="epg.builtin" tone="system"><Icon name="check" :size="10" />built-in</Pill>
           <Pill tone="cyan">{{ (epg.interval || '').toLowerCase() }}</Pill>
           <Pill v-if="isPlaylistBound" tone="good">Playlist-bound</Pill>
+          <Pill v-for="n in tagNames(epg.tags)" :key="n" tone="magenta">{{ n }}</Pill>
         </div>
         <div class="epg-meta">
           <span v-for="c in epgMetaChips(epg, ['source', 'lineupId'])" :key="c.label" class="meta-item" :title="`${c.label}: ${c.value}`">
@@ -403,6 +425,15 @@ function livePr(c: Channel) {
       <button v-if="!epg.builtin" class="btn ghost danger" :disabled="deleting" @click="confirmDelete = true" title="Delete EPG source">
         <Icon name="trash" :size="14" />Delete
       </button>
+    </div>
+
+    <!-- Custom tags -->
+    <div class="card">
+      <span style="font-weight: 600; font-size: var(--fs-base);">Tags</span>
+      <div class="muted" style="font-size: var(--fs-xs); margin: 4px 0 10px;">
+        Assign custom tags to this EPG source. Tags are searchable and shared across the app.
+      </div>
+      <TagPicker :model-value="tags" @update:model-value="saveTags" />
     </div>
 
     <!-- Summary dashboard -->

@@ -10,8 +10,9 @@ import ChannelPlayer from './ChannelPlayer.vue';
 import LivelineChart from './LivelineChart.vue';
 import GroupPicker from './GroupPicker.vue';
 import GroupManager from './GroupManager.vue';
+import TagPicker from './TagPicker.vue';
 import { useStreamStats } from '../composables/useStreamStats';
-import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, type Channel, type StreamProbe } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, tagNames, type Channel, type StreamProbe } from '../data';
 import { bus } from '../composables/bus';
 
 const props = defineProps<{ ch: Channel }>();
@@ -32,6 +33,8 @@ const streamUrl = ref(props.ch.streamEntryUrl ?? '');
 // DaddyLive-family sources (dlhd) expose several interchangeable upstream "players" per channel; the
 // picker below lets the operator prefer one for THIS channel (0 = Auto → inherit the source-wide default).
 const player = ref(props.ch.playerPref ?? 0);
+// Operator-assigned custom tags (persisted on Save, alongside the other editable fields).
+const tags = ref<string[]>([...(props.ch.tags ?? [])]);
 
 // A failover CHILD mirrors its parent's EPG identity (the server rejects direct EPG edits on it with
 // 409 failover_child_epg_locked), so the TVG-ID field is locked with an "inherited" hint.
@@ -94,6 +97,10 @@ function save() {
   if (supportsPlayer.value && (player.value || null) !== (props.ch.playerPref ?? null)) {
     patch.playerPref = player.value || null;
   }
+  // Custom tags — send only when the set actually changed (order-independent compare on unique ids).
+  const curTags = props.ch.tags ?? [];
+  const sameTags = tags.value.length === curTags.length && tags.value.every((t) => curTags.includes(t));
+  if (!sameTags) patch.tags = tags.value;
   if (Object.keys(patch).length) putChannel(patch);
   emit('close');
 }
@@ -192,6 +199,7 @@ watch(
     tvgId.value = props.ch.tvg_id ?? '';
     streamUrl.value = props.ch.streamEntryUrl ?? '';
     player.value = props.ch.playerPref ?? 0;
+    tags.value = [...(props.ch.tags ?? [])];
     confirmRemove.value = false;
   },
 );
@@ -288,6 +296,7 @@ onBeforeUnmount(() => {
           <Pill tone="cyan">{{ playlist?.source ?? ch.source }}</Pill>
           <Pill v-if="ch.failoverRole === 'parent'" tone="parent" title="Failover group parent">parent</Pill>
           <Pill v-else-if="ch.failoverRole === 'child'" tone="child" title="Failover backup — hidden from exports, EPG inherited from the parent">child</Pill>
+          <Pill v-for="n in tagNames(ch.tags)" :key="n" tone="magenta">{{ n }}</Pill>
         </div>
 
         <div class="divider" />
@@ -330,6 +339,11 @@ onBeforeUnmount(() => {
             <div class="field-lbl">Group</div>
             <GroupPicker v-model="group" :playlist-id="ch.source" allow-create />
           </div>
+        </div>
+
+        <div class="form-row">
+          <div class="field-lbl">Tags</div>
+          <TagPicker v-model="tags" />
         </div>
 
         <!-- DaddyLive-family only: pick which upstream player this channel prefers (redundant feeds of the

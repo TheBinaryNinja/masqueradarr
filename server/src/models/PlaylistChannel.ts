@@ -51,6 +51,10 @@ export interface PlaylistChannelDoc {
   // resolve time by the seam (buildGrant) and honored+failed-over by the adapter's resolveStream. OPTIONAL — older
   // docs lack it (treat undefined as null). $setOnInsert-only, like the failover fields, so it survives re-sync.
   playerPref?: number | null;
+  // Operator-assigned custom tag ids (opaque Tag.id references; see models/Tag.ts). $setOnInsert-only, like
+  // the failover/playerPref fields, so it survives re-sync. OPTIONAL — older docs lack it (treat undefined
+  // as []). Set via PUT /api/playlists/:id/channels/:channelId; a tag delete `$pull`s its id here.
+  tags?: string[];
   stream: {
     initials: string | null;
     isPlayable: boolean;
@@ -85,6 +89,8 @@ const PlaylistChannelSchema = new Schema<PlaylistChannelDoc>(
     // ABSENT until captured so `$type:'missing'` / `=== undefined` reliably means "never snapshotted".
     origTvgId: { type: String },
     playerPref: { type: Number, default: null }, // preferred upstream player (1-based) for playerSelectable sources; null = inherit source default
+    // Operator-assigned custom tag ids (Tag.id references). $setOnInsert-only (survives re-sync), like failover/playerPref.
+    tags: { type: [String], default: [] },
     // Nested object (not a subdocument) → Mongoose adds no `stream._id`.
     stream: {
       initials: { type: String, default: null },

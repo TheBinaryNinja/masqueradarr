@@ -15,6 +15,7 @@ import { Playlist } from '../models/Playlist.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
 import { EpgSource } from '../models/EpgSource.js';
 import { EpgChannel } from '../models/EpgChannel.js';
+import { Tag } from '../models/Tag.js';
 
 export const searchRouter = Router();
 
@@ -73,22 +74,29 @@ searchRouter.get('/', async (req, res, next) => {
     }
     const rx = new RegExp(escapeRegExp(q), 'i');
 
-    // Label maps (small collections) — playlist id → name, epg source id → name.
-    const [playlists, epgSources] = await Promise.all([
-      Playlist.find({}, { _id: 0, id: 1, name: 1, endpoint: 1, source: 1 }).lean<
-        Array<{ id: string; name: string; endpoint?: string; source?: string | null }>
+    // Label maps (small collections) — playlist id → name, epg source id → name. `tags` is projected so a
+    // record can match by an assigned tag's NAME (records store tag IDS; the Tag registry resolves the name).
+    const [playlists, epgSources, tags] = await Promise.all([
+      Playlist.find({}, { _id: 0, id: 1, name: 1, endpoint: 1, source: 1, tags: 1 }).lean<
+        Array<{ id: string; name: string; endpoint?: string; source?: string | null; tags?: string[] }>
       >(),
-      EpgSource.find({}, { _id: 0, id: 1, name: 1, source: 1, lineupId: 1 }).lean<
-        Array<{ id: string; name: string; source?: string | null; lineupId?: string | null }>
+      EpgSource.find({}, { _id: 0, id: 1, name: 1, source: 1, lineupId: 1, tags: 1 }).lean<
+        Array<{ id: string; name: string; source?: string | null; lineupId?: string | null; tags?: string[] }>
       >(),
+      Tag.find({}, { _id: 0, id: 1, name: 1 }).lean<Array<{ id: string; name: string }>>(),
     ]);
     const playlistName = new Map(playlists.map((p) => [p.id, p.name]));
     const epgSourceName = new Map(epgSources.map((e) => [e.id, e.name]));
+    // Custom tags match by NAME → resolve to the set of matching tag ids; a record is a tag-hit when its
+    // `tags` array intersects this set. We surface the OWNING record (no new result type).
+    const matchedTagIds = new Set(tags.filter((t) => rx.test(t.name)).map((t) => t.id));
 
     // Channel + epg-channel matches (bucketed by parent), plus the direct name matches.
     const [chDocs, epgChDocs] = await Promise.all([
       PlaylistChannel.find(
-        { $or: [{ tvg_name: rx }, { tvg_id: rx }, { group: rx }, { channelNo: rx }] },
+        // The trailing `tags $in` arm surfaces a channel when the query matches an assigned tag's name (empty
+        // set → matches nothing, harmless). Bucketed by parent under its playlist group, like the other arms.
+        { $or: [{ tvg_name: rx }, { tvg_id: rx }, { group: rx }, { channelNo: rx }, { tags: { $in: [...matchedTagIds] } }] },
         { _id: 1, tvg_name: 1, tvg_id: 1, group: 1, channelNo: 1, source: 1 },
       )
         .limit(MATCH_CAP)
@@ -143,7 +151,7 @@ searchRouter.get('/', async (req, res, next) => {
 
     const topLevel = {
       playlists: playlists
-        .filter((p) => rx.test(p.name))
+        .filter((p) => rx.test(p.name) || !!p.tags?.some((id) => matchedTagIds.has(id)))
         .slice(0, TOP_LIMIT)
         .map((p) => ({
           type: 'playlist' as const,
@@ -152,7 +160,12 @@ searchRouter.get('/', async (req, res, next) => {
           sublabel: [p.endpoint, isCustomTag(p.source) ? p.source : null].filter(Boolean).join(' · '),
         })),
       epgSources: epgSources
-        .filter((e) => rx.test(e.name) || (e.lineupId != null && rx.test(e.lineupId)))
+        .filter(
+          (e) =>
+            rx.test(e.name) ||
+            (e.lineupId != null && rx.test(e.lineupId)) ||
+            !!e.tags?.some((id) => matchedTagIds.has(id)),
+        )
         .slice(0, TOP_LIMIT)
         .map((e) => ({
           type: 'epg-source' as const,

@@ -108,6 +108,7 @@ async function upsertLocalChannels(selected: Array<{ ch: LocalRawChannel; id: st
             failoverGroupId: pc.failoverGroupId,
             failoverRole: pc.failoverRole,
             failoverOrder: pc.failoverOrder,
+            tags: pc.tags, // operator-owned custom tags — written-once, survives re-sync (like failover)
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             'stream.probe': pc.stream.probe,

@@ -10,6 +10,7 @@ import ProxyConfigPanel from '../components/ProxyConfigPanel.vue';
 import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
+import TagManager from '../components/TagManager.vue';
 import { type CronFrequency } from '../data';
 import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
@@ -26,7 +27,7 @@ const toast = useToast();
 
 // Settings is split into three tabs: General (General + Data), Video Config (Channel Probe Scheduler,
 // In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, DaddyLive Player Source,
-// Dulo.tv Authentication).
+// Dulo.tv Authentication, Custom Tags).
 const activeTab = ref<'general' | 'video' | 'advanced'>('general');
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
@@ -522,6 +523,11 @@ async function fireReset() {
     </div>
 
     <DuloAuthPanel v-if="activeTab === 'advanced'" />
+
+    <div class="card" v-if="activeTab === 'advanced'">
+      <h3 class="section-title">Custom Tags</h3>
+      <TagManager />
+    </div>
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">Data</h3>

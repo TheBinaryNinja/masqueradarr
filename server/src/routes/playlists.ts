@@ -21,6 +21,7 @@ import {
   failoverDisbandUpdate,
 } from '../services/failover.js';
 import { reconcileGroupRegistry, groupsWithCounts } from '../services/groups.js';
+import { validateTagIds } from '../services/tags.js';
 import { fetchProgramsGrouped, MAX_CHANNEL_IDS } from '../epg/queryPrograms.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { logger } from '../sources/core/logger.js';
@@ -257,10 +258,17 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
       }
       $set.auto = body.auto;
     }
+    // Operator-assigned custom tag ids — validated against the Tag registry (unknown id → 400). Covers both
+    // built-in and custom playlists (both are Playlist docs edited through this route).
+    if (body.tags !== undefined) {
+      const v = await validateTagIds(body.tags);
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      $set.tags = v.ids;
+    }
     if (!Object.keys($set).length) {
       return res
         .status(400)
-        .json({ error: 'no editable fields provided (name, state, pinned, endpoint, url, interval, auto)' });
+        .json({ error: 'no editable fields provided (name, state, pinned, endpoint, url, interval, auto, tags)' });
     }
 
     // Canonicalize the persisted `url` against the effective endpoint (defense-in-depth — the filename and
@@ -697,10 +705,17 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
         $set['stream.isPlayable'] = stream.isPlayable;
       }
     }
+    // Operator-assigned custom tag ids — validated against the Tag registry (unknown id → 400). An array, so
+    // it has its own block (can't ride the string loop above, like playerPref).
+    if (body.tags !== undefined) {
+      const v = await validateTagIds(body.tags);
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      $set.tags = v.ids;
+    }
     if (!Object.keys($set).length) {
       return res.status(400).json({
         error:
-          'no editable fields provided (status, tvg_name, group, channelNo, streamEntryUrl, tvg_id, epg, epgState, playerPref, stream.*)',
+          'no editable fields provided (status, tvg_name, group, channelNo, streamEntryUrl, tvg_id, epg, epgState, playerPref, tags, stream.*)',
       });
     }
     // Failover-group EPG authority: a CHILD mirrors its parent's EPG identity (services/failover.ts), so

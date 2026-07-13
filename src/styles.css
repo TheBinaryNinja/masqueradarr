@@ -858,6 +858,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: oklch(0.79 0.09 250);
   border-color: oklch(0.74 0.09 250 / 0.3);
 }
+/* Custom tags — a single magenta variant for all user-managed tags (hue ~340, distinct from the violet
+   parent/305 and system-purple/280 roles). Raw oklch like parent/child, so no separate light-mode override. */
+.pill.magenta {
+  background: oklch(0.72 0.18 340 / 0.14);
+  color: oklch(0.80 0.16 340);
+  border-color: oklch(0.72 0.18 340 / 0.32);
+}
 
 /* Segmented control */
 .segmented {

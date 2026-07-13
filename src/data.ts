@@ -8,7 +8,7 @@
 // Static UI constants (GROUPS, EPG_HOURS) and pure client-side helpers
 // live here too — they're not mock data, they're config the SPA owns.
 
-import { ref, reactive, type Ref } from 'vue';
+import { ref, reactive, computed, type Ref } from 'vue';
 import { summarizeFrequency } from './composables/useSchedule';
 
 // ──────────────────────────────────────────────────────────────────────
@@ -45,6 +45,9 @@ export interface Playlist {
   // Optional BY DESIGN: an unset `order` sorts LAST, so a newly created playlist lands at the bottom of its
   // category. Set via PUT /api/playlists/reorder { field:'order' } (reorderPlaylistCategory); never by a sync.
   order?: number;
+  // Operator-assigned custom tag ids (opaque Tag.id references; resolve to names via tagNames()). Set via
+  // PUT /api/playlists/:id { tags }. Absent on legacy rows (treat undefined as none).
+  tags?: string[];
 }
 export interface EpgSource {
   id: string; name: string; url: string; channels: number; programs: number;
@@ -77,6 +80,9 @@ export interface EpgSource {
   device?: string | null;
   timezone?: string | null;
   languagecode?: string | null;
+  // Operator-assigned custom tag ids (opaque Tag.id references; resolve to names via tagNames()). Set via
+  // PUT /api/epg-sources/:id { tags }. Absent on legacy rows (treat undefined as none).
+  tags?: string[];
 }
 // Decode-metadata shape (the deep technical-detail slot). Channel.stream.probe is filled by the channel probe
 // from manifest-declared decode metadata (null until first probed); ActiveStream.probe stays null — a passthrough
@@ -121,6 +127,7 @@ export interface Channel {
   failoverOrder?: number | null; // child ordinal within the group
   origTvgId?: string | null; // pre-failover snapshot of this channel's own tvg_id (server-managed; SPA never writes it)
   playerPref?: number | null; // preferred upstream player (1-based) for playerSelectable sources (dlhd); null = inherit source default
+  tags?: string[]; // operator-assigned custom tag ids (Tag.id refs; resolve via tagNames()). Set via PUT /api/playlists/:id/channels/:id
   stream: {
     initials: string | null;
     isPlayable: boolean;
@@ -335,6 +342,9 @@ export const VIEW_SESSIONS: Ref<ViewSession[]> = ref([]);
 export const USER_METRICS: Ref<UserMetric[]> = ref([]);
 export const LOGS: Ref<Log[]> = ref([]);
 export const CRON_JOBS: Ref<CronJob[]> = ref([]);
+// Custom tags — the shared registry (server: Tag collection + /api/tags). Assigned by opaque id on Playlist /
+// EpgSource / Channel; resolve id→name via tagNames(). Managed on the Settings screen (TagManager.vue).
+export const TAGS: Ref<Tag[]> = ref([]);
 export const EPG_PROGRAMS: Record<string, Program[]> = reactive({});
 // Ephemeral (not bootstrapped) — kept live by useSystemStats.ts off the /api/system-stats WebSocket. NOT in
 // bootstrapData(): the route is admin-only, so a standard user's parallel bootstrap would 403; the admin
@@ -400,7 +410,7 @@ export function bootstrapData(): Promise<void> {
     // loads epg-channels per-selected-source (fetchEpgChannelsForSource).
     const [
       playlists, epgSources, sources, activeStreams,
-      customPlaylists, viewSessions, logs, cronjobs,
+      customPlaylists, viewSessions, logs, cronjobs, tags,
     ] = await Promise.all([
       getJson<Playlist[]>('/api/playlists'),
       getJson<EpgSource[]>('/api/epg-sources'),
@@ -410,6 +420,7 @@ export function bootstrapData(): Promise<void> {
       getJson<ViewSession[]>('/api/view-sessions'),
       getJson<Log[]>('/api/logs?limit=200'),
       getJson<CronJob[]>('/api/cronjobs'),
+      getJson<Tag[]>('/api/tags'),
     ]);
     // The global channel list is the union of each PROVISIONED source's projected channels PLUS every
     // user-composed (Clone/Import) playlist's copied channels (the legacy /api/channels collection endpoint
@@ -431,6 +442,7 @@ export function bootstrapData(): Promise<void> {
     VIEW_SESSIONS.value = viewSessions;
     LOGS.value = logs;
     CRON_JOBS.value = cronjobs;
+    TAGS.value = tags;
   })().catch((err) => {
     bootstrapPromise = null;
     throw err;
@@ -702,6 +714,79 @@ export async function deleteGroup(playlistId: string, name: string): Promise<Gro
     c.source === playlistId && c.group === name ? { ...c, group: null } : c,
   );
   return defs;
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Custom tags — the shared, app-wide label registry (server: Tag collection + /api/tags). Records store
+// opaque tag IDS (a `tags: string[]` on Playlist / EpgSource / Channel); tagNames() resolves ids → display
+// names via a single cached Map so rows never do per-item lookups. A rename is one registry write (every row
+// reflects it reactively — no record rewrite); a delete `$pull`s the id from every record server-side and is
+// mirrored in-memory below so open rows drop the pill without a refetch.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface Tag { id: string; name: string; order?: number }
+
+// id → name, rebuilt only when TAGS changes.
+export const tagsById = computed(() => new Map(TAGS.value.map((t) => [t.id, t.name])));
+
+// Resolve a record's tag ids to display names (dropping any unknown/stale id).
+export function tagNames(ids?: string[]): string[] {
+  if (!ids?.length) return [];
+  const m = tagsById.value;
+  return ids.map((id) => m.get(id)).filter((n): n is string => !!n);
+}
+
+export async function reloadTags(): Promise<void> {
+  TAGS.value = await getJson<Tag[]>('/api/tags');
+}
+
+// Create a tag. Returns it; throws with the server error slug (e.g. 'tag_exists') so a caller can react.
+export async function createTag(name: string): Promise<Tag> {
+  const res = await fetch('/api/tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `create tag failed: ${res.status}`);
+  }
+  const tag = (await res.json()) as Tag;
+  TAGS.value = [...TAGS.value, tag];
+  return tag;
+}
+
+// Rename a tag. No record patching — rows resolve names via tagsById, which updates reactively.
+export async function renameTag(id: string, name: string): Promise<Tag> {
+  const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `rename tag failed: ${res.status}`);
+  }
+  const tag = (await res.json()) as Tag;
+  TAGS.value = TAGS.value.map((t) => (t.id === id ? tag : t));
+  return tag;
+}
+
+// Delete a tag. The server cascades a $pull across all records; mirror it in-memory so open rows drop the
+// pill without a refetch (parallels deleteGroup patching CHANNELS).
+export async function deleteTag(id: string): Promise<void> {
+  const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(`delete tag failed: ${res.status}`);
+  TAGS.value = TAGS.value.filter((t) => t.id !== id);
+  PLAYLISTS.value = PLAYLISTS.value.map((p) =>
+    p.tags?.includes(id) ? { ...p, tags: p.tags.filter((t) => t !== id) } : p,
+  );
+  EPG_SOURCES.value = EPG_SOURCES.value.map((e) =>
+    e.tags?.includes(id) ? { ...e, tags: e.tags.filter((t) => t !== id) } : e,
+  );
+  CHANNELS.value = CHANNELS.value.map((c) =>
+    c.tags?.includes(id) ? { ...c, tags: c.tags.filter((t) => t !== id) } : c,
+  );
 }
 
 // Hard-delete channels (tombstoned server-side so a re-sync won't re-add them). Removes them from the global

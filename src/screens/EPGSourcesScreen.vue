@@ -7,7 +7,7 @@ import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
 import SearchInput from '../components/SearchInput.vue';
 import EpgSyncModal from '../components/EpgSyncModal.vue';
-import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources, reloadEpgSources } from '../data';
+import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources, reloadEpgSources, tagNames } from '../data';
 import { useToast } from '../composables/useToast';
 import { useEpgActions } from '../composables/useEpgActions';
 
@@ -37,14 +37,14 @@ async function onSyncAll(): Promise<{ failed: string[] }> {
   return { failed };
 }
 
-// Search filter — case-insensitive substring across name + kind (source) + lineupId. Debounced via the
-// shared SearchInput so a large source list doesn't re-filter on every keystroke.
+// Search filter — case-insensitive substring across name + kind (source) + lineupId + assigned custom tag
+// names. Debounced via the shared SearchInput so a large source list doesn't re-filter on every keystroke.
 const search = ref('');
 const filteredSources = computed(() => {
   const q = search.value.trim().toLowerCase();
   if (!q) return EPG_SOURCES.value;
   return EPG_SOURCES.value.filter((p) =>
-    [p.name, p.source, p.lineupId].some((v) => (v || '').toLowerCase().includes(q)),
+    [p.name, p.source, p.lineupId, ...tagNames(p.tags)].some((v) => (v || '').toLowerCase().includes(q)),
   );
 });
 
@@ -146,6 +146,7 @@ function openSource(id: string) {
             <Pill v-if="p.builtin" tone="system"><Icon name="check" :size="10" />built-in</Pill>
             <Pill tone="cyan">{{ (p.interval || '').toLowerCase() }}</Pill>
             <Pill v-if="p.playlistBinding" tone="good">Playlist-bound</Pill>
+            <Pill v-for="n in tagNames(p.tags)" :key="n" tone="magenta">{{ n }}</Pill>
           </div>
           <div class="epg-meta">
             <span v-for="c in epgMetaChips(p, ['source', 'lineupId'])" :key="c.label" class="meta-item" :title="`${c.label}: ${c.value}`">

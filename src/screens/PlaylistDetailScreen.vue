@@ -19,7 +19,7 @@ import GroupConfigModal from '../components/GroupConfigModal.vue';
 import AssignAccessModal from '../components/AssignAccessModal.vue';
 import GetAccessModal from '../components/GetAccessModal.vue';
 import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
-import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, disbandChannelLocal, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
+import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, disbandChannelLocal, deleteChannels as apiDeleteChannels, tagNames, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
 import { isAdmin } from '../composables/useAuth';
@@ -574,10 +574,13 @@ const headerMenuItems = computed<RowActionItem[]>(() => {
 // backup count per parent id (always equals the nested rows shown). A child whose parent is filtered out
 // falls through as a normal, un-nested row.
 const filteredView = computed(() => {
+  const q = search.value.toLowerCase();
   const rows = channels.value.filter((c) =>
     c.status === stateFilter.value &&
     (group.value === 'all' || c.group === group.value) &&
-    (search.value === '' || c.tvg_name.toLowerCase().includes(search.value.toLowerCase()))
+    (q === '' ||
+      c.tvg_name.toLowerCase().includes(q) ||
+      tagNames(c.tags).some((n) => n.toLowerCase().includes(q)))
   );
   // Sort by the selected key. channelNo is a user-editable string (may be numeric or null) — compare it
   // numerically when both sides parse, else lexically, with nulls last; name/group are plain string sorts.
@@ -881,6 +884,7 @@ async function doAppend() {
                 <Pill v-if="c.failoverRole === 'parent'" tone="parent" title="Failover group parent — exported and served first">parent</Pill>
                 <Pill v-else-if="c.failoverRole === 'child'" tone="child" title="Failover backup — hidden from exports, EPG inherited from the parent">child</Pill>
                 <Pill v-if="filteredView.childCounts.has(c.id)" title="Failover backups behind this parent">{{ filteredView.childCounts.get(c.id) }} backup{{ filteredView.childCounts.get(c.id) === 1 ? '' : 's' }}</Pill>
+                <Pill v-for="n in tagNames(c.tags)" :key="n" tone="magenta">{{ n }}</Pill>
               </div>
             </td>
             <td class="muted">{{ c.group }}</td>

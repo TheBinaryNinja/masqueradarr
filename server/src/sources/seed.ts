@@ -295,6 +295,8 @@ async function upsertPlaylistChannels(docs: SourceChannelDoc[]): Promise<void> {
             failoverOrder: pc.failoverOrder,
             // Operator-owned player preference — written-once null, NEVER $set (survives re-sync), like failover.
             playerPref: pc.playerPref,
+            // Operator-owned custom tags — written-once [], NEVER $set (survives re-sync), like failover/playerPref.
+            tags: pc.tags,
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             // Written-once null; the live probe (set by the proxy sink) is preserved across re-syncs.

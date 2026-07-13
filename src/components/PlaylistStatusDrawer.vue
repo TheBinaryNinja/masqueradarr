@@ -6,6 +6,7 @@ import Pill from './Pill.vue';
 import Toggle from './Toggle.vue';
 import FrequencyBuilder from './FrequencyBuilder.vue';
 import ProxyConfigPanel from './ProxyConfigPanel.vue';
+import TagPicker from './TagPicker.vue';
 import { type Channel, type Playlist, type CronFrequency, type CronJob, CRON_JOBS, reloadCronjobs, reloadPlaylists } from '../data';
 import { domain, timezone } from '../composables/useSettings';
 import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/useSchedule';
@@ -298,6 +299,14 @@ function setActive(v: boolean) {
   save({ state: v });
 }
 
+// Custom tag assignment — persisted immediately (like the other drawer fields). The optimistic `emit('updated')`
+// inside save() updates the parent's bound row so the magenta pills refresh without a refetch.
+const tags = ref<string[]>([...(props.playlist.tags ?? [])]);
+function onTags(v: string[]) {
+  tags.value = v;
+  save({ tags: v });
+}
+
 function setMode(m: 'global' | 'custom') {
   mode.value = m;
   save({ endpoint: m, url: hostedUrl.value });
@@ -415,6 +424,14 @@ function onCustomPath(v: string) {
               </div>
             </label>
           </div>
+        </div>
+
+        <div class="divider" />
+
+        <!-- Custom tags -->
+        <div class="form-row">
+          <div class="field-lbl">Tags</div>
+          <TagPicker :model-value="tags" @update:model-value="onTags" />
         </div>
 
         <div class="divider" />

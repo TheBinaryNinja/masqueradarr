@@ -84,6 +84,10 @@ const PlaylistSchema = new Schema(
       type: [{ name: { type: String, required: true }, order: { type: Number, default: 0 } }],
       default: [],
     },
+    // Operator-assigned custom tag ids (opaque Tag.id references; see models/Tag.ts). Covers built-in AND
+    // custom playlists (both are Playlist docs). User-owned — a sync never writes it; set only via
+    // PUT /api/playlists/:id. A tag delete `$pull`s its id here (services/tags.ts cascadeDeleteTag).
+    tags: { type: [String], default: [] },
   },
   { versionKey: false },
 );
