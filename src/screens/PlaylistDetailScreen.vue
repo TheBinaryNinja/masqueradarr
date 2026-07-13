@@ -79,6 +79,10 @@ const view = ref<'table' | 'grid'>('table');
 // State filter (orthogonal to the table/grid view): defaults to Active so a channel list always opens
 // showing only Active channels. Filters on the top-level 'Active' | 'Disabled' governor (playlistchannels.status).
 const stateFilter = ref<'Active' | 'Disabled'>('Active');
+// EPG match filter (mirrors stateFilter, plus an 'all' passthrough): 'all' applies no EPG filtering;
+// 'matched' shows only epgState === 'matched'; 'unmatched' shows everything else (epgState 'unmatched'
+// OR null). Defaults to all (unfiltered).
+const epgFilter = ref<'all' | 'matched' | 'unmatched'>('all');
 // Channel-list sort key (the toolbar Segmented to the right of the group filter): by name (default),
 // channel number, or group. Applied AFTER the state/group/search filters, in both Table and Grid views.
 const sortBy = ref<'name' | 'channelNo' | 'group'>('name');
@@ -90,7 +94,7 @@ const channels = ref<Channel[]>([]);
 
 // Whenever a different playlist is opened, default the state filter back to Active (each time a
 // channel list is displayed it should start on Active).
-watch(() => props.id, () => { stateFilter.value = 'Active'; });
+watch(() => props.id, () => { stateFilter.value = 'Active'; epgFilter.value = 'all'; });
 
 // Nav-in load: refresh the shared playlist store (fresh header row) + THIS playlist's channel list. Re-runs
 // whenever the route id changes (tracked via props.id here); reload() writes only the store + channels, so it
@@ -604,6 +608,8 @@ const filteredView = computed(() => {
   const q = search.value.toLowerCase();
   const rows = channels.value.filter((c) =>
     c.status === stateFilter.value &&
+    (epgFilter.value === 'all' ||
+      (epgFilter.value === 'matched' ? c.epgState === 'matched' : c.epgState !== 'matched')) &&
     (group.value === 'all' || c.group === group.value) &&
     (q === '' ||
       c.tvg_name.toLowerCase().includes(q) ||
@@ -858,6 +864,11 @@ async function doAppend() {
           <Segmented :value="stateFilter" @change="(v) => stateFilter = v as any" :options="[
             { value: 'Active', label: 'Active', icon: 'check', cls: 'seg-cyan' },
             { value: 'Disabled', label: 'Disabled', icon: 'x', cls: 'seg-amber' },
+          ]" />
+          <Segmented :value="epgFilter" @change="(v) => epgFilter = v as any" :options="[
+            { value: 'all', label: 'All', icon: 'list' },
+            { value: 'matched', label: 'Matched', icon: 'check', cls: 'seg-green' },
+            { value: 'unmatched', label: 'Unmatched', icon: 'warn', cls: 'seg-amber' },
           ]" />
           <Segmented :value="view" @change="(v) => view = v as any" :options="[
             { value: 'table', label: 'Table', icon: 'list' },
