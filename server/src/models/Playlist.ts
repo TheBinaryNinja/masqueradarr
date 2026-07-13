@@ -55,6 +55,12 @@ const PlaylistSchema = new Schema(
     // lifecycle (PlaylistAuthState.save → Playlist write-back); $setOnInsert false on first provision so a
     // re-sync never clobbers the live value. The playlistauths doc remains the authority.
     isAuthenticated: { type: Boolean, required: true, default: false },
+    // Organizational pin: when true the playlist renders in the Playlists screen's PINNED section (above the
+    // source-type groups). `pinOrder` is the drag-reorder ordinal WITHIN that section (only meaningful while
+    // pinned; a newly pinned row lands at the bottom via nextPinOrder()). Both are USER-OWNED — a sync never
+    // writes them; only the API (PUT /:id + PUT /reorder) does. Mirrors epgsources.order (drag-to-reorder).
+    pinned: { type: Boolean, required: true, default: false },
+    pinOrder: { type: Number, required: true, default: 0 },
     // Tombstone set of PlaylistChannel `_id`s the operator hard-deleted via the bulk-delete route
     // (POST /:id/channels/delete). The sync/import re-insert paths ($setOnInsert upserts off the live
     // upstream listing) consult this and SKIP tombstoned ids, so a deleted channel that is still present

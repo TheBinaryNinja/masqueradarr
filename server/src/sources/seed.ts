@@ -169,6 +169,20 @@ async function backfillPlaylistBinding(): Promise<void> {
   if (r.modifiedCount) logger.info('seed', `backfilled playlistBinding on ${r.modifiedCount} self-epg source(s)`);
 }
 
+// One-time, idempotent backfill of the organizational pin fields (playlists.pinned / pinOrder) onto rows
+// created before the fields existed. Mongoose applies schema defaults only at document CREATION, so a
+// pre-field row surfaces `undefined` on read until written; this makes `pinned:false` explicit (correct
+// initial state — nothing starts pinned). The `$exists:false` guard makes it a no-op once applied / on a
+// fresh DB. No order-seed is needed (unlike seedEpgSourceOrder): the PINNED section starts empty and each
+// pin assigns its own bottom-of-section ordinal. Non-fatal.
+async function backfillPlaylistPinned(): Promise<void> {
+  const r = await Playlist.updateMany(
+    { pinned: { $exists: false } },
+    { $set: { pinned: false, pinOrder: 0 } },
+  );
+  if (r.modifiedCount) logger.info('seed', `backfilled pinned:false on ${r.modifiedCount} playlist(s)`);
+}
+
 // One-time, idempotent purge of the retired 'epg-xml' compose cronjobs. The EPG-XML compose SCHEDULE was
 // removed (the scheduler no longer dispatches an 'epg-xml' target and the UI no longer creates one), so any
 // persisted job is an orphan. Delete them at boot — this runs BEFORE startScheduler() (index.ts), so the
@@ -573,6 +587,14 @@ export async function bootInitSources(): Promise<void> {
     await backfillPlaylistBinding();
   } catch (err) {
     logger.warn('seed', `playlistBinding backfill failed (continuing): ${(err as Error).message}`);
+  }
+
+  // Backfill the organizational pin fields (pinned:false / pinOrder:0) onto existing playlist rows created
+  // before the fields existed (idempotent; a no-op once set or on a fresh DB). Non-fatal.
+  try {
+    await backfillPlaylistPinned();
+  } catch (err) {
+    logger.warn('seed', `playlist pinned backfill failed (continuing): ${(err as Error).message}`);
   }
 
   // Purge retired 'epg-xml' compose cronjobs (the EPG-XML compose schedule was removed). Runs BEFORE

@@ -17,6 +17,10 @@ const props = defineProps<{
   // Always-on wrapping layout for narrow embeds (the Dashboard's narrow panel column), independent of
   // the viewport-width `@media (max-width: 1500px)` breakpoint the full Playlists list relies on.
   compact?: boolean;
+  // Render the drag grip (the Playlists PINNED section is drag-reorderable). NOT named `draggable` — that
+  // would swallow the native draggable DOM attribute the host passes separately (it falls through to the
+  // single root element). The Dashboard omits this, so it never shows a grip.
+  reorderable?: boolean;
 }>();
 
 defineEmits<{ (e: 'open'): void }>();
@@ -49,6 +53,11 @@ function sourceChip(p: Playlist): { label: string; tone: string; icon: string } 
     :class="{ 'pl-grouped': grouped, 'pl-row-compact': compact }"
     @click="$emit('open')"
   >
+    <!-- Drag grip for the PINNED section (absolutely positioned at the row's left edge; the host makes the
+         row draggable). Hover-revealed via CSS so the resting list stays clean. -->
+    <span v-if="reorderable" class="drag-grip" title="Drag to reorder" @click.stop>
+      <Icon name="grip" :size="16" />
+    </span>
     <div :class="['src-ico', { builtin: playlist.builtin }]">
       <Icon :name="playlist.builtin ? 'tv' : 'playlist'" :size="18" />
     </div>
