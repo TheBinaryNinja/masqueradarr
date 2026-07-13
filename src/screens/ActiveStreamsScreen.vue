@@ -40,7 +40,7 @@ const totals = computed(() => ({
   issues: liveStreams.value.filter((s) => s.status !== 'good').length,
 }));
 
-// Technical detail for a stream: the live ffprobe snapshot rides ActiveStream.probe; fall back to the
+// Technical detail for a stream: the live decode-metadata snapshot rides ActiveStream.probe; fall back to the
 // flat codec/resolution fields. `probed` flips on the extra probe-only rows (pixfmt / time base).
 function techOf(s: ActiveStream) {
   const p = s.probe;

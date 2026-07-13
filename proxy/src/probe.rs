@@ -1,4 +1,4 @@
-//! The channel-probe endpoint (PRB, P1.3) — the ffprobe-free successor to the removed streamProbe sweep.
+//! The channel-probe endpoint (PRB, P1.3) — the successor to the removed streamProbe sweep; reads manifest-declared decode metadata.
 //!
 //! Node's `sources/probeAll.ts` RESOLVES every Active channel (dulo/dlhd/dami adapter logic, throttled) then
 //! POSTs the resolved `{ id, target, upstreamHeaders }` batch here. This binary FETCHES each target

@@ -119,8 +119,8 @@ function onResolution(res: string) {
   if (res !== props.ch.stream.res) putChannel({ stream: { res } });
 }
 
-// Persisted per-channel technical snapshot. The deep ffprobe probe + its live poll (the removed
-// GET /api/sources/:id/{channel-status,stream-details}) were torn down with the video engine; the scheduled
+// Persisted per-channel technical snapshot. The deep decode-metadata probe + its live poll (the removed
+// GET /api/sources/:id/{channel-status,stream-details}) were removed with the old transcode engine; the scheduled
 // channel probe (Settings → Advanced) now refreshes stream.status/stream.res on the doc, and the live decode
 // metadata (codec/res/…) is surfaced on Active Streams. Seeded from the doc; null → the tech rows show '—'.
 const details = ref<StreamProbe | null>(props.ch.stream.probe ?? null);
@@ -143,7 +143,7 @@ const statusChip = computed(() => {
   }
 });
 
-// Compact one-line presenters for the ffprobe technical details (null → row shows '—').
+// Compact one-line presenters for the decode-metadata technical details (null → row shows '—').
 const videoLine = computed(() => {
   const v = details.value?.video;
   if (!v || !v.codec) return null;
@@ -247,7 +247,7 @@ onBeforeUnmount(() => {
         <!-- Blank spacer between the liveline graph and Technical Details. -->
         <div style="height: 15px" />
 
-        <!-- Technical detail (labeled kv rows). ffprobe rows appear once the channel has been probed. -->
+        <!-- Technical detail (labeled kv rows). Decode-metadata rows appear once the channel has been probed. -->
         <div class="chd-tech">
           <div class="field-lbl">Technical Details</div>
           <div class="kv-list">

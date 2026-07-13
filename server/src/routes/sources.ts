@@ -8,11 +8,10 @@
 //   POST /api/sources/:id/reset     Restore defaults: drop channels + re-sync from upstream
 //   POST /api/sources/:id/provision provision a built-in (Default) source playlist on demand
 //
-// NOTE (video engine teardown): the stream proxy mounts (/api/v1 appPlayer + /api/ext/v1 externalPlayer) and
-// their ffmpeg engine / B-Roll slate / ffprobe machinery were REMOVED. No video is served here until a new
-// playback engine is rebuilt (the in-app player shell stays but its /api/v1 URLs no longer resolve). This
-// router now covers only the catalog manifest, per-source status/metrics, sync/reset, built-in provisioning,
-// and dulo auth. Mounted at the app root (app.use(sourcesRouter)) because its paths span /api/sources.
+// NOTE: the old always-on ffmpeg engine / slate / probe machinery were removed; the Rust masq-proxy now
+// serves video on the stream mounts (/api/v1 appPlayer + /api/ext/v1 externalPlayer). This router itself
+// covers only the catalog manifest, per-source status/metrics, sync/reset, built-in provisioning, and dulo
+// auth. Mounted at the app root (app.use(sourcesRouter)) because its paths span /api/sources.
 
 import { Router } from 'express';
 import { logger } from '../sources/core/logger.js';

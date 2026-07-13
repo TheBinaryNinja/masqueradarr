@@ -55,7 +55,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the RAW (macro-laden) master, served as an .m3u8 entry
-// (→ B-Roll slate + telemetry + ffprobe); resolveStream fills the macros per play. Single "Sports" group (the
+// (viewer telemetry); resolveStream fills the macros per play. Single "Sports" group (the
 // upstream categories are opaque ids; FreeLiveSports is sports-only — the FastChannels hardcode).
 function normalize(raw: FlsRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name || !raw.streamUrl) return null;

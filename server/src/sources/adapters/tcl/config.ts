@@ -320,7 +320,7 @@ export function parseTclEntry(url: string): { bundleId: string; source: string |
  * Resolve a channel → a fresh HLS master url via the gateway's `format-stream-url` POST (a Roku-style per-play
  * resolve). The catalog `media` url is the FALLBACK: on a resolve failure (or an empty `stream_url`) it is
  * returned directly (the un-personalized master, the FastChannels posture). Throws an actionable error only when
- * BOTH are unavailable (the proxy maps it to a 502 + the B-Roll "failed" slate). The caller (the adapter's
+ * BOTH are unavailable (the proxy surfaces a 502). The caller (the adapter's
  * resolveStream) pre-allows the resolved host so the proxy's SSRF gate passes the master's child hops.
  */
 export async function resolveTclMaster(

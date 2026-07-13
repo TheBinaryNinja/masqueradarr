@@ -8,8 +8,8 @@
 // hostnames via dns.lookup() (getaddrinfo / the OS resolver), which IGNORES setServers() entirely.
 // So to make fetch() honor a custom nameserver we hand undici a dns.lookup-SHAPED callback that is
 // actually backed by a c-ares Resolver pointed at the configured server(s). Only global fetch() is
-// affected; the MongoDB driver (net.connect + dns.lookup) and the ffmpeg/Chromium subprocesses keep
-// the OS resolver — so a bad value can never break the (fatal-on-fail) Mongo connect at boot.
+// affected; the MongoDB driver (net.connect + dns.lookup) keeps the OS resolver — so a bad value can never
+// break the (fatal-on-fail) Mongo connect at boot.
 //
 // CONFIG SOURCE: there is no NAMESERVER env any more. The IMPORT-TIME bootstrap (before Mongo connects)
 // applies the hardcoded DEFAULT_NAMESERVERS so the very first outbound fetch already has a working
@@ -69,7 +69,7 @@ function installCustomLookup(servers: string[]): void {
     const done = (err: NodeJS.ErrnoException | null, recs: { address: string; family: number }[]): void => {
       if (err) {
         // The configured nameserver(s) failed (blocked egress to 8.8.8.8, SERVFAIL, timeout, …). Fall back to
-        // the OS resolver (getaddrinfo — the same one MongoDB + the ffmpeg/Chromium subprocesses already use),
+        // the OS resolver (getaddrinfo — the same one MongoDB already uses),
         // so a filtered nameserver doesn't silently break EVERY outbound fetch (EPG guides, scrape sources).
         // Only surface the original error if the OS resolver ALSO fails. Mongo is unaffected — it never uses
         // this dispatcher — so the "a bad nameserver value can't break the fatal Mongo connect" invariant holds.

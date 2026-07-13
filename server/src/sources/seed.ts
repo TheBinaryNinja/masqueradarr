@@ -539,7 +539,7 @@ export async function bootInitSources(): Promise<void> {
     logger.warn('seed', `playlistauths index reconcile failed (continuing): ${(err as Error).message}`);
   }
 
-  // Video-engine teardown cleanup: drop any stale `probe-all` cronjobs left from the removed ffprobe sweep
+  // Video-engine teardown cleanup: drop any stale `probe-all` cronjobs left over from the removed video-engine probe sweep
   // (its Settings UI is gone, so a lingering schedule would otherwise error on every tick with no way to
   // delete it). Idempotent + non-fatal. Runs before startScheduler() so a stale job never gets registered.
   try {

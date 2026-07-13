@@ -247,11 +247,11 @@ const sel = computed(() => sessions.value.find((s) => s.id === selectedId.value)
 
 function chOf(s: Session) { return CHANNELS.value.find((c) => c.id === s.channelId)!; }
 
-// Per-session ffprobe technical details were removed in the video-engine teardown (the streamsessions store
-// is gone), so this is always null now — the presenters + detail block below degrade to '—' / hidden.
+// Per-session decode-metadata technical details were removed with the old transcode engine (the streamsessions
+// store is gone), so this is always null now — the presenters + detail block below degrade to '—' / hidden.
 const selProbe = computed<StreamProbe | null>(() => null);
 
-// Compact one-line presenters for the ffprobe technical details (null → row shows '—'). Mirrors ChannelDrawer.
+// Compact one-line presenters for the decode-metadata technical details (null → row shows '—'). Mirrors ChannelDrawer.
 const videoLine = computed(() => {
   const v = selProbe.value?.video;
   if (!v || !v.codec) return null;

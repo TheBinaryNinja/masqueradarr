@@ -65,7 +65,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the `plex://<compoundId>` ENTRY sentinel (resolved per
-// play); served as an entry (→ B-Roll slate + telemetry + ffprobe). The masq `_id` uses the STABLE gridKey; the
+// play); served as an entry (viewer telemetry). The masq `_id` uses the STABLE gridKey; the
 // sentinel carries the COMPOUND id. Grouped by the channel's derived category.
 function normalize(raw: PlexRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.id || !raw.name) return null;

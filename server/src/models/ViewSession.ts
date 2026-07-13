@@ -4,7 +4,7 @@ import { Schema, model } from 'mongoose';
 // that watched a channel through the proxy, written when that client's session ends (it goes stale past
 // the telemetry TTL) by the stats layer's persistence sink (stats/statsHub.ts ← streamTelemetry.onSessionClose).
 // Feeds the History/Metrics screen (sessions table, buffer histogram, problem channels, QoE). Distinct from
-// streamsessions (the ffprobe quality TIME-SERIES) and from the live in-memory ActiveStream snapshot. See
+// streamsessions (the decode-quality TIME-SERIES) and from the live in-memory ActiveStream snapshot. See
 // schemas.md §3.x.
 //
 // QoE score (0–100), computed at write time: start at 100, subtract a rebuffer-ratio penalty
@@ -32,7 +32,7 @@ export interface ViewSessionDoc {
   durationMs: number;
   bytesTotal: number;
   avgBitrate: number; // kbps = bytesTotal*8 / durationMs
-  resolution: string | null; // snapshotted from the channel's last ffprobe at close
+  resolution: string | null; // snapshotted from the channel's last probe at close
   codec: string | null;
   bufferCount: number;
   rebufferMs: number;

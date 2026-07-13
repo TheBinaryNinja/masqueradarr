@@ -335,7 +335,7 @@ function fillNonce(url: string): string {
 
 /**
  * Resolve a video id → a fresh HLS master url (the 1-hop POST resolve). Throws an actionable error when the
- * channel has no playable media (the proxy maps it to a 502 + the B-Roll "failed" slate). The caller (the
+ * channel has no playable media (the proxy surfaces a 502). The caller (the
  * adapter's resolveStream) pre-allows the resolved host so the proxy's SSRF gate passes the master's child hops.
  */
 export async function resolveStirrMaster(videoId: string): Promise<string> {

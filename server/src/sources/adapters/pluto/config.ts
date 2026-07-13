@@ -315,7 +315,7 @@ export function parsePlutoEntry(url: string): { region: string; channelId: strin
 /**
  * Resolve a channel → a fresh, signed HLS master url via the region's boot session (the per-play stitcher JWT).
  * Boots the region (cached) and assembles the stitcher master with its stitcherParams + the session JWT. Throws
- * an actionable error when the region can't boot (the proxy maps it to a 502 + the B-Roll "failed" slate). The
+ * an actionable error when the region can't boot (the proxy surfaces a 502). The
  * caller (the adapter's resolveStream) pre-allows the resolved host so the proxy's SSRF gate passes the master's
  * same-host child hops. Mirrors FastChannels pluto.py `resolve`.
  */

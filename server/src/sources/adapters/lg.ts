@@ -53,7 +53,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the RAW (macro-laden) master, served as an .m3u8 entry
-// (→ B-Roll slate + telemetry + ffprobe); resolveStream expands the macros per play. Grouped by LG's category.
+// (viewer telemetry); resolveStream expands the macros per play. Grouped by LG's category.
 function normalize(raw: LgRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name || !raw.streamUrl) return null;
   const id = String(raw.channelId);

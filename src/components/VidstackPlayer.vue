@@ -5,18 +5,15 @@
 // keeping the EXACT stream-handling contract of the old player:
 //   - REUSES the app's bundled hls.js (provider.library = Hls) so nothing is fetched from Vidstack's default
 //     jsDelivr CDN — critical for a self-hosted / possibly air-gapped deploy.
-//   - Defers attach behind the shared establishing gate (useAppStreamSource → gatedSrc): the <media-player>
-//     `src` stays empty until the entry is serving live content (no __broll__ slate), so the slate never enters
-//     the MSE buffer (the slate→live handoff is a fatal "buffers not in DTS sequence" decode error in hls.js).
-//     If the gate hits its 30s deadline still slating, we surface a "failed to establish" error (failOnDeadline)
-//     instead of attaching the slate.
+//   - Binds `src` to the token-gated URL from useAppStreamSource (gatedSrc); the stream resolves on demand
+//     server-side when hls.js fetches it.
 //   - Adds a capped (3×) network-error reload plus a visible error surface with Retry. Vidstack auto-recovers
 //     fatal MEDIA errors (recoverMediaError, uncapped) and only NOTIFIES network/other, so we add the network
 //     retry and surface an error once retries are exhausted / media errors keep recurring — never double-recover.
 //   - Emits `resolution` from the underlying <video> height, same contract as before.
 // Same `{ src }` prop as the old HlsPlayer, so it's a drop-in swap at both mount sites (the slide-out via
 // ChannelPlayer, and the Dashboard preview directly).
-import { ref, computed, toRef, onBeforeUnmount } from 'vue';
+import { ref, toRef, onMounted, onBeforeUnmount } from 'vue';
 import Hls from 'hls.js';
 import 'vidstack/player';
 import 'vidstack/player/layouts/default';
@@ -41,20 +38,13 @@ let hasHls = false;
 // freezes with no surface — the old HlsPlayer had a .hls-error banner we restore here.
 const playbackError = ref<string | null>(null);
 
-// The gate (token append + __broll__ wait + generation id) lives in the composable; we bind <media-player>'s src
-// to gatedSrc, which is null while establishing and the authenticated live URL once it's safe to attach.
-// failOnDeadline: at the 30s deadline surface a "failed to establish" error instead of attaching the still-slating
-// stream (its slate→live handoff is a fatal decode error).
-const { gatedSrc, connecting, establishFailed, reload } = useAppStreamSource(toRef(props, 'src'), {
-  failOnDeadline: true,
-});
-
-// One overlay for both failure kinds: a mid-stream playback error, or the establishing gate giving up.
-const errorText = computed(() => playbackError.value ?? (establishFailed.value ? 'Channel failed to establish' : null));
+// Token append lives in the composable; we bind <media-player>'s src to gatedSrc (the authenticated URL, or null
+// while idle). reload() re-attaches the current src for the Retry button.
+const { gatedSrc, reload } = useAppStreamSource(toRef(props, 'src'));
 
 function retry() {
   playbackError.value = null;
-  reload(); // clears establishFailed + re-runs the gate for the current src
+  reload(); // re-attach the current src
 }
 
 // Backstop for the non-hls.js path (Safari native HLS, where `hls-instance` never fires): Vidstack dispatches its
@@ -107,9 +97,16 @@ function onHlsInstance(e: any) {
         playbackError.value = `Network error · ${d.details}`;
       }
     } else if (d.type === Hls.ErrorTypes.MEDIA_ERROR) {
-      // Vidstack's provider already called recoverMediaError() (uncapped) before this handler runs. We only COUNT
-      // and surface once it's clearly not recovering — never double-recover or stopLoad (that fights Vidstack).
-      if (++mediaFatals >= 4) playbackError.value = `Playback error · ${d.details}`;
+      // Vidstack's provider already called recoverMediaError() (uncapped) before this handler runs — but that
+      // detaches+reattaches the MSE buffer, which PAUSES the <video>, and neither hls.js nor Vidstack re-issues
+      // play() once playback has started. So the stream would start then freeze until a manual play. Resume it
+      // ourselves (mirrors DebugHlsPlayer.vue). We never recover the error ourselves — only re-play after Vidstack's
+      // recovery — and give up (surface an error) once recovery clearly isn't taking.
+      if (++mediaFatals >= 4) {
+        playbackError.value = `Playback error · ${d.details}`;
+      } else {
+        player.value?.provider?.video?.play().catch(() => { /* interrupted mid-reattach; harmless */ });
+      }
     } else {
       // Fatal OTHER (mux, key, etc.) — Vidstack only notify()s these; surface it (the old player did too).
       playbackError.value = `Playback error · ${d.details}`;
@@ -118,6 +115,16 @@ function onHlsInstance(e: any) {
   hls.on(Hls.Events.MANIFEST_PARSED, reportResolution);
   hls.on(Hls.Events.LEVEL_SWITCHED, reportResolution);
 }
+
+onMounted(() => {
+  // Keep the Vidstack control bar always visible (it otherwise idle-hides after defaultDelay=2s, which is why
+  // controls "only appear on right-click"). `canIdle = false` disables idle tracking — Vidstack's #init effect
+  // re-runs and disposes its play/pause/mouse auto-hide listeners; since controlsVisible starts false, show()
+  // forces the bar visible now. NOT the `controls` attribute — that swaps to native browser controls and hides
+  // this rich layout (quality menu / PiP / fullscreen). `player.value.controls` exists once the element connects.
+  const c = player.value?.controls;
+  if (c) { c.canIdle = false; c.show(); }
+});
 
 onBeforeUnmount(() => {
   // Vidstack tears the hls instance down with the element, but destroy explicitly to avoid a lingering worker
@@ -144,9 +151,8 @@ onBeforeUnmount(() => {
            drops the volume slider + persistent control bar in these sub-576px / sub-380px frames). -->
       <media-video-layout small-when="never" />
     </media-player>
-    <div v-if="connecting" class="vds-connecting mono">Connecting…</div>
-    <div v-if="errorText" class="vds-error mono">
-      <span>{{ errorText }}</span>
+    <div v-if="playbackError" class="vds-error mono">
+      <span>{{ playbackError }}</span>
       <button type="button" class="vds-retry mono" @click="retry">Retry</button>
     </div>
   </div>
@@ -164,21 +170,8 @@ onBeforeUnmount(() => {
   width: 100%;
   height: 100%;
 }
-.vds-connecting {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 12px;
-  color: rgba(255, 255, 255, 0.85);
-  background: #000;
-  border-radius: inherit;
-  pointer-events: none;
-  z-index: 1;
-}
-/* Error banner: bottom-docked, above the control bar (z-index 2). Unlike .vds-connecting it keeps pointer events
-   so the Retry button is clickable. Mirrors the old HlsPlayer's .hls-error. */
+/* Error banner: bottom-docked, above the control bar (z-index 2). Keeps pointer events so the Retry button is
+   clickable. Mirrors the old HlsPlayer's .hls-error. */
 .vds-error {
   position: absolute;
   inset: auto 8px 8px 8px;

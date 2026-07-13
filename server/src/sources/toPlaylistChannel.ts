@@ -62,7 +62,7 @@ export function toPlaylistChannelDoc(src: SourceChannelDoc): PlaylistChannelDoc 
       isPlayable: src.isPlayable,
       res: null, // unknown until probed
       status: null, // realtime phase — in-memory authority (streamState.ts), not persisted at seed
-      probe: null, // ffprobe technical details — unknown until first probed at proxy time (streamProbe.ts)
+      probe: null, // decode/technical details — unknown until first probed at proxy time (channel probe)
     },
   };
 }

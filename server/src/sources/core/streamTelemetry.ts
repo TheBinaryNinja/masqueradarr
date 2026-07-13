@@ -6,7 +6,7 @@
 // recognised by RECENCY: a connection — keyed by ip|user-agent|username|channel — is "active" if it has
 // polled that channel's composed entry playlist within CLIENT_TTL_MS. Keying per channel means one client
 // watching two channels at once (picture-in-picture / multi-view) counts as two connections, not one that
-// flips between them. The entry-poll IS the heartbeat — brollProxy calls noteViewer() on every poll
+// flips between them. The entry-poll IS the heartbeat — the proxy calls noteViewer() on every poll
 // (upserting that client's per-channel connection), and proxyHandler calls noteBytes() after each
 // segment/playlist send (attributing egress to the channel the client polled most recently — a direct-hop
 // segment carries no channel id, but the same ip|ua polled an entry moments earlier). A
@@ -18,7 +18,7 @@
 import { streamKey, phaseFor, type StreamPhase } from './streamState.js';
 
 // How long after a client's last request we still count it as watching. The entry playlist reloads on the
-// HLS target-duration cadence (B-Roll ~2s, live ~6s), so 30s tolerates several missed polls — the Masqueradarr
+// HLS target-duration cadence (typically ~2–6s), so 30s tolerates several missed polls — the Masqueradarr
 // analog of Dispatcharr's 60s client TTL (its heartbeat thread refreshed a Redis TTL; here the client's
 // own HLS reload refreshes lastSeen).
 const CLIENT_TTL_MS = 30_000;
@@ -53,8 +53,8 @@ export interface BufferEvent {
 }
 
 // Which player produced a stream session: the in-app slide-out HLS player (appPlayer, the /api/v1 mount) or a
-// third-party IPTV client app — TiviMate/Kodi/VLC/… (externalPlayer, the /api/ext mount routed through the
-// configurable ffmpeg engine). The proxy derives it from the request mount and threads it here so Active
+// third-party IPTV client app — TiviMate/Kodi/VLC/… (externalPlayer, the /api/ext mount served by the Rust
+// proxy). The proxy derives it from the request mount and threads it here so Active
 // Streams / History can classify every viewer + session.
 export type PlayerType = 'appPlayer' | 'externalPlayer';
 
@@ -244,8 +244,8 @@ export function noteBytes(ip: string, ua: string, bytes: number, username?: stri
 
 // ── Manifest-declared decode metadata (DEC) ────────────────────────────────────────────────────────────
 // The Rust data plane parses each proxied manifest for its declared decode metadata (master
-// #EXT-X-STREAM-INF resolution/codecs/frame-rate; media-playlist container hint) — the ffprobe-free
-// successor to the removed streamProbe monitor. A master poll and a variant/media poll are SEPARATE fetches,
+// #EXT-X-STREAM-INF resolution/codecs/frame-rate; media-playlist container hint) — parsed from the manifest,
+// not an external probe — the successor to the removed streamProbe monitor. A master poll and a variant/media poll are SEPARATE fetches,
 // each carrying only what it declares, so we MERGE per channel (non-null overwrite): the master fills
 // resolution/codecs/frame-rate, the variant fills the container. statsHub reads + humanizes this for the
 // Active Streams "Technical // Decode" card. Bounded by distinct channels + in-memory like streamState.states

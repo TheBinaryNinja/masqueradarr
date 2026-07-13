@@ -56,7 +56,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the broadcast.json ENTRY url (resolved per play);
-// served as an entry (→ B-Roll slate + telemetry + ffprobe). Grouped by Xumo's genre bucket.
+// served as an entry (viewer telemetry). Grouped by Xumo's genre bucket.
 function normalize(raw: XumoRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name) return null;
   const id = String(raw.channelId);

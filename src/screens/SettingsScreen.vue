@@ -24,9 +24,10 @@ import {
 
 const toast = useToast();
 
-// Settings is split into two tabs: General (General + Data cards) and Advanced (Geolocation,
+// Settings is split into three tabs: General (General + Data), Video Config (Channel Probe Scheduler,
+// In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, DaddyLive Player Source,
 // Dulo.tv Authentication).
-const activeTab = ref<'general' | 'advanced'>('general');
+const activeTab = ref<'general' | 'video' | 'advanced'>('general');
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
 // the region prefix for the <optgroup>s. Falls back to a small common set on the rare runtime without the API.
@@ -335,6 +336,7 @@ async function fireReset() {
     <div class="col settings-col" :style="{ maxWidth: '760px' }">
     <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
       { value: 'general', label: 'General' },
+      { value: 'video', label: 'Video Config' },
       { value: 'advanced', label: 'Advanced' },
     ]" style="margin-bottom: 4px;" />
 
@@ -415,7 +417,42 @@ async function fireReset() {
         mono />
     </div>
 
-    <div class="card" v-if="activeTab === 'general'">
+    <div class="card" v-if="activeTab === 'video'">
+      <h3 class="section-title">Channel Probe Scheduler</h3>
+      <div class="muted" style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
+        Periodically check every active channel and refresh its status + resolution, so the Channels and Active
+        Streams screens stay accurate even for channels nobody is watching. Each channel is resolved and probed
+        through the video engine, so this runs at most once per hour.
+      </div>
+      <SettingsRow label="Automatic probe" hint="Sweep all channels on a schedule.">
+        <template #right>
+          <Toggle :on="probeAuto" @change="(v) => { probeAuto = v; saveProbeSchedule(); }" />
+        </template>
+      </SettingsRow>
+
+      <template v-if="probeAuto">
+        <FrequencyBuilder :freq="probeFreq" :auto="probeAuto" v-model:rawCron="probeRawCron"
+                          :modes="PROBE_MODES" hideMode label="Schedule" icon="refresh" manualHint="" />
+        <div class="row" style="gap: 8px; margin-top: 14px; align-items: center;">
+          <Btn variant="primary" icon="check" :disabled="probeSaving" @click="saveProbeSchedule">
+            {{ probeSaving ? 'Saving…' : 'Save schedule' }}
+          </Btn>
+          <span v-if="probeSaveState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
+          <span v-else-if="probeSaveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
+        </div>
+      </template>
+
+      <div class="divider" />
+      <SettingsRow label="Run a probe now" hint="Immediately check every active channel once.">
+        <template #right>
+          <Btn variant="ghost" icon="refresh" :disabled="probeRunning" @click="runProbeNow">
+            {{ probeRunning ? 'Running…' : 'Run now' }}
+          </Btn>
+        </template>
+      </SettingsRow>
+    </div>
+
+    <div class="card" v-if="activeTab === 'video'">
       <h3 class="section-title">In-app Video Player</h3>
       <SettingsRow label="Player"
         hint="Which player the channel slide-out uses. “Debug” swaps in a diagnostic player with a live hls.js status readout + event log for troubleshooting playback.">
@@ -426,24 +463,9 @@ async function fireReset() {
       </SettingsRow>
     </div>
 
-    <div class="card" v-if="activeTab === 'general'">
-      <h3 class="section-title">DaddyLive Player Source</h3>
-      <SettingsRow label="Default player"
-        hint="DaddyLive offers several interchangeable players per channel — redundant feeds of the same stream. This is the default for every such channel; “Auto” uses Player 1 and falls back to the others if it’s down. You can override it per channel in the channel editor.">
-        <template #right>
-          <Segmented :value="String(dlhdPlayer)" @change="(v) => dlhdPlayer = Number(v)"
-            :options="[
-              { value: '0', label: 'Auto' },
-              { value: '1', label: '1' },
-              { value: '2', label: '2' },
-              { value: '3', label: '3' },
-              { value: '4', label: '4' },
-              { value: '5', label: '5' },
-              { value: '6', label: '6' },
-            ]" />
-        </template>
-      </SettingsRow>
-    </div>
+    <!-- Durable video engine — the (Default) proxy config applied to every playlist (per-playlist Custom
+         overrides live in the playlist editor drawer). Auto-saves on change. [UICFG] -->
+    <ProxyConfigPanel v-if="activeTab === 'video'" config-id="app" title="Video Proxy Engine (Default)" />
 
     <div class="card" v-if="activeTab === 'advanced'">
       <h3 class="section-title">Geolocation (MaxMind GeoIP)</h3>
@@ -480,46 +502,26 @@ async function fireReset() {
       </div>
     </div>
 
-    <DuloAuthPanel v-if="activeTab === 'advanced'" />
-
     <div class="card" v-if="activeTab === 'advanced'">
-      <h3 class="section-title">Channel Probe Scheduler</h3>
-      <div class="muted" style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
-        Periodically check every active channel and refresh its status + resolution, so the Channels and Active
-        Streams screens stay accurate even for channels nobody is watching. Each channel is resolved and probed
-        through the video engine, so this runs at most once per hour.
-      </div>
-      <SettingsRow label="Automatic probe" hint="Sweep all channels on a schedule.">
+      <h3 class="section-title">DaddyLive Player Source (Default)</h3>
+      <SettingsRow label="Default player"
+        hint="DaddyLive offers several interchangeable players per channel — redundant feeds of the same stream. This is the default for every such channel; “Auto” uses Player 1 and falls back to the others if it’s down. You can override it per channel in the channel editor.">
         <template #right>
-          <Toggle :on="probeAuto" @change="(v) => { probeAuto = v; saveProbeSchedule(); }" />
-        </template>
-      </SettingsRow>
-
-      <template v-if="probeAuto">
-        <FrequencyBuilder :freq="probeFreq" :auto="probeAuto" v-model:rawCron="probeRawCron"
-                          :modes="PROBE_MODES" hideMode label="Schedule" icon="refresh" manualHint="" />
-        <div class="row" style="gap: 8px; margin-top: 14px; align-items: center;">
-          <Btn variant="primary" icon="check" :disabled="probeSaving" @click="saveProbeSchedule">
-            {{ probeSaving ? 'Saving…' : 'Save schedule' }}
-          </Btn>
-          <span v-if="probeSaveState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
-          <span v-else-if="probeSaveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
-        </div>
-      </template>
-
-      <div class="divider" />
-      <SettingsRow label="Run a probe now" hint="Immediately check every active channel once.">
-        <template #right>
-          <Btn variant="ghost" icon="refresh" :disabled="probeRunning" @click="runProbeNow">
-            {{ probeRunning ? 'Running…' : 'Run now' }}
-          </Btn>
+          <Segmented :value="String(dlhdPlayer)" @change="(v) => dlhdPlayer = Number(v)"
+            :options="[
+              { value: '0', label: 'Auto' },
+              { value: '1', label: '1' },
+              { value: '2', label: '2' },
+              { value: '3', label: '3' },
+              { value: '4', label: '4' },
+              { value: '5', label: '5' },
+              { value: '6', label: '6' },
+            ]" />
         </template>
       </SettingsRow>
     </div>
 
-    <!-- Durable video engine — the (Default) proxy config applied to every playlist (per-playlist Custom
-         overrides live in the playlist editor drawer). Auto-saves on change. [UICFG] -->
-    <ProxyConfigPanel v-if="activeTab === 'advanced'" config-id="app" title="Video proxy engine" />
+    <DuloAuthPanel v-if="activeTab === 'advanced'" />
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">Data</h3>

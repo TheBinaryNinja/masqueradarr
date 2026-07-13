@@ -126,7 +126,7 @@ function apiHeaders(accept = 'application/json'): Record<string, string> {
 /**
  * Ensure a usable anon token exists (mint if stale/absent or `force`). Seeds watch.plex.tv cookies first
  * (best-effort — the FastChannels posture), then POSTs the anonymous-users endpoint for the token. Throws on
- * failure so the caller fails cleanly (the catalog falls back to the snapshot; resolve maps it to the B-Roll slate).
+ * failure so the caller fails cleanly (the catalog falls back to the snapshot; resolve surfaces a 502).
  */
 export async function ensureAuth(force = false): Promise<string> {
   if (!force && tokenFresh()) return authToken as string;
@@ -455,7 +455,7 @@ function tunePlex(compoundId: string, token: string): void {
  * tune, and builds the deterministic master URL (the provider serves the master at 200 or 302s to AWS MediaTailor;
  * the proxy follows the redirect and learns the CDN child hosts). No per-play fetch here (unlike roku's playback
  * POST) — the master URL is deterministic given the compound id + token, so a dead channel simply 4xx's at the
- * proxy's master fetch → the B-Roll "failed" slate (liveness is request-time, the family's posture). The caller
+ * proxy's master fetch → the proxy surfaces a 502 (liveness is request-time, the family's posture). The caller
  * (the adapter's resolveStream) pre-allows the master host so the proxy's SSRF gate passes its child hops.
  */
 export async function resolvePlexMaster(compoundId: string): Promise<string> {

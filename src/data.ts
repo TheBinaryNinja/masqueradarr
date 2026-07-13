@@ -78,8 +78,9 @@ export interface EpgSource {
   timezone?: string | null;
   languagecode?: string | null;
 }
-// ffprobe-derived technical-detail shape. VESTIGIAL after the video-engine teardown: ffprobe was removed, so
-// Channel.stream.probe / ActiveStream.probe are always null now — retained as a nullable slot for the rebuild.
+// Decode-metadata shape (the deep technical-detail slot). Channel.stream.probe is filled by the channel probe
+// from manifest-declared decode metadata (null until first probed); ActiveStream.probe stays null — a passthrough
+// proxy can't measure the deep per-session metrics (dropped frames / latency) this slot was built to carry.
 export interface StreamProbe {
   video: {
     codec: string | null; profile: string | null; pixFmt: string | null;
@@ -95,7 +96,7 @@ export interface StreamProbe {
 // 1:1 with the editable PlaylistChannel store (server/src/models/PlaylistChannel.ts) — read verbatim from
 // GET /api/playlists/:id/channels (no projection). `status` is the enable/disable governor ('Active' |
 // 'Disabled', m3u inclusion). Volatile per-channel detail lives in `stream`: realtime phase, playability,
-// resolution, the initials logo fallback, and the ffprobe technical-detail snapshot. Fields with no source
+// resolution, the initials logo fallback, and the technical-detail snapshot. Fields with no source
 // equivalent are explicit null.
 export interface Channel {
   id: string;
@@ -125,7 +126,7 @@ export interface Channel {
     isPlayable: boolean;
     res: string | null;
     status: 'live' | 'establishing' | 'buffer' | 'failed' | null; // realtime phase
-    probe?: StreamProbe | null; // ffprobe technical-detail snapshot (latest); null until first probed
+    probe?: StreamProbe | null; // technical-detail snapshot from the channel probe (latest); null until first probed
   };
 }
 // start/end are epoch ms for ALL programs (Gracenote/EPG-PW synced AND the mock seed — uniform shape; EPG
@@ -147,10 +148,10 @@ export interface Program {
 // GET /api/active-streams and pushed over the /api/stream-stats WebSocket. One row per channel with ≥1
 // active viewer. Real-metrics-only: viewers/bandwidth/bitrate are measured off the proxy byte stream and
 // quality (codec/audio/container/resolution/fps) is MANIFEST-DECLARED (parsed from #EXT-X-STREAM-INF by the
-// Rust data plane, humanized server-side; null for a media-playlist-only upstream). The deep ffprobe `probe`
+// Rust data plane, humanized server-side; null for a media-playlist-only upstream). The deep `probe`
 // snapshot is not rebuilt (always null) — a passthrough proxy still can't measure dropped frames or latency.
 // Which player produced a session: the in-app slide-out HLS player (appPlayer) or a third-party IPTV client
-// app — TiviMate/Kodi/VLC/… (externalPlayer, routed through the server-side ffmpeg engine).
+// app — TiviMate/Kodi/VLC/… (externalPlayer, served from the proxy's external mount as HLS or raw-TS).
 export type PlayerType = 'appPlayer' | 'externalPlayer';
 export interface ActiveStream {
   id: string; // = channelId (stable row id)

@@ -303,7 +303,7 @@ export function processStreamUri(uri: string): string {
 
 /**
  * Resolve a channel id → a fresh, clean HLS master url (the 3-hop resolve). Throws an actionable error when the
- * channel has no live broadcast / no HLS source (the proxy maps it to a 502 + the B-Roll "failed" slate). The
+ * channel has no live broadcast / no HLS source (the proxy surfaces a 502). The
  * caller (the adapter's resolveStream) pre-allows the resolved host so the proxy's SSRF gate passes the master's
  * same-host child hops.
  */

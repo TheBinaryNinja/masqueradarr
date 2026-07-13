@@ -1,4 +1,5 @@
-// Scheduled channel probe (PRB, P1.3) — the ffprobe-free successor to the removed streamProbe sweep. Walks
+// Scheduled channel probe (PRB, P1.3) — the successor to the removed streamProbe sweep, reading
+// manifest-declared decode metadata. Walks
 // every Active channel in every (non-clone) playlist and refreshes its persisted health (stream.status) +
 // human resolution (stream.res), so those fields stay current for channels nobody has open right now (the
 // live telemetry only fills them while a viewer watches).

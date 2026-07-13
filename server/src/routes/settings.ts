@@ -10,8 +10,8 @@ import { logger } from '../sources/core/logger.js';
 // translation layer (settings/translate.ts): GET projects the stored doc into the runtime shape
 // (toRuntimeSettings), PUT validates the body into a whitelisted $set patch (toExternalPatch), and both
 // seed missing fields from env defaults (envDefaults). GET creates the row from those defaults on first
-// read; the boot path seeds it earlier (sources/seedSettings.ts). The server-rendered B-Roll stream reads
-// `displayName`; every hosted endpoint derives from `domain` — so the SPA persists them (no longer
+// read; the boot path seeds it earlier (sources/seedSettings.ts). The server reads `displayName` as a
+// human-facing label; every hosted endpoint derives from `domain` — so the SPA persists them (no longer
 // frontend-only refs). See restapi-client.md / useSettings.ts.
 //
 // Changing `domain` cascades to every playlist's persisted `url` (HOSTED AT) — both Global- and

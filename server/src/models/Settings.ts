@@ -4,7 +4,7 @@ import { Schema, model } from 'mongoose';
 // a singleton upsert (same idempotency rule as the synced collections). It holds operator-facing values
 // the SPA edits on the Settings screen that the *server* also needs at runtime, and that must survive a
 // restart:
-//   - displayName  — burned into the server-rendered B-Roll placeholder card (headless clients see it).
+//   - displayName  — a human-facing display label for the deployment.
 //   - domain       — base URL of every hosted endpoint; drives each playlist's persisted `url` (HOSTED AT)
 //                    and the settings→playlists url cascade (see routes/settings.ts + routes/playlists.ts).
 //   - timezone / darkMode — operator preferences. `offset` is the DST-aware UTC offset ('±HHMM') DERIVED

@@ -54,7 +54,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the RAW (macro-laden) master, served as an .m3u8
-// entry (→ B-Roll slate + telemetry + ffprobe); resolveStream fills the macros per play. Grouped by Whale's
+// entry (viewer telemetry); resolveStream fills the macros per play. Grouped by Whale's
 // canonicalized genre.
 function normalize(raw: WhaleRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name || !raw.streamUrl) return null;
