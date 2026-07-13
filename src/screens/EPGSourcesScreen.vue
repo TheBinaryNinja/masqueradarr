@@ -199,15 +199,15 @@ function openSource(id: string) {
             <StatusDot :status="p.status" :pulse="p.status === 'good'" />
             {{ p.name }}
             <Pill v-if="p.builtin" tone="system"><Icon name="check" :size="10" />built-in</Pill>
-            <Pill tone="cyan">{{ (p.interval || '').toLowerCase() }}</Pill>
-            <Pill v-if="p.playlistBinding" tone="good">Playlist-bound</Pill>
-            <Pill v-for="n in tagNames(p.tags)" :key="n" tone="magenta">{{ n }}</Pill>
           </div>
           <div class="epg-meta">
             <span v-for="c in epgMetaChips(p, ['source', 'lineupId'])" :key="c.label" class="meta-item" :title="`${c.label}: ${c.value}`">
               <span class="meta-k">{{ c.label }}:</span>
               <span class="meta-chip">{{ c.value }}</span>
             </span>
+            <Pill tone="cyan">{{ (p.interval || '').toLowerCase() }}</Pill>
+            <Pill v-if="p.playlistBinding" tone="good">Playlist-bound</Pill>
+            <Pill v-for="n in tagNames(p.tags)" :key="n" tone="magenta">{{ n }}</Pill>
           </div>
         </div>
         <div class="stat-mini"><b>{{ p.channels }}</b>channels</div>

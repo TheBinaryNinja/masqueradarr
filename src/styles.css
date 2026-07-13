@@ -1385,9 +1385,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .src-row .stat-mini { font-size: var(--fs-xs); color: var(--text-2); text-align: right; min-width: 60px; }
 .src-row .stat-mini b { color: var(--text-0); font-size: var(--fs-base); font-weight: 600; display: block; }
 
-/* EPG source provenance fields (under the name; replaces the old single url line). Each item is a plain
-   label OUTSIDE the cyan value pill — e.g. SOURCE: (Gracenote). */
-.epg-meta { display: flex; flex-wrap: wrap; gap: 7px 12px; margin-top: 12px; }
+/* EPG source provenance line (under the name; replaces the old single url line). Leads with the SOURCE /
+   LINEUPID chips — each a plain label OUTSIDE the cyan value pill, e.g. SOURCE: (Gracenote) — then carries
+   the source's inline pills (sync-frequency, Playlist-bound, tags) after them. align-items:center keeps the
+   mixed-height children (.meta-item chips vs. .pill badges) sharing one baseline. */
+.epg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 12px; }
 .meta-item { display: inline-flex; align-items: center; gap: 5px; max-width: 280px; }
 .meta-k { color: var(--text-3); text-transform: uppercase; letter-spacing: 0.03em; font-size: 9.5px; font-weight: 600; }
 .meta-chip {
