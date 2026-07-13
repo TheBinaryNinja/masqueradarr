@@ -280,8 +280,9 @@ function selectRange(toId: string) {
   selected.value = n;
 }
 
-async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number }) {
-  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined && payload.chnoSeed === undefined) {
+async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number; addTags?: string[]; removeTags?: string[] }) {
+  const hasTagOps = !!(payload.addTags?.length || payload.removeTags?.length);
+  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined && payload.chnoSeed === undefined && !hasTagOps) {
     bulkOpen.value = false;
     return;
   }
@@ -329,10 +330,29 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
     }
     return b;
   };
+  // Merge tags per-channel: union each channel's existing tags with addTags, then drop removeTags (remove
+  // wins if an id is in both sets). The channel PUT does a full $set replace of `tags`, so we compute the
+  // merged set client-side — and only send it when it actually differs (skip a needless write + keep each
+  // channel's own tags that aren't part of this op).
+  const tagsById = new Map<string, string[]>();
+  if (hasTagOps) {
+    const add = payload.addTags ?? [];
+    const remove = new Set(payload.removeTags ?? []);
+    for (const c of targets) {
+      const cur = c.tags ?? [];
+      const next = [...new Set([...cur, ...add])].filter((t) => !remove.has(t));
+      const curSet = new Set(cur);
+      if (next.length !== cur.length || next.some((t) => !curSet.has(t))) tagsById.set(c.id, next);
+    }
+  }
   // Persist each channel edit (PUT /api/playlists/<source>/channels/<id>), then update locally.
   await Promise.all(
     targets.map((c) => {
-      const chBody = { ...bodyFor(c), ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id) } : {}) };
+      const chBody = {
+        ...bodyFor(c),
+        ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id) } : {}),
+        ...(tagsById.has(c.id) ? { tags: tagsById.get(c.id) } : {}),
+      };
       if (!Object.keys(chBody).length) return Promise.resolve(undefined);
       return fetch(`/api/playlists/${encodeURIComponent(c.source)}/channels/${encodeURIComponent(c.id)}`, {
         method: 'PUT',
@@ -352,6 +372,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
             : {}),
           ...(payload.playerPref !== undefined && supportsPlayer(c) ? { playerPref: payload.playerPref } : {}),
           ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id)! } : {}),
+          ...(tagsById.has(c.id) ? { tags: tagsById.get(c.id)! } : {}),
         }
       : c
   );
@@ -363,6 +384,12 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   if (chnoById.size) {
     const nums = [...chnoById.values()].map(Number);
     parts.push(`channel # → ${Math.min(...nums)}…${Math.max(...nums)}`);
+  }
+  if (hasTagOps) {
+    const bits: string[] = [];
+    if (payload.addTags?.length) bits.push(`+${payload.addTags.length}`);
+    if (payload.removeTags?.length) bits.push(`−${payload.removeTags.length}`);
+    parts.push(`tags ${bits.join(' ')}`);
   }
   banner({ text: `Updated ${n} channel${n === 1 ? '' : 's'} · ${parts.join(', ')}`, tone: 'good', icon: 'edit' });
   bulkOpen.value = false;
@@ -1136,6 +1163,7 @@ async function doAppend() {
       :playlist="playlist"
       :channels="channels"
       @close="statusOpen = false"
+      @channels-tagged="reload"
     />
 
     <PlaylistOpModal
