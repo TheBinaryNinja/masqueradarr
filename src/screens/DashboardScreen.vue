@@ -38,6 +38,10 @@ const barcode = (() => {
 
 const totalChannels = computed(() => PLAYLISTS.value.reduce((s, p) => s + p.channels, 0));
 const totalPrograms = computed(() => EPG_SOURCES.value.reduce((s, e) => s + e.programs, 0));
+// Dashboard renders these two overview panels A–Z (the store holds them in raw/server order).
+// Scoped to the Dashboard only — the Playlists / EPG Sources screens keep their own ordering.
+const sortedPlaylists = computed(() => [...PLAYLISTS.value].sort((a, b) => a.name.localeCompare(b.name)));
+const sortedEpgSources = computed(() => [...EPG_SOURCES.value].sort((a, b) => a.name.localeCompare(b.name)));
 // "Unmatched" = anything not EPG-matched, including the null seed state (never EPG-evaluated) —
 // not just epgState === 'unmatched'. epgState is the dedicated match-status indicator ('matched' | 'unmatched' | null).
 const unmatched = computed(() => CHANNELS.value.filter((c) => c.epgState !== 'matched').length);
@@ -401,7 +405,7 @@ onBeforeUnmount(() => {
             <Btn variant="ghost" size="sm" @click="go('/playlists')">View all</Btn>
             <Btn variant="ghost" size="sm" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
           </div>
-          <PlaylistRow v-for="p in PLAYLISTS" :key="p.id" :playlist="p" compact @open="go(`/playlists/${p.id}`)" />
+          <PlaylistRow v-for="p in sortedPlaylists" :key="p.id" :playlist="p" compact @open="go(`/playlists/${p.id}`)" />
         </div>
 
         <div class="card flush">
@@ -413,7 +417,7 @@ onBeforeUnmount(() => {
             <Btn variant="ghost" size="sm" @click="go('/epg-sources')">View all</Btn>
             <Btn variant="ghost" size="sm" icon="plus" @click="emit('add', 'epg')">Add EPG source</Btn>
           </div>
-          <div v-for="p in EPG_SOURCES" :key="p.id" class="src-row" @click="go(`/epg-sources/${p.id}`)">
+          <div v-for="p in sortedEpgSources" :key="p.id" class="src-row" @click="go(`/epg-sources/${p.id}`)">
             <div :class="['src-ico', { builtin: p.builtin, 'epg-builtin': p.builtin }]" style="color: var(--good);">
               <Icon :name="p.builtin ? 'tv' : 'epg'" :size="18" />
             </div>
