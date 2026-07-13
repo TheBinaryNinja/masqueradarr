@@ -141,11 +141,13 @@ const codeTags = computed(() => {
 
 const viewStream = computed(() => liveStreams.value.find((s) => s.id === viewing.value));
 
-// Connected viewers for the selected channel (re-fetched on selection + each snapshot). A monotonic
-// token discards a stale response — rapid switching can leave an older channel's fetch in flight that
-// resolves after the newer one, which would otherwise paint the wrong channel's sessions.
+// Connected viewers for the selected channel — re-fetched on selection change + a slow interval, NOT on
+// every WS snapshot (that fires ~1/sec and would starve the token guard below / flicker the list). A
+// monotonic token discards a stale response — rapid switching can leave an older channel's fetch in
+// flight that resolves after the newer one, which would otherwise paint the wrong channel's sessions.
 const clients = ref<StreamClient[]>([]);
 let clientsReq = 0;
+let clientsTimer: number | undefined;
 async function loadClients(id: string | undefined) {
   const my = ++clientsReq;
   if (!id) { clients.value = []; return; }
@@ -155,13 +157,13 @@ async function loadClients(id: string | undefined) {
     if (res.ok) clients.value = (await res.json()) as StreamClient[];
   } catch { /* best-effort */ }
 }
-watch([() => sel.value?.id, ACTIVE_STREAMS], () => loadClients(sel.value?.id), { immediate: true });
+watch(() => sel.value?.id, (id) => loadClients(id), { immediate: true });
 
 function onView() { if (!sel.value) return; viewing.value = sel.value.id; playing.value = sel.value.status !== 'bad'; muted.value = false; }
 function close() { viewing.value = null; }
 function onKey(e: KeyboardEvent) { if (e.key === 'Escape' && viewing.value) close(); }
-onMounted(() => { subscribe(); window.addEventListener('keydown', onKey); });
-onBeforeUnmount(() => { release(); window.removeEventListener('keydown', onKey); });
+onMounted(() => { subscribe(); window.addEventListener('keydown', onKey); clientsTimer = window.setInterval(() => loadClients(sel.value?.id), 4000); });
+onBeforeUnmount(() => { release(); window.removeEventListener('keydown', onKey); if (clientsTimer) clearInterval(clientsTimer); });
 
 // Programs are stored epoch-ms — format an absolute epoch-ms time as local HH:MM.
 function formatTime(ms: number) { const d = new Date(ms); return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); }
@@ -396,7 +398,7 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
           </div>
 
           <div class="card flush stream-sessions asd-label asd-label-flush">
-            <div class="card-hd asd-label-hd" style="padding: 12px 14px;">
+            <div class="card-hd asd-label-hd">
               <span class="asd-cap">SESSIONS // CONNECTED</span>
               <Pill tone="cyan">{{ clients.length }}</Pill>
               <span class="spacer" />
@@ -741,6 +743,15 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
 /* kv-list rows recast to the mono spec idiom inside the label cards. */
 .stream-detail .asd-label .kv-list .k { font-family: var(--mq-font-mono); font-size: 11px; letter-spacing: 0.04em; color: var(--text-2); }
 
+/* Short-window fit: bound the content column to the fixed (overflow:hidden) panel height and let ONLY the
+   instrument cards scroll when they can't all fit — the brand header + stream title stay pinned above.
+   Without this, a column taller than the panel pushes the sessions card past the bottom edge and its rows
+   get clipped (the reported "sessions header shows, no rows"). The sessions card is pinned (flex:none) so
+   the column scrolls TO it rather than collapsing it; the sessions table keeps its own internal scroll. */
+.stream-detail .stream-detail-split { grid-template-rows: minmax(0, 1fr); }
+.stream-detail .stream-detail-main { overflow-y: auto; }
+.stream-detail .stream-sessions { flex: none; }
+
 /* Connected-sessions table → mono + hairline idiom (table semantics unchanged). */
 .stream-detail .stream-sessions .tbl th {
   font-family: var(--mq-font-mono);
@@ -748,14 +759,18 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
   letter-spacing: 0.1em;
   color: var(--text-2);
 }
-/* The sessions table is the ONLY scroller in the panel: capped to ~2 data rows so the panel itself
-   never scrolls. The shared .tbl thead th is already position:sticky/top:0; give it an opaque bg here
-   so scrolled rows don't bleed through the borderless (transparent) panel. Density-aware via --row-h. */
+/* Flush card owns its caption padding; tighten the bottom so the caption groups with the header row. */
+.stream-detail .stream-sessions .card-hd.asd-label-hd { padding: 12px 14px 8px; }
 .stream-detail .stream-sessions .asd-sess-scroll {
-  max-height: calc(var(--row-h) * 2 + 38px);
+  max-height: calc(var(--row-h) * 3 + 34px);
   overflow-y: auto;
 }
+/* Sticky header pins to the SCROLL BOX top (top:0) — NOT the shared .tbl default top:var(--topbar-h),
+   which is for tables scrolling inside .screen. Opaque bg so scrolled rows don't bleed through the
+   borderless (transparent) panel. Density-aware via --row-h. */
 .stream-detail .stream-sessions .asd-sess-scroll .tbl thead th {
+  top: 0;
+  padding-top: 4px;
   background: var(--bg-1);
   z-index: 1;
 }
