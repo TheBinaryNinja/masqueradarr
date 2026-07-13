@@ -42,6 +42,40 @@ async function channelCountFor(doc: { id: string; source?: string | null }): Pro
   return PlaylistChannel.countDocuments({ source: isCustomPlaylistType(doc.source) ? doc.id : doc.source });
 }
 
+// The authoritative playlist list payload — the read-scoped rows plus each one's derived `channels` count.
+// Shared by GET / and the drag-reorder PUT /reorder so the reorder response reconciles 1:1 with the list
+// the SPA already renders (the client replaces its store with this). A non-admin's effective read set is the
+// UNION of their Global grants (allowedPlaylists) and custom-playlist grants (allowedCustomPlaylists).
+async function buildPlaylistList(req: AuthRequest): Promise<Record<string, unknown>[]> {
+  let filter = {};
+  if (req.user?.role === 'user') {
+    const allowedIds = [
+      ...(req.user.allowedPlaylists || []),
+      ...(req.user.allowedCustomPlaylists || []),
+    ];
+    filter = { id: { $in: allowedIds } };
+  }
+  const docs = await Playlist.find(filter, { _id: 0 }).lean();
+  const sourceCounts = await PlaylistChannel.aggregate<{ _id: string; count: number }>([
+    { $group: { _id: '$source', count: { $sum: 1 } } },
+  ]);
+  const bySource = new Map(sourceCounts.map((c) => [c._id, c.count]));
+  return docs.map((d) => ({
+    ...d,
+    // A custom-type playlist's copies are grouped under its id ('clone'/'file'/'url'/'hdhomerun' are type tags); others by `source`.
+    channels: d.source ? bySource.get(isCustomPlaylistType(d.source) ? d.id : d.source) ?? 0 : 0,
+  }));
+}
+
+// Next pin ordinal = (max pinOrder among currently-pinned rows) + 1, so a newly pinned playlist lands at the
+// BOTTOM of the PINNED section (mirrors epgSources nextOrder()). 0 when nothing is pinned yet.
+async function nextPinOrder(): Promise<number> {
+  const top = await Playlist.findOne({ pinned: true }, { pinOrder: 1, _id: 0 })
+    .sort({ pinOrder: -1 })
+    .lean();
+  return typeof top?.pinOrder === 'number' ? top.pinOrder + 1 : 0;
+}
+
 // Swap the origin (scheme + host + port) of a stored http(s) url to `domain`, preserving path/search/hash.
 // Returns null for values that aren't real http(s) URLs (e.g. the `source://<id>` seed sentinel, or an
 // unparseable value) so the caller leaves them untouched.
@@ -98,30 +132,29 @@ export async function cascadePlaylistUrls(nextDomain: string): Promise<void> {
 
 playlistsRouter.get('/', async (req: AuthRequest, res, next) => {
   try {
-    let filter = {};
-    if (req.user?.role === 'user') {
-      // A non-admin's effective read set is the UNION of their Global grants (allowedPlaylists) and their
-      // custom-playlist grants (allowedCustomPlaylists). The compose path already treats a custom grant as
-      // access, so the list/detail/channels reads must too — otherwise a user can be granted a clone they
-      // can never list or stream.
-      const allowedIds = [
-        ...(req.user.allowedPlaylists || []),
-        ...(req.user.allowedCustomPlaylists || []),
-      ];
-      filter = { id: { $in: allowedIds } };
+    res.json(await buildPlaylistList(req));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Persist a new pinned-playlist order (the drag-to-reorder UX inside the PINNED section). `ids` is the full
+// pinned id sequence in the new visual order; each row's `pinOrder` is rewritten to its index. Admin-only —
+// unlike /api/epg-sources, the /api/playlists mount is NOT in adminOnlyRoutes, so gate inline. MUST be
+// declared BEFORE PUT /:id so 'reorder' isn't captured as an :id. Near-clone of PUT /api/epg-sources/reorder.
+playlistsRouter.put('/reorder', requireAdmin, async (req: AuthRequest, res, next) => {
+  try {
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const ids = b.ids;
+    if (!Array.isArray(ids) || ids.some((v) => typeof v !== 'string')) {
+      return res.status(400).json({ error: 'ids (string[]) required' });
     }
-    const docs = await Playlist.find(filter, { _id: 0 }).lean();
-    const sourceCounts = await PlaylistChannel.aggregate<{ _id: string; count: number }>([
-      { $group: { _id: '$source', count: { $sum: 1 } } },
-    ]);
-    const bySource = new Map(sourceCounts.map((c) => [c._id, c.count]));
-    res.json(
-      docs.map((d) => ({
-        ...d,
-        // A custom-type playlist's copies are grouped under its id ('clone'/'file'/'url'/'hdhomerun' are type tags); others by `source`.
-        channels: d.source ? bySource.get(isCustomPlaylistType(d.source) ? d.id : d.source) ?? 0 : 0,
-      })),
-    );
+    const ops = (ids as string[]).map((id, index) => ({
+      updateOne: { filter: { id }, update: { $set: { pinOrder: index } } },
+    }));
+    if (ops.length) await Playlist.bulkWrite(ops);
+    // Return the authoritative list (fresh pinOrder + channel counts) so the SPA reconciles its store.
+    res.json(await buildPlaylistList(req));
   } catch (err) {
     next(err);
   }
@@ -162,7 +195,7 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
     // on the endpoint/state/url transition (SKILL §8).
     const before = await Playlist.findOne(
       { id: req.params.id },
-      { _id: 0, endpoint: 1, url: 1, state: 1, source: 1 },
+      { _id: 0, endpoint: 1, url: 1, state: 1, source: 1, pinned: 1 },
     ).lean();
     if (!before) return res.status(404).json({ error: 'not_found' });
 
@@ -179,6 +212,16 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
         return res.status(400).json({ error: 'state (boolean) required' });
       }
       $set.state = body.state;
+    }
+    // `pinned` is an organizational flag (moves the row into the PINNED section) — mirrors the `state`
+    // toggle. On the transition into pinned, assign a bottom-of-section ordinal; leave `pinOrder` untouched
+    // on unpin and on a redundant re-pin so an existing pinned slot is preserved.
+    if (body.pinned !== undefined) {
+      if (typeof body.pinned !== 'boolean') {
+        return res.status(400).json({ error: 'pinned (boolean) required' });
+      }
+      $set.pinned = body.pinned;
+      if (body.pinned && !before.pinned) $set.pinOrder = await nextPinOrder();
     }
     if (body.endpoint !== undefined) {
       // Accept either casing (an older SPA build may still send 'Global'/'Custom') but normalize to the
@@ -212,7 +255,7 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
     if (!Object.keys($set).length) {
       return res
         .status(400)
-        .json({ error: 'no editable fields provided (name, state, endpoint, url, interval, auto)' });
+        .json({ error: 'no editable fields provided (name, state, pinned, endpoint, url, interval, auto)' });
     }
 
     // Canonicalize the persisted `url` against the effective endpoint (defense-in-depth — the filename and

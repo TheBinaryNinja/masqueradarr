@@ -35,6 +35,12 @@ export interface Playlist {
   // every other playlist. The upstream .m3u/.m3u8 URL the import fetched, persisted so a manual or scheduled
   // Sync re-fetches + reconciles this playlist's channels from it. (Distinct from `url`, the hosted URL.)
   remoteUrl?: string | null;
+  // Organizational pin — when true the playlist renders in the Playlists screen's PINNED section (above the
+  // source-type groups). `pinOrder` is the drag-to-reorder ordinal WITHIN that section. Toggled via PUT
+  // /api/playlists/:id { pinned }; ordering persisted via PUT /api/playlists/reorder (reorderPlaylistPins).
+  // Optional: legacy rows pre-date the fields (absent ⇒ not pinned; pinOrder absent ⇒ sorts as 0).
+  pinned?: boolean;
+  pinOrder?: number;
 }
 export interface EpgSource {
   id: string; name: string; url: string; channels: number; programs: number;
@@ -459,6 +465,44 @@ export async function reorderEpgSources(orderedIds: string[]): Promise<void> {
 // Re-fetch playlists after an out-of-band change (e.g. a dulo sign-in flips a playlist's isAuthenticated).
 export async function reloadPlaylists(): Promise<void> {
   PLAYLISTS.value = await getJson<Playlist[]>('/api/playlists');
+}
+
+// Pin/unpin a playlist (the Playlists screen's PINNED section toggle). PUT the flag, then re-pull the shared
+// store so every consumer (nav count, Dashboard) stays coherent. On the transition into pinned the server
+// assigns a bottom-of-section pinOrder, so a plain reload surfaces the new position.
+export async function setPlaylistPinned(id: string, pinned: boolean): Promise<void> {
+  const res = await fetch(`/api/playlists/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ pinned }),
+  });
+  if (!res.ok) throw new Error(`pin toggle failed: ${res.status}`);
+  await reloadPlaylists();
+}
+
+// Persist a new pinned-playlist order (the drag-to-reorder UX inside the PINNED section). `orderedIds` is the
+// pinned id sequence in the new visual order. Optimistic: each reordered row's `pinOrder` is snapped
+// immediately (the screen sorts the PINNED section by it) so the UI reflects the drop before the round-trip,
+// then PUT /api/playlists/reorder writes the ordinals and returns the authoritative list which we reconcile
+// back. On failure the original list is restored so the UI never drifts from the server. Mirrors
+// reorderEpgSources (the EPG Sources drag-to-reorder).
+export async function reorderPlaylistPins(orderedIds: string[]): Promise<void> {
+  const prev = PLAYLISTS.value;
+  const orderMap = new Map(orderedIds.map((id, i) => [id, i]));
+  // Optimistic snap: rewrite pinOrder in place on the reordered rows (untouched rows pass through).
+  PLAYLISTS.value = prev.map((p) => (orderMap.has(p.id) ? { ...p, pinOrder: orderMap.get(p.id) } : p));
+  try {
+    const res = await fetch('/api/playlists/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: orderedIds }),
+    });
+    if (!res.ok) throw new Error(`reorder failed: ${res.status}`);
+    PLAYLISTS.value = (await res.json()) as Playlist[];
+  } catch (err) {
+    PLAYLISTS.value = prev; // reconcile back to the known-good order on failure
+    throw err;
+  }
 }
 
 // ──────────────────────────────────────────────────────────────────────

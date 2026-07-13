@@ -10,7 +10,7 @@ import GetAccessModal from '../components/GetAccessModal.vue';
 import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
-import { PLAYLISTS, reloadEpgSources, reloadPlaylists, type Playlist, type Channel } from '../data';
+import { PLAYLISTS, reloadEpgSources, reloadPlaylists, setPlaylistPinned, reorderPlaylistPins, type Playlist, type Channel } from '../data';
 import { bus } from '../composables/bus';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
@@ -108,9 +108,17 @@ function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResul
 // legacy 'import' only if such rows exist). The group key mirrors PlaylistRow's source-type chip: a registry
 // built-in (id === source) → "built-in", otherwise the stored `source` (a source-unset row falls into
 // "other"). Only non-empty groups are emitted.
+// Pinned rows render in a dedicated PINNED section (above the type groups), ordered by their drag-reorder
+// ordinal. They're pulled OUT of the type grouping below while pinned (e.g. pinning a clone empties it from
+// the CLONE group and surfaces it under PINNED).
+const pinnedPlaylists = computed<Playlist[]>(() =>
+  playlists.value.filter((p) => p.pinned).sort((a, b) => (a.pinOrder ?? 0) - (b.pinOrder ?? 0)),
+);
+
 const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
   const m = new Map<string, Playlist[]>();
   for (const p of playlists.value) {
+    if (p.pinned) continue; // pinned rows live in the PINNED section, not their source-type group
     const key = p.builtin ? 'built-in' : p.source ?? 'other';
     let bucket = m.get(key);
     if (!bucket) m.set(key, (bucket = []));
@@ -120,6 +128,78 @@ const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
     .sort((a, b) => a[0].localeCompare(b[0]))
     .map(([key, items]) => ({ key, items }));
 });
+
+// Render order: the PINNED section first (only when non-empty), then the alphabetical type groups. The
+// `draggable` flag marks the pinned section as drag-reorderable — the template binds the DnD handlers only
+// for that group, so a single PlaylistRow block (one #actions slot) serves every section.
+const allGroups = computed<{ key: string; items: Playlist[]; draggable: boolean }[]>(() => {
+  const groups = groupedPlaylists.value.map((g) => ({ ...g, draggable: false }));
+  return pinnedPlaylists.value.length
+    ? [{ key: 'pinned', items: pinnedPlaylists.value, draggable: true }, ...groups]
+    : groups;
+});
+
+// ── Pin toggle + drag-to-reorder (PINNED section) ──────────────────────────
+// Pin/unpin flips the shared store via setPlaylistPinned (PUT + reload). Reorder mirrors the EPG Sources
+// native-HTML5 DnD: `dragIndex` is the pinned row being dragged, `overIndex` the drop target (drives the
+// insertion-line styling), `dragMoved` suppresses the row's click→navigate after a drop.
+const dragIndex = ref<number | null>(null);
+const overIndex = ref<number | null>(null);
+const dragMoved = ref(false);
+
+async function togglePin(p: Playlist): Promise<void> {
+  try {
+    await setPlaylistPinned(p.id, !p.pinned);
+  } catch {
+    banner({ text: 'Could not update pin', tone: 'bad', icon: 'warn' });
+  }
+}
+
+function onPinDragStart(i: number, e: DragEvent): void {
+  dragIndex.value = i;
+  dragMoved.value = false;
+  if (e.dataTransfer) {
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', String(i)); // a payload is required to start the drag in some browsers
+  }
+}
+
+function onPinDragOver(i: number, e: DragEvent): void {
+  if (dragIndex.value === null) return;
+  e.preventDefault(); // allow the drop
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+  if (i !== overIndex.value) overIndex.value = i;
+  if (i !== dragIndex.value) dragMoved.value = true;
+}
+
+async function onPinDrop(i: number): Promise<void> {
+  const from = dragIndex.value;
+  resetDrag();
+  if (from === null || from === i) return;
+  // Move `from` to `i` within the pinned id sequence, then persist.
+  const ids = pinnedPlaylists.value.map((p) => p.id);
+  const [moved] = ids.splice(from, 1);
+  ids.splice(i, 0, moved);
+  try {
+    await reorderPlaylistPins(ids);
+  } catch {
+    banner({ text: 'Could not save the new pin order. Please try again.', tone: 'bad', icon: 'warn' });
+  }
+}
+
+function resetDrag(): void {
+  dragIndex.value = null;
+  overIndex.value = null;
+}
+
+// Navigate on a pinned row click — but swallow the synthetic click HTML5 DnD fires on the source after a drop.
+function onPinOpen(id: string): void {
+  if (dragMoved.value) {
+    dragMoved.value = false;
+    return;
+  }
+  router.push(`/playlists/${id}`);
+}
 
 // Returns { failed } (the names of global playlists whose sync errored) so the sync-mode PlaylistOpModal can
 // settle those rows red while marking the rest done.
@@ -220,10 +300,33 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
         <span class="spacer" />
         <Btn variant="primary" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
       </div>
-      <template v-for="g in groupedPlaylists" :key="g.key">
-        <div class="pl-group-hdr">{{ g.key }}</div>
-        <PlaylistRow v-for="p in g.items" :key="p.id" :playlist="p" grouped @open="router.push(`/playlists/${p.id}`)">
+      <template v-for="g in allGroups" :key="g.key">
+        <div class="pl-group-hdr" :class="{ pinned: g.draggable }">{{ g.key }}</div>
+        <PlaylistRow
+          v-for="(p, i) in g.items"
+          :key="p.id"
+          :playlist="p"
+          grouped
+          :reorderable="g.draggable"
+          :draggable="g.draggable || undefined"
+          :class="g.draggable ? { 'drag-source': dragIndex === i, 'drag-over': overIndex === i && dragIndex !== i } : undefined"
+          @dragstart="g.draggable ? onPinDragStart(i, $event) : undefined"
+          @dragover="g.draggable ? onPinDragOver(i, $event) : undefined"
+          @drop="g.draggable ? onPinDrop(i) : undefined"
+          @dragend="resetDrag"
+          @open="g.draggable ? onPinOpen(p.id) : router.push(`/playlists/${p.id}`)"
+        >
           <template #actions>
+            <Btn
+              size="sm"
+              variant="ghost"
+              :icon="p.pinned ? 'pin-solid' : 'pin'"
+              :title="p.pinned ? 'Unpin' : 'Pin'"
+              :aria-label="p.pinned ? 'Unpin playlist' : 'Pin playlist'"
+              :aria-pressed="p.pinned ? 'true' : 'false'"
+              :class="['pin-btn', { 'is-pinned': p.pinned }]"
+              @click="togglePin(p)"
+            />
             <Btn
               variant="cyan"
               size="sm"

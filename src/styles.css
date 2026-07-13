@@ -1248,7 +1248,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
    Active / channels / groups / last-sync / action cells form clean vertical bands across all rows
    regardless of per-row content width (e.g. "Sync Global" vs "Sync"). */
 .src-row.pl-row {
-  grid-template-columns: 40px 1fr 84px 72px 72px 168px 56px;
+  grid-template-columns: 40px 1fr 84px 72px 72px 168px 92px;
 }
 /* Source-type group header in the Playlists list — a light divider label above each group of rows
    (built-in / clone / file / hdhomerun / url). Lighter than .section-title; uses only existing tokens. */
@@ -1263,6 +1263,19 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 /* Slight indent so grouped rows read as children of their source-type header. */
 .src-row.pl-row.pl-grouped { padding-left: calc(var(--pad-card) + 16px); }
+/* PINNED-section rows are drag-reorderable (mirrors the EPG Sources affordance). The row already carries
+   .src-row so .src-row.drag-source / .drag-over (the dim + insertion line) and the generic .drag-grip apply
+   for free; this only combines the grouped indent (16px) with the grip gutter (18px). Declared AFTER
+   .pl-row.pl-grouped so it wins the equal-specificity padding-left tie. */
+.src-row.pl-row[draggable="true"] {
+  position: relative;
+  padding-left: calc(var(--pad-card) + 16px + 18px);
+  cursor: grab;
+}
+.src-row.pl-row[draggable="true"]:active { cursor: grabbing; }
+.src-row.pl-row[draggable="true"]:hover .drag-grip { opacity: 1; }
+/* PINNED section header — a subtle accent so the pinned group reads as distinct from the type-group dividers. */
+.pl-group-hdr.pinned { color: var(--accent-hi); }
 /* Stat cells in a playlist row right-align onto their fixed column so the numbers line up column-to-column. */
 .src-row.pl-row .stat-mini { justify-self: end; }
 /* Active/Inactive pill (the only .pill that is a DIRECT grid child — the name chips are nested in
@@ -1277,9 +1290,16 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   display: flex;
   justify-content: flex-end;
   align-items: center;
+  gap: 2px;
   width: 100%;
   justify-self: end;
 }
+/* Persistent pin toggle (left of the waffle). Muted at rest so it reads as a secondary control; a pinned
+   row's pin fills + takes the accent so the state is legible at a glance. The three-class selector clears
+   the base .btn.ghost color. */
+.src-row.pl-row .pl-row-actions .btn.pin-btn { color: var(--text-3); }
+.src-row.pl-row .pl-row-actions .btn.pin-btn:hover { color: var(--text-1); }
+.src-row.pl-row .pl-row-actions .btn.pin-btn.is-pinned { color: var(--accent-hi); }
 /* Two stacked rows inside the playlist name cell: row 1 is the status dot + display name, row 2 is the
    chip/pill cluster underneath. Scoped to .pl-row so the shared .src-name (EPG Sources / Dashboard rows,
    which stay a single inline row) is unaffected. The column overrides the base .src-name flex-row. */
