@@ -5,8 +5,8 @@
 // operator can watch a channel's client-side playback health in real time. Everything here is measured from
 // the actual <video>/hls.js in the operator's browser — distinct from the server-side stream telemetry
 // (useStreamStats). Same `{ src }` prop + `resolution` emit as the normal in-app player, so the slide-out can
-// swap between them (see ChannelPlayer.vue). Token-append + the __broll__ establishing gate come from
-// useAppStreamSource — do NOT re-implement them here.
+// swap between them (see ChannelPlayer.vue). Token-append comes from useAppStreamSource — do NOT re-implement
+// it here.
 //
 // Layout: a HUD inside the drawer's 16:9 media frame — video fills the frame, a status strip is docked at the
 // top and the scrolling event log at the bottom. Native <video> controls are intentionally omitted (the log
@@ -23,8 +23,8 @@ const video = ref<HTMLVideoElement | null>(null);
 const logEl = ref<HTMLElement | null>(null);
 let hls: Hls | null = null;
 
-// The gate (token append + __broll__ wait + generation id) lives in the composable; we bind hls.js to gatedSrc.
-const { gatedSrc, connecting } = useAppStreamSource(toRef(props, 'src'));
+// Token append lives in the composable; we bind hls.js to gatedSrc (the authenticated URL, or null while idle).
+const { gatedSrc } = useAppStreamSource(toRef(props, 'src'));
 
 // ---- live status line (sampled every 500ms) ----
 const m = reactive({
@@ -119,7 +119,7 @@ function teardownHls() {
   }
 }
 
-// Attach raw hls.js (or native HLS on Safari) to a src the gate has confirmed is serving live.
+// Attach raw hls.js (or native HLS on Safari) to the authenticated src.
 function attach(el: HTMLVideoElement, src: string) {
   bindVideoEvents(el);
   if (el.canPlayType('application/vnd.apple.mpegurl')) {
@@ -165,17 +165,15 @@ function attach(el: HTMLVideoElement, src: string) {
   el.play().catch(() => undefined);
 }
 
-// gatedSrc drives attach/teardown. Null while establishing (slate) → tear down; a URL → attach.
+// gatedSrc drives attach/teardown. Null → tear down; a URL → attach.
 watch(gatedSrc, (url) => {
   teardownHls();
-  if (url && video.value) { log('accent', 'gate passed → attaching'); attach(video.value, url); }
+  if (url && video.value) { log('accent', 'src ready → attaching'); attach(video.value, url); }
 });
-watch(connecting, (c) => { if (c) log('warn', 'establishing — waiting for live playlist…'); });
 
 onMounted(() => {
   sampler = setInterval(sample, 500);
   if (gatedSrc.value && video.value) attach(video.value, gatedSrc.value);
-  else if (connecting.value) log('warn', 'establishing — waiting for live playlist…');
 });
 onBeforeUnmount(() => {
   if (sampler) clearInterval(sampler);
@@ -192,7 +190,6 @@ onBeforeUnmount(() => {
       <Pill :tone="m.fatal > 0 ? 'bad' : m.stalls > 0 ? 'warn' : 'good'">
         {{ m.fatal > 0 ? 'FATAL' : m.paused ? 'PAUSED' : 'LIVE' }}
       </Pill>
-      <span v-if="connecting" class="dbg-kv"><b class="warn">establishing…</b></span>
       <span class="dbg-kv"><i>t</i>{{ m.currentTime.toFixed(2) }}</span>
       <span class="dbg-kv"><i>frozen</i><b :class="m.frozenFor > 3 ? 'bad' : 'good'">{{ m.frozenFor.toFixed(1) }}s</b></span>
       <span class="dbg-kv"><i>buf</i><b :class="m.bufAhead < 1 ? 'bad' : 'good'">{{ m.bufAhead.toFixed(1) }}s</b></span>

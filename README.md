@@ -431,9 +431,9 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
   categories, 14-day TTL) with a live log drawer — including a dedicated **`proxy`** category fed by the
   Rust engine's full resolve→fetch→rewrite→serve lineage.
 
-> **The video engine is a rebuilt Rust proxy.** The old always-on **ffmpeg** transcode engine (with the
-> B-Roll slate, ffprobe monitoring, and GPU hardware acceleration) was replaced by a **remux-free Rust
-> data-plane sidecar** — see [Video Proxy Engine](#video-proxy-engine) for the full picture. The one part
+> **The video engine is a Rust proxy.** masqueradarr serves video through a **remux-free Rust data-plane
+> sidecar** (replacing an older transcode engine) that resolves each stream on demand and rewrites its
+> `.m3u8` manifests — see [Video Proxy Engine](#video-proxy-engine) for the full picture. The one part
 > still pending is remux / transcode (e.g. HDHomeRun TS→HLS).
 
 **Scheduling**
@@ -656,10 +656,10 @@ Per composed surface:
 
 # Video Proxy Engine
 
-> **Scope:** how masqueradarr actually serves video. The old always-on **ffmpeg** engine was replaced by a
-> **remux-free Rust data-plane sidecar** that resolves each stream on demand and pipes it durably to the
-> player. This section covers the two-plane split, the internal seams, the request path, the durability
-> features, the tunable config, and the opt-in public-edge topology.
+> **Scope:** how masqueradarr actually serves video — a **remux-free Rust data-plane sidecar** (replacing an
+> older transcode engine) that resolves each stream on demand and pipes it durably to the player. This
+> section covers the two-plane split, the internal seams, the request path, the durability features, the
+> tunable config, and the opt-in public-edge topology.
 
 ## Two planes: Node control plane · Rust data plane
 

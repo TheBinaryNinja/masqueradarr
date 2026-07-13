@@ -30,10 +30,10 @@ const directAdapter: SourceAdapter = {
   // Never surfaced (synthetic → omitted from the manifest), but the contract requires it.
   grouping: { by: 'groupKey', groupOrder: 'alpha', channelOrder: 'name' },
 
-  // ── stream resolution: an .m3u8 entry composes (B-Roll/telemetry/ffprobe); resolveStream is identity. ──
+  // ── stream resolution: an .m3u8 entry is resolved per play (viewer telemetry); resolveStream is identity. ──
   isEntryUrl(url: string) {
     // An imported HLS playlist (.m3u8) is the channel ENTRY → route it through serveComposedMedia so it gets
-    // the B-Roll slate + viewer telemetry + ffprobe (like dulo/dlhd). Its rewritten children are segments/keys
+    // resolved per play with viewer telemetry (like dulo/dlhd). Its rewritten children are segments/keys
     // (.ts/.key) — never .m3u8 through the proxy, since the composer resolves master→variant server-side — so
     // they fall through to the direct hop. Non-HLS imports (raw .ts/.mp4) stay direct-hop (no compose).
     try {

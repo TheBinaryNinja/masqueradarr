@@ -14,7 +14,7 @@ use percent_encoding::{utf8_percent_encode, AsciiSet, NON_ALPHANUMERIC};
 use std::borrow::Cow;
 use url::Url;
 
-/// Decode metadata declared IN the manifest — parsed WITHOUT ffprobe (the video-engine teardown removed it).
+/// Decode metadata declared IN the manifest (no external probe).
 /// A MASTER playlist's `#EXT-X-STREAM-INF` carries RESOLUTION/CODECS/FRAME-RATE (we keep the highest-BANDWIDTH
 /// variant's); a MEDIA playlist implies the container (`#EXT-X-MAP` init segment ⇒ fMP4, else `#EXTINF`
 /// segments ⇒ TS). Each field is independently optional — the master and the media playlist are separate

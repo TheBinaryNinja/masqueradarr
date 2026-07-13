@@ -6,6 +6,7 @@ import Pill from './Pill.vue';
 import Toggle from './Toggle.vue';
 import FrequencyBuilder from './FrequencyBuilder.vue';
 import ProxyConfigPanel from './ProxyConfigPanel.vue';
+import TagPicker from './TagPicker.vue';
 import { type Channel, type Playlist, type CronFrequency, type CronJob, CRON_JOBS, reloadCronjobs, reloadPlaylists } from '../data';
 import { domain, timezone } from '../composables/useSettings';
 import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/useSchedule';
@@ -47,7 +48,7 @@ onMounted(async () => {
   customProxy.value = await customConfigExists(proxyConfigId.value);
 });
 
-// ── Automatic cron pickers (the shared FrequencyBuilder, same as the EPG ScheduleEditorDrawer) ──────────
+// ── Automatic cron pickers (the shared FrequencyBuilder, same as the EPG source Edit drawer) ──────────
 // Two independent jobs for the (Default) source playlist's source id (id === source), distinguished by
 // targetType — each is its own cronjobs doc / _id ("<targetType>:<targetId>"), so the cadences never collide:
 //   • Sync schedule — targetType 'playlist'; the scheduler runs the source live-sync (the same work as the
@@ -109,7 +110,7 @@ const m3uRawCron = ref('0 */6 * * *');
 const m3uCron = computed(() => buildCron(m3uFreq, m3uRawCron.value));
 
 // Save lifecycle for the schedule writes — surfaced in the footer so a failed save is visible instead of
-// silently swallowed (the drawer stays open on error, mirroring the EPG ScheduleEditorDrawer).
+// silently swallowed (the drawer stays open on error, mirroring the EPG source Edit drawer).
 const saving = ref(false);
 const error = ref('');
 
@@ -298,6 +299,14 @@ function setActive(v: boolean) {
   save({ state: v });
 }
 
+// Custom tag assignment — persisted immediately (like the other drawer fields). The optimistic `emit('updated')`
+// inside save() updates the parent's bound row so the magenta pills refresh without a refetch.
+const tags = ref<string[]>([...(props.playlist.tags ?? [])]);
+function onTags(v: string[]) {
+  tags.value = v;
+  save({ tags: v });
+}
+
 function setMode(m: 'global' | 'custom') {
   mode.value = m;
   save({ endpoint: m, url: hostedUrl.value });
@@ -415,6 +424,14 @@ function onCustomPath(v: string) {
               </div>
             </label>
           </div>
+        </div>
+
+        <div class="divider" />
+
+        <!-- Custom tags -->
+        <div class="form-row">
+          <div class="field-lbl">Tags</div>
+          <TagPicker :model-value="tags" @update:model-value="onTags" />
         </div>
 
         <div class="divider" />

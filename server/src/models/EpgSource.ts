@@ -48,6 +48,9 @@ export interface EpgSourceDoc {
   device: string | null;
   timezone: string | null;
   languagecode: string | null;
+  // Operator-assigned custom tag ids (opaque Tag.id references; see models/Tag.ts). User-owned — a sync never
+  // writes this; set only via PUT /api/epg-sources/:id. Absent on legacy rows (treat undefined as []).
+  tags?: string[];
 }
 
 const EpgSourceSchema = new Schema<EpgSourceDoc>(
@@ -82,6 +85,8 @@ const EpgSourceSchema = new Schema<EpgSourceDoc>(
     device: { type: String, default: null },
     timezone: { type: String, default: null },
     languagecode: { type: String, default: null },
+    // Operator-assigned custom tag ids (Tag.id references). User-owned; set only via PUT /api/epg-sources/:id.
+    tags: { type: [String], default: [] },
   },
   { versionKey: false },
 );

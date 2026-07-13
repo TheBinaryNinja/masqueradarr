@@ -4,7 +4,7 @@ import { Schema, model } from 'mongoose';
 // a singleton upsert (same idempotency rule as the synced collections). It holds operator-facing values
 // the SPA edits on the Settings screen that the *server* also needs at runtime, and that must survive a
 // restart:
-//   - displayName  — burned into the server-rendered B-Roll placeholder card (headless clients see it).
+//   - displayName  — a human-facing display label for the deployment.
 //   - domain       — base URL of every hosted endpoint; drives each playlist's persisted `url` (HOSTED AT)
 //                    and the settings→playlists url cascade (see routes/settings.ts + routes/playlists.ts).
 //   - timezone / darkMode — operator preferences. `offset` is the DST-aware UTC offset ('±HHMM') DERIVED
@@ -56,6 +56,10 @@ export interface SettingsDoc {
   maxmindLicenseKey: string | null; // MaxMind GeoLite2 license key — SECRET, redacted by translate.ts on read
   user: Record<string, unknown>; // placeholder for per-user settings; opaque object for now
   backupLocation: string; // absolute on-disk dir for scheduled + saved backups; default '/backups' (BACKUPS_DIR env)
+  // Playlists screen "A-Z" toggle: when true, rows auto-sort alphabetically within each source-type category;
+  // when false, they follow the manual per-category order (Playlist.order). SPA-only display preference — the
+  // server never reads it at runtime (persisted here only so the choice is shared across admin devices). Default true.
+  playlistsAlphaSort: boolean;
 }
 
 export const SETTINGS_ID = 'app';
@@ -76,6 +80,7 @@ const SettingsSchema = new Schema<SettingsDoc>(
     maxmindLicenseKey: { type: String, default: null },
     user: { type: Schema.Types.Mixed, default: {} },
     backupLocation: { type: String, required: true, default: '/backups' },
+    playlistsAlphaSort: { type: Boolean, required: true, default: true },
   },
   { versionKey: false },
 );

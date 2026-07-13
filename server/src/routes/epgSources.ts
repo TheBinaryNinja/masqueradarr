@@ -4,6 +4,7 @@ import { EpgSource, type EpgSourceDoc } from '../models/EpgSource.js';
 import { Program } from '../models/Program.js';
 import { EpgChannel } from '../models/EpgChannel.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
+import { validateTagIds } from '../services/tags.js';
 import { Cronjob, cronjobId } from '../models/Cronjob.js';
 import { removeCronjob } from '../scheduler/index.js';
 import {
@@ -255,8 +256,14 @@ epgSourcesRouter.put('/:id', async (req, res, next) => {
       }
       $set.auto = b.auto;
     }
+    // Operator-assigned custom tag ids — validated against the Tag registry (unknown id → 400).
+    if (b.tags !== undefined) {
+      const v = await validateTagIds(b.tags);
+      if (!v.ok) return res.status(400).json({ error: v.error });
+      $set.tags = v.ids;
+    }
     if (!Object.keys($set).length) {
-      return res.status(400).json({ error: 'no editable fields provided (name, interval, auto)' });
+      return res.status(400).json({ error: 'no editable fields provided (name, interval, auto, tags)' });
     }
     const doc = (await EpgSource.findOneAndUpdate(
       { id: req.params.id },

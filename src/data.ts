@@ -8,7 +8,7 @@
 // Static UI constants (GROUPS, EPG_HOURS) and pure client-side helpers
 // live here too — they're not mock data, they're config the SPA owns.
 
-import { ref, reactive, type Ref } from 'vue';
+import { ref, reactive, computed, type Ref } from 'vue';
 import { summarizeFrequency } from './composables/useSchedule';
 
 // ──────────────────────────────────────────────────────────────────────
@@ -41,6 +41,13 @@ export interface Playlist {
   // Optional: legacy rows pre-date the fields (absent ⇒ not pinned; pinOrder absent ⇒ sorts as 0).
   pinned?: boolean;
   pinOrder?: number;
+  // Manual list position WITHIN this playlist's source-type category (Playlists screen, A-Z toggle OFF).
+  // Optional BY DESIGN: an unset `order` sorts LAST, so a newly created playlist lands at the bottom of its
+  // category. Set via PUT /api/playlists/reorder { field:'order' } (reorderPlaylistCategory); never by a sync.
+  order?: number;
+  // Operator-assigned custom tag ids (opaque Tag.id references; resolve to names via tagNames()). Set via
+  // PUT /api/playlists/:id { tags }. Absent on legacy rows (treat undefined as none).
+  tags?: string[];
 }
 export interface EpgSource {
   id: string; name: string; url: string; channels: number; programs: number;
@@ -73,9 +80,13 @@ export interface EpgSource {
   device?: string | null;
   timezone?: string | null;
   languagecode?: string | null;
+  // Operator-assigned custom tag ids (opaque Tag.id references; resolve to names via tagNames()). Set via
+  // PUT /api/epg-sources/:id { tags }. Absent on legacy rows (treat undefined as none).
+  tags?: string[];
 }
-// ffprobe-derived technical-detail shape. VESTIGIAL after the video-engine teardown: ffprobe was removed, so
-// Channel.stream.probe / ActiveStream.probe are always null now — retained as a nullable slot for the rebuild.
+// Decode-metadata shape (the deep technical-detail slot). Channel.stream.probe is filled by the channel probe
+// from manifest-declared decode metadata (null until first probed); ActiveStream.probe stays null — a passthrough
+// proxy can't measure the deep per-session metrics (dropped frames / latency) this slot was built to carry.
 export interface StreamProbe {
   video: {
     codec: string | null; profile: string | null; pixFmt: string | null;
@@ -91,7 +102,7 @@ export interface StreamProbe {
 // 1:1 with the editable PlaylistChannel store (server/src/models/PlaylistChannel.ts) — read verbatim from
 // GET /api/playlists/:id/channels (no projection). `status` is the enable/disable governor ('Active' |
 // 'Disabled', m3u inclusion). Volatile per-channel detail lives in `stream`: realtime phase, playability,
-// resolution, the initials logo fallback, and the ffprobe technical-detail snapshot. Fields with no source
+// resolution, the initials logo fallback, and the technical-detail snapshot. Fields with no source
 // equivalent are explicit null.
 export interface Channel {
   id: string;
@@ -116,12 +127,13 @@ export interface Channel {
   failoverOrder?: number | null; // child ordinal within the group
   origTvgId?: string | null; // pre-failover snapshot of this channel's own tvg_id (server-managed; SPA never writes it)
   playerPref?: number | null; // preferred upstream player (1-based) for playerSelectable sources (dlhd); null = inherit source default
+  tags?: string[]; // operator-assigned custom tag ids (Tag.id refs; resolve via tagNames()). Set via PUT /api/playlists/:id/channels/:id
   stream: {
     initials: string | null;
     isPlayable: boolean;
     res: string | null;
     status: 'live' | 'establishing' | 'buffer' | 'failed' | null; // realtime phase
-    probe?: StreamProbe | null; // ffprobe technical-detail snapshot (latest); null until first probed
+    probe?: StreamProbe | null; // technical-detail snapshot from the channel probe (latest); null until first probed
   };
 }
 // start/end are epoch ms for ALL programs (Gracenote/EPG-PW synced AND the mock seed — uniform shape; EPG
@@ -143,10 +155,10 @@ export interface Program {
 // GET /api/active-streams and pushed over the /api/stream-stats WebSocket. One row per channel with ≥1
 // active viewer. Real-metrics-only: viewers/bandwidth/bitrate are measured off the proxy byte stream and
 // quality (codec/audio/container/resolution/fps) is MANIFEST-DECLARED (parsed from #EXT-X-STREAM-INF by the
-// Rust data plane, humanized server-side; null for a media-playlist-only upstream). The deep ffprobe `probe`
+// Rust data plane, humanized server-side; null for a media-playlist-only upstream). The deep `probe`
 // snapshot is not rebuilt (always null) — a passthrough proxy still can't measure dropped frames or latency.
 // Which player produced a session: the in-app slide-out HLS player (appPlayer) or a third-party IPTV client
-// app — TiviMate/Kodi/VLC/… (externalPlayer, routed through the server-side ffmpeg engine).
+// app — TiviMate/Kodi/VLC/… (externalPlayer, served from the proxy's external mount as HLS or raw-TS).
 export type PlayerType = 'appPlayer' | 'externalPlayer';
 export interface ActiveStream {
   id: string; // = channelId (stable row id)
@@ -330,6 +342,9 @@ export const VIEW_SESSIONS: Ref<ViewSession[]> = ref([]);
 export const USER_METRICS: Ref<UserMetric[]> = ref([]);
 export const LOGS: Ref<Log[]> = ref([]);
 export const CRON_JOBS: Ref<CronJob[]> = ref([]);
+// Custom tags — the shared registry (server: Tag collection + /api/tags). Assigned by opaque id on Playlist /
+// EpgSource / Channel; resolve id→name via tagNames(). Managed on the Settings screen (TagManager.vue).
+export const TAGS: Ref<Tag[]> = ref([]);
 export const EPG_PROGRAMS: Record<string, Program[]> = reactive({});
 // Ephemeral (not bootstrapped) — kept live by useSystemStats.ts off the /api/system-stats WebSocket. NOT in
 // bootstrapData(): the route is admin-only, so a standard user's parallel bootstrap would 403; the admin
@@ -395,7 +410,7 @@ export function bootstrapData(): Promise<void> {
     // loads epg-channels per-selected-source (fetchEpgChannelsForSource).
     const [
       playlists, epgSources, sources, activeStreams,
-      customPlaylists, viewSessions, logs, cronjobs,
+      customPlaylists, viewSessions, logs, cronjobs, tags,
     ] = await Promise.all([
       getJson<Playlist[]>('/api/playlists'),
       getJson<EpgSource[]>('/api/epg-sources'),
@@ -405,6 +420,7 @@ export function bootstrapData(): Promise<void> {
       getJson<ViewSession[]>('/api/view-sessions'),
       getJson<Log[]>('/api/logs?limit=200'),
       getJson<CronJob[]>('/api/cronjobs'),
+      getJson<Tag[]>('/api/tags'),
     ]);
     // The global channel list is the union of each PROVISIONED source's projected channels PLUS every
     // user-composed (Clone/Import) playlist's copied channels (the legacy /api/channels collection endpoint
@@ -426,6 +442,7 @@ export function bootstrapData(): Promise<void> {
     VIEW_SESSIONS.value = viewSessions;
     LOGS.value = logs;
     CRON_JOBS.value = cronjobs;
+    TAGS.value = tags;
   })().catch((err) => {
     bootstrapPromise = null;
     throw err;
@@ -496,6 +513,29 @@ export async function reorderPlaylistPins(orderedIds: string[]): Promise<void> {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ ids: orderedIds }),
+    });
+    if (!res.ok) throw new Error(`reorder failed: ${res.status}`);
+    PLAYLISTS.value = (await res.json()) as Playlist[];
+  } catch (err) {
+    PLAYLISTS.value = prev; // reconcile back to the known-good order on failure
+    throw err;
+  }
+}
+
+// Persist a new manual order for ONE source-type category (the Playlists screen's per-category drag-reorder,
+// active when the A-Z toggle is OFF). `orderedIds` is that category's rows in the new visual order; the server
+// rewrites each row's `order` to its index (field:'order'). Same optimistic-snap + reconcile + rollback shape
+// as reorderPlaylistPins — only the ordinal field differs.
+export async function reorderPlaylistCategory(orderedIds: string[]): Promise<void> {
+  const prev = PLAYLISTS.value;
+  const orderMap = new Map(orderedIds.map((id, i) => [id, i]));
+  // Optimistic snap: rewrite `order` in place on the reordered rows (untouched rows pass through).
+  PLAYLISTS.value = prev.map((p) => (orderMap.has(p.id) ? { ...p, order: orderMap.get(p.id) } : p));
+  try {
+    const res = await fetch('/api/playlists/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: orderedIds, field: 'order' }),
     });
     if (!res.ok) throw new Error(`reorder failed: ${res.status}`);
     PLAYLISTS.value = (await res.json()) as Playlist[];
@@ -676,6 +716,79 @@ export async function deleteGroup(playlistId: string, name: string): Promise<Gro
   return defs;
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Custom tags — the shared, app-wide label registry (server: Tag collection + /api/tags). Records store
+// opaque tag IDS (a `tags: string[]` on Playlist / EpgSource / Channel); tagNames() resolves ids → display
+// names via a single cached Map so rows never do per-item lookups. A rename is one registry write (every row
+// reflects it reactively — no record rewrite); a delete `$pull`s the id from every record server-side and is
+// mirrored in-memory below so open rows drop the pill without a refetch.
+// ──────────────────────────────────────────────────────────────────────
+
+export interface Tag { id: string; name: string; order?: number }
+
+// id → name, rebuilt only when TAGS changes.
+export const tagsById = computed(() => new Map(TAGS.value.map((t) => [t.id, t.name])));
+
+// Resolve a record's tag ids to display names (dropping any unknown/stale id).
+export function tagNames(ids?: string[]): string[] {
+  if (!ids?.length) return [];
+  const m = tagsById.value;
+  return ids.map((id) => m.get(id)).filter((n): n is string => !!n);
+}
+
+export async function reloadTags(): Promise<void> {
+  TAGS.value = await getJson<Tag[]>('/api/tags');
+}
+
+// Create a tag. Returns it; throws with the server error slug (e.g. 'tag_exists') so a caller can react.
+export async function createTag(name: string): Promise<Tag> {
+  const res = await fetch('/api/tags', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `create tag failed: ${res.status}`);
+  }
+  const tag = (await res.json()) as Tag;
+  TAGS.value = [...TAGS.value, tag];
+  return tag;
+}
+
+// Rename a tag. No record patching — rows resolve names via tagsById, which updates reactively.
+export async function renameTag(id: string, name: string): Promise<Tag> {
+  const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `rename tag failed: ${res.status}`);
+  }
+  const tag = (await res.json()) as Tag;
+  TAGS.value = TAGS.value.map((t) => (t.id === id ? tag : t));
+  return tag;
+}
+
+// Delete a tag. The server cascades a $pull across all records; mirror it in-memory so open rows drop the
+// pill without a refetch (parallels deleteGroup patching CHANNELS).
+export async function deleteTag(id: string): Promise<void> {
+  const res = await fetch(`/api/tags/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(`delete tag failed: ${res.status}`);
+  TAGS.value = TAGS.value.filter((t) => t.id !== id);
+  PLAYLISTS.value = PLAYLISTS.value.map((p) =>
+    p.tags?.includes(id) ? { ...p, tags: p.tags.filter((t) => t !== id) } : p,
+  );
+  EPG_SOURCES.value = EPG_SOURCES.value.map((e) =>
+    e.tags?.includes(id) ? { ...e, tags: e.tags.filter((t) => t !== id) } : e,
+  );
+  CHANNELS.value = CHANNELS.value.map((c) =>
+    c.tags?.includes(id) ? { ...c, tags: c.tags.filter((t) => t !== id) } : c,
+  );
+}
+
 // Hard-delete channels (tombstoned server-side so a re-sync won't re-add them). Removes them from the global
 // CHANNELS union; the caller (detail screen) also patches its own local list. Returns the deleted count.
 export async function deleteChannels(playlistId: string, ids: string[]): Promise<number> {
@@ -728,6 +841,20 @@ export async function reloadChannels(): Promise<void> {
   CHANNELS.value = channelLists.flat();
 }
 
+// User-path sibling of reloadChannels(): builds CHANNELS from ONLY the playlists the signed-in user has
+// been granted, without touching any admin-only endpoint (reloadChannels() fetches /api/custom-playlists,
+// which 403s for role 'user' and rejects the whole load). GET /api/playlists is already user-scoped, so
+// App.vue's loadAppData() awaits reloadPlaylists() first and this reads channels for exactly those granted
+// ids — each /api/playlists/:id/channels call passes the server's allowed-playlist guard. A per-call catch
+// keeps one playlist's failure from wiping the rest.
+export async function reloadUserChannels(): Promise<void> {
+  const lists = await Promise.all(
+    PLAYLISTS.value.map((p) =>
+      getJson<Channel[]>(`/api/playlists/${p.id}/channels`).catch(() => [] as Channel[])),
+  );
+  CHANNELS.value = lists.flat();
+}
+
 // Fetch programs for a SCOPED set of channels within a time window and MERGE them into the shared
 // EPG_PROGRAMS cache (keyed by composite channelId "<source>:<id>"). Replaces the old "load every
 // program at boot" path. Merge (not wipe) because two screens share the cache (EPG Detail timeline +
@@ -752,6 +879,26 @@ export async function fetchProgramsFor(
       getJson<Record<string, Program[]>>(`/api/epg-programs?channelIds=${encodeURIComponent(c.join(','))}${win}`)),
   );
   for (const r of results) Object.assign(EPG_PROGRAMS, r);
+}
+
+// User-scoped sibling of fetchProgramsFor: reads the guide via GET /api/playlists/:id/programs (the
+// user-reachable route) instead of the admin-only /api/epg-programs, then MERGES into EPG_PROGRAMS.
+// The Dashboard's per-user view uses this. `channelIds` are composite "<epg>:<tvg_id>" keys; `playlistId`
+// is the selected channel's `source` (the id the server's grant guard is checked against). A single
+// channel is fetched at a time, so no chunking is needed.
+export async function fetchUserProgramsFor(
+  playlistId: string,
+  channelIds: string[],
+  from?: number,
+  to?: number,
+): Promise<void> {
+  const ids = [...new Set(channelIds.filter(Boolean))];
+  if (!playlistId || ids.length === 0) return;
+  const win = (from != null && to != null) ? `&from=${from}&to=${to}` : '';
+  const r = await getJson<Record<string, Program[]>>(
+    `/api/playlists/${encodeURIComponent(playlistId)}/programs?channelIds=${encodeURIComponent(ids.join(','))}${win}`,
+  );
+  Object.assign(EPG_PROGRAMS, r);
 }
 
 // Re-fetch the cron jobs after a schedule edit (the EPG Edit drawer upserts/deletes one).

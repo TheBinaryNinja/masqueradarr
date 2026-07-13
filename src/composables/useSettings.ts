@@ -44,6 +44,11 @@ export const maxmindLicenseKeySet = ref(false);
 // field; defaults to '/backups'. The Data backup feature (Generate/Restore/schedule) lives on the Settings
 // screen — see SettingsScreen.vue.
 export const backupLocation = ref('/backups');
+// Playlists screen "A-Z" toggle: when true, rows auto-sort alphabetically within each source-type category;
+// when false they follow the manual per-category order (Playlist.order). Persisted on the Settings singleton
+// like any other field (shared across admin devices); the Playlists screen mutates this ref directly (button
+// click, or a drag → false) and the debounced watcher below PUTs it. Default ON.
+export const playlistsAlphaSort = ref(true);
 
 const { tweaks, setTweak } = useTweaks();
 
@@ -81,6 +86,7 @@ export async function loadSettings(): Promise<void> {
       maxmindAccountId: string | null;
       maxmindLicenseKeySet: boolean;
       backupLocation: string;
+      playlistsAlphaSort: boolean;
     }>;
     if (typeof s.displayName === 'string') displayName.value = s.displayName;
     if (typeof s.domain === 'string') domain.value = s.domain;
@@ -94,6 +100,7 @@ export async function loadSettings(): Promise<void> {
     if (s.maxmindAccountId !== undefined) maxmindAccountId.value = s.maxmindAccountId ?? '';
     if (typeof s.maxmindLicenseKeySet === 'boolean') maxmindLicenseKeySet.value = s.maxmindLicenseKeySet;
     if (typeof s.backupLocation === 'string') backupLocation.value = s.backupLocation;
+    if (typeof s.playlistsAlphaSort === 'boolean') playlistsAlphaSort.value = s.playlistsAlphaSort;
   } catch {
     // Best-effort: the defaults stand if the API is unreachable.
   } finally {
@@ -142,6 +149,7 @@ watch(nameservers, (v) => persist({ nameservers: v.trim() === '' ? null : v.trim
 watch(logLevel, (v) => persist({ logLevel: v }));
 watch(maxmindAccountId, (v) => persist({ maxmindAccountId: v.trim() === '' ? null : v.trim() }));
 watch(backupLocation, (v) => persist({ backupLocation: v.trim() || '/backups' }));
+watch(playlistsAlphaSort, (v) => persist({ playlistsAlphaSort: v }));
 
 // Write-only PUT of the MaxMind license key (never goes through the auto-persist refs — the API doesn't
 // return it, so round-tripping would blank it). Triggered by the Save/Clear buttons on the Settings screen;

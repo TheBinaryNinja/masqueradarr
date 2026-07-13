@@ -108,6 +108,7 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     border-collapse: separate;
     border-spacing: 0;
     width: 100%;
+    table-layout: fixed;
     font-size: var(--fs-sm);
 }
 .access-tbl thead th {
@@ -130,20 +131,29 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
 .user-block + .user-block td {
     border-top: 2px solid var(--hairline-strong);
 }
-.c-user { width: 200px; }
-.c-pl { width: 220px; }
-.c-url { min-width: 280px; }
+/* Percent widths + table-layout:fixed → columns scale with the modal and the table is always exactly the
+   container width, so it never overflows into a horizontal scrollbar. Both URL columns share .c-url → equal. */
+.c-user { width: 25%; }
+.c-pl { width: 21%; }
+.c-url { width: 27%; }
 .user-cell {
     display: flex;
     align-items: center;
     gap: 8px;
     min-width: 0;
 }
+/* Username + role pill inline on one line (mirrors the Playlist name + type-pill cell). */
 .user-meta {
     display: flex;
-    flex-direction: column;
-    gap: 3px;
+    align-items: center;
+    gap: 6px;
     min-width: 0;
+}
+/* Keep the role/type pill at its natural size so a long username/playlist name clips (ellipsis) instead
+   of squashing the pill. */
+.user-meta :deep(.pill),
+.pl-cell :deep(.pill) {
+    flex: none;
 }
 .avatar-sm {
     width: 26px;
@@ -158,6 +168,7 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     place-items: center;
 }
 .uname {
+    min-width: 0;
     font-weight: 600;
     color: var(--text-0);
     overflow: hidden;

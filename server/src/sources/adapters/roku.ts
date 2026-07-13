@@ -5,7 +5,7 @@
 // The TWIST vs the rest of the resolve family is a stateful, CLOUDFLARE-SENSITIVE anonymous SESSION (the family's
 // first cookie-bearing session): a 3-step keyless bootstrap (GET / → cookies; GET /api/v1/csrf → token) gates the
 // catalog/EPG/resolve hops, and a 403 from the CloudFront edge trips a 5-minute cooldown (back off, keep the prior
-// catalog/guide + serve the B-Roll slate — the plan's resilience mandate, never hammer). So normalize() stores a
+// catalog/guide from the committed snapshot — the plan's resilience mandate, never hammer). So normalize() stores a
 // `roku://<id>` ENTRY sentinel (the dulo/pluto custom-scheme posture — the master needs a freshly-minted playback
 // JWT) and resolveStream() boots the session (cached), resolves a fresh playId via the content proxy, and POSTs
 // `/api/v3/playback` PER PLAY (all in roku/config.ts), learning the resolved OSM host into a per-source dynamic
@@ -64,7 +64,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the `roku://<id>` ENTRY sentinel (resolved per play);
-// served as an entry (→ B-Roll slate + telemetry + ffprobe). Grouped by the station's derived category.
+// served as an entry (viewer telemetry). Grouped by the station's derived category.
 function normalize(raw: RokuRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name) return null;
   const id = String(raw.channelId);

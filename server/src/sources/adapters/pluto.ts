@@ -60,7 +60,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the `pluto://<region>/<id>` ENTRY sentinel (carrying
-// the region; resolved per play); served as an entry (→ B-Roll slate + telemetry + ffprobe). Grouped by Pluto's
+// the region; resolved per play); served as an entry (viewer telemetry). Grouped by Pluto's
 // guide category.
 function normalize(raw: PlutoRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name || !raw.region) return null;

@@ -206,11 +206,26 @@ const bufBins = computed(() => {
       else upstream[idx] += 1;
     });
   });
-  return { upstream, client, total: upstream.map((u, i) => u + client[i]) };
+  return { upstream, client, total: upstream.map((u, i) => u + client[i]), start, binMs };
 });
 const bufMax = computed(() => Math.max(1, ...bufBins.value.total));
 const totalClientBuffers = computed(() => bufBins.value.client.reduce((a, b) => a + b, 0));
 const totalUpstreamBuffers = computed(() => bufBins.value.upstream.reduce((a, b) => a + b, 0));
+
+// X-axis timeline: AXIS_TICKS evenly-spaced clock/date labels spanning the SAME [start, now] window the
+// bars use (derived from bufBins so bars + axis never drift). Format adapts to range — HH:MM for 1h/24h,
+// M/D for 7d/30d — mirroring the time formatting used elsewhere (e.g. ActiveStreamsScreen).
+const AXIS_TICKS = 5;
+function fmtTick(t: number) {
+  const d = new Date(t);
+  if (range.value === '7d' || range.value === '30d') return `${d.getMonth() + 1}/${d.getDate()}`;
+  return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+}
+const axisTicks = computed(() => {
+  const { start, binMs } = bufBins.value;
+  const span = binMs * BUF_BINS;
+  return Array.from({ length: AXIS_TICKS }, (_, k) => fmtTick(start + (k / (AXIS_TICKS - 1)) * span));
+});
 
 const problemChannels = computed(() => {
   const byChannel: Record<string, { ch: any; sessions: number; buffers: number; scores: number[] }> = {};
@@ -232,11 +247,11 @@ const sel = computed(() => sessions.value.find((s) => s.id === selectedId.value)
 
 function chOf(s: Session) { return CHANNELS.value.find((c) => c.id === s.channelId)!; }
 
-// Per-session ffprobe technical details were removed in the video-engine teardown (the streamsessions store
-// is gone), so this is always null now — the presenters + detail block below degrade to '—' / hidden.
+// Per-session decode-metadata technical details were removed with the old transcode engine (the streamsessions
+// store is gone), so this is always null now — the presenters + detail block below degrade to '—' / hidden.
 const selProbe = computed<StreamProbe | null>(() => null);
 
-// Compact one-line presenters for the ffprobe technical details (null → row shows '—'). Mirrors ChannelDrawer.
+// Compact one-line presenters for the decode-metadata technical details (null → row shows '—'). Mirrors ChannelDrawer.
 const videoLine = computed(() => {
   const v = selProbe.value?.video;
   if (!v || !v.codec) return null;
@@ -308,8 +323,9 @@ function segStyle(count: number, total: number) {
   return { height: (total > 0 ? (count / total) * 100 : 0) + '%' };
 }
 function binTitle(i: number) {
-  const u = bufBins.value.upstream[i], c = bufBins.value.client[i];
-  return `${u + c} buffer events (${u} upstream · ${c} client)`;
+  const { upstream, client, start, binMs } = bufBins.value;
+  const u = upstream[i], c = client[i];
+  return `${fmtTick(start + i * binMs)}–${fmtTick(start + (i + 1) * binMs)} · ${u + c} buffer events (${u} upstream · ${c} client)`;
 }
 
 const events = computed(() => sel.value?.events ?? []);
@@ -391,13 +407,13 @@ function metricColor(tone?: string) {
               </div>
             </div>
           </div>
-          <div class="row" style="justify-content: space-between; margin-top: 6px; font-size: 10px; color: var(--text-3);">
-            <span class="mono">−{{ range }}</span>
-            <span class="row" style="gap: 10px;">
-              <span class="buf-legend"><i class="buf-swatch buf-seg-upstream" /> upstream {{ totalUpstreamBuffers }}</span>
-              <span class="buf-legend"><i class="buf-swatch buf-seg-client" /> client {{ totalClientBuffers }}</span>
-            </span>
-            <span class="mono">now</span>
+          <!-- X-axis timeline: evenly-spaced clock/date ticks across the [−range, now] window -->
+          <div class="buf-axis">
+            <span v-for="(t, i) in axisTicks" :key="i" class="mono buf-tick">{{ t }}</span>
+          </div>
+          <div class="row" style="justify-content: center; gap: 10px; margin-top: 6px; font-size: 10px; color: var(--text-3);">
+            <span class="buf-legend"><i class="buf-swatch buf-seg-upstream" /> upstream {{ totalUpstreamBuffers }}</span>
+            <span class="buf-legend"><i class="buf-swatch buf-seg-client" /> client {{ totalClientBuffers }}</span>
           </div>
         </div>
       </div>

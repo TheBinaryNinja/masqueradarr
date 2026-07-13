@@ -7,14 +7,69 @@ import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
 import SearchInput from '../components/SearchInput.vue';
 import EpgSyncModal from '../components/EpgSyncModal.vue';
-import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources, reloadEpgSources } from '../data';
+import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
+import EditEpgSourceDrawer from '../components/EditEpgSourceDrawer.vue';
+import DeleteEpgSourceModal from '../components/DeleteEpgSourceModal.vue';
+import UploadXmlModal from '../components/UploadXmlModal.vue';
+import { EPG_SOURCES, epgMetaChips, formatSyncTime, reorderEpgSources, reloadEpgSources, tagNames, type EpgSource } from '../data';
 import { useToast } from '../composables/useToast';
 import { useEpgActions } from '../composables/useEpgActions';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
 const toast = useToast();
-const { syncingAllEpg, syncAllEpg } = useEpgActions();
+const { syncingAllEpg, syncAllEpg, syncingIds, syncEpgSource } = useEpgActions();
+
+// ── Per-row waffle menu ──────────────────────────────────────────────────────
+// One anchored actions popup per row, one open at a time (tracked by source id). Item set is ROW-SCOPED:
+// Sync + Delete only for a standalone, syncable source; 'xml file' swaps Sync → Upload XML; a playlist-bound
+// or built-in row shows Edit only (its sync/delete are managed elsewhere / off-limits). Edit is always present.
+const openMenuId = ref<string | null>(null);
+function toggleMenu(id: string): void {
+  openMenuId.value = openMenuId.value === id ? null : id;
+}
+// Row-scoped surfaces opened from a waffle item (null = closed). Rendered by the screen — the menu unmounts on
+// select, so each item's `run` just flips one of these refs.
+const editingSource = ref<EpgSource | null>(null);
+const deletingSource = ref<EpgSource | null>(null);
+const uploadingSource = ref<EpgSource | null>(null);
+
+async function onSync(p: EpgSource): Promise<void> {
+  const { ok, offsetDefaulted } = await syncEpgSource(p.id);
+  if (ok && offsetDefaulted) {
+    toast.lowerRight({
+      tone: 'warn',
+      title: 'Time zone offset not set',
+      text: 'Stored guide times defaulted to UTC (+0000). Set a Time zone in Settings.',
+    });
+  } else if (!ok) {
+    toast.lowerRight({ tone: 'bad', title: 'Sync failed', text: `Could not sync "${p.name}". Please try again.` });
+  }
+}
+
+function menuItems(p: EpgSource): RowActionItem[] {
+  const items: RowActionItem[] = [];
+  // Sync + Delete are hidden for playlist-bound (playlist owns the cadence) and built-in (ships preconfigured)
+  // rows — they get Edit only. Everyone else gets Sync (or Upload XML for a one-shot 'xml file') + Delete.
+  const restricted = !!p.builtin || !!p.playlistBinding;
+  if (!restricted) {
+    if (p.source === 'xml file') {
+      items.push({ key: 'upload', icon: 'upload', label: 'Upload XML', run: () => { uploadingSource.value = p; } });
+    } else {
+      const syncing = syncingIds.value.has(p.id);
+      items.push({ key: 'sync', icon: 'refresh', label: syncing ? 'Syncing…' : 'Sync', disabled: syncing, run: () => { void onSync(p); } });
+    }
+  }
+  items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { editingSource.value = p; } });
+  if (!restricted) {
+    items.push({ key: 'delete', icon: 'trash', label: 'Delete', danger: true, run: () => { deletingSource.value = p; } });
+  }
+  return items;
+}
+
+function onUploaded(): void {
+  void reloadEpgSources();
+}
 
 // The list renders straight off the shared EPG_SOURCES store (no local copy), so a scheduled sync or an
 // edit made elsewhere only surfaces if we re-pull on entry. Refetch on mount — the screen mounts fresh on
@@ -37,14 +92,14 @@ async function onSyncAll(): Promise<{ failed: string[] }> {
   return { failed };
 }
 
-// Search filter — case-insensitive substring across name + kind (source) + lineupId. Debounced via the
-// shared SearchInput so a large source list doesn't re-filter on every keystroke.
+// Search filter — case-insensitive substring across name + kind (source) + lineupId + assigned custom tag
+// names. Debounced via the shared SearchInput so a large source list doesn't re-filter on every keystroke.
 const search = ref('');
 const filteredSources = computed(() => {
   const q = search.value.trim().toLowerCase();
   if (!q) return EPG_SOURCES.value;
   return EPG_SOURCES.value.filter((p) =>
-    [p.name, p.source, p.lineupId].some((v) => (v || '').toLowerCase().includes(q)),
+    [p.name, p.source, p.lineupId, ...tagNames(p.tags)].some((v) => (v || '').toLowerCase().includes(q)),
   );
 });
 
@@ -144,14 +199,15 @@ function openSource(id: string) {
             <StatusDot :status="p.status" :pulse="p.status === 'good'" />
             {{ p.name }}
             <Pill v-if="p.builtin" tone="system"><Icon name="check" :size="10" />built-in</Pill>
-            <Pill tone="cyan">{{ (p.interval || '').toLowerCase() }}</Pill>
-            <Pill v-if="p.playlistBinding" tone="good">Playlist-bound</Pill>
           </div>
           <div class="epg-meta">
             <span v-for="c in epgMetaChips(p, ['source', 'lineupId'])" :key="c.label" class="meta-item" :title="`${c.label}: ${c.value}`">
               <span class="meta-k">{{ c.label }}:</span>
               <span class="meta-chip">{{ c.value }}</span>
             </span>
+            <Pill tone="cyan">{{ (p.interval || '').toLowerCase() }}</Pill>
+            <Pill v-if="p.playlistBinding" tone="good">Playlist-bound</Pill>
+            <Pill v-for="n in tagNames(p.tags)" :key="n" tone="magenta">{{ n }}</Pill>
           </div>
         </div>
         <div class="stat-mini"><b>{{ p.channels }}</b>channels</div>
@@ -160,8 +216,43 @@ function openSource(id: string) {
           <b style="font-size: 12px; font-weight: 500; color: var(--text-1);">{{ formatSyncTime(p.lastSync) }}</b>
           last sync
         </div>
+        <!-- Row actions — the waffle drops into the .src-row grid's spare 6th column (no template change).
+             @click.stop keeps the trigger from navigating the row AND satisfies RowActionsMenu's outside-click
+             toggle contract. -->
+        <div style="position: relative; justify-self: end;" @click.stop>
+          <Btn
+            variant="cyan"
+            size="sm"
+            icon="waffle"
+            title="Row actions"
+            aria-label="Row actions"
+            aria-haspopup="menu"
+            :aria-expanded="openMenuId === p.id"
+            @click="toggleMenu(p.id)"
+          />
+          <RowActionsMenu
+            v-if="openMenuId === p.id"
+            :items="menuItems(p)"
+            @close="openMenuId = null"
+          />
+        </div>
       </div>
     </div>
     <EpgSyncModal v-if="opOpen" :run="() => onSyncAll()" @close="opOpen = false" />
+
+    <EditEpgSourceDrawer v-if="editingSource" :source="editingSource" @close="editingSource = null" />
+    <DeleteEpgSourceModal
+      v-if="deletingSource"
+      :source="deletingSource"
+      @close="deletingSource = null"
+      @deleted="deletingSource = null"
+    />
+    <UploadXmlModal
+      v-if="uploadingSource"
+      :source-id="uploadingSource.id"
+      :source-name="uploadingSource.name"
+      @close="uploadingSource = null"
+      @uploaded="onUploaded"
+    />
   </div>
 </template>

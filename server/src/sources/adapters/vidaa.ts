@@ -47,8 +47,8 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. DRM / DASH channels are DROPPED (HLS-only proxy); a row whose cleaned master
-// isn't http(s) is also dropped. The stream entry is the already-cleaned master (served as an .m3u8 entry → B-Roll
-// slate + telemetry + ffprobe). `_id`/sourceChannelId carry the GEO-QUALIFIED id; grouped by the extracted genre.
+// isn't http(s) is also dropped. The stream entry is the already-cleaned master (served as an .m3u8 entry,
+// resolved per play; viewer telemetry). `_id`/sourceChannelId carry the GEO-QUALIFIED id; grouped by the extracted genre.
 function normalize(raw: VidaaRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name) return null;
   if (raw.drm) return null; // DASH/DRM — out of scope (HLS-only proxy)

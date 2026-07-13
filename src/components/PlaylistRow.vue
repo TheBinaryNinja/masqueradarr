@@ -3,7 +3,7 @@ import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import StatusDot from './StatusDot.vue';
-import { playlistScheduleLabel, type Playlist } from '../data';
+import { playlistScheduleLabel, tagNames, type Playlist } from '../data';
 
 // Shared playlist row — the 7-column `.src-row.pl-row` used by the Playlists list AND the Dashboard
 // Playlists panel, so the two never drift. Presentational only: the row's data comes in via `playlist`,
@@ -79,6 +79,7 @@ function sourceChip(p: Playlist): { label: string; tone: string; icon: string } 
             <Icon :name="playlist.isAuthenticated ? 'check' : 'lock'" :size="10" />
             {{ playlist.isAuthenticated ? 'Authenticated' : 'Sign-in needed' }}
           </Pill>
+          <Pill v-for="n in tagNames(playlist.tags)" :key="n" tone="magenta">{{ n }}</Pill>
         </div>
       </div>
     </div>

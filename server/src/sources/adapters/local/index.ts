@@ -1,5 +1,5 @@
 // Local Now stream adapter — resolves a channel's opaque `localnow://<id>?slug=<slug>` sentinel to a fresh
-// signed CDN master per play, so the in-app player, the B-Roll slate, ffprobe, and live telemetry all work
+// signed CDN master per play, so the in-app player and live telemetry both work
 // through the EXISTING composer with zero core changes. Channels imported from a market carry origin:'local'
 // (sources/adapters/local/import.ts), so their derived proxy URL is /api/v1/local/<enc localnow://…> and this
 // adapter binds that route.

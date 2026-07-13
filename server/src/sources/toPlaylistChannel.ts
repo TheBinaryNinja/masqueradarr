@@ -57,12 +57,13 @@ export function toPlaylistChannelDoc(src: SourceChannelDoc): PlaylistChannelDoc 
     failoverRole: null,
     failoverOrder: null,
     playerPref: null, // no per-channel player override at seed — inherits the source-wide default (Settings.dlhdPlayer)
+    tags: [], // no operator tags at seed — assigned post-sync via the channel edit route ($setOnInsert-only)
     stream: {
       initials: initialsFor(src.name),
       isPlayable: src.isPlayable,
       res: null, // unknown until probed
       status: null, // realtime phase — in-memory authority (streamState.ts), not persisted at seed
-      probe: null, // ffprobe technical details — unknown until first probed at proxy time (streamProbe.ts)
+      probe: null, // decode/technical details — unknown until first probed at proxy time (channel probe)
     },
   };
 }

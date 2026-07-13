@@ -4,10 +4,10 @@
 //   1. Builds the DISPLAY snapshot — resolves each active channel's telemetry to a real channelId
 //      (PlaylistChannel), attaches the live phase (streamState), and formats bytes/sec into Mbps + a human
 //      uptime. Served by GET /api/active-streams AND pushed over the WS. The codec/audio/container/resolution/
-//      fps fields are the MANIFEST-DECLARED decode metadata (the ffprobe-free successor to the removed probe):
+//      fps fields are the MANIFEST-DECLARED decode metadata (the successor to the removed probe engine):
 //      the Rust data plane parses each proxied manifest (#EXT-X-STREAM-INF + container hint), streamTelemetry
 //      stores it per channel, and this layer humanizes it (avc1→H.264, mp4a→AAC, fmp4→fMP4, 1920x1080→1080p).
-//      `probe` stays null — the deep ffprobe technical snapshot is not rebuilt.
+//      `probe` stays null — the deep technical snapshot is not rebuilt.
 //   2. WebSocket fan-out on /api/stream-stats — pushes the active-streams snapshot every BROADCAST_MS (only
 //      while ≥1 client is connected) plus one-shot buffer-event frames, and persists a ViewSession row when
 //      the telemetry core reports a closed viewer session.
@@ -32,7 +32,7 @@ const MIN_SESSION_MS = 5_000;
 // next good sample — which makes the Active Streams pill flicker even though the stream is effectively fine.
 // We hold the pill at `live` until a channel has stayed in `buffer` CONTINUOUSLY for STATUS_DEBOUNCE_MS; any
 // `live` sample resets the streak. Recovery is instant and a hard `failed`/`establishing` is shown verbatim —
-// only the noisy live↔buffer edge is damped. Display-ONLY: B-Roll serving, engine stall/fail detection, and
+// only the noisy live↔buffer edge is damped. Display-ONLY: engine stall/fail detection and
 // buffer-event telemetry all still act on the REAL phase via phaseFor(); this just smooths what the pill shows.
 const STATUS_DEBOUNCE_MS = 5_000;
 // channelKey → epoch ms when the current uninterrupted `buffer` streak began (absent = not currently buffering).
@@ -82,7 +82,7 @@ export interface DisplayStream {
   container: string | null;
   resolution: string | null;
   fps: number | null;
-  probe: null; // was the ffprobe technical snapshot — always null after the video-engine teardown
+  probe: null; // was the deep technical snapshot — always null after the video-engine teardown
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's
   // identity — the parent's own upstream is dead and the named backup is carrying the stream.
   failover: FailoverServing | null;
@@ -163,7 +163,7 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       container: decode.container,
       resolution: decode.resolution,
       fps: decode.fps,
-      probe: null, // the deep ffprobe technical snapshot is not rebuilt (video-engine teardown)
+      probe: null, // the deep technical snapshot is not rebuilt (video-engine teardown)
       failover: failoverFor(r.channelKey),
     });
   }

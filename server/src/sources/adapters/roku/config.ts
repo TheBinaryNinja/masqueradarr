@@ -10,7 +10,7 @@
 // The TWIST vs the rest of the resolve family is a stateful, Cloudflare-sensitive anonymous SESSION (the FAST
 // family's first cookie-bearing session): a 3-step keyless bootstrap mints session cookies + a csrf token that
 // gate the catalog/EPG/resolve hops, and a 403 from the CloudFront edge trips a 5-minute cooldown (the
-// resilience the plan calls out — keeping the previous catalog/guide and the B-Roll slate, never hammering). So
+// resilience the plan calls out — keeping the previous catalog/guide, never hammering). So
 // normalize() stores a `roku://<id>` ENTRY sentinel (the dulo/pluto custom-scheme posture — the playable master
 // needs a freshly-minted playback JWT) and resolveStream() boots the session (cached), resolves a fresh playId
 // via the content proxy, and POSTs `/api/v3/playback` PER PLAY:
@@ -524,7 +524,7 @@ function invalidate(stationId: string): void {
 // ── stream resolve (content → playback, per play) ──────────────────────────────────────
 
 // The playback request body envelope (the web client's fixed params). mediaFormat is forced to 'm3u' to stay
-// HLS-only (the plan's mandate — a DASH-only channel simply fails resolve → the B-Roll "failed" slate, never a
+// HLS-only (the plan's mandate — a DASH-only channel simply fails resolve → a surfaced 502, never a
 // broken master). Ported from FastChannels roku.py resolve body.
 function playbackBody(stationId: string, playId: string): Record<string, unknown> {
   const sessionId = cookies.get('_usn') || 'roku-scraper';
@@ -544,8 +544,8 @@ function playbackBody(stationId: string, playId: string): Record<string, unknown
 /**
  * Resolve a station → a fresh, signed OSM HLS master url. Reuses a cached resolved url within its TTL; otherwise
  * boots the session (cached), resolves a playId (cached → content proxy), and POSTs `/api/v3/playback`. Throws an
- * actionable error when no playId/master can be obtained (the proxy maps it to a 502 + the B-Roll "failed"
- * slate). The caller (the adapter's resolveStream) pre-allows the resolved host so the proxy's SSRF gate passes
+ * actionable error when no playId/master can be obtained (the proxy surfaces a 502). The caller (the adapter's
+ * resolveStream) pre-allows the resolved host so the proxy's SSRF gate passes
  * the master's child hops. `allowCache=false` forces a fresh playback lookup (audit-time). Mirrors roku.py resolve.
  */
 export async function resolveRokuMaster(stationId: string, allowCache = true): Promise<string> {

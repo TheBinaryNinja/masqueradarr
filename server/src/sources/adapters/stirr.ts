@@ -56,7 +56,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the `…/playable` ENTRY url (resolved per play);
-// served as an entry (→ B-Roll slate + telemetry + ffprobe). Grouped by STIRR's mapped category.
+// served as an entry (viewer telemetry). Grouped by STIRR's mapped category.
 function normalize(raw: StirrRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name) return null;
   const id = String(raw.channelId);

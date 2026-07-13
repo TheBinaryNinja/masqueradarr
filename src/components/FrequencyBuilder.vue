@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Shared Manual/Automatic schedule frequency builder — the single source of truth for the cron-frequency
-// UI used by every schedule editor: the EPG ScheduleEditorDrawer (sync + EPG-XML cards) and the Playlist
+// UI used by every schedule editor: the EPG source Edit drawer (sync schedule) and the Playlist
 // status drawer (Sync + Compose m3u). Renders the Manual/Automatic toggle and, when Automatic, the
 // frequency-mode picker + per-mode inputs + a live summary/cron preview. State is owned by the parent:
 // `freq` is a reactive CronFrequency mutated in place; `auto` and `rawCron` are v-model bindings. The

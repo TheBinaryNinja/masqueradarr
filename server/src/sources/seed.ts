@@ -295,6 +295,8 @@ async function upsertPlaylistChannels(docs: SourceChannelDoc[]): Promise<void> {
             failoverOrder: pc.failoverOrder,
             // Operator-owned player preference — written-once null, NEVER $set (survives re-sync), like failover.
             playerPref: pc.playerPref,
+            // Operator-owned custom tags — written-once [], NEVER $set (survives re-sync), like failover/playerPref.
+            tags: pc.tags,
             'stream.res': pc.stream.res,
             'stream.status': pc.stream.status,
             // Written-once null; the live probe (set by the proxy sink) is preserved across re-syncs.
@@ -539,7 +541,7 @@ export async function bootInitSources(): Promise<void> {
     logger.warn('seed', `playlistauths index reconcile failed (continuing): ${(err as Error).message}`);
   }
 
-  // Video-engine teardown cleanup: drop any stale `probe-all` cronjobs left from the removed ffprobe sweep
+  // Video-engine teardown cleanup: drop any stale `probe-all` cronjobs left over from the removed video-engine probe sweep
   // (its Settings UI is gone, so a lingering schedule would otherwise error on every tick with no way to
   // delete it). Idempotent + non-fatal. Runs before startScheduler() so a stale job never gets registered.
   try {

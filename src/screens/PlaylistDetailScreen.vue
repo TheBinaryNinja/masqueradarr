@@ -19,7 +19,7 @@ import GroupConfigModal from '../components/GroupConfigModal.vue';
 import AssignAccessModal from '../components/AssignAccessModal.vue';
 import GetAccessModal from '../components/GetAccessModal.vue';
 import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
-import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, disbandChannelLocal, deleteChannels as apiDeleteChannels, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
+import { PLAYLISTS, CUSTOM_PLAYLISTS, GROUPS_BY_PLAYLIST, playlistScheduleLabel, reloadCustomPlaylists, reloadPlaylists, reloadEpgSources, reloadChannels, reloadGroups, disbandFailoverGroup, disbandChannelLocal, deleteChannels as apiDeleteChannels, tagNames, type Playlist, type Channel, type CustomPlaylist, type FailoverGroupResult } from '../data';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
 import { isAdmin } from '../composables/useAuth';
@@ -280,8 +280,8 @@ function selectRange(toId: string) {
   selected.value = n;
 }
 
-async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null }) {
-  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined) {
+async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number }) {
+  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined && payload.chnoSeed === undefined) {
     bulkOpen.value = false;
     return;
   }
@@ -289,6 +289,21 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   const n = ids.size;
   const targets = channels.value.filter((c) => ids.has(c.id));
   const supportsPlayer = (c: Channel) => ['dlhd'].includes(c.origin ?? c.source);
+  // Renumber: assign channelNo = seed, seed+step, … in the CURRENT display order (filteredView tree
+  // order). Selected channels not currently visible (filtered out by search/group/status) sort last,
+  // keeping their base order. Keyed by id, so it's independent of the PUT fan-out iteration order.
+  const chnoById = new Map<string, string>();
+  if (payload.chnoSeed !== undefined) {
+    const step = payload.chnoStep && payload.chnoStep !== 0 ? payload.chnoStep : 1;
+    const orderIdx = new Map<string, number>();
+    filtered.value.forEach((c, i) => orderIdx.set(c.id, i));
+    const ordered = [...targets].sort((a, b) => {
+      const ai = orderIdx.has(a.id) ? orderIdx.get(a.id)! : Number.MAX_SAFE_INTEGER;
+      const bi = orderIdx.has(b.id) ? orderIdx.get(b.id)! : Number.MAX_SAFE_INTEGER;
+      return ai - bi;
+    });
+    ordered.forEach((c, i) => chnoById.set(c.id, String(payload.chnoSeed! + i * step)));
+  }
   // The persisted PUT body: status/group pass through; clearEpg unlinks the 2-factor EPG link (tvg_id + epg
   // → null) and flips epgState to 'unmatched' (mirrors DELETE /api/epg-sources/:id's unlink). playerPref sets
   // the DaddyLive player override (null = Auto/inherit); it's stripped per-channel below for non-DaddyLive sources.
@@ -317,7 +332,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   // Persist each channel edit (PUT /api/playlists/<source>/channels/<id>), then update locally.
   await Promise.all(
     targets.map((c) => {
-      const chBody = bodyFor(c);
+      const chBody = { ...bodyFor(c), ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id) } : {}) };
       if (!Object.keys(chBody).length) return Promise.resolve(undefined);
       return fetch(`/api/playlists/${encodeURIComponent(c.source)}/channels/${encodeURIComponent(c.id)}`, {
         method: 'PUT',
@@ -336,6 +351,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
             ? { tvg_id: null, epg: null, epgState: 'unmatched' as const }
             : {}),
           ...(payload.playerPref !== undefined && supportsPlayer(c) ? { playerPref: payload.playerPref } : {}),
+          ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id)! } : {}),
         }
       : c
   );
@@ -344,6 +360,10 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   if (payload.group) parts.push(`group → ${payload.group}`);
   if (payload.clearEpg) parts.push('EPG match removed');
   if (payload.playerPref !== undefined) parts.push(`player → ${payload.playerPref === null ? 'Auto' : payload.playerPref}`);
+  if (chnoById.size) {
+    const nums = [...chnoById.values()].map(Number);
+    parts.push(`channel # → ${Math.min(...nums)}…${Math.max(...nums)}`);
+  }
   banner({ text: `Updated ${n} channel${n === 1 ? '' : 's'} · ${parts.join(', ')}`, tone: 'good', icon: 'edit' });
   bulkOpen.value = false;
   selected.value = new Set();
@@ -554,10 +574,13 @@ const headerMenuItems = computed<RowActionItem[]>(() => {
 // backup count per parent id (always equals the nested rows shown). A child whose parent is filtered out
 // falls through as a normal, un-nested row.
 const filteredView = computed(() => {
+  const q = search.value.toLowerCase();
   const rows = channels.value.filter((c) =>
     c.status === stateFilter.value &&
     (group.value === 'all' || c.group === group.value) &&
-    (search.value === '' || c.tvg_name.toLowerCase().includes(search.value.toLowerCase()))
+    (q === '' ||
+      c.tvg_name.toLowerCase().includes(q) ||
+      tagNames(c.tags).some((n) => n.toLowerCase().includes(q)))
   );
   // Sort by the selected key. channelNo is a user-editable string (may be numeric or null) — compare it
   // numerically when both sides parse, else lexically, with nulls last; name/group are plain string sorts.
@@ -861,6 +884,7 @@ async function doAppend() {
                 <Pill v-if="c.failoverRole === 'parent'" tone="parent" title="Failover group parent — exported and served first">parent</Pill>
                 <Pill v-else-if="c.failoverRole === 'child'" tone="child" title="Failover backup — hidden from exports, EPG inherited from the parent">child</Pill>
                 <Pill v-if="filteredView.childCounts.has(c.id)" title="Failover backups behind this parent">{{ filteredView.childCounts.get(c.id) }} backup{{ filteredView.childCounts.get(c.id) === 1 ? '' : 's' }}</Pill>
+                <Pill v-for="n in tagNames(c.tags)" :key="n" tone="magenta">{{ n }}</Pill>
               </div>
             </td>
             <td class="muted">{{ c.group }}</td>

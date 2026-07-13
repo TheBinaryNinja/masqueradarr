@@ -1,4 +1,4 @@
-//! DST-3 continuous raw-TS distribution — an ffmpeg-free "output format" for the external-player mount.
+//! DST-3 continuous raw-TS distribution — a remux-free raw-TS "output format" for the external-player mount.
 //!
 //! When the (Default)/(Custom) proxyconfig sets `outputFormat: "ts"`, an /api/ext/v1 ENTRY request is served as
 //! ONE continuous `video/mp2t` chunked response instead of a rewritten HLS manifest: we follow the upstream

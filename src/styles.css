@@ -858,6 +858,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: oklch(0.79 0.09 250);
   border-color: oklch(0.74 0.09 250 / 0.3);
 }
+/* Custom tags — a single magenta variant for all user-managed tags (hue ~340, distinct from the violet
+   parent/305 and system-purple/280 roles). Raw oklch like parent/child, so no separate light-mode override. */
+.pill.magenta {
+  background: oklch(0.72 0.18 340 / 0.14);
+  color: oklch(0.80 0.16 340);
+  border-color: oklch(0.72 0.18 340 / 0.32);
+}
 
 /* Segmented control */
 .segmented {
@@ -903,6 +910,10 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-bottom: 1px solid var(--hairline);
 }
 .toolbar .spacer { flex: 1; }
+/* A-Z sort toggle (Playlists screen): a ghost button that lights up in the accent when active, mirroring the
+   pin button's is-pinned treatment. */
+.toolbar .btn.az-btn { font-weight: 600; letter-spacing: 0.02em; }
+.toolbar .btn.az-btn.is-active { color: var(--accent-hi); border-color: var(--accent-hi); }
 
 /* Playlist-detail sticky header: pin the toolbar (search/filter/view-switch) AND the table column
    headers to the top of the .screen scroll area while the channel rows scroll underneath. Scoped to
@@ -1374,9 +1385,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .src-row .stat-mini { font-size: var(--fs-xs); color: var(--text-2); text-align: right; min-width: 60px; }
 .src-row .stat-mini b { color: var(--text-0); font-size: var(--fs-base); font-weight: 600; display: block; }
 
-/* EPG source provenance fields (under the name; replaces the old single url line). Each item is a plain
-   label OUTSIDE the cyan value pill — e.g. SOURCE: (Gracenote). */
-.epg-meta { display: flex; flex-wrap: wrap; gap: 7px 12px; margin-top: 12px; }
+/* EPG source provenance line (under the name; replaces the old single url line). Leads with the SOURCE /
+   LINEUPID chips — each a plain label OUTSIDE the cyan value pill, e.g. SOURCE: (Gracenote) — then carries
+   the source's inline pills (sync-frequency, Playlist-bound, tags) after them. align-items:center keeps the
+   mixed-height children (.meta-item chips vs. .pill badges) sharing one baseline. */
+.epg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 12px; }
 .meta-item { display: inline-flex; align-items: center; gap: 5px; max-width: 280px; }
 .meta-k { color: var(--text-3); text-transform: uppercase; letter-spacing: 0.03em; font-size: 9.5px; font-weight: 600; }
 .meta-chip {
@@ -2226,6 +2239,15 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .buf-legend { display: inline-flex; align-items: center; gap: 4px; }
 .buf-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .buf-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+/* X-axis timeline under the bars: evenly-spaced ticks; end ticks hug the row edges (= window start/now). */
+.buf-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+.buf-tick { white-space: nowrap; }
 
 /* Buffering timeline */
 .buf-timeline {

@@ -66,6 +66,9 @@ export function envDefaults(): SettingsData {
     user: {},
     // Scheduled/saved backups write here (default '/backups'; the AIO image seeds BACKUPS_DIR=/data/backups).
     backupLocation: process.env.BACKUPS_DIR ?? '/backups',
+    // Playlists screen "A-Z" toggle default (SPA-only display preference; not env-derived). Default ON so a
+    // fresh install shows alphabetical rows within each source-type category out of the box.
+    playlistsAlphaSort: true,
   };
 }
 
@@ -85,6 +88,7 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     maxmindLicenseKeySet: !!doc.maxmindLicenseKey, // redact the secret → expose only "configured?"
     user: doc.user ?? {},
     backupLocation: doc.backupLocation ?? '/backups', // not secret — returned for the Settings UI
+    playlistsAlphaSort: typeof doc.playlistsAlphaSort === 'boolean' ? doc.playlistsAlphaSort : true,
   };
 }
 
@@ -113,7 +117,7 @@ export function toExternalPatch(body: unknown): PatchResult {
   if (typeof $set.timezone === 'string') {
     $set.offset = zoneOffsetString($set.timezone);
   }
-  for (const key of ['darkMode'] as const) {
+  for (const key of ['darkMode', 'playlistsAlphaSort'] as const) {
     const v = b[key];
     if (v !== undefined) {
       if (typeof v !== 'boolean') {

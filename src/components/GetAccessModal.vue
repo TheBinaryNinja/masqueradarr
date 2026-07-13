@@ -121,7 +121,9 @@ onMounted(async () => {
 
 <style scoped>
 .get-modal {
-    width: min(920px, 94vw);
+    /* Responsive: grows to a comfy ceiling on wide screens, shrinks to 94vw when the screen won't allow.
+       Paired with the table's percentage columns, content always fits — no horizontal scrollbar. */
+    width: min(1200px, 94vw);
 }
 /* Header/search/footer sit OUTSIDE the scroll region; only the URL table scrolls (bounded below). */
 .get-body {

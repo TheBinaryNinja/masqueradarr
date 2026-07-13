@@ -90,6 +90,7 @@ async function upsertHdhrChannels(entries: HdhrLineupEntry[], importId: string):
             failoverGroupId: pc.failoverGroupId,
             failoverRole: pc.failoverRole,
             failoverOrder: pc.failoverOrder,
+            tags: pc.tags, // operator-owned custom tags — written-once, survives re-sync (like failover)
             logoUrl: pc.logoUrl,
             'stream.initials': pc.stream.initials,
             'stream.res': pc.stream.res,

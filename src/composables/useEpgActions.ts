@@ -21,6 +21,11 @@ export interface EpgSyncResult {
 const syncingAllEpg = ref(false);
 const syncAllProgress = ref(0); // 0..1
 
+// Per-source inflight set for single-row syncs (the waffle "Sync" item on the list + detail screens). A Set
+// reassigned on each mutation so `.has(id)` stays reactive in the menu-item builders (label → "Syncing…",
+// disabled). Independent of the "Sync all" cohort — a row can be syncing on its own without a full run.
+const syncingIds = ref<Set<string>>(new Set());
+
 // The single source of truth for the sync cohort: an EPG source is a "Sync all" target iff it is NOT
 // playlist-bound. The run thunk (syncAllEpg, below) and the modal's displayed list (EpgSyncModal → syncTargets)
 // BOTH consume this exact predicate, so the operation and its preview can never diverge — the same role
@@ -66,10 +71,35 @@ async function syncAllEpg(): Promise<EpgSyncResult> {
   }
 }
 
+// Sync ONE EPG source via the same endpoint the "Sync all" loop uses (POST /api/epg-sources/:id/sync). Tracks
+// its own inflight flag in syncingIds and re-pulls the store so the row's counts/status settle without a full
+// reload. Returns { ok, offsetDefaulted } so a caller can surface the "time zone offset not set" toast.
+async function syncEpgSource(id: string): Promise<{ ok: boolean; offsetDefaulted?: boolean }> {
+  if (syncingIds.value.has(id)) return { ok: false };
+  syncingIds.value = new Set(syncingIds.value).add(id);
+  try {
+    const res = await fetch(`/api/epg-sources/${encodeURIComponent(id)}/sync`, { method: 'POST' });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const body = await res.json().catch(() => null);
+    await reloadEpgSources().catch(() => {});
+    return { ok: true, offsetDefaulted: !!body?.offsetDefaulted };
+  } catch {
+    // The server flips status to 'error' on a 502; re-read so the row reflects it.
+    await reloadEpgSources().catch(() => {});
+    return { ok: false };
+  } finally {
+    const next = new Set(syncingIds.value);
+    next.delete(id);
+    syncingIds.value = next;
+  }
+}
+
 export function useEpgActions() {
   return {
     syncingAllEpg,
     syncAllProgress,
     syncAllEpg,
+    syncingIds,
+    syncEpgSource,
   };
 }

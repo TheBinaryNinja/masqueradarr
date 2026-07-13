@@ -18,7 +18,7 @@ import { runSearch, type SearchResponse, type SearchRow } from './composables/us
 import ToastBanner from './components/ToastBanner.vue';
 import ToastUpperRight from './components/ToastUpperRight.vue';
 import ToastLowerRight from './components/ToastLowerRight.vue';
-import { PLAYLISTS, EPG_SOURCES, ACTIVE_STREAMS, bootstrapData, reloadPlaylists, reloadChannels, type Channel } from './data';
+import { PLAYLISTS, EPG_SOURCES, ACTIVE_STREAMS, bootstrapData, reloadPlaylists, reloadUserChannels, type Channel } from './data';
 import { useTweaks } from './composables/useTweaks';
 import { useStreamStats } from './composables/useStreamStats';
 import { loadSettings } from './composables/useSettings';
@@ -224,7 +224,7 @@ async function loadAppData() {
     loadSettings().catch((err) => console.error('[settings] load failed:', err));
     try {
       await reloadPlaylists();
-      await reloadChannels();
+      await reloadUserChannels();
     } catch (err) {
       console.error('[user bootstrap] failed:', err);
     }
@@ -268,7 +268,7 @@ onBeforeUnmount(() => {
         </div>
       </div>
       <div class="nav-group-label">Workspace</div>
-      <div v-for="n in (currentUser?.role === 'user' ? NAV : NAV.slice(0, 7))" :key="n.id"
+      <div v-for="n in (currentUser?.role === 'user' ? NAV : NAV.slice(0, 6))" :key="n.id"
            :class="['nav-item', { active: isActive(n.id) }]" @click="go(n.path)">
         <Icon :name="n.icon" :class="n.iconClass" />
         <span>{{ n.label }}</span>
@@ -276,7 +276,7 @@ onBeforeUnmount(() => {
         <span v-if="n.count !== undefined" class="count">{{ n.count }}</span>
       </div>
       <div v-if="currentUser?.role === 'admin'" class="nav-group-label">Actions</div>
-      <div v-for="n in (currentUser?.role === 'user' ? [] : NAV.slice(7))" :key="n.id"
+      <div v-for="n in (currentUser?.role === 'user' ? [] : NAV.slice(6))" :key="n.id"
            :class="['nav-item', { active: isActive(n.id) }]" @click="go(n.path)">
         <Icon :name="n.icon" :class="n.iconClass" />
         <span>{{ n.label }}</span>

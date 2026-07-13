@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import { useRouter } from 'vue-router';
 import Icon from '../components/Icon.vue';
 import Btn from '../components/Btn.vue';
@@ -7,10 +7,9 @@ import Pill from '../components/Pill.vue';
 import StatusDot from '../components/StatusDot.vue';
 import PlaylistRow from '../components/PlaylistRow.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
-import VidstackPlayer from '../components/VidstackPlayer.vue';
 import PublishedUrlGroups from '../components/PublishedUrlGroups.vue';
 import LivelineChart from '../components/LivelineChart.vue';
-import { PLAYLISTS, EPG_SOURCES, CHANNELS, ACTIVE_STREAMS, VIEW_SESSIONS, SYSTEM_STATS, epgMetaChips, formatSyncTime, reloadPlaylists, reloadViewSessions, appPlayerProxyPath, playlistScheduleLabel } from '../data';
+import { PLAYLISTS, EPG_SOURCES, CHANNELS, ACTIVE_STREAMS, VIEW_SESSIONS, SYSTEM_STATS, EPG_PROGRAMS, fetchUserProgramsFor, epgMetaChips, formatSyncTime, reloadPlaylists, reloadViewSessions, playlistScheduleLabel, type Program } from '../data';
 import { bus } from '../composables/bus';
 import { currentUser, isAdmin, regenerateStreamToken } from '../composables/useAuth';
 import { usePublishedUrls } from '../composables/usePublishedUrls';
@@ -149,18 +148,63 @@ const userInitials = computed(() => {
 // is no new data-model field and no backend call. PublishedUrlGroups owns the copy + confirmation modal.
 const publishedUrls = usePublishedUrls(() => currentUser.value);
 
+// Available Channels are scoped to the playlists this user has been granted (allowedPlaylists ∪
+// allowedCustomPlaylists). reloadUserChannels() already limits CHANNELS to granted playlists, but we also
+// gate at the render layer: a channel's `source` equals the playlist/source id the grant is keyed on, so
+// an ungranted channel never surfaces here even if the store is repopulated out-of-band.
+const grantedSources = computed(() => new Set([
+  ...(currentUser.value?.allowedPlaylists || []),
+  ...(currentUser.value?.allowedCustomPlaylists || []),
+]));
+
 const filteredChannels = computed(() => {
   return CHANNELS.value.filter((c) => {
+    if (!grantedSources.value.has(c.source)) return false;
     if (!channelSearch.value) return true;
     const q = channelSearch.value.toLowerCase();
     return (c.tvg_name || '').toLowerCase().includes(q) || (c.group || '').toLowerCase().includes(q);
   });
 });
 
-const selectedChannelProxyPath = computed(() => {
-  if (!selectedChannel.value) return null;
-  return appPlayerProxyPath(selectedChannel.value);
+// ── EPG guide for the selected channel (replaces the in-app player on the user dashboard) ───────────
+// The channel↔guide link is the 2-factor (tvg_id, epg); programs are keyed by the composite <epg>:<tvg_id>
+// (the same key ActiveStreams / EPG Detail use). Fetched via the user-reachable /api/playlists/:id/programs
+// (the admin /api/epg-programs is admin-only), scoped to the selected channel's own playlist `source`.
+const epgKey = computed<string | null>(() => {
+  const c = selectedChannel.value;
+  return c && c.epg && c.tvg_id ? `${c.epg}:${c.tvg_id}` : null;
 });
+const epgLoading = ref(false);
+
+watch(selectedChannel, async (c) => {
+  const key = epgKey.value;
+  if (!c || !key) return;                 // unmatched channel → no guide (rendered as an empty state)
+  if (EPG_PROGRAMS[key]?.length) return;  // already cached from a prior selection
+  epgLoading.value = true;
+  try {
+    const now = Date.now();
+    await fetchUserProgramsFor(c.source, [key], now - 60 * 60 * 1000, now + 3 * 60 * 60 * 1000);
+  } catch { /* best-effort; the panel falls back to "No guide data" */ }
+  finally { epgLoading.value = false; }
+});
+
+// Now-playing + upcoming derived from the cached programs (overlap semantics match ActiveStreams' npData:
+// live = straddles now; upcoming = starts at/after the live block ends). Snapshot at selection time.
+const epgPrograms = computed<Program[]>(() => (epgKey.value ? EPG_PROGRAMS[epgKey.value] || [] : []));
+const nowPlaying = computed<Program | null>(() => {
+  const now = Date.now();
+  return epgPrograms.value.find((p) => now >= p.start && now < p.end) || null;
+});
+const upcoming = computed<Program[]>(() => {
+  const now = Date.now();
+  const floor = nowPlaying.value ? nowPlaying.value.end : now;
+  return epgPrograms.value.filter((p) => p.start >= floor);
+});
+
+// HH:MM clock for guide rows (mirrors EPGDetailScreen's local-time formatting).
+function fmtClock(ms: number): string {
+  return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+}
 
 async function handleRegenerateToken() {
   if (confirm('Are you sure you want to regenerate your stream token? Any configured players will need to be updated with the new URL.')) {
@@ -486,7 +530,7 @@ onBeforeUnmount(() => {
     </div>
   </div>
 
-  <div v-else class="col mq-dash" style="gap: 18px;">
+  <div v-else class="col mq-dash mq-dash-user" style="gap: 18px;">
     <!-- masqueradarr HUD micro row — telemetry overline for the end-user console -->
     <div class="mq-micro-row" aria-hidden="true">
       <span class="mq-micro-hi">MASQUERADARR // ACCOUNT</span>
@@ -531,15 +575,15 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 3. Channel Stream & Preview -->
-    <div style="display: grid; grid-template-columns: 1fr 1.5fr; gap: 18px;">
-      <!-- Left Side: Channels List -->
-      <div class="card flush" style="display: flex; flex-direction: column; padding: 16px; gap: 12px; min-height: 400px; max-height: 600px;">
+    <!-- 3. Channels & Program Guide -->
+    <div class="mq-dash-cols">
+      <!-- Left: granted channels list + selected-channel info bar -->
+      <div class="card flush mq-dash-channels">
         <div class="mq-h" style="font-size: 15px;">Available Channels</div>
         <div class="input">
           <input v-model="channelSearch" placeholder="Search channels or groups..." style="width: 100%;" />
         </div>
-        <div style="flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px;">
+        <div class="mq-chan-list">
           <div v-for="c in filteredChannels" :key="c.id" 
                :class="['src-row', { selected: selectedChannel?.id === c.id }]" 
                style="padding: 8px 12px; margin: 0; border-radius: 8px; cursor: pointer; transition: all 0.2s;"
@@ -584,32 +628,52 @@ onBeforeUnmount(() => {
             <div class="mq-empty-sub">Adjust your search or contact your administrator for access.</div>
           </div>
         </div>
+
+        <!-- info bar: clicked-channel details (title + pills), pinned below the list -->
+        <div class="mq-chan-info">
+          <template v-if="selectedChannel">
+            <div style="min-width: 0;">
+              <div class="mq-chan-info-title">{{ selectedChannel.tvg_name }}</div>
+              <div class="muted" style="font-size: 11px;">#{{ selectedChannel.channelNo || '—' }} · {{ selectedChannel.group }}</div>
+            </div>
+            <div class="row" style="gap: 6px; flex: none;">
+              <Pill tone="cyan">{{ selectedChannel.source }}</Pill>
+              <Pill v-if="selectedChannel.stream.res" tone="good">{{ selectedChannel.stream.res }}</Pill>
+            </div>
+          </template>
+          <div v-else class="muted mq-chan-info-empty">Select a channel to view its details.</div>
+        </div>
       </div>
 
-      <!-- Right Side: Player Preview -->
-      <div>
-        <div v-if="selectedChannel" class="card flush" style="height: 100%; display: flex; flex-direction: column;">
-          <div class="player chd-player" style="aspect-ratio: 16/9; background: #000; border-radius: 8px 8px 0 0; overflow: hidden; position: relative;">
-            <!-- :key forces a clean unmount→remount per channel (fires player.destroy(), fresh gate generation) —
-                 parity with the keyed drawer path; avoids the un-keyed live src-swap that compounded stalls. -->
-            <VidstackPlayer :key="selectedChannelProxyPath" :src="selectedChannelProxyPath" />
-          </div>
-          <div style="padding: 16px; display: flex; flex-direction: column; gap: 10px;">
-            <div style="display: flex; justify-content: space-between; align-items: center;">
-              <div>
-                <h3 style="margin: 0; font-size: 16px; font-weight: 600; color: var(--text-0);">{{ selectedChannel.tvg_name }}</h3>
-                <div class="muted" style="font-size: 12px;">#{{ selectedChannel.channelNo || '—' }} · {{ selectedChannel.group }}</div>
-              </div>
-              <div class="row" style="gap: 8px;">
-                <Pill tone="cyan">{{ selectedChannel.source }}</Pill>
-                <Pill v-if="selectedChannel.stream.res" tone="good">{{ selectedChannel.stream.res }}</Pill>
-              </div>
+      <!-- Right: EPG program guide for the selected channel (in place of the in-app player) -->
+      <div class="card flush mq-dash-epg">
+        <div class="mq-epg-hd">
+          <div class="mq-h" style="font-size: 15px;">Program Guide</div>
+          <span v-if="selectedChannel" class="mq-cap">{{ selectedChannel.tvg_name }}</span>
+        </div>
+
+        <template v-if="selectedChannel && (nowPlaying || upcoming.length)">
+          <div v-if="nowPlaying" class="mq-epg-now">
+            <div class="mq-epg-now-tag">NOW</div>
+            <div class="mq-epg-now-title">{{ nowPlaying.title }}</div>
+            <div class="mq-epg-now-time">
+              {{ fmtClock(nowPlaying.start) }}–{{ fmtClock(nowPlaying.end) }}<span v-if="nowPlaying.cat"> · {{ nowPlaying.cat }}</span>
             </div>
           </div>
-        </div>
-        <div v-else class="card mq-lockstate" style="height: 100%; display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 40px; text-align: center; min-height: 280px;">
-          <!-- decorative SIGNAL LOCK micrographic plate (masqueradarr-micrographics MK-07.3) — "waiting to lock onto a stream" -->
-          <svg class="mq-plate" viewBox="0 0 360 230" aria-hidden="true">
+          <div class="mq-epg-next-rule" aria-hidden="true">UP NEXT</div>
+          <div class="mq-epg-list">
+            <div v-for="(p, i) in upcoming" :key="i" class="mq-epg-row">
+              <span class="mq-epg-row-time">{{ fmtClock(p.start) }}</span>
+              <span class="mq-epg-row-title">{{ p.title }}</span>
+              <span v-if="p.cat" class="mq-epg-row-cat">{{ p.cat }}</span>
+            </div>
+            <div v-if="upcoming.length === 0" class="muted mq-epg-empty-inline">No upcoming programs in the guide window.</div>
+          </div>
+        </template>
+
+        <!-- nothing selected / loading / no guide data — decorative SIGNAL LOCK plate reused -->
+        <div v-else class="mq-epg-state">
+          <svg class="mq-plate mq-plate-sm" viewBox="0 0 360 230" aria-hidden="true">
             <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
               <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
               <path d="M14 202 V216 H28" /><path d="M346 202 V216 H332" />
@@ -633,9 +697,13 @@ onBeforeUnmount(() => {
             <line x1="40" y1="200" x2="320" y2="200" stroke="var(--mq-steel)" stroke-width="1" />
             <line x1="40" y1="200" x2="180" y2="200" stroke="var(--mq-teal)" stroke-width="2" />
           </svg>
-          <div class="mq-lock-tag" aria-hidden="true">AWAITING SIGNAL LOCK</div>
-          <div style="font-weight: 600; font-size: 15px; color: var(--text-1);">No Channel Selected</div>
-          <div class="muted" style="font-size: 12px; max-width: 280px; margin-top: 4px;">Select a channel from the list on the left to start streaming directly in your browser.</div>
+          <div class="mq-lock-tag" aria-hidden="true">{{ selectedChannel ? 'NO GUIDE SIGNAL' : 'AWAITING SIGNAL LOCK' }}</div>
+          <div style="font-weight: 600; font-size: 15px; color: var(--text-1);">
+            {{ !selectedChannel ? 'No Channel Selected' : (epgLoading ? 'Loading guide…' : 'No Guide Data') }}
+          </div>
+          <div class="muted" style="font-size: 12px; max-width: 300px; margin-top: 4px;">
+            {{ !selectedChannel ? 'Select a channel from the list to view its program guide.' : (epgLoading ? 'Fetching the program guide…' : 'This channel has no EPG guide data available.') }}
+          </div>
         </div>
       </div>
     </div>
@@ -800,6 +868,174 @@ onBeforeUnmount(() => {
   color: var(--accent);
   margin-bottom: 10px;
 }
+
+/* ── single-window user console ─────────────────────────────────────────────────────────────
+   The end-user dashboard fits ENTIRELY in one viewport — no page scroll, no horizontal scroll.
+   The root fills exactly the .mq-stage-content box (which already adds padding-top: topbar+pad and
+   padding-bottom: pad), so .screen's overflow-y never trips; the two-column area flex-fills the
+   remaining space and each column's inner list is the only scroller. Scoped to .mq-dash-user so the
+   admin dashboard (shares .mq-dash) keeps its normal document flow + scrolling. */
+.mq-dash-user {
+  height: calc(100vh - var(--topbar-h) - 2 * var(--pad-x));
+  min-height: 0;
+  overflow: hidden;
+}
+.mq-dash-user > * { flex: 0 0 auto; }            /* welcome / integration / foot: intrinsic height */
+.mq-dash-user > .mq-dash-cols { flex: 1 1 auto; min-height: 0; }  /* absorbs the remaining height */
+
+/* two equal-height columns; minmax(0,…) tracks + min-width:0 kill any horizontal overflow */
+.mq-dash-cols {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
+  gap: 18px;
+  min-height: 0;
+}
+.mq-dash-cols > * { min-width: 0; min-height: 0; }
+
+/* left: channels list card fills the row; the list scrolls internally, the info bar pins below.
+   The .card compound selectors beat the global .card.flush{padding:0} without inline styles. */
+.card.mq-dash-channels,
+.card.mq-dash-epg {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  padding: 16px;
+  gap: 12px;
+}
+.mq-chan-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-right: 4px;
+}
+.mq-chan-info {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding-top: 12px;
+  border-top: 1px solid var(--hairline);
+}
+.mq-chan-info-title {
+  font-family: var(--mq-font-sans);
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--text-0);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mq-chan-info-empty { font-size: 12px; }
+
+/* right: EPG program guide card (in place of the in-app player) — NOW block pinned, Up Next scrolls */
+.mq-epg-hd {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.mq-epg-hd .mq-cap { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mq-epg-now {
+  flex: 0 0 auto;
+  background: linear-gradient(135deg, var(--accent-soft) 0%, var(--bg-1) 100%);
+  border: 1px solid var(--accent-soft);
+  border-radius: var(--radius-m);
+  padding: 12px 14px;
+}
+.mq-epg-now-tag {
+  font-family: var(--mq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.18em;
+  color: var(--accent);
+  margin-bottom: 4px;
+}
+.mq-epg-now-title {
+  font-family: var(--mq-font-sans);
+  font-weight: 600;
+  font-size: 16px;
+  letter-spacing: -0.01em;
+  color: var(--text-0);
+}
+.mq-epg-now-time {
+  font-family: var(--mq-font-mono);
+  font-size: 11px;
+  color: var(--text-2);
+  margin-top: 3px;
+}
+.mq-epg-next-rule {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-family: var(--mq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: var(--text-3);
+}
+.mq-epg-next-rule::after {
+  content: "";
+  flex: 1;
+  height: 1px;
+  background: var(--hairline);
+}
+.mq-epg-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  padding-right: 4px;
+}
+.mq-epg-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 8px 4px;
+  border-bottom: 1px solid var(--hairline);
+}
+.mq-epg-row-time {
+  flex: none;
+  width: 52px;
+  font-family: var(--mq-font-mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+.mq-epg-row-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 13px;
+  color: var(--text-1);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.mq-epg-row-cat {
+  flex: none;
+  font-family: var(--mq-font-mono);
+  font-size: 10px;
+  letter-spacing: 0.05em;
+  color: var(--text-3);
+}
+.mq-epg-empty-inline { font-size: 12px; padding: 10px 4px; }
+
+/* EPG idle / loading / no-guide state — centered brand plate (reuses the SIGNAL LOCK micrographic) */
+.mq-epg-state {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  text-align: center;
+  padding: 20px;
+}
+.mq-epg-state .mq-plate { max-width: 240px; opacity: 0.6; margin-bottom: 8px; }
 
 /* brand foot — deterministic barcode + mono spec strip */
 .mq-foot { margin-top: 4px; }

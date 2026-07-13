@@ -283,8 +283,8 @@ customPlaylistsRouter.post('/:id/sync', async (req, res) => {
 // allowedCustomPlaylists. Exported so the playlists router's DELETE (which guards built-ins) shares the EXACT
 // same cascade — one source of truth. The caller is responsible for the not-found / built-in guard before
 // calling this. (For an HDHomeRun playlist, dropping its channels + pruning its m3u stops all polling of its
-// loopback remux streams; the remux idle-sweep then reaps the ffmpeg processes — no explicit teardown here,
-// which also avoids killing a remux another playlist on the same device may still be using.)
+// loopback streams — no explicit teardown here, which also avoids disrupting a stream another playlist on
+// the same device may still be using.)
 export async function cascadeDeleteCustomPlaylist(id: string, url: string): Promise<void> {
   await Playlist.deleteOne({ id });
   await PlaylistChannel.deleteMany({ source: id });

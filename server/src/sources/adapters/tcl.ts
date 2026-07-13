@@ -58,7 +58,7 @@ async function listChannels(): Promise<RawListing> {
 }
 
 // One catalog row → one SourceChannel. The stream entry is the `…/format-stream-url?…` ENTRY url (carrying the
-// resolve inputs; resolved per play); served as an entry (→ B-Roll slate + telemetry + ffprobe). Grouped by the
+// resolve inputs; resolved per play); served as an entry (viewer telemetry). Grouped by the
 // livetab category the channel first appeared under.
 function normalize(raw: TclRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name) return null;

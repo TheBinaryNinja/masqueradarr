@@ -47,7 +47,7 @@ async function listChannels(): Promise<RawListing> {
 
 // One catalog row → one SourceChannel. Token-gated + DRM channels are DROPPED (HLS-only proxy); a row whose
 // macro-expanded master isn't http(s) is also dropped. The stream entry is the macro-expanded master (served as
-// an .m3u8 entry → B-Roll slate + telemetry + ffprobe). Grouped by Vizio's catalog category.
+// an .m3u8 entry, resolved per play; viewer telemetry). Grouped by Vizio's catalog category.
 function normalize(raw: VizioRow, { ingestedAt }: { ingestedAt: string }): SourceChannelDoc | null {
   if (!raw || !raw.channelId || !raw.name) return null;
   if (raw.tokenUrl || raw.licenseUrl) return null; // token-gated (NFL) / DRM — out of scope
