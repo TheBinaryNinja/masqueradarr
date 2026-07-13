@@ -9,16 +9,18 @@ import SearchInput from '../components/SearchInput.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
 import Segmented from '../components/Segmented.vue';
 import Stat from '../components/Stat.vue';
-import ScheduleEditorDrawer from '../components/ScheduleEditorDrawer.vue';
+import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
+import EditEpgSourceDrawer from '../components/EditEpgSourceDrawer.vue';
+import DeleteEpgSourceModal from '../components/DeleteEpgSourceModal.vue';
 import UploadXmlModal from '../components/UploadXmlModal.vue';
-import TagPicker from '../components/TagPicker.vue';
 import {
   EPG_SOURCES, PLAYLISTS, CHANNELS, CRON_JOBS, EPG_PROGRAMS,
-  epgMetaChips, formatSyncTime, reloadEpgSources, fetchProgramsFor, reloadCronjobs, tagNames,
+  epgMetaChips, formatSyncTime, reloadEpgSources, fetchProgramsFor, tagNames,
   type Channel, type Program, type CronJob,
 } from '../data';
 import { useTweaks } from '../composables/useTweaks';
 import { useToast } from '../composables/useToast';
+import { useEpgActions } from '../composables/useEpgActions';
 import { summarizeFrequency } from '../composables/useSchedule';
 import { useVirtualList } from '../composables/useVirtualList';
 
@@ -26,28 +28,9 @@ const props = defineProps<{ id: string }>();
 const { tweaks } = useTweaks();
 const router = useRouter();
 const toast = useToast();
+const { syncingIds, syncEpgSource } = useEpgActions();
 
 const epg = computed(() => EPG_SOURCES.value.find((e) => e.id === props.id) || EPG_SOURCES.value[0]);
-
-// ── Custom tags — the EPG source's inline edit (wires the existing PUT /api/epg-sources/:id route). Persisted
-// immediately on change, then re-pull so the shared store (and the row pills on the list) reflect it. ──
-const tags = ref<string[]>([...(epg.value?.tags ?? [])]);
-watch(() => props.id, () => { tags.value = [...(epg.value?.tags ?? [])]; });
-async function saveTags(v: string[]): Promise<void> {
-  tags.value = v;
-  const src = epg.value;
-  if (!src) return;
-  try {
-    const res = await fetch(`/api/epg-sources/${encodeURIComponent(src.id)}`, {
-      method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tags: v }),
-    });
-    if (res.ok) void reloadEpgSources();
-  } catch {
-    /* best-effort; the picker keeps the optimistic local value */
-  }
-}
 
 // Custom source kinds: 'xml file' is a one-shot upload (Sync → Upload, no sync schedule); 'remote url' is a
 // re-fetchable XMLTV URL (normal Sync + schedules). See AddEpgSourceModal.vue / restapi.md.
@@ -79,10 +62,34 @@ const syncFail = computed(() => epg.value?.syncFailCount ?? 0);
 // Interval-type for the sync schedule, read from MongoDB (the EpgSource.auto/interval + the paired cron doc).
 const syncIsAuto = computed(() => !!syncJob.value || !!epg.value?.auto);
 
-// Whether the half-screen sync-schedule editor is open.
-const editingSchedule = ref<'sync' | null>(null);
-async function onScheduleSaved() {
-  await Promise.all([reloadEpgSources(), reloadCronjobs()]);
+// ── Waffle menu + row surfaces ────────────────────────────────────────────
+// The header actions (Sync / Upload XML / Delete) + the old "Sync Schedule" button + Tags card are collapsed
+// into one anchored waffle menu and a single Edit slide-out (Name + Sync schedule + Tags). A computed item set
+// keeps the labels/disabled live while the menu is open. Playlist-bound + built-in rows get Edit only.
+const menuOpen = ref(false);
+const editOpen = ref(false);
+const confirmDelete = ref(false);
+const menuItems = computed<RowActionItem[]>(() => {
+  const e = epg.value;
+  const items: RowActionItem[] = [];
+  if (!e) return items;
+  const restricted = !!e.builtin || isPlaylistBound.value;
+  if (!restricted) {
+    if (isXmlFile.value) {
+      items.push({ key: 'upload', icon: 'upload', label: 'Upload XML', run: () => { uploadOpen.value = true; } });
+    } else {
+      const syncing = syncingIds.value.has(e.id);
+      items.push({ key: 'sync', icon: 'refresh', label: syncing ? 'Syncing…' : 'Sync', disabled: syncing, run: () => { void syncNow(); } });
+    }
+  }
+  items.push({ key: 'edit', icon: 'edit', label: 'Edit', run: () => { editOpen.value = true; } });
+  if (!restricted) {
+    items.push({ key: 'delete', icon: 'trash', label: 'Delete', danger: true, run: () => { confirmDelete.value = true; } });
+  }
+  return items;
+});
+function onDeleted(): void {
+  router.push('/epg-sources');
 }
 
 // Channels (playlistchannels) linked to THIS EPG source via the 2-factor link factor `epg === id`.
@@ -157,50 +164,19 @@ const viewing = ref<{ channel: Channel; prog: Program } | null>(null);
 function open(channel: Channel, prog: Program) { viewing.value = { channel, prog }; }
 function close() { viewing.value = null; }
 
-const syncing = ref(false);
+// Manual re-sync via the shared single-source helper (which owns the inflight flag + store re-pull); we add
+// the guide-program refresh and the "time zone offset not set" toast the detail screen surfaces.
 async function syncNow() {
   const src = epg.value;
-  if (!src || syncing.value) return;
-  syncing.value = true;
-  try {
-    const res = await fetch(`/api/epg-sources/${encodeURIComponent(src.id)}/sync`, { method: 'POST' });
-    if (!res.ok) throw new Error('sync failed');
-    const body = await res.json().catch(() => null);
-    await reloadEpgSources();
-    refreshGuide();
-    if (body?.offsetDefaulted) {
-      toast.lowerRight({
-        tone: 'warn',
-        title: 'Time zone offset not set',
-        text: 'Stored guide times defaulted to UTC (+0000). Set a Time zone in Settings.',
-      });
-    }
-  } catch {
-    // The server flips status to 'error' on a 502; re-read so the row reflects it.
-    await reloadEpgSources();
-  } finally {
-    syncing.value = false;
-  }
-}
-
-const confirmDelete = ref(false);
-const deleting = ref(false);
-async function deleteSource() {
-  const src = epg.value;
-  if (!src || deleting.value) return;
-  deleting.value = true;
-  const name = src.name;
-  try {
-    const res = await fetch(`/api/epg-sources/${encodeURIComponent(src.id)}`, { method: 'DELETE' });
-    if (!res.ok) throw new Error('delete failed');
-    await reloadEpgSources();
-    confirmDelete.value = false;
-    toast.lowerRight({ tone: 'good', title: 'EPG source deleted', text: `"${name}" and its guide data were removed.` });
-    router.push('/epg-sources');
-  } catch {
-    toast.lowerRight({ tone: 'bad', title: 'Delete failed', text: `Could not delete "${name}". Please try again.` });
-  } finally {
-    deleting.value = false;
+  if (!src) return;
+  const { ok, offsetDefaulted } = await syncEpgSource(src.id);
+  refreshGuide();
+  if (ok && offsetDefaulted) {
+    toast.lowerRight({
+      tone: 'warn',
+      title: 'Time zone offset not set',
+      text: 'Stored guide times defaulted to UTC (+0000). Set a Time zone in Settings.',
+    });
   }
 }
 
@@ -416,24 +392,20 @@ function livePr(c: Channel) {
         <Stat label="Programs" :value="epg.programs.toLocaleString()" />
         <Stat label="Synced" :value="formatSyncTime(epg.lastSync)" small />
       </div>
-      <Btn v-if="!epg.builtin && !isXmlFile && !isPlaylistBound" variant="ghost" icon="refresh" :disabled="syncing" @click="syncNow">
-        {{ syncing ? 'Syncing…' : 'Sync' }}
-      </Btn>
-      <Btn v-if="!epg.builtin && isXmlFile" variant="ghost" icon="upload" @click="uploadOpen = true">
-        Upload XML
-      </Btn>
-      <button v-if="!epg.builtin" class="btn ghost danger" :disabled="deleting" @click="confirmDelete = true" title="Delete EPG source">
-        <Icon name="trash" :size="14" />Delete
-      </button>
-    </div>
-
-    <!-- Custom tags -->
-    <div class="card">
-      <span style="font-weight: 600; font-size: var(--fs-base);">Tags</span>
-      <div class="muted" style="font-size: var(--fs-xs); margin: 4px 0 10px;">
-        Assign custom tags to this EPG source. Tags are searchable and shared across the app.
+      <!-- Row actions — one waffle for Sync / Edit / Delete (Upload XML replaces Sync for an 'xml file'
+           source). @click.stop keeps the trigger clear of the document outside-click listener. -->
+      <div style="position: relative;" @click.stop>
+        <Btn
+          variant="cyan"
+          icon="waffle"
+          title="Actions"
+          aria-label="Actions"
+          aria-haspopup="menu"
+          :aria-expanded="menuOpen"
+          @click="menuOpen = !menuOpen"
+        />
+        <RowActionsMenu v-if="menuOpen" :items="menuItems" @close="menuOpen = false" />
       </div>
-      <TagPicker :model-value="tags" @update:model-value="saveTags" />
     </div>
 
     <!-- Summary dashboard -->
@@ -441,11 +413,11 @@ function livePr(c: Channel) {
       <div class="row" style="margin-bottom: 14px;">
         <Icon name="dashboard" :size="15" style="color: var(--accent);" />
         <span style="font-weight: 600; font-size: var(--fs-base); margin-left: 8px;">Overview</span>
+        <!-- Read-only sync-schedule summary. Editing the schedule now lives in the Edit slide-out (waffle → Edit). -->
         <template v-if="!isXmlFile && !isPlaylistBound">
           <span class="spacer" />
           <Pill v-if="syncIsAuto" tone="cyan"><Icon name="refresh" :size="10" />{{ scheduleSummary(syncJob) }}</Pill>
           <Pill v-else><Icon name="pause" :size="10" />manual</Pill>
-          <Btn variant="ghost" icon="sync" :disabled="epg.builtin" @click="editingSchedule = 'sync'">Sync Schedule</Btn>
         </template>
       </div>
       <div class="epg-summary-grid">
@@ -756,58 +728,19 @@ function livePr(c: Channel) {
       </div>
     </div>
 
-    <!-- Delete confirmation -->
-    <div v-if="confirmDelete" class="modal-bg" @click="deleting || (confirmDelete = false)">
-      <div class="modal" @click.stop style="width: 480px; max-width: 92vw;">
-        <div class="modal-hd">
-          <span style="color: var(--bad);"><Icon name="trash" :size="18" /></span>
-          <h2>Delete EPG source?</h2>
-          <span class="spacer" />
-          <Btn variant="ghost" size="sm" icon="x" :disabled="deleting" @click="confirmDelete = false" />
-        </div>
-        <div class="modal-body">
-          <div style="font-size: var(--fs-base); color: var(--text-1); line-height: 1.5;">
-            This permanently removes <strong>{{ epg.name }}</strong> and all of its guide data.
-            This cannot be undone.
-          </div>
-          <div style="display: grid; gap: 8px;">
-            <div v-for="it in [
-              { icon: 'tv', text: 'Channel mappings to this guide are unlinked' },
-              { icon: 'epg', text: `${epg.programs.toLocaleString()} programs are removed` },
-              { icon: 'list', text: `${epg.channels} guide channels are removed` },
-              { icon: 'trash', text: 'The EPG source and its sync schedule are deleted' },
-            ]" :key="it.text" class="row"
-                 style="gap: 8px; padding: 4px 0; font-size: var(--fs-sm); color: var(--text-1);">
-              <span style="color: var(--text-2);"><Icon :name="it.icon" :size="13" /></span>
-              <span>{{ it.text }}</span>
-            </div>
-          </div>
-        </div>
-        <div class="modal-ft">
-          <span class="spacer" />
-          <Btn variant="ghost" :disabled="deleting" @click="confirmDelete = false">Cancel</Btn>
-          <button class="btn ghost danger" :disabled="deleting" @click="deleteSource">
-            <Icon name="trash" :size="14" />{{ deleting ? 'Deleting…' : 'Delete source' }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <!-- Delete confirmation (shared with the list screen) -->
+    <DeleteEpgSourceModal
+      v-if="confirmDelete"
+      :source="epg"
+      @close="confirmDelete = false"
+      @deleted="onDeleted"
+    />
 
-    <!-- Half-screen sync-schedule editor (keyed so re-opening re-hydrates from the cron doc) -->
-    <ScheduleEditorDrawer
-      v-if="editingSchedule === 'sync'"
-      key="sync"
-      title="Sync schedule"
-      icon="sync"
-      :source-id="epg.id"
-      :source-name="epg.name"
-      target-type="epg-source"
-      :job="syncJob"
-      :auto="syncIsAuto"
-      :disabled="epg.builtin"
-      :sync-epg-interval="true"
-      @close="editingSchedule = null"
-      @saved="onScheduleSaved"
+    <!-- Edit slide-out — Name + Sync schedule + Tags, auto-saved per field -->
+    <EditEpgSourceDrawer
+      v-if="editOpen"
+      :source="epg"
+      @close="editOpen = false"
     />
 
     <!-- Re-upload an XMLTV file for an 'xml file' source (the Sync replacement) -->

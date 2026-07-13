@@ -437,7 +437,7 @@ function formatTime(s: string) {
 }
 .drawer {
     /* Half-window panel — matches the established half-window drawer convention
-       (PlaylistStatusDrawer / ScheduleEditorDrawer: 50vw, min 440px), capped at 96vw. */
+       (PlaylistStatusDrawer / EditEpgSourceDrawer: 50vw, min 440px), capped at 96vw. */
     width: 50vw;
     min-width: 440px;
     max-width: 96vw;

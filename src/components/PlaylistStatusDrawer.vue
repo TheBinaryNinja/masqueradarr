@@ -48,7 +48,7 @@ onMounted(async () => {
   customProxy.value = await customConfigExists(proxyConfigId.value);
 });
 
-// ── Automatic cron pickers (the shared FrequencyBuilder, same as the EPG ScheduleEditorDrawer) ──────────
+// ── Automatic cron pickers (the shared FrequencyBuilder, same as the EPG source Edit drawer) ──────────
 // Two independent jobs for the (Default) source playlist's source id (id === source), distinguished by
 // targetType — each is its own cronjobs doc / _id ("<targetType>:<targetId>"), so the cadences never collide:
 //   • Sync schedule — targetType 'playlist'; the scheduler runs the source live-sync (the same work as the
@@ -110,7 +110,7 @@ const m3uRawCron = ref('0 */6 * * *');
 const m3uCron = computed(() => buildCron(m3uFreq, m3uRawCron.value));
 
 // Save lifecycle for the schedule writes — surfaced in the footer so a failed save is visible instead of
-// silently swallowed (the drawer stays open on error, mirroring the EPG ScheduleEditorDrawer).
+// silently swallowed (the drawer stays open on error, mirroring the EPG source Edit drawer).
 const saving = ref(false);
 const error = ref('');
 
