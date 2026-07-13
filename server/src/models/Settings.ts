@@ -56,6 +56,10 @@ export interface SettingsDoc {
   maxmindLicenseKey: string | null; // MaxMind GeoLite2 license key — SECRET, redacted by translate.ts on read
   user: Record<string, unknown>; // placeholder for per-user settings; opaque object for now
   backupLocation: string; // absolute on-disk dir for scheduled + saved backups; default '/backups' (BACKUPS_DIR env)
+  // Playlists screen "A-Z" toggle: when true, rows auto-sort alphabetically within each source-type category;
+  // when false, they follow the manual per-category order (Playlist.order). SPA-only display preference — the
+  // server never reads it at runtime (persisted here only so the choice is shared across admin devices). Default true.
+  playlistsAlphaSort: boolean;
 }
 
 export const SETTINGS_ID = 'app';
@@ -76,6 +80,7 @@ const SettingsSchema = new Schema<SettingsDoc>(
     maxmindLicenseKey: { type: String, default: null },
     user: { type: Schema.Types.Mixed, default: {} },
     backupLocation: { type: String, required: true, default: '/backups' },
+    playlistsAlphaSort: { type: Boolean, required: true, default: true },
   },
   { versionKey: false },
 );

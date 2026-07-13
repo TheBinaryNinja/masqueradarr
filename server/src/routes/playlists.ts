@@ -21,6 +21,7 @@ import {
   failoverDisbandUpdate,
 } from '../services/failover.js';
 import { reconcileGroupRegistry, groupsWithCounts } from '../services/groups.js';
+import { fetchProgramsGrouped, MAX_CHANNEL_IDS } from '../epg/queryPrograms.js';
 import { Settings, SETTINGS_ID } from '../models/Settings.js';
 import { logger } from '../sources/core/logger.js';
 import { logMilestone, logTrace } from '../logs/tier.js';
@@ -138,10 +139,13 @@ playlistsRouter.get('/', async (req: AuthRequest, res, next) => {
   }
 });
 
-// Persist a new pinned-playlist order (the drag-to-reorder UX inside the PINNED section). `ids` is the full
-// pinned id sequence in the new visual order; each row's `pinOrder` is rewritten to its index. Admin-only —
-// unlike /api/epg-sources, the /api/playlists mount is NOT in adminOnlyRoutes, so gate inline. MUST be
-// declared BEFORE PUT /:id so 'reorder' isn't captured as an :id. Near-clone of PUT /api/epg-sources/reorder.
+// Persist a new drag-to-reorder sequence. `ids` is the full id sequence in the new visual order; each row's
+// ordinal is rewritten to its index. `field` selects which ordinal to write (whitelisted):
+//   • 'pinOrder' (DEFAULT, back-compat) — the PINNED section reorder; `ids` is the pinned id sequence.
+//   • 'order'                           — a single source-type category's reorder (Playlists screen, A-Z OFF);
+//                                         `ids` is that category's rows in new order (per-category 0-based).
+// Admin-only — unlike /api/epg-sources, the /api/playlists mount is NOT in adminOnlyRoutes, so gate inline.
+// MUST be declared BEFORE PUT /:id so 'reorder' isn't captured as an :id. Near-clone of PUT /api/epg-sources/reorder.
 playlistsRouter.put('/reorder', requireAdmin, async (req: AuthRequest, res, next) => {
   try {
     const b = (req.body ?? {}) as Record<string, unknown>;
@@ -149,8 +153,9 @@ playlistsRouter.put('/reorder', requireAdmin, async (req: AuthRequest, res, next
     if (!Array.isArray(ids) || ids.some((v) => typeof v !== 'string')) {
       return res.status(400).json({ error: 'ids (string[]) required' });
     }
+    const field = b.field === 'order' ? 'order' : 'pinOrder'; // whitelist; default pinOrder (back-compat)
     const ops = (ids as string[]).map((id, index) => ({
-      updateOne: { filter: { id }, update: { $set: { pinOrder: index } } },
+      updateOne: { filter: { id }, update: { $set: { [field]: index } } },
     }));
     if (ops.length) await Playlist.bulkWrite(ops);
     // Return the authoritative list (fresh pinOrder + channel counts) so the SPA reconciles its store.
@@ -582,6 +587,36 @@ playlistsRouter.get('/:id/channels', async (req: AuthRequest, res, next) => {
       .sort({ group: 1, tvg_name: 1 })
       .lean();
     res.json(docs);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// EPG programs for channels in a granted playlist — the user-reachable sibling of the admin-only
+// /api/epg-programs. Same grouped shape and overlap query (../epg/queryPrograms), scoped by the SAME
+// allowed-playlist guard as GET /:id/channels so a standard user can read the guide only for playlists
+// they've been granted. The composite channelIds ("<epg>:<tvg_id>") come from the channels the caller is
+// rendering (the Dashboard passes the currently-selected channel's own key).
+//   ?channelIds=<csv of "<epg>:<tvg_id>">   (required)
+//   ?from=<epoch-ms>  ?to=<epoch-ms>        (optional window; defaults to a bounded now-relative span)
+playlistsRouter.get('/:id/programs', async (req: AuthRequest, res, next) => {
+  try {
+    if (req.user?.role === 'user') {
+      const allowed = [
+        ...(req.user.allowedPlaylists || []),
+        ...(req.user.allowedCustomPlaylists || []),
+      ];
+      if (!allowed.includes(req.params.id as string)) {
+        return res.status(403).json({ error: 'forbidden' });
+      }
+    }
+    const raw = typeof req.query.channelIds === 'string' ? req.query.channelIds : '';
+    const ids = [...new Set(raw.split(',').map((s) => s.trim()).filter(Boolean))];
+    if (ids.length === 0) return res.status(400).json({ error: 'channel_ids_required' });
+    if (ids.length > MAX_CHANNEL_IDS) return res.status(400).json({ error: 'too_many_channel_ids' });
+    const from = Number((req.query as Record<string, unknown>).from);
+    const to = Number((req.query as Record<string, unknown>).to);
+    return res.json(await fetchProgramsGrouped(ids, from, to));
   } catch (err) {
     next(err);
   }

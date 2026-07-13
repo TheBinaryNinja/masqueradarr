@@ -10,11 +10,12 @@ import GetAccessModal from '../components/GetAccessModal.vue';
 import DeletePlaylistModal from '../components/DeletePlaylistModal.vue';
 import RowActionsMenu, { type RowActionItem } from '../components/RowActionsMenu.vue';
 import PlaylistOpModal, { type OpMode, type OpScope, type OpRunResult } from '../components/PlaylistOpModal.vue';
-import { PLAYLISTS, reloadEpgSources, reloadPlaylists, setPlaylistPinned, reorderPlaylistPins, type Playlist, type Channel } from '../data';
+import { PLAYLISTS, reloadEpgSources, reloadPlaylists, setPlaylistPinned, reorderPlaylistPins, reorderPlaylistCategory, type Playlist, type Channel } from '../data';
 import { bus } from '../composables/bus';
 import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
 import { isAdmin } from '../composables/useAuth';
+import { playlistsAlphaSort } from '../composables/useSettings';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
@@ -104,20 +105,46 @@ function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResul
   opOpen.value = true;
 }
 
+// Search filter — case-insensitive substring across name + source (type). Debounced via the shared
+// SearchInput. The whole list (pinned + type groups) is filtered off this; an empty query passes through.
+const search = ref('');
+const visiblePlaylists = computed<Playlist[]>(() => {
+  const q = search.value.trim().toLowerCase();
+  if (!q) return playlists.value;
+  return playlists.value.filter((p) => [p.name, p.source].some((v) => (v || '').toLowerCase().includes(q)));
+});
+
 // Rows grouped by source TYPE, headers shown alphabetically (built-in / clone / file / hdhomerun / url, plus
 // legacy 'import' only if such rows exist). The group key mirrors PlaylistRow's source-type chip: a registry
 // built-in (id === source) → "built-in", otherwise the stored `source` (a source-unset row falls into
 // "other"). Only non-empty groups are emitted.
 // Pinned rows render in a dedicated PINNED section (above the type groups), ordered by their drag-reorder
 // ordinal. They're pulled OUT of the type grouping below while pinned (e.g. pinning a clone empties it from
-// the CLONE group and surfaces it under PINNED).
+// the CLONE group and surfaces it under PINNED). The PINNED section is inherently manual — the A-Z toggle
+// never touches it.
 const pinnedPlaylists = computed<Playlist[]>(() =>
-  playlists.value.filter((p) => p.pinned).sort((a, b) => (a.pinOrder ?? 0) - (b.pinOrder ?? 0)),
+  visiblePlaylists.value.filter((p) => p.pinned).sort((a, b) => (a.pinOrder ?? 0) - (b.pinOrder ?? 0)),
 );
+
+// Order rows WITHIN one source-type category. A-Z toggle ON → alphabetical by name. OFF → the manual `order`
+// ordinal (ascending); rows without an `order` (never dragged / freshly added) sink to the BOTTOM, tie-broken
+// by name. The toggle (playlistsAlphaSort) is the shared, Settings-persisted preference.
+function sortCategory(items: Playlist[]): Playlist[] {
+  const byName = (a: Playlist, b: Playlist) => a.name.localeCompare(b.name);
+  if (playlistsAlphaSort.value) return [...items].sort(byName);
+  return [...items].sort((a, b) => {
+    const ao = a.order;
+    const bo = b.order;
+    if (ao == null && bo == null) return byName(a, b);
+    if (ao == null) return 1; // unordered rows sink to the bottom
+    if (bo == null) return -1;
+    return ao - bo || byName(a, b);
+  });
+}
 
 const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
   const m = new Map<string, Playlist[]>();
-  for (const p of playlists.value) {
+  for (const p of visiblePlaylists.value) {
     if (p.pinned) continue; // pinned rows live in the PINNED section, not their source-type group
     const key = p.builtin ? 'built-in' : p.source ?? 'other';
     let bucket = m.get(key);
@@ -126,23 +153,26 @@ const groupedPlaylists = computed<{ key: string; items: Playlist[] }[]>(() => {
   }
   return [...m.entries()]
     .sort((a, b) => a[0].localeCompare(b[0]))
-    .map(([key, items]) => ({ key, items }));
+    .map(([key, items]) => ({ key, items: sortCategory(items) }));
 });
 
-// Render order: the PINNED section first (only when non-empty), then the alphabetical type groups. The
-// `draggable` flag marks the pinned section as drag-reorderable — the template binds the DnD handlers only
-// for that group, so a single PlaylistRow block (one #actions slot) serves every section.
-const allGroups = computed<{ key: string; items: Playlist[]; draggable: boolean }[]>(() => {
-  const groups = groupedPlaylists.value.map((g) => ({ ...g, draggable: false }));
-  return pinnedPlaylists.value.length
-    ? [{ key: 'pinned', items: pinnedPlaylists.value, draggable: true }, ...groups]
-    : groups;
-});
+// Render order: the PINNED section first (only when non-empty), then the alphabetical type groups. EVERY
+// section is drag-reorderable now — a single PlaylistRow block (one #actions slot) serves them all; onRowDrop
+// routes by the section key (pinned → reorder pins; a category → reorder its `order` + flip A-Z off).
+const allGroups = computed<{ key: string; items: Playlist[] }[]>(() =>
+  pinnedPlaylists.value.length
+    ? [{ key: 'pinned', items: pinnedPlaylists.value }, ...groupedPlaylists.value]
+    : groupedPlaylists.value,
+);
 
-// ── Pin toggle + drag-to-reorder (PINNED section) ──────────────────────────
+// ── Pin toggle + drag-to-reorder (every section) ───────────────────────────
 // Pin/unpin flips the shared store via setPlaylistPinned (PUT + reload). Reorder mirrors the EPG Sources
-// native-HTML5 DnD: `dragIndex` is the pinned row being dragged, `overIndex` the drop target (drives the
-// insertion-line styling), `dragMoved` suppresses the row's click→navigate after a drop.
+// native-HTML5 DnD, generalized to every section: `dragKey` is the section being dragged (a group key or
+// 'pinned'), `dragIndex` the row within it, `overIndex` the drop target (drives the insertion-line styling),
+// `dragMoved` suppresses the row's click→navigate after a drop. Reorder is disabled while a search filter is
+// active — reordering a filtered subset is ambiguous against the persisted full-category ordinals.
+const canReorder = computed(() => !search.value.trim());
+const dragKey = ref<string | null>(null);
 const dragIndex = ref<number | null>(null);
 const overIndex = ref<number | null>(null);
 const dragMoved = ref(false);
@@ -155,7 +185,9 @@ async function togglePin(p: Playlist): Promise<void> {
   }
 }
 
-function onPinDragStart(i: number, e: DragEvent): void {
+function onRowDragStart(key: string, i: number, e: DragEvent): void {
+  if (!canReorder.value) return;
+  dragKey.value = key;
   dragIndex.value = i;
   dragMoved.value = false;
   if (e.dataTransfer) {
@@ -164,36 +196,45 @@ function onPinDragStart(i: number, e: DragEvent): void {
   }
 }
 
-function onPinDragOver(i: number, e: DragEvent): void {
-  if (dragIndex.value === null) return;
+function onRowDragOver(key: string, i: number, e: DragEvent): void {
+  if (dragIndex.value === null || dragKey.value !== key) return; // only react within the SAME section
   e.preventDefault(); // allow the drop
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
   if (i !== overIndex.value) overIndex.value = i;
   if (i !== dragIndex.value) dragMoved.value = true;
 }
 
-async function onPinDrop(i: number): Promise<void> {
+async function onRowDrop(key: string, items: Playlist[], i: number): Promise<void> {
   const from = dragIndex.value;
+  const sameSection = dragKey.value === key; // a cross-section drop is a no-op (can't move between categories)
   resetDrag();
-  if (from === null || from === i) return;
-  // Move `from` to `i` within the pinned id sequence, then persist.
-  const ids = pinnedPlaylists.value.map((p) => p.id);
+  if (from === null || !sameSection || from === i) return;
+  // Move `from` to `i` within this section's id sequence (as rendered — equals the full category because drag
+  // is disabled during search), then persist. Route by section: the PINNED section reorders pins; a type
+  // category reorders its `order` AND flips the A-Z toggle off (a manual move can't coexist with auto-sort).
+  const ids = items.map((p) => p.id);
   const [moved] = ids.splice(from, 1);
   ids.splice(i, 0, moved);
   try {
-    await reorderPlaylistPins(ids);
+    if (key === 'pinned') {
+      await reorderPlaylistPins(ids);
+    } else {
+      playlistsAlphaSort.value = false; // set BEFORE persist so the optimistic snap shows the new manual order
+      await reorderPlaylistCategory(ids);
+    }
   } catch {
-    banner({ text: 'Could not save the new pin order. Please try again.', tone: 'bad', icon: 'warn' });
+    banner({ text: 'Could not save the new order. Please try again.', tone: 'bad', icon: 'warn' });
   }
 }
 
 function resetDrag(): void {
+  dragKey.value = null;
   dragIndex.value = null;
   overIndex.value = null;
 }
 
-// Navigate on a pinned row click — but swallow the synthetic click HTML5 DnD fires on the source after a drop.
-function onPinOpen(id: string): void {
+// Navigate on a row click — but swallow the synthetic click HTML5 DnD fires on the source after a drop.
+function onRowOpen(id: string): void {
   if (dragMoved.value) {
     dragMoved.value = false;
     return;
@@ -296,25 +337,32 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
   <div class="col">
     <div class="card flush">
       <div class="toolbar">
-        <SearchInput :value="''" @change="() => {}" placeholder="Search playlists" />
+        <SearchInput :value="search" @change="(v) => (search = v)" :debounce="200" placeholder="Search playlists" />
+        <Btn
+          variant="ghost"
+          :class="['az-btn', { 'is-active': playlistsAlphaSort }]"
+          :aria-pressed="playlistsAlphaSort ? 'true' : 'false'"
+          title="Sort A–Z within each category"
+          @click="playlistsAlphaSort = !playlistsAlphaSort"
+        >A–Z</Btn>
         <span class="spacer" />
         <Btn variant="primary" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
       </div>
       <template v-for="g in allGroups" :key="g.key">
-        <div class="pl-group-hdr" :class="{ pinned: g.draggable }">{{ g.key }}</div>
+        <div class="pl-group-hdr" :class="{ pinned: g.key === 'pinned' }">{{ g.key }}</div>
         <PlaylistRow
           v-for="(p, i) in g.items"
           :key="p.id"
           :playlist="p"
           grouped
-          :reorderable="g.draggable"
-          :draggable="g.draggable || undefined"
-          :class="g.draggable ? { 'drag-source': dragIndex === i, 'drag-over': overIndex === i && dragIndex !== i } : undefined"
-          @dragstart="g.draggable ? onPinDragStart(i, $event) : undefined"
-          @dragover="g.draggable ? onPinDragOver(i, $event) : undefined"
-          @drop="g.draggable ? onPinDrop(i) : undefined"
+          :reorderable="canReorder"
+          :draggable="canReorder || undefined"
+          :class="dragKey === g.key ? { 'drag-source': dragIndex === i, 'drag-over': overIndex === i && dragIndex !== i } : undefined"
+          @dragstart="onRowDragStart(g.key, i, $event)"
+          @dragover="onRowDragOver(g.key, i, $event)"
+          @drop="onRowDrop(g.key, g.items, i)"
           @dragend="resetDrag"
-          @open="g.draggable ? onPinOpen(p.id) : router.push(`/playlists/${p.id}`)"
+          @open="onRowOpen(p.id)"
         >
           <template #actions>
             <Btn

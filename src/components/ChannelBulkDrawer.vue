@@ -16,7 +16,9 @@ const emit = defineEmits<{
   (e: 'close'): void;
   // status/group/clearEpg apply to the SELECTED channels; clearEpg unlinks the 2-factor EPG link.
   // playerPref sets the DaddyLive player override (null = clear → inherit the source default).
-  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null }): void;
+  // chnoSeed/chnoStep renumber the selection: channelNo = seed, seed+step, seed+2·step, … assigned
+  // in the parent's current display order (the parent owns the ordering).
+  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number }): void;
   // Hard-delete the selected channels (tombstoned server-side; the parent patches its local list).
   (e: 'deleteChannels', ids: string[]): void;
 }>();
@@ -30,6 +32,23 @@ const clearEpg = ref(false);
 // override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
 const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd'].includes(c.origin ?? c.source)));
 const playerVal = ref<number | ''>('');
+
+// Channel-number seed + increment. '' seed = leave unchanged; a valid non-negative integer renumbers
+// the selection starting at the seed, stepping by chnoStep (default 1), in the parent's display order.
+const chnoSeed = ref<string>('');
+const chnoStep = ref<number>(1);
+// The parsed seed when it is a usable non-negative integer, else null (blank/garbage = leave unchanged).
+const chnoSeedNum = computed(() => {
+  const n = parseInt(chnoSeed.value, 10);
+  return String(n) === chnoSeed.value.trim() && Number.isFinite(n) && n >= 0 ? n : null;
+});
+// Human preview of the first few assigned numbers (uses the same seed/step math as apply()).
+const chnoPreview = computed(() => {
+  if (chnoSeedNum.value == null) return '';
+  const step = Number(chnoStep.value) || 1;
+  const nums = props.channels.slice(0, 3).map((_, i) => chnoSeedNum.value! + i * step);
+  return nums.join(', ') + (props.channels.length > 3 ? ' …' : '');
+});
 
 const statusMixed = computed(() => new Set(props.channels.map((c) => c.status)).size > 1);
 const groupMixed = computed(() => new Set(props.channels.map((c) => c.group)).size > 1);
@@ -50,12 +69,17 @@ function setStatus(v: string) {
 }
 
 function apply() {
-  const payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null } = {};
+  const payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number } = {};
   if (statusVal.value && statusVal.value !== commonStatus.value) payload.status = statusVal.value;
   if (groupVal.value && groupVal.value !== commonGroup.value) payload.group = groupVal.value;
   if (clearEpg.value) payload.clearEpg = true;
   // 0 = Auto → clear the override (null); a specific 1..6 is sent verbatim. '' leaves it untouched.
   if (playerVal.value !== '') payload.playerPref = playerVal.value === 0 ? null : playerVal.value;
+  // Renumber only when the seed parses to a non-negative integer; otherwise leave channel # untouched.
+  if (chnoSeedNum.value != null) {
+    payload.chnoSeed = chnoSeedNum.value;
+    payload.chnoStep = Number(chnoStep.value) || 1;
+  }
   emit('apply', payload);
   emit('close');
 }
@@ -86,7 +110,7 @@ function doDeleteChannels() {
       </div>
 
       <div class="drawer-body">
-        <div style="border: 1px solid var(--hairline); border-radius: 10px; padding: 10px 12px; background: var(--bg-2); max-height: 168px; overflow: auto;">
+        <div style="border: 1px solid var(--hairline); border-radius: 10px; padding: 10px 12px; background: var(--bg-2); flex: none;">
           <div class="row" style="gap: 8px; margin-bottom: 8px;">
             <Icon name="check" :size="13" style="color: var(--good);" />
             <span style="font-weight: 600; font-size: var(--fs-sm);">Channels being edited</span>
@@ -156,6 +180,30 @@ function doDeleteChannels() {
           <div v-if="playerVal !== ''" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             The selected DaddyLive channels will prefer
             <b style="color: var(--accent-hi);">{{ playerVal === 0 ? 'Auto (source default)' : `Player ${playerVal}` }}</b>.
+          </div>
+        </div>
+
+        <!-- Renumber the selection: seed the first number and auto-increment by "Increment by" across the
+             selection in the current table order (the parent owns the ordering). Blank seed = leave unchanged. -->
+        <div class="form-row">
+          <div class="field-lbl">Channel number</div>
+          <div class="row" style="gap: 10px; align-items: flex-end;">
+            <div style="flex: 1;">
+              <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 4px;">Start number (seed)</div>
+              <div class="input">
+                <input v-model="chnoSeed" inputmode="numeric" placeholder="Start #, e.g. 100" />
+              </div>
+            </div>
+            <div style="width: 110px;">
+              <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 4px;">Increment by</div>
+              <div class="input">
+                <input v-model.number="chnoStep" type="number" min="1" placeholder="1" />
+              </div>
+            </div>
+          </div>
+          <div v-if="chnoSeedNum != null" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Assigns <b style="color: var(--accent-hi);">{{ chnoPreview }}</b>
+            across the {{ channels.length }} selected channel{{ channels.length === 1 ? '' : 's' }} in the current sort order.
           </div>
         </div>
 

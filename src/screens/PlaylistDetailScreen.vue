@@ -280,8 +280,8 @@ function selectRange(toId: string) {
   selected.value = n;
 }
 
-async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null }) {
-  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined) {
+async function applyBulk(payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number }) {
+  if (!payload.status && !payload.group && !payload.clearEpg && payload.playerPref === undefined && payload.chnoSeed === undefined) {
     bulkOpen.value = false;
     return;
   }
@@ -289,6 +289,21 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   const n = ids.size;
   const targets = channels.value.filter((c) => ids.has(c.id));
   const supportsPlayer = (c: Channel) => ['dlhd'].includes(c.origin ?? c.source);
+  // Renumber: assign channelNo = seed, seed+step, … in the CURRENT display order (filteredView tree
+  // order). Selected channels not currently visible (filtered out by search/group/status) sort last,
+  // keeping their base order. Keyed by id, so it's independent of the PUT fan-out iteration order.
+  const chnoById = new Map<string, string>();
+  if (payload.chnoSeed !== undefined) {
+    const step = payload.chnoStep && payload.chnoStep !== 0 ? payload.chnoStep : 1;
+    const orderIdx = new Map<string, number>();
+    filtered.value.forEach((c, i) => orderIdx.set(c.id, i));
+    const ordered = [...targets].sort((a, b) => {
+      const ai = orderIdx.has(a.id) ? orderIdx.get(a.id)! : Number.MAX_SAFE_INTEGER;
+      const bi = orderIdx.has(b.id) ? orderIdx.get(b.id)! : Number.MAX_SAFE_INTEGER;
+      return ai - bi;
+    });
+    ordered.forEach((c, i) => chnoById.set(c.id, String(payload.chnoSeed! + i * step)));
+  }
   // The persisted PUT body: status/group pass through; clearEpg unlinks the 2-factor EPG link (tvg_id + epg
   // → null) and flips epgState to 'unmatched' (mirrors DELETE /api/epg-sources/:id's unlink). playerPref sets
   // the DaddyLive player override (null = Auto/inherit); it's stripped per-channel below for non-DaddyLive sources.
@@ -317,7 +332,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   // Persist each channel edit (PUT /api/playlists/<source>/channels/<id>), then update locally.
   await Promise.all(
     targets.map((c) => {
-      const chBody = bodyFor(c);
+      const chBody = { ...bodyFor(c), ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id) } : {}) };
       if (!Object.keys(chBody).length) return Promise.resolve(undefined);
       return fetch(`/api/playlists/${encodeURIComponent(c.source)}/channels/${encodeURIComponent(c.id)}`, {
         method: 'PUT',
@@ -336,6 +351,7 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
             ? { tvg_id: null, epg: null, epgState: 'unmatched' as const }
             : {}),
           ...(payload.playerPref !== undefined && supportsPlayer(c) ? { playerPref: payload.playerPref } : {}),
+          ...(chnoById.has(c.id) ? { channelNo: chnoById.get(c.id)! } : {}),
         }
       : c
   );
@@ -344,6 +360,10 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   if (payload.group) parts.push(`group → ${payload.group}`);
   if (payload.clearEpg) parts.push('EPG match removed');
   if (payload.playerPref !== undefined) parts.push(`player → ${payload.playerPref === null ? 'Auto' : payload.playerPref}`);
+  if (chnoById.size) {
+    const nums = [...chnoById.values()].map(Number);
+    parts.push(`channel # → ${Math.min(...nums)}…${Math.max(...nums)}`);
+  }
   banner({ text: `Updated ${n} channel${n === 1 ? '' : 's'} · ${parts.join(', ')}`, tone: 'good', icon: 'edit' });
   bulkOpen.value = false;
   selected.value = new Set();

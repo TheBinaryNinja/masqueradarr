@@ -41,6 +41,10 @@ export interface Playlist {
   // Optional: legacy rows pre-date the fields (absent ⇒ not pinned; pinOrder absent ⇒ sorts as 0).
   pinned?: boolean;
   pinOrder?: number;
+  // Manual list position WITHIN this playlist's source-type category (Playlists screen, A-Z toggle OFF).
+  // Optional BY DESIGN: an unset `order` sorts LAST, so a newly created playlist lands at the bottom of its
+  // category. Set via PUT /api/playlists/reorder { field:'order' } (reorderPlaylistCategory); never by a sync.
+  order?: number;
 }
 export interface EpgSource {
   id: string; name: string; url: string; channels: number; programs: number;
@@ -505,6 +509,29 @@ export async function reorderPlaylistPins(orderedIds: string[]): Promise<void> {
   }
 }
 
+// Persist a new manual order for ONE source-type category (the Playlists screen's per-category drag-reorder,
+// active when the A-Z toggle is OFF). `orderedIds` is that category's rows in the new visual order; the server
+// rewrites each row's `order` to its index (field:'order'). Same optimistic-snap + reconcile + rollback shape
+// as reorderPlaylistPins — only the ordinal field differs.
+export async function reorderPlaylistCategory(orderedIds: string[]): Promise<void> {
+  const prev = PLAYLISTS.value;
+  const orderMap = new Map(orderedIds.map((id, i) => [id, i]));
+  // Optimistic snap: rewrite `order` in place on the reordered rows (untouched rows pass through).
+  PLAYLISTS.value = prev.map((p) => (orderMap.has(p.id) ? { ...p, order: orderMap.get(p.id) } : p));
+  try {
+    const res = await fetch('/api/playlists/reorder', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ids: orderedIds, field: 'order' }),
+    });
+    if (!res.ok) throw new Error(`reorder failed: ${res.status}`);
+    PLAYLISTS.value = (await res.json()) as Playlist[];
+  } catch (err) {
+    PLAYLISTS.value = prev; // reconcile back to the known-good order on failure
+    throw err;
+  }
+}
+
 // ──────────────────────────────────────────────────────────────────────
 // Failover groups — thin wrappers over the /api/playlists/:id/failover-groups routes. The detail screen
 // owns a LOCAL channels ref, so each helper returns the authoritative post-state for the screen to merge
@@ -728,6 +755,20 @@ export async function reloadChannels(): Promise<void> {
   CHANNELS.value = channelLists.flat();
 }
 
+// User-path sibling of reloadChannels(): builds CHANNELS from ONLY the playlists the signed-in user has
+// been granted, without touching any admin-only endpoint (reloadChannels() fetches /api/custom-playlists,
+// which 403s for role 'user' and rejects the whole load). GET /api/playlists is already user-scoped, so
+// App.vue's loadAppData() awaits reloadPlaylists() first and this reads channels for exactly those granted
+// ids — each /api/playlists/:id/channels call passes the server's allowed-playlist guard. A per-call catch
+// keeps one playlist's failure from wiping the rest.
+export async function reloadUserChannels(): Promise<void> {
+  const lists = await Promise.all(
+    PLAYLISTS.value.map((p) =>
+      getJson<Channel[]>(`/api/playlists/${p.id}/channels`).catch(() => [] as Channel[])),
+  );
+  CHANNELS.value = lists.flat();
+}
+
 // Fetch programs for a SCOPED set of channels within a time window and MERGE them into the shared
 // EPG_PROGRAMS cache (keyed by composite channelId "<source>:<id>"). Replaces the old "load every
 // program at boot" path. Merge (not wipe) because two screens share the cache (EPG Detail timeline +
@@ -752,6 +793,26 @@ export async function fetchProgramsFor(
       getJson<Record<string, Program[]>>(`/api/epg-programs?channelIds=${encodeURIComponent(c.join(','))}${win}`)),
   );
   for (const r of results) Object.assign(EPG_PROGRAMS, r);
+}
+
+// User-scoped sibling of fetchProgramsFor: reads the guide via GET /api/playlists/:id/programs (the
+// user-reachable route) instead of the admin-only /api/epg-programs, then MERGES into EPG_PROGRAMS.
+// The Dashboard's per-user view uses this. `channelIds` are composite "<epg>:<tvg_id>" keys; `playlistId`
+// is the selected channel's `source` (the id the server's grant guard is checked against). A single
+// channel is fetched at a time, so no chunking is needed.
+export async function fetchUserProgramsFor(
+  playlistId: string,
+  channelIds: string[],
+  from?: number,
+  to?: number,
+): Promise<void> {
+  const ids = [...new Set(channelIds.filter(Boolean))];
+  if (!playlistId || ids.length === 0) return;
+  const win = (from != null && to != null) ? `&from=${from}&to=${to}` : '';
+  const r = await getJson<Record<string, Program[]>>(
+    `/api/playlists/${encodeURIComponent(playlistId)}/programs?channelIds=${encodeURIComponent(ids.join(','))}${win}`,
+  );
+  Object.assign(EPG_PROGRAMS, r);
 }
 
 // Re-fetch the cron jobs after a schedule edit (the EPG Edit drawer upserts/deletes one).

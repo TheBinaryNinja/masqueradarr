@@ -903,6 +903,10 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-bottom: 1px solid var(--hairline);
 }
 .toolbar .spacer { flex: 1; }
+/* A-Z sort toggle (Playlists screen): a ghost button that lights up in the accent when active, mirroring the
+   pin button's is-pinned treatment. */
+.toolbar .btn.az-btn { font-weight: 600; letter-spacing: 0.02em; }
+.toolbar .btn.az-btn.is-active { color: var(--accent-hi); border-color: var(--accent-hi); }
 
 /* Playlist-detail sticky header: pin the toolbar (search/filter/view-switch) AND the table column
    headers to the top of the .screen scroll area while the channel rows scroll underneath. Scoped to
@@ -2226,6 +2230,15 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .buf-legend { display: inline-flex; align-items: center; gap: 4px; }
 .buf-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .buf-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
+/* X-axis timeline under the bars: evenly-spaced ticks; end ticks hug the row edges (= window start/now). */
+.buf-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--text-3);
+}
+.buf-tick { white-space: nowrap; }
 
 /* Buffering timeline */
 .buf-timeline {

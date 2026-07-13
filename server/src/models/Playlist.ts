@@ -61,6 +61,13 @@ const PlaylistSchema = new Schema(
     // writes them; only the API (PUT /:id + PUT /reorder) does. Mirrors epgsources.order (drag-to-reorder).
     pinned: { type: Boolean, required: true, default: false },
     pinOrder: { type: Number, required: true, default: 0 },
+    // Manual list position WITHIN this playlist's source-type category (the Playlists screen, when the A-Z
+    // toggle is OFF). Optional/undefined BY DESIGN: an unset `order` sorts LAST, so a newly created playlist
+    // lands at the bottom of its category with no backfill migration and no changes to any creation site.
+    // User-owned (a sync never writes it); set only by PUT /reorder (field:'order'). Only ever compared
+    // WITHIN a category (rows are grouped first), so per-category 0-based indices are sufficient. Mirrors
+    // epgsources.order / pinOrder, but deliberately has NO default (undefined = "unordered, sort last").
+    order: { type: Number },
     // Tombstone set of PlaylistChannel `_id`s the operator hard-deleted via the bulk-delete route
     // (POST /:id/channels/delete). The sync/import re-insert paths ($setOnInsert upserts off the live
     // upstream listing) consult this and SKIP tombstoned ids, so a deleted channel that is still present
