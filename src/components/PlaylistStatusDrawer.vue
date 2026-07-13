@@ -13,7 +13,13 @@ import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/
 import { customConfigExists, createCustomFromDefault, deleteCustomConfig } from '../composables/useProxyConfig';
 
 const props = defineProps<{ playlist: Playlist; channels: Channel[] }>();
-const emit = defineEmits<{ (e: 'close'): void; (e: 'updated', patch: Partial<Playlist>): void }>();
+const emit = defineEmits<{
+  (e: 'close'): void;
+  (e: 'updated', patch: Partial<Playlist>): void;
+  // The server cascaded this playlist's tags onto its channels (applyTagsToChannels is on). Lets the parent
+  // screen re-fetch its channel list so the per-row tag pills refresh without a full reload.
+  (e: 'channelsTagged'): void;
+}>();
 
 const baseDomain = computed(() => domain.value.replace(/\/$/, ''));
 
@@ -305,6 +311,18 @@ const tags = ref<string[]>([...(props.playlist.tags ?? [])]);
 function onTags(v: string[]) {
   tags.value = v;
   save({ tags: v });
+  // When "Apply to all channels" is on, the server additively re-pushes these tags onto every channel; ask
+  // the parent to re-fetch channels so the table's per-row tag pills reflect the cascade.
+  if (applyTags.value) emit('channelsTagged');
+}
+
+// Persistent "cascade these tags onto every channel" flag. Turning it ON triggers the server cascade now (and
+// re-runs on every future tag edit while on); OFF just stops future propagation (existing channel tags stay).
+const applyTags = ref(!!props.playlist.applyTagsToChannels);
+function setApplyTags(v: boolean) {
+  applyTags.value = v;
+  save({ applyTagsToChannels: v });
+  if (v) emit('channelsTagged');
 }
 
 function setMode(m: 'global' | 'custom') {
@@ -432,6 +450,19 @@ function onCustomPath(v: string) {
         <div class="form-row">
           <div class="field-lbl">Tags</div>
           <TagPicker :model-value="tags" @update:model-value="onTags" />
+          <!-- Persistent cascade toggle: push these tags onto every channel in this playlist, and keep them
+               in sync as the tags change (additive — a channel's own tags are preserved). -->
+          <div class="row" style="align-items: center; gap: 10px; margin-top: 12px;">
+            <div style="flex: 1;">
+              <div class="field-lbl" style="margin: 0;">Apply to all channels</div>
+              <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
+                {{ applyTags
+                  ? 'These tags are added to every channel in this playlist, and re-applied whenever you change them.'
+                  : 'Tags stay on the playlist only. Turn on to add them to every channel.' }}
+              </div>
+            </div>
+            <Toggle :on="applyTags" @change="setApplyTags" />
+          </div>
         </div>
 
         <div class="divider" />

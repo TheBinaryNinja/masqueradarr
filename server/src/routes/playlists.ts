@@ -265,10 +265,19 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
       if (!v.ok) return res.status(400).json({ error: v.error });
       $set.tags = v.ids;
     }
+    // Persistent "cascade this playlist's tags onto every channel" flag. When true, the tag propagation runs
+    // after the write below (additive $addToSet). Operator-owned — a sync never writes it.
+    if (body.applyTagsToChannels !== undefined) {
+      if (typeof body.applyTagsToChannels !== 'boolean') {
+        return res.status(400).json({ error: 'applyTagsToChannels (boolean) required' });
+      }
+      $set.applyTagsToChannels = body.applyTagsToChannels;
+    }
     if (!Object.keys($set).length) {
-      return res
-        .status(400)
-        .json({ error: 'no editable fields provided (name, state, pinned, endpoint, url, interval, auto, tags)' });
+      return res.status(400).json({
+        error:
+          'no editable fields provided (name, state, pinned, endpoint, url, interval, auto, tags, applyTagsToChannels)',
+      });
     }
 
     // Canonicalize the persisted `url` against the effective endpoint (defense-in-depth — the filename and
@@ -311,6 +320,25 @@ playlistsRouter.put('/:id', requireAdmin, async (req, res, next) => {
       { new: true, projection: { _id: 0 } },
     ).lean();
     if (!doc) return res.status(404).json({ error: 'not_found' });
+
+    // Persistent tag cascade: when `applyTagsToChannels` is on, additively push this playlist's tags onto
+    // every one of its channels ($addToSet — never clobbers a channel's own tags). Runs when the flag was
+    // just turned on OR the tag set changed while on (both are idempotent to re-run). Best-effort — a cascade
+    // hiccup must never fail the API write. Mirrors the group-cascade / cascadeDeleteTag updateMany pattern.
+    if (
+      doc.applyTagsToChannels &&
+      doc.tags?.length &&
+      (body.tags !== undefined || body.applyTagsToChannels !== undefined)
+    ) {
+      try {
+        await PlaylistChannel.updateMany(
+          { source: req.params.id },
+          { $addToSet: { tags: { $each: doc.tags } } },
+        );
+      } catch (err) {
+        logger.warn('settings', `apply-tags-to-channels cascade failed: ${(err as Error).message}`);
+      }
+    }
 
     // Re-derive the m3u exports on an endpoint/state/url change for a source playlist. Best-effort — a
     // compose/prune hiccup must never fail the API write.

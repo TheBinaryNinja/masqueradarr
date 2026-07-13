@@ -48,6 +48,9 @@ export interface Playlist {
   // Operator-assigned custom tag ids (opaque Tag.id references; resolve to names via tagNames()). Set via
   // PUT /api/playlists/:id { tags }. Absent on legacy rows (treat undefined as none).
   tags?: string[];
+  // When true, this playlist's `tags` are cascaded (additively) onto every one of its channels — pushed now
+  // and re-pushed whenever the tags change. Set via PUT /api/playlists/:id { applyTagsToChannels }.
+  applyTagsToChannels?: boolean;
 }
 export interface EpgSource {
   id: string; name: string; url: string; channels: number; programs: number;

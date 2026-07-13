@@ -6,6 +6,7 @@ import Pill from './Pill.vue';
 import Segmented from './Segmented.vue';
 import GroupPicker from './GroupPicker.vue';
 import GroupManager from './GroupManager.vue';
+import TagPicker from './TagPicker.vue';
 import { type Channel } from '../data';
 
 const props = defineProps<{
@@ -18,7 +19,9 @@ const emit = defineEmits<{
   // playerPref sets the DaddyLive player override (null = clear → inherit the source default).
   // chnoSeed/chnoStep renumber the selection: channelNo = seed, seed+step, seed+2·step, … assigned
   // in the parent's current display order (the parent owns the ordering).
-  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number }): void;
+  // addTags/removeTags are custom tag ids to add to / remove from each selected channel; the parent merges
+  // them per-channel over that channel's existing tags (remove wins if an id is in both).
+  (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number; addTags?: string[]; removeTags?: string[] }): void;
   // Hard-delete the selected channels (tombstoned server-side; the parent patches its local list).
   (e: 'deleteChannels', ids: string[]): void;
 }>();
@@ -32,6 +35,67 @@ const clearEpg = ref(false);
 // override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
 const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd'].includes(c.origin ?? c.source)));
 const playerVal = ref<number | ''>('');
+
+// Tags — one tri-state picker over the selection (matches the single-channel editor's chip layout). Each tag's
+// initial membership across the selected channels is 'all' (on every one), 'some' (on a subset → the picker's
+// partial/dashed state), or 'none' (on none). The operator's explicit choices live in `decision` (add = force
+// onto all, remove = pull from all); a tag with no decision is left untouched. In apply() the decisions become
+// the same addTags/removeTags payload the parent merges per-channel — so nothing downstream changes.
+type Membership = 'all' | 'some';
+type Decision = 'add' | 'remove';
+const membership = computed(() => {
+  const n = props.channels.length;
+  const count = new Map<string, number>();
+  for (const c of props.channels) for (const id of c.tags ?? []) count.set(id, (count.get(id) ?? 0) + 1);
+  const m = new Map<string, Membership>();
+  for (const [id, ct] of count) m.set(id, ct === n ? 'all' : 'some');
+  return m; // ids absent from the map are on no selected channel → treated as 'none'
+});
+const decision = ref(new Map<string, Decision>());
+
+// Effective chip state for a tag, from its decision (if any) else its baseline membership.
+function stateOf(id: string): 'on' | 'partial' | 'off' {
+  const d = decision.value.get(id);
+  if (d) return d === 'add' ? 'on' : 'off';
+  const mem = membership.value.get(id);
+  return mem === 'all' ? 'on' : mem === 'some' ? 'partial' : 'off';
+}
+// Bound to the picker: ids shown solid (on) and dashed (partial). Built from decision + membership so
+// decisions on ids not currently on any channel (e.g. a just-created tag forced on) are included.
+const onIds = computed(() => {
+  const s = new Set<string>();
+  for (const [id, d] of decision.value) if (d === 'add') s.add(id);
+  for (const [id, mem] of membership.value) if (mem === 'all' && !decision.value.has(id)) s.add(id);
+  return [...s];
+});
+const partialIds = computed(() => {
+  const s: string[] = [];
+  for (const [id, mem] of membership.value) if (mem === 'some' && !decision.value.has(id)) s.push(id);
+  return s;
+});
+
+// Advance a chip one step through its membership-dependent cycle, clearing the decision when it lands back on
+// the baseline (leave-unchanged): some → partial→on→off→partial; all → on⇄off; none → off⇄on.
+function onToggle(id: string) {
+  const mem = membership.value.get(id); // undefined = 'none'
+  const cur = stateOf(id);
+  const baseline: 'on' | 'partial' | 'off' = mem === 'all' ? 'on' : mem === 'some' ? 'partial' : 'off';
+  let next: 'on' | 'partial' | 'off';
+  if (mem === 'some') next = cur === 'partial' ? 'on' : cur === 'on' ? 'off' : 'partial';
+  else if (mem === 'all') next = cur === 'on' ? 'off' : 'on';
+  else next = cur === 'off' ? 'on' : 'off';
+  const m = new Map(decision.value);
+  if (next === baseline) m.delete(id);
+  else m.set(id, next === 'on' ? 'add' : 'remove');
+  decision.value = m;
+}
+// A freshly created/selected tag from the input: force it "on" (add to all), unless it's already on every one.
+function onCreate(id: string) {
+  const m = new Map(decision.value);
+  if (membership.value.get(id) === 'all') m.delete(id);
+  else m.set(id, 'add');
+  decision.value = m;
+}
 
 // Channel-number seed + increment. '' seed = leave unchanged; a valid non-negative integer renumbers
 // the selection starting at the seed, stepping by chnoStep (default 1), in the parent's display order.
@@ -69,7 +133,7 @@ function setStatus(v: string) {
 }
 
 function apply() {
-  const payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number } = {};
+  const payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number; addTags?: string[]; removeTags?: string[] } = {};
   if (statusVal.value && statusVal.value !== commonStatus.value) payload.status = statusVal.value;
   if (groupVal.value && groupVal.value !== commonGroup.value) payload.group = groupVal.value;
   if (clearEpg.value) payload.clearEpg = true;
@@ -80,6 +144,12 @@ function apply() {
     payload.chnoSeed = chnoSeedNum.value;
     payload.chnoStep = Number(chnoStep.value) || 1;
   }
+  // Tags: emit the operator's explicit decisions as the same add/remove id sets the parent merges per-channel
+  // (empty = leave each channel's tags untouched).
+  const added = [...decision.value].filter(([, d]) => d === 'add').map(([id]) => id);
+  const removed = [...decision.value].filter(([, d]) => d === 'remove').map(([id]) => id);
+  if (added.length) payload.addTags = added;
+  if (removed.length) payload.removeTags = removed;
   emit('apply', payload);
   emit('close');
 }
@@ -224,6 +294,18 @@ function doDeleteChannels() {
               </div>
             </div>
           </label>
+        </div>
+
+        <!-- Bulk-assign custom tags via one tri-state picker (matches the single-channel editor's chip layout).
+             A chip is solid when the tag is on every selected channel, dashed when it's on only some, plain when
+             on none; clicking cycles it to add-to-all / remove-from-all / leave. Only the operator's explicit
+             add/remove decisions are sent — untouched (incl. partial) tags are left as each channel had them. -->
+        <div class="form-row">
+          <div class="field-lbl">Tags</div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 6px;">
+            Toggle a tag on to add it to all selected, off to remove it. Dashed = on some of the selection.
+          </div>
+          <TagPicker :model-value="onIds" :partial="partialIds" @toggle="onToggle" @create="onCreate" />
         </div>
 
         <div class="row" style="margin-top: 6px;">

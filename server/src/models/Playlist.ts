@@ -88,6 +88,10 @@ const PlaylistSchema = new Schema(
     // custom playlists (both are Playlist docs). User-owned — a sync never writes it; set only via
     // PUT /api/playlists/:id. A tag delete `$pull`s its id here (services/tags.ts cascadeDeleteTag).
     tags: { type: [String], default: [] },
+    // When true, this playlist's `tags` cascade onto every PlaylistChannel (additive $addToSet), re-applied
+    // on each PUT /api/playlists/:id that changes `tags` or this flag. User-owned — a sync never writes it.
+    // See routes/playlists.ts. Turning it OFF stops future propagation but leaves channel tags intact.
+    applyTagsToChannels: { type: Boolean, default: false },
   },
   { versionKey: false },
 );
