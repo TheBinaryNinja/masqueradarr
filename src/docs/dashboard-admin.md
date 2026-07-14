@@ -9,9 +9,9 @@ administrator you see the operational view: counters, your sources, and live act
   **Channels**, **Channels live**, **Channels down**, **EPG sources**, and **Unmatched** (channels with
   no guide link yet). These are computed from the data already loaded into the app; they update as
   syncs and streams change the underlying numbers.
-- **Playlists panel** — each playlist source with its status, channel count, and its sync/compose
-  schedule chips. The **schedule chips** reflect what you've configured on each playlist's schedule.
-- **EPG Sources panel** — each guide source with its program counts and metadata.
+- **Playlists panel** — each playlist source (listed **A–Z**) with its status, channel count, and its
+  sync/compose schedule chips. The **schedule chips** reflect what you've configured on each playlist's schedule.
+- **EPG Sources panel** — each guide source (listed **A–Z**) with its program counts and metadata.
 - **Activity panel** (right) — two live sub-sections:
   - **Active Sessions** — who is watching right now, with bitrate and uptime. This is pushed live over
     a WebSocket, so it moves in real time without refreshing.
@@ -31,9 +31,11 @@ watching at this moment.
 
 - **Add playlist** (top-right of the header on this screen) — opens the Add Playlist flow. New sources
   show up immediately in the Playlists panel and on the **Playlists** screen.
-- **Global search** (top bar) — as an admin you have a search box in the top bar that spans playlists,
-  channels, and EPG sources. Pick a result to jump straight to it; choosing a channel scrolls to and
-  briefly highlights its row on the playlist detail screen.
+- **Global search** (top bar) — as an admin you have a search box in the top bar that spans **playlists**,
+  playlist **channels**, **EPG sources**, and **EPG channels**. Results are **grouped by their parent** (with
+  a **"+N more"** line when a group overflows), and search also matches by **tag name** — so a tag is a quick
+  way to pull up everything you've labeled. Pick a result to jump straight to it; choosing a channel scrolls
+  to and briefly highlights its row on the playlist detail screen.
 - **View all / Add** buttons on the Playlists and EPG panels — jump to the full **Playlists** or
   **EPG Sources** screens, where the real management happens.
 - Clicking a playlist or EPG source row opens its detail screen.

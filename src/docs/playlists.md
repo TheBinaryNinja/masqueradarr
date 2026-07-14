@@ -22,9 +22,14 @@ tighter control over exactly what a playlist contains.
 ## Global vs. custom endpoints
 
 Built-in source playlists are **Global** — they roll up together into a single combined M3U your users can
-subscribe to. Custom playlists are **Custom-endpoint** — each one publishes its own M3U. This distinction
-drives how the sync and compose actions below behave, and how you grant access to them on the **Playlists**
-screen.
+subscribe to. Custom playlists are **Custom-endpoint** — each one publishes its own M3U. This distinction is
+a playlist's **scope**, and it drives how the playlist is **composed** (into the shared Global M3U, or into
+its own file) and how you grant access to it.
+
+Whether a playlist can **Sync** is a **separate** question: it depends only on whether the playlist has a
+**live upstream to pull from** — its *kind* — not on its scope. So a built-in you've switched to Custom still
+syncs from its provider, and a URL import you've set to Global still syncs from its address; a **file
+upload**, with no upstream, has nothing to sync either way.
 
 ## Sync
 
@@ -46,8 +51,18 @@ screen.
 
 ### List view
 Every playlist as a row: its **name**, **kind**, **status**, **channel count**, and its **schedule** chips.
-Built-in and custom playlists live side by side. Each row's menu also holds the per-playlist **Assign
-access** and **Get access** actions (see *Related screens → Users*).
+Rows are grouped by **kind** (built-in, clone, file, URL, HDHomeRun), and you can shape the list to taste:
+
+- **Pin** a playlist with the **pin button** on its row to lift it into a **PINNED** section above the kind
+  groups — handy for the handful you reach for most.
+- **Drag** a row by its grip to reorder it within its section; the order you set is saved. (Reordering
+  pauses while a search filter is active.)
+- Toggle **A–Z** in the toolbar to sort rows alphabetically **within each kind group** instead. It's a
+  Settings-backed preference, remembered across sessions — and dragging a row to reorder turns it back off,
+  keeping your manual order.
+
+Each row's menu carries the per-playlist actions — **Sync** / **Compose** (for the playlists that have
+them), **Assign access** and **Get access** (see *Related screens → Users*), **Edit**, and **Delete**.
 
 ### Detail view
 The channels inside one playlist — each with its name, number, logo, guide link, and live status. This is
@@ -75,6 +90,16 @@ re-syncs** — a sync updates provider-derived fields but keeps your edits.
   correctly.
 - **Editing channels** — done in the detail view. You can rename, renumber, disable, delete, group, and add
   failover backups to channels. The full editing model lives in **Channels, Groups & Failover**.
+- **Edit** (from a row's menu) — opens the playlist's Edit drawer, where — among its settings — you assign
+  **Tags** and can toggle **Apply to all channels** to push the playlist's tags down onto every channel it
+  contains (see **Custom Tags**).
+- **Delete** (from a row's menu) — removes the whole playlist. For a **built-in** it first shows an
+  **affected-areas report** — the users, mappings, and composed files that depend on it — so you can see the
+  blast radius before confirming; the delete then cascades to those access grants and mappings.
+
+> **Caution:** **Delete** and **Restore Defaults** are not the same thing. Delete removes the playlist itself
+> and everything hanging off it; **Restore Defaults** keeps the playlist and just re-fetches it from the
+> provider. Reach for Delete only when you want the playlist gone for good.
 
 ## How to add and publish a playlist
 
@@ -92,3 +117,4 @@ re-syncs** — a sync updates provider-derived fields but keeps your edits.
 - **Channel Mapping** — link these channels to EPG guide data.
 - **Settings** — the **Domain** there determines the published URL of every playlist.
 - **Users** — grant specific users access to specific playlists (via **Assign access** on this screen).
+- **Custom Tags** — the labels you assign in a playlist's Edit drawer (and optionally cascade to its channels).

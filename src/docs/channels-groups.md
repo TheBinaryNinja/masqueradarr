@@ -14,6 +14,9 @@ actually receive. This is where you edit individual channels, bulk-edit many at 
 - **The channel table** — one row per channel: a **select checkbox**, its **number**, **logo**, **name**,
   **category group**, **guide link**, and **live status**. Sort by **name**, **channel number**, or
   **group**, and narrow the list with the **group dropdown** and search box above the table.
+- **Guide-match filter** — a segmented **All / Matched / Unmatched** control filters the table by whether a
+  channel is linked to guide data. It's a **view filter only** (it changes what you see, not the channels
+  themselves), and **Unmatched** also includes channels that have never been evaluated for a match.
 - **The selection toolbar** — the moment you check one or more rows, a toolbar appears with an **{n}
   selected** pill and these actions:
   - **Group** — builds a **failover group** from the selection ("Configure a failover group from the
@@ -49,6 +52,11 @@ Below that are the editable fields:
   *inherited*: a backup always carries its parent's guide identity, so the server won't let you edit it
   directly. Changing a normal channel's TVG-ID unlinks any existing guide match.
 - **Group** — the category group this channel is filed under (see below).
+- **Player source** — for **DaddyLive** channels only, picks which of DaddyLive's interchangeable players the
+  channel uses (**Auto**, or Player **1–6**), or leaves it on the workspace default set in **Settings →
+  Advanced**. Channels from other sources don't show this field.
+- **Tags** — the app-wide labels on this channel; add or remove them from the chip picker (type a name to
+  create a new one on the spot). See **Custom Tags**.
 
 At the bottom, **Remove** deletes just this channel (a two-step confirm). **Save changes** writes only the
 fields you touched.
@@ -64,6 +72,10 @@ edited, then offers:
   Leave it on "leave unchanged" to skip.
 - **Remove EPG match** — clears the guide link on the selected channels. It shows how many of them are
   currently linked so you know the impact.
+- **Tags** — add or remove app-wide labels across the whole selection. The chips are **tri-state**: solid =
+  on every selected channel, dashed = on some, plain = on none; clicking cycles add-to-all → remove-from-all
+  → leave (see **Custom Tags**).
+- **Player source** — for **DaddyLive** channels in the selection, set which player they use, all at once.
 - **Apply to N channels** — writes the status / group / EPG changes above.
 - **Manage groups** — the shared group panel (see below).
 - **Delete N channels** — the destructive action, guarded by a two-step confirm (see *Deleting channels*).
@@ -125,9 +137,10 @@ group and return every channel to standing on its own). Inside the dialog you ca
 become the new parent.
 
 > **Note:** Failover is on by default. Deleting a group's parent — or its last remaining child — automatically
-> **disbands** the group, and the survivors keep the parent's inherited guide link. You can watch failover
-> happen live on the **Active Streams** screen, where a session shows a **failover → {backup name}** badge
-> while it's running on a backup.
+> **disbands** the group. When a channel **leaves** a group this way, it **reverts to its own guide identity**
+> — the TVG-ID it carried before it joined — rather than keeping the parent's inherited link. You can watch
+> failover happen live on the **Active Streams** screen, where a session shows a **failover → {backup name}**
+> badge while it's running on a backup.
 
 ## Deleting channels & Restore Defaults
 
@@ -149,3 +162,4 @@ re-fetches from scratch. Treat it as a clean slate, not a gentle "un-delete".
 - **Playlists** — where you add, sync, compose, and schedule the playlist these channels live in.
 - **Channel Mapping** — link channels to guide data (map a failover **parent**; its children inherit).
 - **Active Streams** — watch these channels play in real time, including failover in action.
+- **Custom Tags** — the app-wide labels you assign to channels here, one at a time or in bulk.
