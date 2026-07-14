@@ -116,6 +116,17 @@ export async function buildGrant(
   // probe sweep keeps probing the actual channel (failover can never mask a dead parent as healthy).
   if (attempt !== undefined && attempt >= 1) return buildFailoverGrant(source, url, pl, attempt);
 
+  // SSRF guard: `url` is the entry taken VERBATIM from the request path, and Rust does NOT run ssrf_ok on the
+  // trusted-entry hop (proxy.rs gates hops only) — so an arbitrary URL here would make the data plane fetch it
+  // (internal SSRF / open proxy: cloud-metadata, LAN hosts, response exfiltration). Every LEGITIMATE entry is a
+  // stored channel's streamEntryUrl — the exported m3u/lineup reference exactly those, and the index
+  // {streamEntryUrl, source} makes this exists() cheap. Reject anything else before resolving or fetching it.
+  // This closes the identity-passthrough (hdhomerun/direct) AND non-sentinel (dulo/dlhd isEntryUrl→false)
+  // open-proxy paths uniformly; the failover path (attempt≥1, above) is already DB-sourced, not request-driven.
+  if (!(await PlaylistChannel.exists({ streamEntryUrl: url }))) {
+    return { ok: false, status: 403, error: 'unrecognized_entry' };
+  }
+
   let target = url;
   let isEntry = false;
   try {
@@ -153,14 +164,14 @@ export async function buildGrant(
   // attribution is stale the moment this grant is built (a later failed fetch re-sets it via attempt 1).
   if (attempt === 0) noteFailoverServing(source, url, null);
 
-  // P1 sources (dulo/dlhd/dami) are all public-CDN + private-IP-rejecting. A future LAN adapter (hdhomerun/
-  // local) will need a per-adapter signal here to allow private targets; hardcoded false is correct for now.
+  // Public-CDN sources (dulo/dlhd/dami) reject private targets; a LAN adapter (hdhomerun / imported `direct`)
+  // opts in via allowsPrivateUpstream so Rust's ssrf_ok permits private hosts on this source's hops.
   return {
     ok: true,
     target,
     upstreamHeaders,
     relabelSegment,
-    allowPrivate: false,
+    allowPrivate: adapter.allowsPrivateUpstream ?? false,
     isEntry,
     proxyConfig,
     policySource: source,
@@ -284,7 +295,7 @@ async function buildFailoverGrant(
     target,
     upstreamHeaders,
     relabelSegment,
-    allowPrivate: false,
+    allowPrivate: candAdapter.allowsPrivateUpstream ?? false,
     isEntry,
     proxyConfig,
     policySource: candSource,

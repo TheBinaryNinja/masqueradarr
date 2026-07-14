@@ -26,12 +26,25 @@ export interface GuideComposeResult {
 // re-tagging each <programme channel=> to the bare tvg_id so it matches its <channel id>. De-dupes the bare
 // <channel id> (first-wins; two sources can publish the same bare id — a player can't disambiguate anyway).
 // Stats: every contributing EPG source gets lastXmlAt set + xmlGeneratedCount++ (xmlFailCount++ on failure).
-export async function composeGuide(
-  channels: PlaylistChannelDoc[],
-  servedPath: string,
-): Promise<GuideComposeResult> {
-  const disk = guideDiskPath(servedPath);
+export interface BuiltGuide {
+  xml: string;
+  channelCount: number;
+  programmeCount: number;
+  sources: string[]; // contributing EPG source ids
+}
 
+// The PURE XMLTV builder — resolves the (tvg_id,epg) join and returns the serialized <tv> document with NO
+// disk write and NO run-stat side-effect. Shared by composeGuide (writes to disk + credits sources) and the
+// on-demand HDHomeRun guide endpoint (routes/hdhrServe.ts, which sends the string and credits nothing —
+// a DVR app polls the guide continuously, so per-poll xml* accounting would be noise).
+export async function buildGuideXml(
+  channels: PlaylistChannelDoc[],
+  // `sink` (optional) receives contributing EPG source ids INCREMENTALLY as they resolve, so composeGuide can
+  // credit xmlFailCount for whatever was resolved before a mid-build throw (parity with the pre-refactor inline
+  // body). `servedPath` (optional) prefixes the duplicate-channel warn so the log identifies the guide surface.
+  opts?: { sink?: Set<string>; servedPath?: string },
+): Promise<BuiltGuide> {
+  const label = opts?.servedPath ? `${opts.servedPath}: ` : '';
   // The M3U inclusion rule: Active channels with a 2-factor EPG link (tvg_id AND epg). Index by the composite
   // key (== EpgChannel._id == Program.channelId); first-wins so a re-linked dup doesn't double-count.
   const byKey = new Map<string, PlaylistChannelDoc>();
@@ -41,49 +54,65 @@ export async function composeGuide(
     if (!byKey.has(key)) byKey.set(key, c);
   }
 
-  const sources = new Set<string>(); // contributing EPG source ids (for the run-stats credit)
+  const sources = opts?.sink ?? new Set<string>();
+  // epgchannels rows for the linked keys (display-name / callSign / channelNo).
+  const epgChans = byKey.size
+    ? await EpgChannel.find({ _id: { $in: [...byKey.keys()] } }).lean<EpgChannelDoc[]>()
+    : [];
+  const epgByKey = new Map(epgChans.map((e) => [e._id, e]));
+
+  // Build the <channel> set, de-duped by bare id; remember each included composite key → bare id.
+  const seenBare = new Set<string>();
+  const keyToBare = new Map<string, string>();
+  const channelEls: string[] = [];
+  for (const [key, pc] of byKey) {
+    const epg = epgByKey.get(key);
+    if (!epg) continue; // linked but the epgchannels row isn't synced (yet) → skip, never orphan a programme
+    const bare = pc.tvg_id as string;
+    if (seenBare.has(bare)) {
+      logger.warn('xmltv', `${label}dropped duplicate bare channel id "${bare}" (${key})`);
+      continue;
+    }
+    seenBare.add(bare);
+    keyToBare.set(key, bare);
+    sources.add(pc.epg as string);
+    channelEls.push(channelEl(epg, bare, pc.logoUrl));
+  }
+
+  // <programme>s for the included channels, grouped+sorted by the covering { channelId, start } index,
+  // re-tagged to the bare id. NaN-timed airings are dropped by programmeEl (§5).
+  const programmeEls: string[] = [];
+  if (keyToBare.size) {
+    const programs = await Program.find({ channelId: { $in: [...keyToBare.keys()] } })
+      .sort({ channelId: 1, start: 1 })
+      .lean<ProgramDoc[]>();
+    for (const p of programs) {
+      const bare = keyToBare.get(p.channelId);
+      if (!bare) continue;
+      const el = programmeEl(p, bare);
+      if (el) programmeEls.push(el);
+    }
+  }
+
+  return {
+    xml: xmltvDocument(channelEls, programmeEls),
+    channelCount: channelEls.length,
+    programmeCount: programmeEls.length,
+    sources: [...sources],
+  };
+}
+
+export async function composeGuide(
+  channels: PlaylistChannelDoc[],
+  servedPath: string,
+): Promise<GuideComposeResult> {
+  const disk = guideDiskPath(servedPath);
+  // Populated incrementally by buildGuideXml (via the sink), so the catch can credit whatever was resolved
+  // before a mid-build throw — not just a fully-successful build.
+  const sources = new Set<string>();
   try {
-    // epgchannels rows for the linked keys (display-name / callSign / channelNo).
-    const epgChans = byKey.size
-      ? await EpgChannel.find({ _id: { $in: [...byKey.keys()] } }).lean<EpgChannelDoc[]>()
-      : [];
-    const epgByKey = new Map(epgChans.map((e) => [e._id, e]));
-
-    // Build the <channel> set, de-duped by bare id; remember each included composite key → bare id.
-    const seenBare = new Set<string>();
-    const keyToBare = new Map<string, string>();
-    const channelEls: string[] = [];
-    for (const [key, pc] of byKey) {
-      const epg = epgByKey.get(key);
-      if (!epg) continue; // linked but the epgchannels row isn't synced (yet) → skip, never orphan a programme
-      const bare = pc.tvg_id as string;
-      if (seenBare.has(bare)) {
-        logger.warn('xmltv', `${servedPath}: dropped duplicate bare channel id "${bare}" (${key})`);
-        continue;
-      }
-      seenBare.add(bare);
-      keyToBare.set(key, bare);
-      sources.add(pc.epg as string);
-      channelEls.push(channelEl(epg, bare, pc.logoUrl));
-    }
-
-    // <programme>s for the included channels, grouped+sorted by the covering { channelId, start } index,
-    // re-tagged to the bare id. NaN-timed airings are dropped by programmeEl (§5).
-    const programmeEls: string[] = [];
-    if (keyToBare.size) {
-      const programs = await Program.find({ channelId: { $in: [...keyToBare.keys()] } })
-        .sort({ channelId: 1, start: 1 })
-        .lean<ProgramDoc[]>();
-      for (const p of programs) {
-        const bare = keyToBare.get(p.channelId);
-        if (!bare) continue;
-        const el = programmeEl(p, bare);
-        if (el) programmeEls.push(el);
-      }
-    }
-
-    const body = xmltvDocument(channelEls, programmeEls);
-    await withPathLock(disk, () => atomicWrite(disk, body));
+    const built = await buildGuideXml(channels, { sink: sources, servedPath });
+    await withPathLock(disk, () => atomicWrite(disk, built.xml));
 
     // Credit every source that contributed channels to this guide (the reinterpreted xml* run-stats).
     if (sources.size) {
@@ -92,7 +121,7 @@ export async function composeGuide(
         { $set: { lastXmlAt: new Date().toISOString() }, $inc: { xmlGeneratedCount: 1 } },
       );
     }
-    return { path: servedPath, channelCount: channelEls.length, programmeCount: programmeEls.length };
+    return { path: servedPath, channelCount: built.channelCount, programmeCount: built.programmeCount };
   } catch (err) {
     // Best-effort failure accounting for whatever sources we'd resolved before the throw.
     if (sources.size) {

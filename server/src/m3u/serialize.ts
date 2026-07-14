@@ -15,6 +15,23 @@ export function m3uHeader(guideUrl: string | null): string {
   return guideUrl ? `#EXTM3U x-tvg-url="${clean(guideUrl)}"` : '#EXTM3U';
 }
 
+// The DERIVED per-channel stream URL — the single source of truth for the /api/ext/v1 path, shared by the
+// M3U serializer (below) and the HDHomeRun lineup builder (routes/hdhrServe.ts) so a tuner's lineup can
+// never drift from the exported playlist. Returns null when the channel has no stream entry / provider.
+// Shape: <domain>/api/ext/v1/<origin ?? source>/<enc(streamEntryUrl)>?token=<streamToken>&pl=<source>.
+// `?token` is the owning user's streamToken (the proxy gate credential); `?pl` selects the per-playlist
+// videoconfig (app / app_<id>) — it is the channel's OWNING playlist id (ch.source), correct even in the
+// global union. The externalPlayer mount is LIVE (Rust sidecar) — these URLs resolve and stream.
+export function deriveStreamUrl(ch: PlaylistChannelDoc, domain: string, token?: string): string | null {
+  const streamSource = ch.origin ?? ch.source;
+  if (!ch.streamEntryUrl || !streamSource) return null;
+  const base = domain.replace(/\/+$/, '');
+  let url = `${base}/api/ext/v1/${streamSource}/${encodeURIComponent(ch.streamEntryUrl)}`;
+  if (token) url += `?token=${encodeURIComponent(token)}`;
+  url += `${url.includes('?') ? '&' : '?'}pl=${encodeURIComponent(ch.source)}`;
+  return url;
+}
+
 // One channel → its 2-line "#EXTINF:-1 …,<name>\n<url>" entry, or null when the channel can't be composed
 // (not Active, or no stream entry). `domain` is the absolute origin used to build the derived proxy URL.
 export function channelToExtinf(ch: PlaylistChannelDoc, domain: string, token?: string): string | null {
@@ -23,27 +40,13 @@ export function channelToExtinf(ch: PlaylistChannelDoc, domain: string, token?: 
   // Undefined-safe: pre-feature docs lack failoverRole entirely.
   if (ch.status !== 'Active' || ch.failoverRole === 'child') return null;
 
-  // §4 URL line — DERIVED, never stored. This M3U is consumed by EXTERNAL IPTV clients (TiviMate/Kodi/VLC/…).
-  // It targets the externalPlayer mount /api/ext/v1, which was REMOVED in the video-engine teardown — so these
-  // exported URLs do NOT resolve until a new playback engine is rebuilt (a deliberate "leave dead until rebuild"
-  // choice; the derivation is kept intact so the export files still generate with stable, rebuild-ready URLs).
-  // For dulo, streamEntryUrl is the `dulo://channel/<id>` sentinel; the proxy mints the real playbackUrl
-  // per play, so the m3u references the proxy path, never a resolved (expiring) upstream.
-  // The proxy source is the channel's PROVIDER: for a clone copy that's `origin` (the real adapter, e.g.
-  // "dulo") since its `source` is the clone id; for a source-playlist channel `origin` is null → use `source`.
-  const streamSource = ch.origin ?? ch.source;
-  if (!ch.streamEntryUrl || !streamSource) return null;
-  const base = domain.replace(/\/+$/, '');
-  let url = `${base}/api/ext/v1/${streamSource}/${encodeURIComponent(ch.streamEntryUrl)}`;
-  if (token) {
-    url += `?token=${encodeURIComponent(token)}`;
-  }
-  // §4b per-playlist videoconfig selector — the OWNING playlist id. `ch.source` IS the owning playlist in every
-  // compose case (a source playlist's channel has source===<id>; a clone copy stores source=<cloneId> with
-  // origin=provider), so it is correct even in the global/multi-playlist union. The /api/ext route reads ?pl to
-  // resolve this playlist's videoconfig (Default 'app' / Custom 'app_<id>') and key the engine; an old M3U
-  // without it falls back to the path :source. Independent of the path segment (origin ?? source) above.
-  url += `${url.includes('?') ? '&' : '?'}pl=${encodeURIComponent(ch.source)}`;
+  // §4 URL line — DERIVED, never stored (see deriveStreamUrl above for the full shape + rationale). This M3U
+  // is consumed by EXTERNAL IPTV clients (TiviMate/Kodi/VLC/…); it targets the LIVE externalPlayer mount
+  // /api/ext/v1 → streamGate → proxyRelay → Rust sidecar. For dulo, streamEntryUrl is the `dulo://channel/<id>`
+  // sentinel; the proxy mints the real playbackUrl per play, so the m3u references the proxy path, never a
+  // resolved (expiring) upstream.
+  const url = deriveStreamUrl(ch, domain, token);
+  if (url == null) return null;
 
   // §3 attribute mapping — order matches the SKILL §13 worked example. Each optional attr is OMITTED
   // (never fabricated) when its source field is null.

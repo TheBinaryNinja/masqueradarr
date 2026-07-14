@@ -117,6 +117,14 @@ export interface SourceAdapter {
    * the SPA hides the picker. Purely a capability flag; the resolution logic lives in the adapter.
    */
   playerSelectable?: boolean;
+  /**
+   * Opt-in: this adapter's upstreams may live on PRIVATE / LAN IP literals (a real HDHomeRun tuner on
+   * 192.168.x, a LAN box behind an imported `direct` .m3u). When true, the resolve seam sets the grant's
+   * `allowPrivate` so Rust's SSRF gate (ssrf_ok) permits private hosts on the hops for this source. The
+   * entry hop is always trusted/ungated, so a raw-TS device streams verbatim regardless; this flag matters
+   * for LAN HLS children. Absent/false ⇒ private targets are rejected (correct for public-CDN sources).
+   */
+  allowsPrivateUpstream?: boolean;
   /** Does this URL need server-side resolution before proxying? (dulo/common: false; dlhd: watch.php) */
   isEntryUrl(url: string): boolean;
   /**

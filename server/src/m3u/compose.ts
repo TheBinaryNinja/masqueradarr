@@ -1,10 +1,10 @@
 // M3U composition — turns the editable PlaylistChannel store into stream-ready EXTM3U files on disk.
 // DB-aware (reads Playlist + PlaylistChannel + Settings.domain) but source-AGNOSTIC: the URL line is
 // always the /api/ext/v1 path (serialize.ts builds it), so there is no per-source branching here (SKILL.md §6).
-// NOTE: that externalPlayer mount was removed in the video-engine teardown, so the exported URLs are dead until
-// a playback engine is rebuilt (the export files still generate — see serialize.ts §4). Two trigger
-// paths share this core: the manual button (POST /api/playlists/:id/compose) and the scheduled
-// `playlist-m3u` cron tick — both call composeM3u(). See .claude/skills/m3u/SKILL.md.
+// The externalPlayer mount is LIVE (the video engine was rebuilt as the Rust sidecar — index.ts mounts
+// /api/ext/v1 → streamGate → proxyRelay), so the exported URLs resolve and stream. Two trigger paths share
+// this core: the manual button (POST /api/playlists/:id/compose) and the scheduled `playlist-m3u` cron tick —
+// both call composeM3u(). See .claude/skills/m3u/SKILL.md.
 //
 // PER-USER ONLY: there is NO canonical playlist.m3u and NO canonical 1:1 Custom file. compose writes ONLY
 // per-user files — one per users-collection account WITH access (Global: scoped to allowedPlaylists;
@@ -39,8 +39,9 @@ export interface ComposeResult {
   bytes: number;
 }
 
-// The minimal lean Playlist shape this module reads.
-interface PlaylistLite {
+// The minimal lean Playlist shape this module reads. Exported so other compose surfaces (the HDHomeRun
+// lineup builder) can reuse playlistActiveChannels() with the same gating and never drift from the M3U.
+export interface PlaylistLite {
   id: string;
   url: string;
   endpoint?: string;
@@ -63,7 +64,7 @@ async function resolveDomain(): Promise<string> {
 // deliberately shows them. `$ne: 'child'` keeps ungrouped docs whether the field is null OR missing
 // entirely (pre-feature docs). composeGuide runs off this same returned set, so children drop from the
 // exported guide automatically.
-async function activeChannels(source: string): Promise<PlaylistChannelDoc[]> {
+export async function activeChannels(source: string): Promise<PlaylistChannelDoc[]> {
   return PlaylistChannel.find(
     { source, status: 'Active', failoverRole: { $ne: 'child' } },
     { _id: 0 },
@@ -80,7 +81,7 @@ async function activeChannels(source: string): Promise<PlaylistChannelDoc[]> {
 //      included (delegated to activeChannels()); a 'Disabled' channel is omitted.
 // channelSourceKey() resolves the PlaylistChannel `source` key (its id for a custom type, else its `source`);
 // a playlist with no usable key also yields [].
-async function playlistActiveChannels(playlist: PlaylistLite): Promise<PlaylistChannelDoc[]> {
+export async function playlistActiveChannels(playlist: PlaylistLite): Promise<PlaylistChannelDoc[]> {
   if (playlist.state === false) return []; // (1) Inactive playlist → exclude its entire channel set
   const key = channelSourceKey(playlist);
   if (!key) return [];

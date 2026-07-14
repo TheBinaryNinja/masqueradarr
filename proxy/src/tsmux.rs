@@ -322,9 +322,10 @@ async fn ts_producer(
                 Ok(u) => u,
                 Err(_) => continue,
             };
-            // Defense: never fetch a private/loopback host; grow the observational allowlist with the host.
+            // Defense: never fetch a private/loopback host UNLESS this source opted into private upstreams
+            // (a LAN HDHomeRun tuner / imported `direct` playlist); grow the observational allowlist with the host.
             if let Some(h) = seg_url.host_str() {
-                if is_private_host(h) {
+                if !ctx.policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
                     continue;
                 }
                 ctx.policy.hosts.write().unwrap().insert(h.to_lowercase());

@@ -11,6 +11,7 @@ import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
 import TagManager from '../components/TagManager.vue';
+import HDHomeRunPanel from '../components/HDHomeRunPanel.vue';
 import { type CronFrequency } from '../data';
 import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
@@ -28,7 +29,7 @@ const toast = useToast();
 // Settings is split into three tabs: General (General + Data), Video Config (Channel Probe Scheduler,
 // In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, DaddyLive Player Source,
 // Dulo.tv Authentication, Custom Tags).
-const activeTab = ref<'general' | 'video' | 'advanced'>('general');
+const activeTab = ref<'general' | 'video' | 'advanced' | 'hdhomerun'>('general');
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
 // the region prefix for the <optgroup>s. Falls back to a small common set on the rare runtime without the API.
@@ -339,7 +340,10 @@ async function fireReset() {
       { value: 'general', label: 'General' },
       { value: 'video', label: 'Video Config' },
       { value: 'advanced', label: 'Advanced' },
+      { value: 'hdhomerun', label: 'HDHomeRun' },
     ]" style="margin-bottom: 4px;" />
+
+    <HDHomeRunPanel v-if="activeTab === 'hdhomerun'" />
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">General</h3>

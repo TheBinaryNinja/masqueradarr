@@ -45,6 +45,9 @@ import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
 import { streamGate } from './middleware/streamGate.js';
 import { proxyRelay } from './proxy/relay.js';
+import { hdhomerunRouter } from './routes/hdhomerun.js';
+import { hdhrServeRouter } from './routes/hdhrServe.js';
+import { startHdhrDiscovery, stopHdhrDiscovery } from './hdhomerun/discovery.js';
 
 // Same-origin gate for the dulo login-stream WebSocket. Compares HOSTNAMES (ignoring port) so the Vite dev
 // proxy (localhost:5173 → localhost:3000) and the co-served prod SPA both pass, while a cross-site page is
@@ -186,7 +189,8 @@ async function main() {
     '/api/proxy-configs', // durable video-engine knobs — headerOverrides can hold an upstream secret, so ALL methods are admin-only
     '/api/sources',
     '/api/search', // global cross-resource search (topbar) — whole feature is admin-only
-    '/api/tags' // custom-tag registry (create/rename/delete) — admin-only management
+    '/api/tags', // custom-tag registry (create/rename/delete) — admin-only management
+    '/api/hdhomerun-tuners' // emulated HDHomeRun tuner CRUD — admin-only (the /hdhr serving surface is separate + token-free)
   ];
   for (const routePath of adminOnlyRoutes) {
     app.use(routePath, requireAdmin);
@@ -195,6 +199,7 @@ async function main() {
   app.use('/api/playlists', playlistsRouter);
   app.use('/api/search', searchRouter);
   app.use('/api/tags', tagsRouter);
+  app.use('/api/hdhomerun-tuners', hdhomerunRouter); // emulated HDHomeRun tuner management (admin)
   app.use('/api/epg-sources', epgSourcesRouter);
   app.use('/api/channels', channelsRouter);
   app.use('/api/active-streams', activeStreamsRouter);
@@ -224,6 +229,12 @@ async function main() {
   // Generic source API (manifest, status, sync/reset, provisioning, dulo auth) — mounted at root since its
   // paths span /api/sources.
   app.use(sourcesRouter);
+
+  // HDHomeRun emulation serving surface — discover.json/lineup.json/epg.xml a DVR app (Plex/Emby) fetches.
+  // Mounted at /hdhr OUTSIDE /api (so it skips the admin auth gate) and BEFORE the SPA static + catch-all
+  // (which would otherwise swallow /hdhr/*). Token-free: the tuner's unguessable :tunerId slug is the secret,
+  // and lineup.json's stream URLs carry the owner's streamToken for the proxy gate.
+  app.use('/hdhr', hdhrServeRouter);
 
   // composeDir holds the m3u exports (decoupled from the SPA's publicDir). Files are PER-USER ONLY
   // (<username>-<slug>.m3u) under _global/m3u/ (Global) and custom/<customPath>/ (Custom), plus the EPG
@@ -288,6 +299,13 @@ async function main() {
     } catch (err) {
       logger.error('startup', `proxy sidecar start error (continuing): ${(err as Error).message}`);
     }
+    // HDHomeRun UDP discovery responder (port 65001). Advertise the PUBLIC HTTP port (config.port) — in edge
+    // mode Rust owns it and reverse-proxies /hdhr to Node. Non-fatal: a bind failure only disables auto-discovery.
+    try {
+      startHdhrDiscovery(config.port);
+    } catch (err) {
+      logger.error('startup', `hdhr discovery start error (continuing): ${(err as Error).message}`);
+    }
   };
   // EDGE mode: bind loopback only — Rust is the public front door and proxies here. Sidecar mode: Node is the
   // public front door, so bind all interfaces (today's behavior).
@@ -334,6 +352,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     logger.info('shutdown', `received ${signal}`);
     await stopProxySidecar(); // stop the data plane first — halts byte-serving + drains in-flight streams
+    await stopHdhrDiscovery(); // release the UDP discovery socket
     await duloLoginBrowser.closeAll();
     closeAllStats();
     closeAllSystemStats();

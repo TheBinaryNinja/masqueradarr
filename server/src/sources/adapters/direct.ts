@@ -30,6 +30,12 @@ const directAdapter: SourceAdapter = {
   // Never surfaced (synthetic → omitted from the manifest), but the contract requires it.
   grouping: { by: 'groupKey', groupOrder: 'alpha', channelOrder: 'name' },
 
+  // Imported playlists commonly point at LAN devices (an HDHomeRun tuner, a local Channels/Plex/xTeVe box on
+  // 192.168/10.x), so private upstreams must be permitted — otherwise a LAN HLS import's private child-segment
+  // hops are rejected by Rust's ssrf_ok. Mirrors hdhomerun. (The entry itself is gated against known channels
+  // in the resolve seam, so this does not re-open the arbitrary-URL SSRF.)
+  allowsPrivateUpstream: true,
+
   // ── stream resolution: an .m3u8 entry is resolved per play (viewer telemetry); resolveStream is identity. ──
   isEntryUrl(url: string) {
     // An imported HLS playlist (.m3u8) is the channel ENTRY → route it through serveComposedMedia so it gets

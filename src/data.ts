@@ -792,6 +792,76 @@ export async function deleteTag(id: string): Promise<void> {
   );
 }
 
+// ── Emulated HDHomeRun tuners (Settings → HDHomeRun; server: HdhrTuner collection + /api/hdhomerun-tuners) ──
+// Not bootstrapped (only the Settings tab needs it) — the panel reloads on mount, like TagManager.
+export interface HdhrTuner {
+  id: string;
+  deviceId: string;
+  friendlyName: string;
+  tunerCount: number;
+  playlistId: string;
+  ownerUsername: string;
+  enabled: boolean;
+  playlistName: string | null;
+  createdAt?: string;
+  updatedAt?: string;
+}
+export interface TunerCreate {
+  friendlyName: string;
+  playlistId: string;
+  tunerCount?: number;
+  ownerUsername?: string;
+}
+export interface TunerPatch {
+  friendlyName?: string;
+  playlistId?: string;
+  tunerCount?: number;
+  ownerUsername?: string;
+  enabled?: boolean;
+  regenerateDeviceId?: boolean;
+}
+export const HDHOMERUN_TUNERS: Ref<HdhrTuner[]> = ref([]);
+
+export async function reloadTuners(): Promise<void> {
+  HDHOMERUN_TUNERS.value = await getJson<HdhrTuner[]>('/api/hdhomerun-tuners');
+}
+
+export async function createTuner(body: TunerCreate): Promise<HdhrTuner> {
+  const res = await fetch('/api/hdhomerun-tuners', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `create tuner failed: ${res.status}`);
+  }
+  const t = (await res.json()) as HdhrTuner;
+  HDHOMERUN_TUNERS.value = [t, ...HDHOMERUN_TUNERS.value];
+  return t;
+}
+
+export async function updateTuner(id: string, patch: TunerPatch): Promise<HdhrTuner> {
+  const res = await fetch(`/api/hdhomerun-tuners/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(patch),
+  });
+  if (!res.ok) {
+    const err = (await res.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(err?.error ?? `update tuner failed: ${res.status}`);
+  }
+  const t = (await res.json()) as HdhrTuner;
+  HDHOMERUN_TUNERS.value = HDHOMERUN_TUNERS.value.map((x) => (x.id === id ? t : x));
+  return t;
+}
+
+export async function deleteTuner(id: string): Promise<void> {
+  const res = await fetch(`/api/hdhomerun-tuners/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok && res.status !== 404) throw new Error(`delete tuner failed: ${res.status}`);
+  HDHOMERUN_TUNERS.value = HDHOMERUN_TUNERS.value.filter((t) => t.id !== id);
+}
+
 // Hard-delete channels (tombstoned server-side so a re-sync won't re-add them). Removes them from the global
 // CHANNELS union; the caller (detail screen) also patches its own local list. Returns the deleted count.
 export async function deleteChannels(playlistId: string, ids: string[]): Promise<number> {
