@@ -11,7 +11,7 @@ manage sources or settings — instead you get:
 - A list of the **channels** you've been granted.
 - Ready-to-use **integration URLs** — links you paste into an IPTV player (or open in a browser) to
   watch your channels.
-- A built-in **preview player** so you can check a channel right here, no external app required.
+- An in-app **Program Guide** so you can see what's on a channel right now and what's coming up next.
 
 ## How to start watching
 
@@ -20,8 +20,8 @@ manage sources or settings — instead you get:
    channel list) and **guide** link (the program data).
 3. **Copy the M3U URL** and paste it into your IPTV player of choice. The player loads your channel
    list automatically.
-4. To check a channel without leaving the app, click it in the **Available Channels** list — it plays
-   in the **preview** pane beside the list.
+4. To see what's on a channel without leaving the app, click it in the **Available Channels** list — its
+   **Program Guide** (now playing and up next) appears beside the list.
 
 ## About your access token
 

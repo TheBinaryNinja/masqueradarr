@@ -17,6 +17,7 @@ import epgSources from './epg-sources.md?raw';
 import channelMapping from './channel-mapping.md?raw';
 import users from './users.md?raw';
 import settings from './settings.md?raw';
+import customTags from './custom-tags.md?raw';
 
 // Who a section is for. 'all' shows to everyone; 'admin'/'user' gate by role so the TOC mirrors the
 // SPA's own role gating (standard users only reach the Dashboard).
@@ -50,6 +51,7 @@ export const DOC_SECTIONS: DocSection[] = [
   { id: 'channel-mapping', title: 'Channel Mapping', group: 'Screens', routeNames: ['mapping'], role: 'admin', body: channelMapping },
   { id: 'users', title: 'Users', group: 'Screens', routeNames: ['users'], role: 'admin', body: users },
   { id: 'settings', title: 'Settings', group: 'Screens', routeNames: ['settings'], role: 'admin', body: settings },
+  { id: 'custom-tags', title: 'Custom Tags', group: 'Screens', role: 'admin', body: customTags },
 ];
 
 /** TOC groups in display order. */

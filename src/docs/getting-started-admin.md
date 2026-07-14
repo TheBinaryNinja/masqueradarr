@@ -58,8 +58,8 @@ the usual cause is "this source hasn't been synced yet." Run a sync and the pane
 
 > **Tip:** The **View logs** button in the sidebar opens a live, filterable log of everything the
 > server is doing — invaluable while you're first wiring up sources. As an admin you also get a **search
-> box in the top bar** that looks across playlists, channels, and EPG sources and jumps you straight to a
-> match.
+> box in the top bar** that looks across playlists, channels, EPG sources, EPG channels, and even your
+> **tag** names, and jumps you straight to a match.
 
 Once channels are synced, you can file them into **groups** and give the important ones **failover
 backups** — see **Channels, Groups & Failover** for the full channel-editing workflow.
