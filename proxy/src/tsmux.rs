@@ -28,14 +28,9 @@ use tokio_stream::wrappers::ReceiverStream;
 use tokio_stream::StreamExt;
 use url::Url;
 
-// RustCrypto AES-128-CBC + PKCS7 — decrypt encrypted HLS (#EXT-X-KEY:METHOD=AES-128) segments before concat.
-use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
-
 use crate::log;
 use crate::proxy::{build_headers, failover_walk, fetch_with_retry, is_private_host, WalkOutcome, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, SourcePolicy};
-
-type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
 /// Everything the TS producer needs to follow a stream + attribute its telemetry. Cloned out of the proxy
 /// handler at hand-off (the handler returns immediately; the producer runs detached).
@@ -53,31 +48,18 @@ pub struct TsContext {
     pub username: Option<String>,
 }
 
-/// The #EXT-X-KEY active for a segment. A KEY applies to every following segment until the next KEY
-/// (METHOD=NONE clears it), so it is tracked POSITIONALLY during parse. We only decrypt AES-128; other
-/// methods are still carried so the producer can drop+warn on a mid-stream rotation, but try_ts_response's
-/// entry guard already bails such a playlist to the HLS rewrite before the producer starts.
-#[derive(Clone, Debug, PartialEq)]
-struct SegKey {
-    method: String,       // uppercased, e.g. "AES-128"
-    uri: String,          // key URI, resolved against the media-playlist URL at fetch time
-    iv: Option<[u8; 16]>, // explicit IV=0x…; None ⇒ derive from the segment's media-sequence number
-}
-
 struct MediaPlaylist {
     media_sequence: i64,  // #EXT-X-MEDIA-SEQUENCE (the sequence number of the first listed segment; default 0)
     target_duration: f64, // #EXT-X-TARGETDURATION (seconds; 0 when absent → a default poll cadence)
     endlist: bool,        // #EXT-X-ENDLIST → the playlist is complete (VOD / finished event)
-    // (segment URI, active #EXT-X-KEY) in order (index i ⇒ sequence media_sequence + i); key None ⇒ cleartext.
-    segments: Vec<(String, Option<SegKey>)>,
+    segments: Vec<String>, // bare segment URIs, in order (index i ⇒ sequence media_sequence + i)
 }
 
 fn parse_media_playlist(body: &str) -> MediaPlaylist {
     let mut media_sequence = 0i64;
     let mut target_duration = 0f64;
     let mut endlist = false;
-    let mut segments: Vec<(String, Option<SegKey>)> = Vec::new();
-    let mut active_key: Option<SegKey> = None;
+    let mut segments: Vec<String> = Vec::new();
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
@@ -89,10 +71,8 @@ fn parse_media_playlist(body: &str) -> MediaPlaylist {
             target_duration = v.trim().parse().unwrap_or(0.0);
         } else if line.starts_with("#EXT-X-ENDLIST") {
             endlist = true;
-        } else if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
-            active_key = parse_key(attrs); // METHOD=NONE / unparseable ⇒ None ⇒ following segments are cleartext
         } else if !line.starts_with('#') {
-            segments.push((line.to_string(), active_key.clone()));
+            segments.push(line.to_string());
         }
     }
     MediaPlaylist {
@@ -101,68 +81,6 @@ fn parse_media_playlist(body: &str) -> MediaPlaylist {
         endlist,
         segments,
     }
-}
-
-/// Split an HLS attribute list `KEY=VALUE,KEY=VALUE` into (key, value) pairs, treating commas INSIDE a
-/// double-quoted value as literal (an `URI="…?a=1,b=2…"` must not split). Values keep their surrounding
-/// quotes; callers strip them where appropriate.
-fn split_attrs(s: &str) -> Vec<(String, String)> {
-    let mut out: Vec<(String, String)> = Vec::new();
-    let mut in_quotes = false;
-    let mut cur = String::new();
-    for c in s.chars() {
-        match c {
-            '"' => {
-                in_quotes = !in_quotes;
-                cur.push(c);
-            }
-            ',' if !in_quotes => {
-                push_attr(&mut out, &cur);
-                cur.clear();
-            }
-            _ => cur.push(c),
-        }
-    }
-    push_attr(&mut out, &cur);
-    out
-}
-
-fn push_attr(out: &mut Vec<(String, String)>, seg: &str) {
-    let seg = seg.trim();
-    if let Some(eq) = seg.find('=') {
-        out.push((seg[..eq].trim().to_string(), seg[eq + 1..].trim().to_string()));
-    }
-}
-
-/// Parse a #EXT-X-KEY attribute list. None for METHOD=NONE / missing method (⇒ cleartext).
-fn parse_key(attrs: &str) -> Option<SegKey> {
-    let mut method = String::new();
-    let mut uri = String::new();
-    let mut iv: Option<[u8; 16]> = None;
-    for (k, v) in split_attrs(attrs) {
-        match k.to_ascii_uppercase().as_str() {
-            "METHOD" => method = v.to_ascii_uppercase(),
-            "URI" => uri = v.trim_matches('"').to_string(),
-            "IV" => iv = parse_iv(&v),
-            _ => {}
-        }
-    }
-    if method.is_empty() || method == "NONE" {
-        return None;
-    }
-    Some(SegKey { method, uri, iv })
-}
-
-/// Parse an HLS IV attribute — a `0x`-prefixed 32-hex-digit (16-byte) value — into bytes.
-fn parse_iv(v: &str) -> Option<[u8; 16]> {
-    let h = v.trim().trim_start_matches("0x").trim_start_matches("0X");
-    let bytes = hex::decode(h).ok()?;
-    if bytes.len() != 16 {
-        return None;
-    }
-    let mut iv = [0u8; 16];
-    iv.copy_from_slice(&bytes);
-    Some(iv)
 }
 
 /// A MASTER playlist (variant selection needed) vs. a MEDIA playlist (segments directly).
@@ -175,35 +93,12 @@ fn has_map(body: &str) -> bool {
     body.split('\n').any(|l| l.trim_start().starts_with("#EXT-X-MAP"))
 }
 
-/// The FIRST #EXT-X-KEY method we CAN'T handle server-side, if any ⇒ bail to the HLS rewrite. We decrypt
-/// full-segment AES-128 (see the producer); METHOD=NONE and AES-128 are handleable, everything else
-/// (SAMPLE-AES/FairPlay, …) is not. Returns the offending method for a specific fallback log.
-fn unsupported_encryption(body: &str) -> Option<String> {
-    for l in body.split('\n') {
-        if let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-KEY:") {
-            let method = split_attrs(attrs)
-                .into_iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("METHOD"))
-                .map(|(_, v)| v.trim().trim_matches('"').to_ascii_uppercase())
-                .unwrap_or_default();
-            if !method.is_empty() && method != "NONE" && method != "AES-128" {
-                return Some(method);
-            }
-        }
-    }
-    None
-}
-
-/// AES-128-CBC + PKCS7 decrypt one whole HLS segment. None on a bad length / padding ⇒ the caller drops the
-/// segment (all-or-nothing: a valid TS packet stream can't be reconstructed from a partial/garbled decrypt).
-fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
-    if ct.is_empty() || ct.len() % 16 != 0 {
-        return None;
-    }
-    Aes128CbcDec::new_from_slices(key, iv)
-        .ok()?
-        .decrypt_padded_vec_mut::<Pkcs7>(ct)
-        .ok()
+/// `#EXT-X-KEY` with a non-NONE METHOD ⇒ AES-encrypted segments we can't concatenate (no server-side decrypt).
+fn is_encrypted(body: &str) -> bool {
+    body.split('\n').any(|l| {
+        let t = l.trim_start();
+        t.starts_with("#EXT-X-KEY") && !t.to_ascii_uppercase().contains("METHOD=NONE")
+    })
 }
 
 /// The highest-BANDWIDTH variant's URI (the STREAM-INF URI is the next non-comment line), resolved absolute.
@@ -270,20 +165,8 @@ pub async fn try_ts_response(
     } else {
         (first_url, first_body)
     };
-    // Bail to the HLS rewrite for anything the raw-TS producer can't serve, and WARN specifically so an
-    // operator can see which tuner channels silently fall back (and therefore won't play in a TS-only DVR):
-    // fMP4 (#EXT-X-MAP) and unsupported encryption (SAMPLE-AES/FairPlay). AES-128 is now handled (decrypted).
-    if has_map(&media_body) {
-        log::warn("tsmux", &ctx.rid, || {
-            format!("raw-TS not eligible for {}/{}: fMP4 (#EXT-X-MAP) — falling back to HLS rewrite", ctx.source, ctx.entry)
-        });
-        return None;
-    }
-    if let Some(method) = unsupported_encryption(&media_body) {
-        log::warn("tsmux", &ctx.rid, || {
-            format!("raw-TS not eligible for {}/{}: unsupported encryption METHOD={method} — falling back to HLS rewrite", ctx.source, ctx.entry)
-        });
-        return None;
+    if has_map(&media_body) || is_encrypted(&media_body) {
+        return None; // fMP4 or AES → not raw-TS-concat-safe; fall back to the HLS rewrite
     }
 
     let (tx, rx) = mpsc::channel::<Result<Bytes, io::Error>>(crate::stream::channel_capacity(buffer_size_kb));
@@ -379,10 +262,6 @@ async fn ts_producer(
     let mut pending_bytes: u64 = 0;
     let mut last_flush = Instant::now();
     let mut first = true;
-    // AES-128 key cache — HLS keys are stable across the live window, so fetch once per rotation (keyed by URI),
-    // not per segment.
-    let mut last_key_uri: Option<String> = None;
-    let mut last_key: Option<[u8; 16]> = None;
 
     'outer: loop {
         // Refresh the media playlist each cycle (except the first — we already have it from try_ts_response).
@@ -433,7 +312,7 @@ async fn ts_producer(
             next_seq = mp.media_sequence; // first poll: begin at the head of the window
         }
 
-        for (i, (uri, seg_key)) in mp.segments.iter().enumerate() {
+        for (i, uri) in mp.segments.iter().enumerate() {
             let seq = mp.media_sequence + i as i64;
             if seq < next_seq {
                 continue; // already served
@@ -451,138 +330,29 @@ async fn ts_producer(
                 }
                 ctx.policy.hosts.write().unwrap().insert(h.to_lowercase());
             }
-
-            // Resolve AES-128 key material for this segment (None ⇒ cleartext passthrough). Fetches + caches the
-            // 16-byte key by URI, applies the SAME private-host SSRF guard + allowlist grow as segments, and
-            // derives the IV (explicit IV=, else the segment media-sequence number). A key we can't fetch/resolve
-            // — or an unsupported method appearing mid-stream — drops just this segment (a gap), not the stream.
-            let key_material: Option<([u8; 16], [u8; 16])> = match seg_key {
-                None => None,
-                Some(k) if k.method == "AES-128" => {
-                    let key_url = match media_url.join(&k.uri) {
-                        Ok(u) => u,
-                        Err(_) => {
-                            log::warn("tsmux", &ctx.rid, || format!("bad AES key URI '{}' — dropping segment seq={seq}", k.uri));
-                            continue;
-                        }
-                    };
-                    if let Some(h) = key_url.host_str() {
-                        if !ctx.policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
-                            log::warn("tsmux", &ctx.rid, || format!("AES key host {h} private/blocked — dropping segment seq={seq}"));
-                            continue;
-                        }
-                        ctx.policy.hosts.write().unwrap().insert(h.to_lowercase());
-                    }
-                    let key = if last_key_uri.as_deref() == Some(key_url.as_str()) {
-                        last_key.expect("last_key is set whenever last_key_uri is")
-                    } else {
-                        match fetch_with_retry(&ctx.client, key_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-key", MAX_UPSTREAM_RETRIES)
-                            .await
-                        {
-                            Ok(resp) if resp.status().is_success() => match resp.bytes().await {
-                                Ok(b) if b.len() == 16 => {
-                                    let mut kb = [0u8; 16];
-                                    kb.copy_from_slice(&b);
-                                    last_key_uri = Some(key_url.as_str().to_string());
-                                    last_key = Some(kb);
-                                    kb
-                                }
-                                Ok(b) => {
-                                    log::warn("tsmux", &ctx.rid, || format!("AES key wrong size {} (want 16) — dropping segment seq={seq}", b.len()));
-                                    continue;
-                                }
-                                Err(_) => {
-                                    log::warn("tsmux", &ctx.rid, || format!("AES key body read failed — dropping segment seq={seq}"));
-                                    continue;
-                                }
-                            },
-                            _ => {
-                                log::warn("tsmux", &ctx.rid, || format!("AES key fetch failed — gap (dropping segment seq={seq})"));
-                                ctx.state.report(serde_json::json!({
-                                    "kind": "upstream", "ok": false, "status": 0, "source": ctx.source, "entryUrl": ctx.entry,
-                                }));
-                                continue;
-                            }
-                        }
-                    };
-                    let iv = k.iv.unwrap_or_else(|| {
-                        let mut iv = [0u8; 16];
-                        iv[8..].copy_from_slice(&(seq as u64).to_be_bytes());
-                        iv
-                    });
-                    Some((key, iv))
-                }
-                Some(k) => {
-                    // Mid-stream rotation to a method we don't handle (the entry guard only saw the first poll).
-                    log::warn("tsmux", &ctx.rid, || format!("unsupported mid-stream encryption METHOD={} — dropping segment seq={seq}", k.method));
-                    continue;
-                }
-            };
-
             log::trace("tsmux", &ctx.rid, || format!("TS segment seq={seq} → {}", crate::proxy::host_of(seg_url.as_str())));
             match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-segment", MAX_UPSTREAM_RETRIES)
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
                     let mut s = Box::pin(resp.bytes_stream());
-                    match key_material {
-                        // CLEARTEXT: stream chunk-by-chunk, partial-tolerant (unchanged — no buffering).
-                        None => loop {
-                            let chunk = match idle {
-                                Some(d) => match tokio::time::timeout(d, s.next()).await {
-                                    Ok(x) => x,
-                                    Err(_) => break, // segment stalled — truncate + move on (partial tolerance)
-                                },
-                                None => s.next().await,
-                            };
-                            match chunk {
-                                Some(Ok(b)) => {
-                                    pending_bytes += b.len() as u64;
-                                    if tx.send(Ok(b)).await.is_err() {
-                                        break 'outer; // client disconnected — tear down (close reported below)
-                                    }
-                                }
-                                Some(Err(_)) => break, // truncated segment — tolerate, continue with the next
-                                None => break,          // segment complete
-                            }
-                        },
-                        // ENCRYPTED: buffer the WHOLE ciphertext, then AES-128-CBC decrypt and send ONCE. All-or-
-                        // nothing — a truncated ciphertext can't be validly CBC-decrypted, so a stall/error drops it.
-                        Some((key, iv)) => {
-                            let mut cipher_buf: Vec<u8> = Vec::new();
-                            let mut complete = false;
-                            loop {
-                                let chunk = match idle {
-                                    Some(d) => match tokio::time::timeout(d, s.next()).await {
-                                        Ok(x) => x,
-                                        Err(_) => break, // stalled → incomplete → dropped below
-                                    },
-                                    None => s.next().await,
-                                };
-                                match chunk {
-                                    Some(Ok(b)) => cipher_buf.extend_from_slice(&b),
-                                    Some(Err(_)) => break, // truncated → incomplete → dropped below
-                                    None => {
-                                        complete = true;
-                                        break;
-                                    }
+                    loop {
+                        let chunk = match idle {
+                            Some(d) => match tokio::time::timeout(d, s.next()).await {
+                                Ok(x) => x,
+                                Err(_) => break, // segment stalled — truncate + move on (partial tolerance)
+                            },
+                            None => s.next().await,
+                        };
+                        match chunk {
+                            Some(Ok(b)) => {
+                                pending_bytes += b.len() as u64;
+                                if tx.send(Ok(b)).await.is_err() {
+                                    break 'outer; // client disconnected — tear down (close reported below)
                                 }
                             }
-                            if !complete {
-                                log::warn("tsmux", &ctx.rid, || format!("encrypted segment seq={seq} truncated ({} bytes) — dropping", cipher_buf.len()));
-                                continue;
-                            }
-                            match decrypt_aes128_cbc(&key, &iv, &cipher_buf) {
-                                Some(plain) => {
-                                    pending_bytes += plain.len() as u64;
-                                    if tx.send(Ok(Bytes::from(plain))).await.is_err() {
-                                        break 'outer; // client disconnected — tear down
-                                    }
-                                }
-                                None => {
-                                    log::warn("tsmux", &ctx.rid, || format!("AES-128 decrypt failed for segment seq={seq} ({} bytes) — dropping", cipher_buf.len()));
-                                }
-                            }
+                            Some(Err(_)) => break, // truncated segment — tolerate, continue with the next
+                            None => break,          // segment complete
                         }
                     }
                 }
@@ -634,10 +404,7 @@ mod tests {
         assert_eq!(mp.media_sequence, 42);
         assert_eq!(mp.target_duration, 6.0);
         assert!(!mp.endlist);
-        assert_eq!(
-            mp.segments,
-            vec![("seg42.ts".to_string(), None), ("seg43.ts".to_string(), None)]
-        );
+        assert_eq!(mp.segments, vec!["seg42.ts".to_string(), "seg43.ts".to_string()]);
     }
 
     #[test]
@@ -658,69 +425,11 @@ mod tests {
     }
 
     #[test]
-    fn guards_fmp4_and_unsupported_encryption() {
+    fn guards_fmp4_and_aes() {
         assert!(has_map("#EXTM3U\n#EXT-X-MAP:URI=\"init.mp4\"\n#EXTINF:6,\ns.m4s\n"));
-        // AES-128 is now HANDLED (decrypted server-side) → NOT unsupported.
-        assert_eq!(
-            unsupported_encryption("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:6,\ns.ts\n"),
-            None
-        );
-        // SAMPLE-AES (FairPlay) is unsupported → bail, surfacing the method for the operator warn log.
-        assert_eq!(
-            unsupported_encryption("#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"skd://x\"\n#EXTINF:6,\ns.ts\n"),
-            Some("SAMPLE-AES".to_string())
-        );
-        assert_eq!(unsupported_encryption("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6,\ns.ts\n"), None);
-        assert_eq!(unsupported_encryption("#EXTM3U\n#EXTINF:6,\ns.ts\n"), None);
-    }
-
-    #[test]
-    fn parses_ext_x_key_positionally() {
-        // A KEY applies to following segments until the next KEY; METHOD=NONE clears it. The URI carries commas
-        // inside quotes (must not split); IV is optional.
-        let m = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:5\n\
-                 #EXT-X-KEY:METHOD=AES-128,URI=\"https://k.example/key?a=1,b=2\",IV=0x000102030405060708090A0B0C0D0E0F\n\
-                 #EXTINF:6,\nenc1.ts\n\
-                 #EXTINF:6,\nenc2.ts\n\
-                 #EXT-X-KEY:METHOD=NONE\n\
-                 #EXTINF:6,\nclear.ts\n";
-        let mp = parse_media_playlist(m);
-        let enc = SegKey {
-            method: "AES-128".to_string(),
-            uri: "https://k.example/key?a=1,b=2".to_string(),
-            iv: Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
-        };
-        assert_eq!(mp.segments[0], ("enc1.ts".to_string(), Some(enc.clone())));
-        assert_eq!(mp.segments[1], ("enc2.ts".to_string(), Some(enc)));
-        assert_eq!(mp.segments[2], ("clear.ts".to_string(), None)); // cleared by METHOD=NONE
-    }
-
-    #[test]
-    fn parses_iv_hex() {
-        assert_eq!(
-            parse_iv("0x000102030405060708090a0b0c0d0e0f"),
-            Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15])
-        );
-        assert_eq!(parse_iv("0xdeadbeef"), None); // wrong length
-        assert_eq!(parse_iv("nothex!!"), None);
-    }
-
-    #[test]
-    fn aes128_cbc_pkcs7_known_answer() {
-        // Vector generated INDEPENDENTLY with openssl (not the aes/cbc crate):
-        //   printf 'hello-masqueradarr-tsmux!' | openssl enc -aes-128-cbc -K 000102…0f -iv 101112…1f
-        let key: [u8; 16] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15];
-        let iv: [u8; 16] = [16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31];
-        let ct = hex::decode("a44d1e384e0f018cd0a53592855da68441d5b954126f3929ff396a1e7eb9f207").unwrap();
-        let pt = decrypt_aes128_cbc(&key, &iv, &ct).expect("decrypt should succeed");
-        assert_eq!(pt, b"hello-masqueradarr-tsmux!");
-    }
-
-    #[test]
-    fn decrypt_rejects_bad_length() {
-        let (key, iv) = ([0u8; 16], [0u8; 16]);
-        assert!(decrypt_aes128_cbc(&key, &iv, &[]).is_none()); // empty
-        assert!(decrypt_aes128_cbc(&key, &iv, &[0u8; 17]).is_none()); // not a 16-byte multiple
+        assert!(is_encrypted("#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k\"\n#EXTINF:6,\ns.ts\n"));
+        assert!(!is_encrypted("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6,\ns.ts\n"));
+        assert!(!is_encrypted("#EXTM3U\n#EXTINF:6,\ns.ts\n"));
     }
 
     #[test]

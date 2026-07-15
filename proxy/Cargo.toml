@@ -36,13 +36,6 @@ url = "2"
 percent-encoding = "2"
 # Name the byte-buffer type for the RSL segment pump channel (already in the tree via axum/reqwest).
 bytes = "1"
-# AES-128-CBC decryption of encrypted HLS (#EXT-X-KEY:METHOD=AES-128) so the DST raw-TS producer can decrypt
-# each segment server-side and concatenate it into the continuous video/mp2t stream (e.g. Pluto's ts_aes
-# channels). Pure-Rust RustCrypto — no system OpenSSL, matching the reqwest rustls choice above; `aes` uses
-# hardware AES-NI where present. `cbc` needs `alloc` for decrypt_padded_vec_mut; `hex` parses the KEY IV=0x… .
-aes = "0.8"
-cbc = { version = "0.1", features = ["alloc"] }
-hex = "0.4"
 
 # A lean, durable release binary (this runs 24/7 on modest hardware — a Pi / small VPS).
 [profile.release]
