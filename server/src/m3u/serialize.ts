@@ -32,6 +32,24 @@ export function deriveStreamUrl(ch: PlaylistChannelDoc, domain: string, token?: 
   return url;
 }
 
+// The DERIVED per-channel TUNER stream URL — the HDHomeRun-tuner sibling of deriveStreamUrl. A wired tuner's
+// lineup.json points Plex/Emby at this dedicated /hdhr/<tunerId>/stream/… route (served by the Node ffmpeg
+// copy-remux engine, a continuous video/mp2t) INSTEAD of the shared /api/ext/v1 mount — so the tuner's video
+// path is fully separate from the production Rust data plane. Returns null when the channel has no stream
+// entry / provider. Shape: <domain>/hdhr/<tunerId>/stream/<origin ?? source>/<enc(streamEntryUrl)>?pl=<source>.
+// NO ?token: the tuner's unguessable :tunerId slug is the access secret (same posture as discover/lineup),
+// and the /stream route re-checks the owner's stream access server-side. `?pl` is the channel's OWNING
+// playlist id (ch.source) — the /stream route threads it into buildGrant for proxyConfig + failover lookup.
+export function deriveTunerStreamUrl(ch: PlaylistChannelDoc, domain: string, tunerId: string): string | null {
+  const streamSource = ch.origin ?? ch.source;
+  if (!ch.streamEntryUrl || !streamSource) return null;
+  const base = domain.replace(/\/+$/, '');
+  return (
+    `${base}/hdhr/${encodeURIComponent(tunerId)}/stream/${streamSource}/${encodeURIComponent(ch.streamEntryUrl)}` +
+    `?pl=${encodeURIComponent(ch.source)}`
+  );
+}
+
 // One channel → its 2-line "#EXTINF:-1 …,<name>\n<url>" entry, or null when the channel can't be composed
 // (not Active, or no stream entry). `domain` is the absolute origin used to build the derived proxy URL.
 export function channelToExtinf(ch: PlaylistChannelDoc, domain: string, token?: string): string | null {

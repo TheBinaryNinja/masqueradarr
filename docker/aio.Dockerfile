@@ -104,11 +104,13 @@ ARG TARGETARCH
 # App runtime deps (MIRROR app.Dockerfile): tini (PID 1, forwards SIGTERM to graceful shutdown), ca-certificates,
 # xvfb (virtual X server for the dulo streamed-login browser, which runs HEADFUL — aio-entrypoint.sh starts Xvfb
 # on DISPLAY=:99 before node), and chromium + fonts-liberation (the distro browser puppeteer-core drives for the
-# dulo login, executablePath=CHROMIUM_PATH=/usr/bin/chromium). (Video-engine teardown: ffmpeg/ffprobe + the
-# jellyfin-ffmpeg overlay + all GPU-hwaccel deps — NVIDIA_DRIVER_CAPABILITIES, libva2/va-driver-all/vainfo,
-# intel-gpu-tools, radeontop — were removed. No video is served until a new playback engine is rebuilt.)
+# dulo login, executablePath=CHROMIUM_PATH=/usr/bin/chromium). ffmpeg (MIRROR app.Dockerfile) = the
+# HDHomeRun tuner's copy-remux engine (server hdhomerun/tunerEngine.ts): a per-connection
+# `ffmpeg -c copy -f mpegts` serving continuous video/mp2t to Plex/Emby. Bare apt ffmpeg only (ffprobe ships
+# with it) — the jellyfin-ffmpeg overlay + all GPU-hwaccel deps (NVIDIA_DRIVER_CAPABILITIES,
+# libva2/va-driver-all/vainfo, intel-gpu-tools, radeontop) stay removed; copy-remux needs no transcode/GPU.
 RUN apt-get update \
- && apt-get install -y --no-install-recommends tini ca-certificates xvfb chromium fonts-liberation \
+ && apt-get install -y --no-install-recommends tini ffmpeg ca-certificates xvfb chromium fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 

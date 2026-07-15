@@ -10,11 +10,15 @@
 import { Router, type Request } from 'express';
 import { HdhrTuner, type HdhrTunerDoc } from '../models/HdhrTuner.js';
 import { Playlist } from '../models/Playlist.js';
-import { User } from '../models/User.js';
+import { User, type UserDoc } from '../models/User.js';
 import { playlistActiveChannels, type PlaylistLite } from '../m3u/compose.js';
-import { deriveStreamUrl, channelToExtinf, m3uHeader } from '../m3u/serialize.js';
+import { deriveStreamUrl, deriveTunerStreamUrl, channelToExtinf, m3uHeader } from '../m3u/serialize.js';
 import { buildGuideXml } from '../epg/composeGuide.js';
 import { deviceIdToNumber } from '../hdhomerun/deviceId.js';
+import { buildGrant } from '../proxy/resolveSeam.js';
+import { gateStreamAccess } from '../middleware/streamGate.js';
+import { isPrivateHost } from '../sources/core/ssrf.js';
+import { serveTunerStream, activeStreamCount } from '../hdhomerun/tunerEngine.js';
 
 export const hdhrServeRouter = Router();
 
@@ -44,6 +48,14 @@ async function wiredPlaylist(playlistId: string): Promise<PlaylistLite | null> {
 async function ownerStreamToken(username: string): Promise<string | undefined> {
   const owner = await User.findOne({ username }, { _id: 0, streamToken: 1 }).lean<{ streamToken?: string }>();
   return owner?.streamToken;
+}
+
+// The tuner owner as the user object the stream-access ladder reads (role / streamTokenEnabled /
+// allowedPlaylists). The token-free /stream route uses this to re-check the owner still has access to the
+// source — defense-in-depth on top of the unguessable :tunerId slug (a revoked owner can't stream).
+async function ownerGateUser(username: string): Promise<(UserDoc & { _id: unknown }) | undefined> {
+  const owner = await User.findOne({ username });
+  return owner ?? undefined;
 }
 
 function xmlEscape(s: string): string {
@@ -100,7 +112,6 @@ hdhrServeRouter.get('/:tunerId/lineup.json', async (req, res, next) => {
     if (!t) return res.status(404).json({ error: 'not_found' });
     const pl = await wiredPlaylist(t.playlistId);
     if (!pl) return res.json([]); // wired playlist vanished → empty lineup (don't 500)
-    const token = await ownerStreamToken(t.ownerUsername);
     const base = requestBase(req);
     const channels = await playlistActiveChannels(pl);
     // GuideNumber must be UNIQUE (DVR apps key channels by it and silently drop duplicates) and STABLE across
@@ -114,7 +125,8 @@ hdhrServeRouter.get('/:tunerId/lineup.json', async (req, res, next) => {
     const used = new Set<string>();
     const lineup: Array<{ GuideNumber: string; GuideName: string; URL: string; HD: number; DRM: number }> = [];
     for (const ch of channels) {
-      const url = deriveStreamUrl(ch, base, token);
+      // Point Plex/Emby at the DEDICATED tuner ffmpeg-TS route (not /api/ext/v1) — token-free, slug-gated.
+      const url = deriveTunerStreamUrl(ch, base, t.id);
       if (!url) continue;
       const explicit = ch.channelNo?.trim();
       const guide = explicit && !used.has(explicit) ? explicit : fallbackGuideNumber(ch.streamEntryUrl, used, reserved);
@@ -168,6 +180,64 @@ hdhrServeRouter.get('/:tunerId/lineup.m3u', async (req, res, next) => {
       if (line) lines.push(line);
     }
     res.type('audio/x-mpegurl').send(`${lines.join('\n')}\n`);
+  } catch (err) {
+    next(err);
+  }
+});
+
+// GET /:tunerId/stream/:source/:entry — the DEDICATED tuner video route (Path B). A per-connection ffmpeg
+// copy-remux (hdhomerun/tunerEngine.ts) streams a continuous video/mp2t straight to Plex/Emby, fully separate
+// from /api/ext/v1 + the Rust data plane. Token-free (the :tunerId slug is the secret); the owner's stream
+// access is re-checked here, then buildGrant resolves the upstream master + headers the engine feeds ffmpeg.
+hdhrServeRouter.get('/:tunerId/stream/:source/:entry', async (req, res, next) => {
+  try {
+    const t = await getEnabledTuner(req.params.tunerId);
+    if (!t) return res.status(404).type('text/plain').send('not found');
+
+    const source = req.params.source;
+    // Auth: the owner must still have stream access to this source (plain-text deny so a player surfaces it).
+    const owner = await ownerGateUser(t.ownerUsername);
+    const decision = gateStreamAccess(owner, source);
+    if (!decision.ok) return res.status(decision.status!).type('text/plain').send(decision.message!);
+
+    // Per-tuner concurrency cap — Plex self-limits to TunerCount, but guard against runaway ffmpeg.
+    if (activeStreamCount(t.id) >= t.tunerCount) {
+      return res.status(503).type('text/plain').send('all tuners busy');
+    }
+
+    // Express decodes the :entry param once, so it equals the stored streamEntryUrl (single-encoded by
+    // deriveTunerStreamUrl). buildGrant's PlaylistChannel.exists gate rejects anything not a stored entry.
+    const entryUrl = req.params.entry;
+    const pl = typeof req.query.pl === 'string' ? req.query.pl : undefined;
+
+    const grant = await buildGrant(source, entryUrl, pl, 0);
+    if (!grant.ok) return res.status(grant.status).type('text/plain').send(grant.error);
+
+    // SSRF: ffmpeg fetches grant.target directly (no Rust host gate), so block a private/loopback target
+    // unless the adapter opts into private upstreams (grant.allowPrivate).
+    let host = '';
+    try {
+      host = new URL(grant.target).hostname;
+    } catch {
+      /* malformed target → blocked below */
+    }
+    if (!grant.allowPrivate && (!host || isPrivateHost(host))) {
+      return res.status(403).type('text/plain').send('forbidden upstream');
+    }
+
+    await serveTunerStream({
+      res,
+      tunerId: t.id,
+      source,
+      entryUrl,
+      pl,
+      grant,
+      viewer: {
+        ip: req.ip || '',
+        ua: (req.headers['user-agent'] as string) || '',
+        username: t.ownerUsername,
+      },
+    });
   } catch (err) {
     next(err);
   }

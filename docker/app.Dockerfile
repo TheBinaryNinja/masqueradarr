@@ -100,12 +100,13 @@ ARG TARGETARCH
 # (executablePath=CHROMIUM_PATH=/usr/bin/chromium); nss/freetype/harfbuzz arrive transitively with chromium.
 # xvfb = virtual framebuffer / X server for that browser, which runs HEADFUL (Google's "Continue with Google"
 # gate blocks headless). app-entrypoint.sh starts Xvfb on DISPLAY=:99 before node.
-# (Video-engine teardown: ffmpeg/ffprobe + the jellyfin-ffmpeg overlay + all GPU-hwaccel deps —
-# NVIDIA_DRIVER_CAPABILITIES, libva2/va-driver-all/vainfo, intel-gpu-tools, radeontop — were removed. No video
-# is served until a new playback engine is rebuilt.)
+# ffmpeg = the HDHomeRun tuner's copy-remux engine (server hdhomerun/tunerEngine.ts): a per-connection
+# `ffmpeg -c copy -f mpegts` that serves continuous video/mp2t to Plex/Emby. Bare apt ffmpeg only (ffprobe
+# ships with it) — the jellyfin-ffmpeg overlay + all GPU-hwaccel deps (NVIDIA_DRIVER_CAPABILITIES,
+# libva2/va-driver-all/vainfo, intel-gpu-tools, radeontop) stay removed; copy-remux needs no transcode/GPU.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
-      tini ca-certificates xvfb chromium fonts-liberation \
+      tini ffmpeg ca-certificates xvfb chromium fonts-liberation \
  && rm -rf /var/lib/apt/lists/* \
  && mkdir -p /tmp/.X11-unix && chmod 1777 /tmp/.X11-unix
 

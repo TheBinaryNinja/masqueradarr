@@ -48,6 +48,7 @@ import { proxyRelay } from './proxy/relay.js';
 import { hdhomerunRouter } from './routes/hdhomerun.js';
 import { hdhrServeRouter } from './routes/hdhrServe.js';
 import { startHdhrDiscovery, stopHdhrDiscovery } from './hdhomerun/discovery.js';
+import { shutdownTunerEngine } from './hdhomerun/tunerEngine.js';
 
 // Same-origin gate for the dulo login-stream WebSocket. Compares HOSTNAMES (ignoring port) so the Vite dev
 // proxy (localhost:5173 → localhost:3000) and the co-served prod SPA both pass, while a cross-site page is
@@ -352,6 +353,7 @@ async function main() {
   const shutdown = async (signal: string) => {
     logger.info('shutdown', `received ${signal}`);
     await stopProxySidecar(); // stop the data plane first — halts byte-serving + drains in-flight streams
+    await shutdownTunerEngine(); // SIGTERM→SIGKILL any live HDHomeRun-tuner ffmpeg copy-remux processes
     await stopHdhrDiscovery(); // release the UDP discovery socket
     await duloLoginBrowser.closeAll();
     closeAllStats();
