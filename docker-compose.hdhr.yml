@@ -1,0 +1,62 @@
+services:
+  masqueradarr:
+    # SPECIFY THE IMAGE TAG TO USE ':dev' or ':latest'
+    # image: iflip721/masqueradarr:latest
+    image: iflip721/masqueradarr:dev
+    user: "${APP_USER_ID:-1000}:${APP_GROUP_ID:-1000}"
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    environment:
+      MONGO_ROOT_USER: ${MONGO_ROOT_USER}
+      MONGO_ROOT_PASS: ${MONGO_ROOT_PASS}
+      DISPLAY_NAME: ${DISPLAY_NAME:-masqueradarr}
+      DOMAIN: ${DOMAIN:-http://localhost:3000}
+      TZ: ${TZ:-America/New_York}
+      DNS_LOG_LEVEL: ${DNS_LOG_LEVEL:-2}
+      # EDGE-3 (opt-in): unset/empty = today's topology (Node is the public edge, Rust a loopback sidecar).
+      # Set MASQ_EDGE=1 to invert — Rust binds the public :3000 and reverse-proxies to Node on a loopback
+      # internal port. Same public port + no other change; fully reversible by clearing it. See .env.example.
+      MASQ_EDGE: ${MASQ_EDGE:-}
+      # The reachable LAN IPv4 advertised in UDP-discovery replies (tuner BaseURL/LineupURL). ONLY has an
+      # effect in host/macvlan mode; leave empty on bridge (empty = auto-detect, harmless). See .env.example.hdhr.
+      MASQ_HDHR_ADVERTISE_HOST: ${MASQ_HDHR_ADVERTISE_HOST:-}
+    ports:
+      - "${MASQUERADARR_PORT:-3000}:3000"
+      # Uncomment ONLY for clients that do UNICAST / "add by IP" discovery (e.g. Channels DVR custom tuner,
+      # hdhomerun_config). It is INERT for Plex — Plex auto-discovery needs host/macvlan, not this publish.
+      # - "65001:65001/udp"
+    volumes:
+      - ${COMPOSE_PATH:-./compose}:/app/compose:rw
+      - ${BACKUPS_PATH:-./backups}:/backups:rw
+    depends_on:
+      mongo:
+        condition: service_healthy
+    networks: [masqueradarr-net]
+    restart: unless-stopped
+
+  mongo:
+    # If you have issues using MongoDB 7.x due to legacy hardware switch value for MongoDB 4.x or highe
+    image: mongo:7.0.15
+    user: "${MONGO_USER_ID:-999}:${MONGO_GROUP_ID:-999}"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASS}
+    ports:
+      - "${MONGO_HOST_PORT:-27017}:27017"
+    volumes:
+      - ${MONGO_DATA_PATH:-mongo-data}:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks: [masqueradarr-net]
+    restart: unless-stopped
+
+volumes:
+  # Fallback named volume — used only when MONGO_DATA_PATH is unset.
+  mongo-data:
+
+networks:
+  masqueradarr-net:
