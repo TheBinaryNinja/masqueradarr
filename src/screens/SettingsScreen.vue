@@ -339,8 +339,8 @@ async function fireReset() {
     <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
       { value: 'general', label: 'General' },
       { value: 'video', label: 'Video Config' },
+      { value: 'hdhomerun', label: 'Tuner' },
       { value: 'advanced', label: 'Advanced' },
-      { value: 'hdhomerun', label: 'HDHomeRun' },
     ]" style="margin-bottom: 4px;" />
 
     <HDHomeRunPanel v-if="activeTab === 'hdhomerun'" />

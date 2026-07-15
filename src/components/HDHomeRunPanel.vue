@@ -170,11 +170,13 @@ async function add(): Promise<void> {
 
 <template>
   <div class="card">
-    <h3 class="section-title">HDHomeRun Tuners</h3>
+    <h3 class="section-title">Tuner Emulator</h3>
     <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 10px;">
-      Emulate one or more HDHomeRun network tuners so Plex, Emby, Jellyfin, or Channels DVR can discover
-      masqueradarr on your LAN and use a wired playlist — its channels and its guide — as a tuner. Tuners are
-      auto-discovered over the network; you can also add one by its base URL below.
+      The Tuner Emulator broadcasts the same discovery signal and lineup format as a physical HDHomeRun network
+      tuner, making masqueradarr a drop-in, compatible tuner for Plex — and other DVR apps like Emby, Jellyfin,
+      and Channels — with no HDHomeRun hardware required. Each emulated tuner exposes a wired playlist — its
+      channels and its guide — as MPEG-TS, which is what those DVR apps expect. Tuners are auto-discovered over
+      the LAN; you can also add one by its base URL below.
     </div>
 
     <div v-if="!HDHOMERUN_TUNERS.length && !loading" class="muted" style="font-size: var(--fs-xs);">
