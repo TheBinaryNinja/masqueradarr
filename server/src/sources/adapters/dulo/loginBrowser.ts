@@ -532,8 +532,8 @@ class DuloLoginBrowser {
     }
     if (found) {
       // No anonKey/supabaseUrl from localStorage — signIn derives the base from the JWT `iss` and resolves the
-      // anon key from the committed public default (auth.ts resolveAnonKey), so refresh stays durable even on
-      // this already-signed-in path (previously this path produced an un-refreshable session).
+      // anon key via supabaseConfig.currentAnonKey (runtime-discovered → committed seed), so refresh stays
+      // durable even on this already-signed-in path (previously this path produced an un-refreshable session).
       await this.onTokenCaptured(session, { ...found, supabaseUrl: null, anonKey: null });
     }
   }

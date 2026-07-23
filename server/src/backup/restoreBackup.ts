@@ -9,6 +9,7 @@ import { backupSpecs } from './registry.js';
 import { BACKUP_FORMAT_VERSION, type BackupEnvelope } from './buildBackup.js';
 import { bootInitSources } from '../sources/seed.js';
 import { startScheduler, removeAllCronjobs } from '../scheduler/index.js';
+import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
 import { logger } from '../sources/core/logger.js';
 
@@ -122,4 +123,8 @@ export async function applyPostRestore(): Promise<void> {
   } catch (err) {
     logger.warn('settings', `post-restore: scheduler re-register failed (continuing): ${(err as Error).message}`);
   }
+  // The restored playlistauths row replaces whatever dulo session the auth singleton has cached in
+  // memory — drop the cache and re-aim its keepalive from the restored doc. Cannot throw (async part
+  // self-logs), so no try/catch wrapper is needed.
+  duloAuth.invalidate();
 }
