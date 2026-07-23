@@ -9,6 +9,7 @@ import { ProxyConfig } from '../models/ProxyConfig.js';
 import { User } from '../models/User.js';
 import { Cronjob, cronjobId } from '../models/Cronjob.js';
 import { removeCronjob } from '../scheduler/index.js';
+import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { AuthRequest, requireAdmin } from '../middleware/auth.js';
 import { composeM3u, composeGlobal, pruneCustomFile, reconcilePlaylistExport, recomposeAllExports } from '../m3u/compose.js';
 import { normalizeEndpointPath, isReservedEndpointPath, isCustomPlaylistType } from '../m3u/paths.js';
@@ -485,6 +486,9 @@ async function cascadeDeleteBuiltinPlaylist(p: {
     removeCronjob(jobId);
   }
   await PlaylistAuth.deleteOne({ _id: src });
+  // The dulo auth singleton caches this doc in memory and runs its keepalive against it — drop both, or
+  // a later save() would resurrect the deleted row via upsert and the timer would refresh a dead session.
+  if (src === 'dulo') duloAuth.invalidate();
   await ProxyConfig.deleteOne({ _id: `app_${p.id}` }); // its Custom proxy override (if any) — same stale-reuse guard as the access lists
   await User.updateMany({}, { $pull: { allowedPlaylists: p.id, allowedCustomPlaylists: p.id } });
 

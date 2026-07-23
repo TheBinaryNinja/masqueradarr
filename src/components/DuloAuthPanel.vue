@@ -22,6 +22,8 @@ interface DuloStatus {
   deviceBound: boolean;
   deviceName: string | null;
   expiresAt: number | null;
+  hasRefreshToken: boolean;
+  nextRefreshAt: number | null;
   sharedFamily: boolean;
   refreshBackoffUntil: number | null;
   blockReason: string | null;
@@ -73,9 +75,9 @@ const statusLabel = computed(() => {
 function fmtExpiry(ms: number | null): string {
   if (!ms) return '';
   const diff = ms - now.value;
-  // The server refreshes lazily (within 60s of expiry, or on the next play), so an elapsed token is normal
-  // and auto-recovers — say "refreshing on next use" rather than alarming "expired".
-  if (diff <= 0) return 'refreshing on next use';
+  // The server's keepalive rotates the token ahead of expiry, so a past-due token means a refresh is
+  // imminent (or briefly backing off) — say "refreshing…" rather than alarming "expired".
+  if (diff <= 0) return 'refreshing…';
   const mins = Math.round(diff / 60000);
   if (mins < 60) return `token valid ~${mins}m`;
   return `token valid ~${Math.round(mins / 60)}h`;
@@ -86,6 +88,15 @@ const refreshing = computed(() => {
   const u = status.value?.refreshBackoffUntil;
   return !!u && u > now.value;
 });
+// The server's proactive keepalive: when the next scheduled token rotation lands (null = disarmed).
+const nextRefreshLabel = computed(() => {
+  const at = status.value?.nextRefreshAt;
+  if (!at || at <= now.value) return '';
+  const mins = Math.max(1, Math.round((at - now.value) / 60000));
+  return mins < 60 ? `auto-refresh in ~${mins}m` : `auto-refresh in ~${Math.round(mins / 60)}h`;
+});
+// A capture that omitted refresh_token cannot be kept alive — flag it so the user re-captures a full session.
+const noRefreshToken = computed(() => !!status.value?.signedIn && status.value?.hasRefreshToken === false);
 // dulo is single-active-device: another device can evict our slot (device_mismatch). Offer a one-click
 // reclaim when we're signed in but no longer hold the device.
 const deviceNeedsReactivate = computed(() => !!status.value?.signedIn && !status.value?.deviceBound);
@@ -284,6 +295,8 @@ onUnmounted(() => {
           device: <b style="color: var(--text-1);">{{ status.deviceName }}</b>
         </span>
         <span v-if="status.expiresAt" class="muted" style="font-size: var(--fs-xs);">· {{ fmtExpiry(status.expiresAt) }}</span>
+        <span v-if="noRefreshToken" style="font-size: var(--fs-xs); color: var(--warn, var(--text-2));">· no refresh token — re-capture the session (it ends at expiry)</span>
+        <span v-else-if="nextRefreshLabel" class="muted" style="font-size: var(--fs-xs);">· {{ nextRefreshLabel }}</span>
         <span v-if="refreshing" class="muted" style="font-size: var(--fs-xs); color: var(--warn, var(--text-2));">· reconnecting…</span>
       </div>
       <div v-if="status.blockReason" class="row" style="gap: 8px; padding: 8px 10px; background: var(--bg-2); border-radius: 8px; align-items: flex-start;">
@@ -305,7 +318,9 @@ onUnmounted(() => {
     <div v-else class="col" style="gap: 12px;">
       <div class="muted" style="font-size: var(--fs-sm); color: var(--text-1); line-height: 1.6;">
         Sign in with <b>your own browser</b> — where Google &amp; Discord work normally — then hand the session
-        back with one click. This is the most reliable way to connect a social account.
+        back with one click. This is the most reliable way to connect a social account. Afterwards simply
+        <b>close the dulo tab — don't sign out</b>: signing out of dulo.tv revokes the session you just handed
+        over. The server keeps it refreshed automatically from then on.
       </div>
 
       <div class="row" style="gap: 8px; flex-wrap: wrap; align-items: center;">
@@ -319,7 +334,9 @@ onUnmounted(() => {
         <div class="muted" style="font-size: var(--fs-xs);">
           Manual alternative: sign in on dulo.tv in your own browser, then open DevTools → Application → Local
           Storage → copy the value of the key starting with <code class="mono">amri-</code> (any key whose value
-          contains <code class="mono">access_token</code>) and paste it here.
+          contains <code class="mono">access_token</code>) and paste it here. Best captured from a
+          <b>private/incognito window</b>; when done, <b>close the window without signing out</b> — signing out
+          of dulo.tv revokes the pasted session. Once pasted, the server keeps the session alive automatically.
         </div>
         <textarea v-model="pasteText" rows="4" placeholder='{"access_token":"…","refresh_token":"…","expires_at":…}'
                   class="input mono" style="width: 100%; font-size: 11px; padding: 8px; resize: vertical;" />

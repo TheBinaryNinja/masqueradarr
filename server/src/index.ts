@@ -32,6 +32,7 @@ import { startScheduler } from './scheduler/index.js';
 import { WebSocketServer } from 'ws';
 import type { IncomingMessage } from 'node:http';
 import { duloLoginBrowser } from './sources/adapters/dulo/loginBrowser.js';
+import { startDuloKeepalive, stopDuloKeepalive } from './sources/adapters/dulo/auth.js';
 import { startStreamTelemetry, stopStreamTelemetry } from './sources/core/streamTelemetry.js';
 import { startStatsHub, closeAllStats, attachStats } from './stats/statsHub.js';
 import { startSystemStatsHub, closeAllSystemStats, attachSystemStats } from './stats/systemStatsHub.js';
@@ -118,6 +119,14 @@ async function main() {
     startSystemStatsHub();
   } catch (err) {
     logger.error('startup', `stream telemetry init error (continuing): ${(err as Error).message}`);
+  }
+
+  // dulo session keepalive: proactively rotate the Supabase access token ahead of its `exp` so an idle
+  // session survives between viewing sessions (lazy play-time refresh alone let it die). Non-fatal.
+  try {
+    await startDuloKeepalive();
+  } catch (err) {
+    logger.error('startup', `dulo keepalive init error (continuing): ${(err as Error).message}`);
   }
 
   // NB: the Rust proxy sidecar is spawned AFTER app.listen() (see below), not here — in EDGE mode Rust binds
@@ -339,6 +348,7 @@ async function main() {
     closeAllSystemStats();
     closeAllLogs();
     stopStreamTelemetry();
+    stopDuloKeepalive();
     await stopLogStore(); // detach the sink + flush the final batch (incl. the shutdown line) before disconnect
     wss.close();
     wssStats.close();

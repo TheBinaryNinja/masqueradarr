@@ -231,7 +231,12 @@ creating the **first admin account**. After that:
 1. **Add a playlist** — the Add Playlist modal offers every built-in source plus custom playlists
    (clone / file / URL / HDHomeRun).
 2. For an **authenticated** source (dulo), capture a login session from **Settings** (a server-streamed
-   Chromium signs you in; only tokens are stored).
+   Chromium signs you in; only tokens are stored). The server then **keeps the session alive on its own**,
+   rotating the token ahead of each expiry — and it **auto-discovers dulo's current Supabase config at
+   runtime**, so when dulo migrates its Supabase project (rotating the public URL + anon key) the session
+   self-heals on its next refresh with no re-capture and nothing to configure. If you captured the session
+   from your own browser (pair/paste), just **close that dulo tab — don't sign out**: signing out of
+   dulo.tv revokes the very session you handed over.
 3. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
    **Channel Mapping** screen.
 4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
