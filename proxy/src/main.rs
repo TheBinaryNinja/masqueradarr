@@ -18,6 +18,7 @@
 mod edge;
 mod log;
 mod manifest;
+mod origin;
 mod probe;
 mod proxy;
 mod state;

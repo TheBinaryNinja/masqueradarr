@@ -427,6 +427,19 @@ pub async fn serve_stream(
             return raw(200, "application/octet-stream", raw_body.to_vec());
         }
         let text_body = String::from_utf8_lossy(&raw_body).into_owned();
+        // S3/ORIGIN Phase 1 — INGEST ONLY, no client surface yet. When the proxyconfig opts this playlist into
+        // origin mode, an ENTRY request starts (or keeps alive) the channel's single refcounted ingest, which
+        // fills the ring in the background. What the client gets here is UNCHANGED — the raw-TS / HLS-rewrite
+        // paths below still serve it. Phase 2 swaps the response over to the ring-backed renderers.
+        //
+        // The lease is held only for THIS request; the ingest then survives on its idle grace window, which a
+        // polling client keeps refreshing on every entry poll. That is deliberate: it means an abandoned
+        // channel winds itself down without any explicit teardown from the request path.
+        let _origin_lease = if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
+            Some(crate::origin::subscribe(&state, source, &stream_entry, pl.as_deref(), &policy))
+        } else {
+            None
+        };
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to

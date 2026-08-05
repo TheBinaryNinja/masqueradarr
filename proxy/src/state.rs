@@ -89,6 +89,10 @@ pub struct AppState {
     /// public edge path (edge.rs); the loopback sidecar path is gated by Node's Express streamGate as before.
     /// `pl` is in the key because Node gates it too — see `authorize`. Absent `pl` keys as the empty string.
     auth_cache: Arc<Mutex<HashMap<AuthKey, AuthDecision>>>,
+    /// S3/ORIGIN: the live per-channel ingests, keyed by `target_key(source, entry)`. Deliberately SEPARATE
+    /// from `targets` — that is a short-lived RESOLUTION cache (TARGET_TTL), this holds long-lived MEDIA
+    /// (a ring of decrypted segments) whose lifetime is driven by subscriber refcount, not a TTL.
+    origins: Arc<Mutex<HashMap<String, Arc<crate::origin::Origin>>>>,
 }
 
 /// A cached resolved ENTRY target + the stream's FAILOVER CURSOR. `attempt` pins which candidate the
@@ -107,7 +111,7 @@ pub struct TargetEntry {
 }
 
 /// The target-cache key for a stream: (mount source, entry url) — NUL-joined like the log rid.
-fn target_key(source: &str, entry: &str) -> String {
+pub(crate) fn target_key(source: &str, entry: &str) -> String {
     format!("{source}\u{0}{entry}")
 }
 
@@ -162,6 +166,16 @@ pub struct SourcePolicy {
     /// FOG: also treat a DEFINITIVE upstream non-2xx (4xx/5xx — normally forwarded verbatim) as a failover
     /// trigger. Default OFF: it changes long-standing forward-verbatim semantics, so the operator opts in.
     pub failover_on_definite_error: AtomicBool,
+    /// S3/ORIGIN: serve this source's streams from a LOCAL ORIGIN (origin.rs) instead of proxying the
+    /// upstream manifest — one refcounted ingest per channel decrypts + caches segments, and the client is
+    /// served a masqueradarr-authored stream. Default OFF: `false` is byte-identical to today's behavior, and
+    /// a grant from a pre-S3 Node omits the key entirely (see ProxyConfigWire).
+    pub origin_enabled: AtomicBool,
+    /// S3/ORIGIN: the per-channel ring cap in MiB. Bounds ingest RAM for ONE channel; a 3-segment floor still
+    /// wins over it (HLS needs ≥3 target durations to be playable), which origin.rs logs under `iop` so the
+    /// operator is told to raise the dial rather than chasing stalls. NOT a global ceiling — see the plan's
+    /// postponed `LRU` item.
+    pub origin_ring_mb: AtomicU64,
 }
 
 impl SourcePolicy {
@@ -179,6 +193,8 @@ impl SourcePolicy {
             stream_inf_redux: AtomicBool::new(false),
             failover_enabled: AtomicBool::new(true),
             failover_on_definite_error: AtomicBool::new(false),
+            origin_enabled: AtomicBool::new(false),
+            origin_ring_mb: AtomicU64::new(crate::origin::DEFAULT_RING_MB),
         }
     }
 }
@@ -249,6 +265,12 @@ pub struct ProxyConfigWire {
     pub failover_enabled: bool,
     #[serde(rename = "failoverOnDefiniteError", default)]
     pub failover_on_definite_error: bool,
+    // S3/ORIGIN knobs. Both serde-default so a grant from a pre-S3 Node (which sends neither key) degrades to
+    // origin OFF at the shipped default cap — i.e. today's behavior exactly. Node wires them in S3 Phase 4.
+    #[serde(rename = "originEnabled", default)]
+    pub origin_enabled: bool,
+    #[serde(rename = "originRingMb", default = "default_origin_ring_mb")]
+    pub origin_ring_mb: u64,
 }
 
 fn default_connect_ms() -> u64 {
@@ -263,6 +285,9 @@ fn default_output_format() -> String {
 fn default_true() -> bool {
     true
 }
+fn default_origin_ring_mb() -> u64 {
+    crate::origin::DEFAULT_RING_MB
+}
 
 impl Default for ProxyConfigWire {
     fn default() -> Self {
@@ -275,6 +300,8 @@ impl Default for ProxyConfigWire {
             stream_inf_redux: false,
             failover_enabled: true,
             failover_on_definite_error: false,
+            origin_enabled: false,
+            origin_ring_mb: default_origin_ring_mb(),
         }
     }
 }
@@ -319,12 +346,18 @@ impl AppState {
             telemetry_tx,
             stream_seq: Arc::new(AtomicU64::new(0)),
             auth_cache: Arc::new(Mutex::new(HashMap::new())),
+            origins: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
     /// DST: mint a unique-per-process continuous-TS stream id (monotonic; Node maps it → a socket connId).
     pub fn next_stream_id(&self) -> String {
         format!("ts{}", self.stream_seq.fetch_add(1, Ordering::Relaxed))
+    }
+
+    /// S3/ORIGIN: the live-ingest registry (origin.rs owns the lifecycle; this is just the shared map).
+    pub(crate) fn origins(&self) -> &Arc<Mutex<HashMap<String, Arc<crate::origin::Origin>>>> {
+        &self.origins
     }
 
     /// PXY-2: return the upstream client for the given proxy-config knobs, building + caching it on first use.
@@ -566,6 +599,13 @@ impl AppState {
         policy
             .failover_on_definite_error
             .store(grant.proxy_config.failover_on_definite_error, Ordering::Relaxed);
+        // S3/ORIGIN: the local-origin opt-in + its per-channel ring cap. Clamped to a sane floor here (not just
+        // in Node's input gate) because the grant is the ONLY thing the data plane trusts — a 0 would make every
+        // push evict itself, and the 3-segment floor would then be the only thing holding a window open.
+        policy.origin_enabled.store(grant.proxy_config.origin_enabled, Ordering::Relaxed);
+        policy
+            .origin_ring_mb
+            .store(grant.proxy_config.origin_ring_mb.max(1), Ordering::Relaxed);
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write_ok().insert(h.to_lowercase());

@@ -52,6 +52,11 @@ export interface ProxyConfigDoc {
   failoverEnabled: boolean; // play-time failover groups: walk the ordered children on an establish failure. Default ON (group config is the opt-in). LIVE.
   failoverOnDefiniteError: boolean; // also fail over on a definitive upstream 4xx/5xx (normally forwarded verbatim). Default OFF. LIVE.
   segmentCacheTtlSec: number | null; // segment cache TTL (s); null = no-store (today's behavior). RESERVED (only unapplied knob).
+  // S3/ORIGIN — serve from a LOCAL ORIGIN instead of proxying the upstream manifest: one refcounted ingest per
+  // channel decrypts + rings segments, and the client gets a masqueradarr-authored stream (our sequence, our
+  // paths, no keys, no vendor tags). Default OFF = today's behavior byte-for-byte.
+  originEnabled: boolean; // S3 Phase 1: INGEST only (fills the ring; output still the proxy path). Phase 2 adds the renderers.
+  originRingMb: number; // per-channel ring cap (MiB). A 3-segment floor still wins over it — the data plane logs an `iop` warn when it does.
 }
 
 export const PROXY_CONFIG_DEFAULT_ID = 'app'; // the (Default) singleton row id
@@ -70,6 +75,8 @@ const ProxyConfigSchema = new Schema<ProxyConfigDoc>(
     failoverEnabled: { type: Boolean, required: true, default: true },
     failoverOnDefiniteError: { type: Boolean, required: true, default: false },
     segmentCacheTtlSec: { type: Number, default: null },
+    originEnabled: { type: Boolean, required: true, default: false },
+    originRingMb: { type: Number, required: true, default: 25 }, // envDefaults() is the operative seed
   },
   { versionKey: false },
 );

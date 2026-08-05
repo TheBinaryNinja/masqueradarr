@@ -68,26 +68,41 @@ pub struct TsContext {
 /// methods are still carried so the producer can drop+warn on a mid-stream rotation, but try_ts_response's
 /// entry guard already bails such a playlist to the HLS rewrite before the producer starts.
 #[derive(Clone, Debug, PartialEq)]
-struct SegKey {
-    method: String,       // uppercased, e.g. "AES-128"
-    uri: String,          // key URI, resolved against the media-playlist URL at fetch time
-    iv: Option<[u8; 16]>, // explicit IV=0x…; None ⇒ derive from the segment's media-sequence number
+pub(crate) struct SegKey {
+    pub method: String,       // uppercased, e.g. "AES-128"
+    pub uri: String,          // key URI, resolved against the media-playlist URL at fetch time
+    pub iv: Option<[u8; 16]>, // explicit IV=0x…; None ⇒ derive from the segment's media-sequence number
 }
 
-struct MediaPlaylist {
-    media_sequence: i64,  // #EXT-X-MEDIA-SEQUENCE (the sequence number of the first listed segment; default 0)
-    target_duration: f64, // #EXT-X-TARGETDURATION (seconds; 0 when absent → a default poll cadence)
-    endlist: bool,        // #EXT-X-ENDLIST → the playlist is complete (VOD / finished event)
-    // (segment URI, active #EXT-X-KEY) in order (index i ⇒ sequence media_sequence + i); key None ⇒ cleartext.
-    segments: Vec<(String, Option<SegKey>)>,
+/// One segment line of a media playlist, with the tags that apply to IT (rather than to the playlist).
+/// `duration` + `discontinuity` are carried for the S3 ORIGIN ingest (origin.rs), which republishes them as
+/// our own `#EXTINF` / `#EXT-X-DISCONTINUITY`; the raw-TS producer ignores both and just concatenates bytes.
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct SegRef {
+    pub uri: String,
+    pub key: Option<SegKey>,
+    pub duration: f64,       // #EXTINF for this segment (0.0 when absent/unparseable)
+    pub discontinuity: bool, // an #EXT-X-DISCONTINUITY tag preceded this segment
 }
 
-fn parse_media_playlist(body: &str) -> MediaPlaylist {
+pub(crate) struct MediaPlaylist {
+    pub media_sequence: i64,  // #EXT-X-MEDIA-SEQUENCE (the sequence of the first listed segment; default 0)
+    pub target_duration: f64, // #EXT-X-TARGETDURATION (seconds; 0 when absent → a default poll cadence)
+    pub endlist: bool,        // #EXT-X-ENDLIST → the playlist is complete (VOD / finished event)
+    // Segments in order (index i ⇒ sequence media_sequence + i). `key: None` ⇒ that segment is cleartext.
+    pub segments: Vec<SegRef>,
+}
+
+pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
     let mut media_sequence = 0i64;
     let mut target_duration = 0f64;
     let mut endlist = false;
-    let mut segments: Vec<(String, Option<SegKey>)> = Vec::new();
+    let mut segments: Vec<SegRef> = Vec::new();
     let mut active_key: Option<SegKey> = None;
+    // Both are PENDING state consumed by the next segment line: an #EXTINF and an #EXT-X-DISCONTINUITY apply
+    // to the segment that FOLLOWS them, so they are cleared on use (unlike #EXT-X-KEY, which is sticky).
+    let mut pending_duration = 0f64;
+    let mut pending_discontinuity = false;
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
@@ -99,10 +114,22 @@ fn parse_media_playlist(body: &str) -> MediaPlaylist {
             target_duration = v.trim().parse().unwrap_or(0.0);
         } else if line.starts_with("#EXT-X-ENDLIST") {
             endlist = true;
+        } else if line.starts_with("#EXT-X-DISCONTINUITY") && !line.starts_with("#EXT-X-DISCONTINUITY-SEQUENCE") {
+            pending_discontinuity = true; // the PREFIX guard matters: -SEQUENCE is a playlist header, not a splice
+        } else if let Some(v) = line.strip_prefix("#EXTINF:") {
+            // "#EXTINF:<duration>[,<title>]" — the title is optional and may itself contain no comma.
+            pending_duration = v.split(',').next().unwrap_or("").trim().parse().unwrap_or(0.0);
         } else if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
             active_key = parse_key(attrs); // METHOD=NONE / unparseable ⇒ None ⇒ following segments are cleartext
         } else if !line.starts_with('#') {
-            segments.push((line.to_string(), active_key.clone()));
+            segments.push(SegRef {
+                uri: line.to_string(),
+                key: active_key.clone(),
+                duration: pending_duration,
+                discontinuity: pending_discontinuity,
+            });
+            pending_duration = 0f64;
+            pending_discontinuity = false;
         }
     }
     MediaPlaylist {
@@ -176,19 +203,19 @@ fn parse_iv(v: &str) -> Option<[u8; 16]> {
 }
 
 /// A MASTER playlist (variant selection needed) vs. a MEDIA playlist (segments directly).
-fn is_master(body: &str) -> bool {
+pub(crate) fn is_master(body: &str) -> bool {
     body.split('\n').any(|l| l.trim_start().starts_with("#EXT-X-STREAM-INF"))
 }
 
 /// `#EXT-X-MAP` (an fMP4 init segment) ⇒ NOT raw-TS-concatenable.
-fn has_map(body: &str) -> bool {
+pub(crate) fn has_map(body: &str) -> bool {
     body.split('\n').any(|l| l.trim_start().starts_with("#EXT-X-MAP"))
 }
 
 /// The FIRST #EXT-X-KEY method we CAN'T handle server-side, if any ⇒ bail to the HLS rewrite. We decrypt
 /// full-segment AES-128 (see the producer); METHOD=NONE and AES-128 are handleable, everything else
 /// (SAMPLE-AES/FairPlay, …) is not. Returns the offending method for a specific fallback log.
-fn unsupported_encryption(body: &str) -> Option<String> {
+pub(crate) fn unsupported_encryption(body: &str) -> Option<String> {
     for l in body.split('\n') {
         if let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-KEY:") {
             let method = split_attrs(attrs)
@@ -206,7 +233,7 @@ fn unsupported_encryption(body: &str) -> Option<String> {
 
 /// AES-128-CBC + PKCS7 decrypt one whole HLS segment. None on a bad length / padding ⇒ the caller drops the
 /// segment (all-or-nothing: a valid TS packet stream can't be reconstructed from a partial/garbled decrypt).
-fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
+pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
     if ct.is_empty() || ct.len() % 16 != 0 {
         return None;
     }
@@ -217,7 +244,7 @@ fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8
 }
 
 /// The highest-BANDWIDTH variant's URI (the STREAM-INF URI is the next non-comment line), resolved absolute.
-fn pick_variant(body: &str, base: &Url) -> Option<Url> {
+pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<Url> {
     let mut best_bw: i64 = -1;
     let mut best_uri: Option<String> = None;
     let mut pending_bw: Option<i64> = None;
@@ -252,7 +279,7 @@ fn parse_bandwidth(attrs: &str) -> i64 {
 }
 
 /// Re-poll cadence: half the target duration, clamped to a sane [1s, 10s]; a missing target duration → 3s.
-fn poll_interval(target_duration: f64) -> Duration {
+pub(crate) fn poll_interval(target_duration: f64) -> Duration {
     let secs = if target_duration > 0.0 { target_duration / 2.0 } else { 3.0 };
     Duration::from_secs_f64(secs.clamp(1.0, 10.0))
 }
@@ -443,13 +470,13 @@ async fn ts_producer(
             next_seq = mp.media_sequence; // first poll: begin at the head of the window
         }
 
-        for (i, (uri, seg_key)) in mp.segments.iter().enumerate() {
+        for (i, seg) in mp.segments.iter().enumerate() {
             let seq = mp.media_sequence + i as i64;
             if seq < next_seq {
                 continue; // already served
             }
             next_seq = seq + 1;
-            let seg_url = match media_url.join(uri) {
+            let seg_url = match media_url.join(&seg.uri) {
                 Ok(u) => u,
                 Err(_) => continue,
             };
@@ -465,7 +492,7 @@ async fn ts_producer(
             // 16-byte key by URI, applies the SAME private-host SSRF guard + allowlist grow as segments, and
             // derives the IV (explicit IV=, else the segment media-sequence number). A key we can't fetch/resolve
             // — or an unsupported method appearing mid-stream — drops just this segment (a gap), not the stream.
-            let key_material: Option<([u8; 16], [u8; 16])> = match seg_key {
+            let key_material: Option<([u8; 16], [u8; 16])> = match &seg.key {
                 None => None,
                 Some(k) if k.method == "AES-128" => {
                     let key_url = match media_url.join(&k.uri) {
@@ -643,10 +670,30 @@ mod tests {
         assert_eq!(mp.media_sequence, 42);
         assert_eq!(mp.target_duration, 6.0);
         assert!(!mp.endlist);
-        assert_eq!(
-            mp.segments,
-            vec![("seg42.ts".to_string(), None), ("seg43.ts".to_string(), None)]
-        );
+        let uris: Vec<&str> = mp.segments.iter().map(|s| s.uri.as_str()).collect();
+        assert_eq!(uris, vec!["seg42.ts", "seg43.ts"]);
+        assert!(mp.segments.iter().all(|s| s.key.is_none()));
+        // #EXTINF is captured per segment (ORIGIN republishes it) and applies to the segment that FOLLOWS it.
+        assert!(mp.segments.iter().all(|s| s.duration == 6.0));
+        assert!(mp.segments.iter().all(|s| !s.discontinuity));
+    }
+
+    #[test]
+    fn parses_extinf_and_discontinuity_positionally() {
+        // A DISCONTINUITY applies only to the segment right after it, and #EXT-X-DISCONTINUITY-SEQUENCE is a
+        // playlist HEADER that must not be mistaken for a splice (the prefix guard in parse_media_playlist).
+        let m = "#EXTM3U\n#EXT-X-DISCONTINUITY-SEQUENCE:7\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXTINF:5.005,\na.ts\n\
+                 #EXT-X-DISCONTINUITY\n#EXTINF:4.0,title here\nb.ts\n\
+                 #EXTINF:3.5,\nc.ts\n";
+        let mp = parse_media_playlist(m);
+        assert_eq!(mp.segments.len(), 3);
+        assert!(!mp.segments[0].discontinuity, "-SEQUENCE header must not flag a splice");
+        assert!(mp.segments[1].discontinuity, "the tag applies to the NEXT segment");
+        assert!(!mp.segments[2].discontinuity, "and is cleared after use");
+        assert_eq!(mp.segments[0].duration, 5.005);
+        assert_eq!(mp.segments[1].duration, 4.0); // "#EXTINF:4.0,title here" — the title is dropped
+        assert_eq!(mp.segments[2].duration, 3.5);
     }
 
     #[test]
@@ -699,9 +746,12 @@ mod tests {
             uri: "https://k.example/key?a=1,b=2".to_string(),
             iv: Some([0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]),
         };
-        assert_eq!(mp.segments[0], ("enc1.ts".to_string(), Some(enc.clone())));
-        assert_eq!(mp.segments[1], ("enc2.ts".to_string(), Some(enc)));
-        assert_eq!(mp.segments[2], ("clear.ts".to_string(), None)); // cleared by METHOD=NONE
+        assert_eq!(mp.segments[0].uri, "enc1.ts");
+        assert_eq!(mp.segments[0].key, Some(enc.clone()));
+        assert_eq!(mp.segments[1].uri, "enc2.ts");
+        assert_eq!(mp.segments[1].key, Some(enc));
+        assert_eq!(mp.segments[2].uri, "clear.ts");
+        assert_eq!(mp.segments[2].key, None); // cleared by METHOD=NONE
     }
 
     #[test]
