@@ -47,7 +47,7 @@ function toHdhrChannel(e: HdhrLineupEntry, importId: string): PlaylistChannelDoc
     failoverGroupId: null,
     failoverRole: null,
     failoverOrder: null,
-    stream: { initials: initialsFor(e.guideName), isPlayable: !e.drm, res: null, status: null, probe: null },
+    stream: { initials: initialsFor(e.guideName), isPlayable: !e.drm, res: null, status: null, container: null, probe: null },
   };
 }
 

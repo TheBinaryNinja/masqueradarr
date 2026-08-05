@@ -63,13 +63,15 @@ internalRouter.post('/resolve', async (req, res, next) => {
 // returns the resolved username so Rust can attribute telemetry (it has no relay-set x-masq-username at the edge).
 internalRouter.post('/authorize', async (req, res, next) => {
   try {
-    const { token, source } = req.body ?? {};
+    const { token, source, pl } = req.body ?? {};
     if (typeof source !== 'string' || !source) {
       res.status(400).json({ error: 'source_required' });
       return;
     }
     const found = typeof token === 'string' && token ? await userFromToken(token) : null;
-    const decision = gateStreamAccess(found?.user, source);
+    // `pl` mirrors the sidecar-mode streamGate's third rung. An older sidecar omits it → undefined → the check
+    // is skipped, exactly as before, so the seam stays backward-compatible across a partial upgrade.
+    const decision = gateStreamAccess(found?.user, source, typeof pl === 'string' ? pl : undefined);
     if (!decision.ok) {
       res.json({ ok: false, status: decision.status, message: decision.message });
       return;

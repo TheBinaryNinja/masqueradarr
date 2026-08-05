@@ -24,6 +24,7 @@ use crate::log;
 use crate::manifest::{enc, rewrite_manifest, RewriteResult};
 use crate::state::{AppState, ResolveErr, SourcePolicy, MAX_FAILOVER_ATTEMPTS};
 use crate::stream::{segment_body, TelemetryCtx};
+use crate::sync::RwExt;
 
 // RSL-3 upstream retry. A transient failure (transport error, or a 502/503/504 gateway status) is retried with
 // bounded backoff before the request is failed; a definitive response (2xx, 4xx, or a non-gateway 5xx) is used
@@ -234,9 +235,24 @@ pub async fn serve_stream(
         }
     };
 
-    // SSRF gate on direct hops only (the entry's target is trusted resolve output).
-    if is_hop && !ssrf_ok(&policy, &fetch_url) {
-        log::warn("proxy", &rid, || format!("SSRF reject: {} not in the source allowlist", host_of(&fetch_url)));
+    // SSRF gate. A HOP is a client-supplied child URL, so it must be IN the observational allowlist. An ENTRY
+    // target is resolve output that seeds that allowlist, so membership is meaningless there — but it still
+    // gets the scheme + private-host half, because an identity-resolve adapter passes the request URL through
+    // verbatim and Node's `unrecognized_entry` gate is a stored-channel check, not an address check. Defense in
+    // depth: a channel stored (or drifted) with a loopback/metadata/LAN target must not be fetched.
+    let allowed = if is_hop {
+        ssrf_ok(&policy, &fetch_url)
+    } else {
+        ssrf_public_ok(&policy, &fetch_url)
+    };
+    if !allowed {
+        log::warn("proxy", &rid, || {
+            format!(
+                "SSRF reject ({}): {} not permitted",
+                if is_hop { "hop/allowlist" } else { "entry/private" },
+                host_of(&fetch_url)
+            )
+        });
         return text(400, "bad request: upstream host not allowed");
     }
 
@@ -416,7 +432,7 @@ pub async fn serve_stream(
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
         // the HLS rewrite below (text_body + final_url are cloned so the fallback still owns them).
         log::trace("proxy", &rid, || format!("manifest received ({} bytes) from {}", text_body.len(), host_of(final_url.as_str())));
-        if !is_hop && mount_path == "/api/ext/v1" && policy.output_format.read().unwrap().as_str() == "ts" {
+        if !is_hop && mount_path == "/api/ext/v1" && policy.output_format.read_ok().as_str() == "ts" {
             log::info("proxy", &rid, || "outputFormat=ts — handing off to the raw-TS producer".to_string());
             let ts_ctx = crate::tsmux::TsContext {
                 state: state.clone(),
@@ -460,7 +476,7 @@ pub async fn serve_stream(
         // Grow the source's SSRF allowlist with every host referenced in the manifest (dynamic-allow).
         let grown = hosts.len();
         if !hosts.is_empty() {
-            let mut set = policy.hosts.write().unwrap();
+            let mut set = policy.hosts.write_ok();
             for h in hosts {
                 set.insert(h);
             }
@@ -782,7 +798,16 @@ pub(crate) fn is_private_host(host: &str) -> bool {
     false
 }
 
-fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
+/// The SCHEME + PRIVATE-HOST half of the SSRF gate, WITHOUT the allowlist-membership check.
+///
+/// This is the right gate for the ENTRY target, which is resolve output rather than a client-supplied child:
+/// the entry's host is what *seeds* `policy.hosts` (state.rs, on every resolve), so testing it for membership
+/// would either be vacuously true or reject the first request of every stream. What it must still not be is a
+/// loopback/link-local/RFC1918 address — an adapter whose `resolveStream` is identity (direct, and any source
+/// whose `isEntryUrl` returns false) passes the request URL through verbatim, so without this a stored entry
+/// pointing at 169.254.169.254 or a LAN host would be fetched. `allowPrivate` (grant-carried, per adapter)
+/// deliberately re-opens that for genuine LAN sources.
+fn ssrf_public_ok(policy: &SourcePolicy, url: &str) -> bool {
     let u = match Url::parse(url) {
         Ok(u) => u,
         Err(_) => return false,
@@ -794,16 +819,24 @@ fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
         Some(h) => h.to_lowercase(),
         None => return false,
     };
-    if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(&host) {
+    policy.allow_private.load(Ordering::Relaxed) || !is_private_host(&host)
+}
+
+fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
+    if !ssrf_public_ok(policy, url) {
         return false;
     }
-    policy.hosts.read().unwrap().contains(&host)
+    let host = match Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_lowercase())) {
+        Some(h) => h,
+        None => return false,
+    };
+    policy.hosts.read_ok().contains(&host)
 }
 
 pub(crate) fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderMap as RHeaderMap, HeaderName, HeaderValue};
     let mut hm = RHeaderMap::new();
-    let snapshot: Vec<(String, String)> = policy.headers.read().unwrap().clone();
+    let snapshot: Vec<(String, String)> = policy.headers.read_ok().clone();
     for (k, v) in snapshot {
         if let (Ok(name), Ok(val)) = (
             HeaderName::from_bytes(k.as_bytes()),

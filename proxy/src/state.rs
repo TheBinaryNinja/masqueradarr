@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+use crate::sync::{LockExt, RwExt};
 use serde::Deserialize;
 use tokio::sync::mpsc;
 use url::Url;
@@ -46,6 +47,12 @@ pub const MAX_FAILOVER_ATTEMPTS: u32 = 8;
 const AUTH_TTL: Duration = Duration::from_secs(30);
 const AUTH_CACHE_MAX: usize = 4096;
 
+/// EDGE-3 auth-cache key: (stream token, mount source, `?pl`). `pl` is part of the key — not just the request
+/// — because Node gates it as well, so a decision made for one playlist must not authorize another. An absent
+/// `pl` keys as the empty string, which is a distinct (and correct) cache slot: no `pl` means "the Default
+/// proxy config", which is a different authorization question from any named playlist.
+type AuthKey = (String, String, String);
+
 struct AuthDecision {
     allowed: bool,
     status: u16,             // deny HTTP status (401/403) when !allowed
@@ -78,9 +85,10 @@ pub struct AppState {
     /// one id (open→sbytes→close carry it) that Node maps to a socket-viewer connId (noteSocketViewer*). Node
     /// overwrites the mapping on `open`, so a counter reset after a sidecar restart cannot collide.
     stream_seq: Arc<AtomicU64>,
-    /// EDGE-3: the per-(token, source) stream-gate decision cache (see AUTH_TTL). Only consulted on the public
-    /// edge path (edge.rs); the loopback sidecar path is gated by Node's Express streamGate as before.
-    auth_cache: Arc<Mutex<HashMap<(String, String), AuthDecision>>>,
+    /// EDGE-3: the per-(token, source, pl) stream-gate decision cache (see AUTH_TTL). Only consulted on the
+    /// public edge path (edge.rs); the loopback sidecar path is gated by Node's Express streamGate as before.
+    /// `pl` is in the key because Node gates it too — see `authorize`. Absent `pl` keys as the empty string.
+    auth_cache: Arc<Mutex<HashMap<AuthKey, AuthDecision>>>,
 }
 
 /// A cached resolved ENTRY target + the stream's FAILOVER CURSOR. `attempt` pins which candidate the
@@ -328,7 +336,7 @@ impl AppState {
         let connect_ms = if connect_timeout_ms == 0 { 15000 } else { connect_timeout_ms };
         let key = (connect_ms, max_redirects);
         {
-            let m = self.upstream_clients.lock().unwrap();
+            let m = self.upstream_clients.lock_ok();
             if let Some(c) = m.get(&key) {
                 return c.clone();
             }
@@ -338,7 +346,7 @@ impl AppState {
             .connect_timeout(Duration::from_millis(connect_ms))
             .build()
             .unwrap_or_else(|_| self.client.clone());
-        let mut m = self.upstream_clients.lock().unwrap();
+        let mut m = self.upstream_clients.lock_ok();
         m.entry(key).or_insert_with(|| built).clone()
     }
 
@@ -356,7 +364,7 @@ impl AppState {
         let key = target_key(source, entry);
         let now = Instant::now();
         let (cached, attempt) = {
-            let mut m = self.targets.lock().unwrap();
+            let mut m = self.targets.lock_ok();
             match m.get_mut(&key) {
                 Some(e) => {
                     if now.duration_since(e.last_access) > FAILOVER_CURSOR_IDLE {
@@ -393,7 +401,7 @@ impl AppState {
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let (policy, policy_key, target) = self.resolve(source, entry, pl, attempt).await?;
         let now = Instant::now();
-        self.targets.lock().unwrap().insert(
+        self.targets.lock_ok().insert(
             target_key(source, entry),
             TargetEntry {
                 target: target.clone(),
@@ -424,7 +432,7 @@ impl AppState {
     /// the entry (and its failover cursor) survives, so the re-resolve resumes at the pinned candidate.
     pub fn invalidate_target(&self, source: &str, entry: &str) {
         let now = Instant::now();
-        if let Some(e) = self.targets.lock().unwrap().get_mut(&target_key(source, entry)) {
+        if let Some(e) = self.targets.lock_ok().get_mut(&target_key(source, entry)) {
             e.expires = now; // `expires > now` is strict — equal means stale
         }
     }
@@ -432,7 +440,7 @@ impl AppState {
     /// FOG: the stream's current failover cursor (0 = the channel itself), after the idle reset.
     pub fn cursor_attempt(&self, source: &str, entry: &str) -> u32 {
         let now = Instant::now();
-        let mut m = self.targets.lock().unwrap();
+        let mut m = self.targets.lock_ok();
         match m.get_mut(&target_key(source, entry)) {
             Some(e) => {
                 if now.duration_since(e.last_access) > FAILOVER_CURSOR_IDLE {
@@ -450,7 +458,7 @@ impl AppState {
     /// a candidate the cursor no longer points at, and serving it for the rest of its TTL would mismatch.
     pub fn reset_cursor(&self, source: &str, entry: &str) {
         let now = Instant::now();
-        if let Some(e) = self.targets.lock().unwrap().get_mut(&target_key(source, entry)) {
+        if let Some(e) = self.targets.lock_ok().get_mut(&target_key(source, entry)) {
             e.attempt = 0;
             e.expires = now;
         }
@@ -461,7 +469,7 @@ impl AppState {
     /// healthy media-playlist refresh loop calls this each cycle — otherwise a pinned session would be
     /// treated as idle after FAILOVER_CURSOR_IDLE and snap back to the parent on the next re-resolve.
     pub fn touch_stream(&self, source: &str, entry: &str) {
-        if let Some(e) = self.targets.lock().unwrap().get_mut(&target_key(source, entry)) {
+        if let Some(e) = self.targets.lock_ok().get_mut(&target_key(source, entry)) {
             e.last_access = Instant::now();
         }
     }
@@ -473,7 +481,7 @@ impl AppState {
     pub fn hop_policy(&self, source: &str, entry: &str) -> Option<Arc<SourcePolicy>> {
         if !entry.is_empty() {
             let policy_key = {
-                let mut m = self.targets.lock().unwrap();
+                let mut m = self.targets.lock_ok();
                 m.get_mut(&target_key(source, entry)).map(|e| {
                     e.last_access = Instant::now();
                     e.policy_key.clone()
@@ -489,11 +497,11 @@ impl AppState {
     }
 
     pub fn get(&self, source: &str) -> Option<Arc<SourcePolicy>> {
-        self.cache.lock().unwrap().get(source).cloned()
+        self.cache.lock_ok().get(source).cloned()
     }
 
     fn get_or_create(&self, source: &str) -> Arc<SourcePolicy> {
-        let mut m = self.cache.lock().unwrap();
+        let mut m = self.cache.lock_ok();
         m.entry(source.to_string())
             .or_insert_with(|| Arc::new(SourcePolicy::empty()))
             .clone()
@@ -541,8 +549,8 @@ impl AppState {
         let grant: Grant = resp.json().await.map_err(|e| ResolveErr::Other(e.to_string()))?;
         let policy_key = grant.policy_source.clone().unwrap_or_else(|| source.to_string());
         let policy = self.get_or_create(&policy_key);
-        *policy.headers.write().unwrap() = grant.upstream_headers.into_iter().collect();
-        *policy.relabel_segment.write().unwrap() = grant.relabel_segment;
+        *policy.headers.write_ok() = grant.upstream_headers.into_iter().collect();
+        *policy.relabel_segment.write_ok() = grant.relabel_segment;
         policy.allow_private.store(grant.allow_private, Ordering::Relaxed);
         // PXY-2: record the resolved client knobs so proxy.rs selects the matching upstream client per hop.
         policy.connect_timeout_ms.store(grant.proxy_config.connect_timeout_ms, Ordering::Relaxed);
@@ -550,7 +558,7 @@ impl AppState {
         // P3.1/RSL: the per-stream knobs (null → 0 → disabled). P3.2/DST: the output format.
         policy.read_timeout_ms.store(grant.proxy_config.read_timeout_ms.unwrap_or(0), Ordering::Relaxed);
         policy.buffer_size_kb.store(grant.proxy_config.buffer_size_kb.unwrap_or(0), Ordering::Relaxed);
-        *policy.output_format.write().unwrap() = grant.proxy_config.output_format.clone();
+        *policy.output_format.write_ok() = grant.proxy_config.output_format.clone();
         // SIR: the opt-in master-reorder flag (proxy.rs gates it to the /api/ext/v1 mount).
         policy.stream_inf_redux.store(grant.proxy_config.stream_inf_redux, Ordering::Relaxed);
         // FOG: the failover knobs (per-playlist resolved, per-source applied like every other knob).
@@ -560,7 +568,7 @@ impl AppState {
             .store(grant.proxy_config.failover_on_definite_error, Ordering::Relaxed);
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
-                policy.hosts.write().unwrap().insert(h.to_lowercase());
+                policy.hosts.write_ok().insert(h.to_lowercase());
             }
         }
         crate::log::info("resolve", &rid, || {
@@ -571,8 +579,8 @@ impl AppState {
             format!(
                 "grant: target={} policy={policy_key} relabel={} outputFormat={} streamInfRedux={} connectTimeout={}ms maxRedirects={}{failover}",
                 crate::proxy::host_of(&grant.target),
-                policy.relabel_segment.read().unwrap().as_deref().unwrap_or("passthrough"),
-                policy.output_format.read().unwrap(),
+                policy.relabel_segment.read_ok().as_deref().unwrap_or("passthrough"),
+                policy.output_format.read_ok(),
                 policy.stream_inf_redux.load(Ordering::Relaxed),
                 policy.connect_timeout_ms.load(Ordering::Relaxed),
                 policy.max_redirects.load(Ordering::Relaxed),
@@ -592,10 +600,18 @@ impl AppState {
     /// message)) on deny — the exact 401/403 + plain text the sidecar-mode streamGate would have returned.
     /// FAILS CLOSED (403) and does NOT cache when Node is unreachable, so a transient blip re-checks next request
     /// rather than blocking for the whole TTL — consistent with entry resolve, which also can't proceed sans Node.
-    pub async fn authorize(&self, token: &str, source: &str) -> Result<Option<String>, (u16, String)> {
-        let key = (token.to_string(), source.to_string());
+    pub async fn authorize(
+        &self,
+        token: &str,
+        source: &str,
+        pl: Option<&str>,
+    ) -> Result<Option<String>, (u16, String)> {
+        // `pl` is part of the KEY, not just the request: it selects the playlist whose data-plane config Node
+        // applies, and Node gates it against the user's playlist access. Keying on (token, source) alone would
+        // let one authorized `pl` mint a cached ALLOW that a different `pl` then rides for the rest of the TTL.
+        let key = (token.to_string(), source.to_string(), pl.unwrap_or_default().to_string());
         {
-            let cache = self.auth_cache.lock().unwrap();
+            let cache = self.auth_cache.lock_ok();
             if let Some(d) = cache.get(&key) {
                 if d.expires > Instant::now() {
                     return if d.allowed {
@@ -606,12 +622,12 @@ impl AppState {
                 }
             }
         }
-        let (allowed, status, message, username) = match self.authorize_remote(token, source).await {
+        let (allowed, status, message, username) = match self.authorize_remote(token, source, pl).await {
             Some(v) => v,
             None => return Err((403, "Forbidden: authorization unavailable".to_string())),
         };
         {
-            let mut cache = self.auth_cache.lock().unwrap();
+            let mut cache = self.auth_cache.lock_ok();
             if cache.len() >= AUTH_CACHE_MAX {
                 let now = Instant::now();
                 cache.retain(|_, d| d.expires > now);
@@ -638,8 +654,13 @@ impl AppState {
 
     /// Ask Node for a fresh gate decision. Returns (allowed, status, message, username) or None on any transport/
     /// parse failure (→ the caller fails closed). HTTP stays 2xx for both allow and deny — the decision is the body.
-    async fn authorize_remote(&self, token: &str, source: &str) -> Option<(bool, u16, String, Option<String>)> {
-        let body = serde_json::json!({ "token": token, "source": source });
+    async fn authorize_remote(
+        &self,
+        token: &str,
+        source: &str,
+        pl: Option<&str>,
+    ) -> Option<(bool, u16, String, Option<String>)> {
+        let body = serde_json::json!({ "token": token, "source": source, "pl": pl });
         let resp = self
             .client
             .post(format!("{}/api/internal/authorize", self.node_url))

@@ -89,15 +89,17 @@ async fn edge_stream(state: AppState, peer: SocketAddr, req: Request, source: St
     // Pull the token + synthesized identity from the request BEFORE the gate await ends the header borrow.
     // On the public edge inbound `x-masq-*` are IGNORED (a public client could forge them) — identity is
     // derived server-side: ip from XFF-or-peer, ua from the real User-Agent, username from the gate.
-    let (token, ip, ua) = {
+    let (token, pl, ip, ua) = {
         let headers = req.headers();
-        let (t, _pl, _e) = parse_query(&query);
-        (t.unwrap_or_default(), client_ip(headers, peer), header_str(headers, "user-agent"))
+        let (t, p, _e) = parse_query(&query);
+        (t.unwrap_or_default(), p, client_ip(headers, peer), header_str(headers, "user-agent"))
     };
 
     // The per-request stream-token gate (auth cache → Node). Runs on ENTRY and every HOP, so revocation takes
     // effect within the cache TTL. Deny → the exact 401/403 + plain text the sidecar-mode streamGate returns.
-    let username = match state.authorize(&token, &source).await {
+    // `pl` rides along because it selects the playlist's data-plane config Node-side, so it is part of what is
+    // being authorized — and therefore part of the cache key.
+    let username = match state.authorize(&token, &source, pl.as_deref()).await {
         Ok(u) => {
             log::trace("edge", "", || format!("stream-token gate ALLOW src={source} user={}", u.as_deref().unwrap_or("-")));
             u

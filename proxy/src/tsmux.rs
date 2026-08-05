@@ -31,6 +31,7 @@ use url::Url;
 use crate::log;
 use crate::proxy::{build_headers, failover_walk, fetch_with_retry, is_private_host, WalkOutcome, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, SourcePolicy};
+use crate::sync::RwExt;
 
 /// Everything the TS producer needs to follow a stream + attribute its telemetry. Cloned out of the proxy
 /// handler at hand-off (the handler returns immediately; the producer runs detached).
@@ -327,7 +328,7 @@ async fn ts_producer(
                 if is_private_host(h) {
                     continue;
                 }
-                ctx.policy.hosts.write().unwrap().insert(h.to_lowercase());
+                ctx.policy.hosts.write_ok().insert(h.to_lowercase());
             }
             log::trace("tsmux", &ctx.rid, || format!("TS segment seq={seq} → {}", crate::proxy::host_of(seg_url.as_str())));
             match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-segment", MAX_UPSTREAM_RETRIES)

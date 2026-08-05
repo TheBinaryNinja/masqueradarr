@@ -22,6 +22,7 @@ mod probe;
 mod proxy;
 mod state;
 mod stream;
+mod sync;
 mod tsmux;
 
 use axum::{
