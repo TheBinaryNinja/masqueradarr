@@ -103,6 +103,22 @@ pub async fn serve_stream(
     if source.is_empty() {
         return text(400, "bad request: missing source");
     }
+    // S3/ORIGIN segment: `<source>/o/<enc-entry>/<generation>-<seq>.ts`. Handled BEFORE everything below
+    // because it is answered entirely from the ring — no resolve, no upstream fetch, no Node round-trip.
+    // (That also means it must never reach buildGrant's stored-entry gate, which would reject it as an
+    // `unrecognized_entry` — a ring segment is not a channel's streamEntryUrl.)
+    if let Some(("o", tail)) = rest.split_once('/') {
+        let (enc_entry, file) = match tail.rsplit_once('/') {
+            Some(p) => p,
+            None => return text(400, "bad request: malformed origin segment path"),
+        };
+        let entry = match dec(enc_entry) {
+            Some(s) => s,
+            None => return text(400, "bad request: malformed encoded url"),
+        };
+        let rid = log::rid(source, &entry);
+        return crate::origin::serve_segment(&state, source, &entry, file, &id, &rid).await;
+    }
     // HOP if the segment after the source is the `h/` marker; else ENTRY.
     let (is_hop, encoded) = match rest.split_once('/') {
         Some(("h", e)) => (true, e),
@@ -234,6 +250,29 @@ pub async fn serve_stream(
             }
         }
     };
+
+    // S3/ORIGIN — the ENTRY is answered from OUR ring, not by proxying the upstream manifest. Dispatched here,
+    // AFTER the resolve (which the ingest needs anyway and which is target-cached) but BEFORE the upstream
+    // fetch below: an origin entry must not fetch upstream at all, or every client poll would re-hit the
+    // provider and defeat the whole point of ingesting once.
+    //
+    // `outputFormat: 'ts'` deliberately still falls through to the passthrough concatenator — the ring-backed
+    // TS renderer is Phase 3. So origin currently changes the HLS shape only.
+    if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) && policy.output_format.read_ok().as_str() == "hls" {
+        log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
+        return crate::origin::serve_entry(
+            &state,
+            &policy,
+            mount_path,
+            source,
+            &stream_entry,
+            token.as_deref(),
+            pl.as_deref(),
+            &Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() },
+            &rid,
+        )
+        .await;
+    }
 
     // SSRF gate. A HOP is a client-supplied child URL, so it must be IN the observational allowlist. An ENTRY
     // target is resolve output that seeds that allowlist, so membership is meaningless there — but it still
@@ -427,10 +466,10 @@ pub async fn serve_stream(
             return raw(200, "application/octet-stream", raw_body.to_vec());
         }
         let text_body = String::from_utf8_lossy(&raw_body).into_owned();
-        // S3/ORIGIN Phase 1 — INGEST ONLY, no client surface yet. When the proxyconfig opts this playlist into
-        // origin mode, an ENTRY request starts (or keeps alive) the channel's single refcounted ingest, which
-        // fills the ring in the background. What the client gets here is UNCHANGED — the raw-TS / HLS-rewrite
-        // paths below still serve it. Phase 2 swaps the response over to the ring-backed renderers.
+        // S3/ORIGIN with `outputFormat: 'ts'` — INGEST ONLY until Phase 3. The HLS shape already returned
+        // above (served from the ring); raw TS still comes from the passthrough concatenator below, so all
+        // this does is keep the channel's ingest warm and its ring filling. When Phase 3 lands the ring-backed
+        // TS renderer, this block goes away with it.
         //
         // The lease is held only for THIS request; the ingest then survives on its idle grace window, which a
         // polling client keeps refreshing on every entry poll. That is deliberate: it means an abandoned
@@ -937,7 +976,7 @@ pub(crate) fn text(code: u16, msg: &str) -> Response {
         .unwrap()
 }
 
-fn raw(code: u16, ct: &str, bytes: Vec<u8>) -> Response {
+pub(crate) fn raw(code: u16, ct: &str, bytes: Vec<u8>) -> Response {
     Response::builder()
         .status(StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY))
         .header("content-type", ct)

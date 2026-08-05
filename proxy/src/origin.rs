@@ -681,6 +681,214 @@ async fn fetch_segment(
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+// SIDE-2 — the renderers. Everything below reads the ring and writes to a client; nothing here touches the
+// upstream. Logged under `oop` so an egress problem is never confused with an ingest one.
+// ─────────────────────────────────────────────────────────────────────────────────────────────────────────
+
+/// How long an entry request waits for a cold ring to reach `MIN_SEGMENTS` before giving up.
+/// ~3 target durations is the unavoidable cost of starting an HLS window from nothing; beyond this the
+/// upstream is presumed unhealthy and the client gets an honest 503 rather than an unplayable manifest.
+const READY_TIMEOUT: Duration = Duration::from_secs(20);
+
+/// Format a SystemTime as RFC3339 UTC (`2026-08-05T12:36:41.433Z`) for `#EXT-X-PROGRAM-DATE-TIME`.
+///
+/// Hand-rolled rather than pulling in a date crate for one call site: this is the only place the data plane
+/// formats a timestamp. Uses Howard Hinnant's civil-from-days algorithm, which is exact for all proleptic
+/// Gregorian dates and needs no tables.
+fn fmt_rfc3339(t: SystemTime) -> String {
+    let d = t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default();
+    let secs = d.as_secs() as i64;
+    let millis = d.subsec_millis();
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    // civil_from_days: shift the epoch to 0000-03-01 so leap days land at the end of the era.
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = doy - (153 * mp + 2) / 5 + 1;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    let year = if month <= 2 { y + 1 } else { y };
+    format!("{year:04}-{month:02}-{day:02}T{h:02}:{mi:02}:{s:02}.{millis:03}Z")
+}
+
+/// Render the AUTHORED media playlist for a window — the whole point of S3.
+///
+/// Pure so the "clean" contract is testable without a network: the output must contain NO upstream host,
+/// path, session id or query; NO `#EXT-X-KEY`; NO vendor tags; and NO `/h/` hop URIs. Only our own sequence,
+/// our own segment paths, and the structural HLS tags that describe OUR timeline.
+#[allow(clippy::too_many_arguments)]
+fn render_media_playlist(
+    window: &[Arc<Segment>],
+    target_duration: f64,
+    mount_path: &str,
+    source: &str,
+    entry: &str,
+    generation: u64,
+    token: Option<&str>,
+    pl: Option<&str>,
+) -> String {
+    // TARGETDURATION must be an integer >= the longest #EXTINF, or players reject the playlist.
+    let longest = window.iter().fold(target_duration, |m, s| if s.duration > m { s.duration } else { m });
+    let td = longest.ceil().max(1.0) as u64;
+    let mut out = String::with_capacity(256 + window.len() * 160);
+    out.push_str("#EXTM3U\n#EXT-X-VERSION:3\n");
+    out.push_str(&format!("#EXT-X-TARGETDURATION:{td}\n"));
+    // OUR sequence — the ring base. Never the upstream's.
+    let base = window.first().map(|s| s.seq).unwrap_or(0);
+    out.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{base}\n"));
+    if let Some(first) = window.first() {
+        out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(first.pdt)));
+    }
+    let enc_entry = crate::manifest::enc(entry);
+    for seg in window {
+        // A splice inside the window is signalled, not hidden — that is L1 by decision: "clean" means no
+        // visible origin/encryption/hops, not a single unbroken timeline. Players handle this tag correctly.
+        if seg.discontinuity {
+            out.push_str("#EXT-X-DISCONTINUITY\n");
+        }
+        out.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
+        out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{}.ts", seg.seq));
+        // The token MUST ride on every segment URI: our paths are guessable by construction, so this is what
+        // keeps per-account governance (streamGate) meaningful. `pl` rides along for config resolution.
+        if let Some(t) = token {
+            out.push_str(&format!("?token={t}"));
+            if let Some(p) = pl {
+                out.push_str(&format!("&pl={p}"));
+            }
+        } else if let Some(p) = pl {
+            out.push_str(&format!("?pl={p}"));
+        }
+        out.push('\n');
+    }
+    out
+}
+
+/// Wait for a cold ring to become playable. Returns false on timeout.
+async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> bool {
+    let deadline = Instant::now() + READY_TIMEOUT;
+    loop {
+        if origin.ring_depth() >= MIN_SEGMENTS {
+            return true;
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() {
+            log::warn("oop", rid, || {
+                format!("ring still short ({}/{MIN_SEGMENTS}) after {READY_TIMEOUT:?} — refusing to serve an unplayable window", origin.ring_depth())
+            });
+            return false;
+        }
+        // Woken by the ingest on every push; the timeout bounds a channel that never produces one.
+        let _ = tokio::time::timeout(left.min(Duration::from_secs(1)), origin.wait_for_segment()).await;
+    }
+}
+
+/// SIDE-2 ENTRY: subscribe, wait for a playable window, and serve OUR manifest.
+///
+/// The lease is dropped when this returns — a polling client renews it on every poll, and the ingest's idle
+/// grace covers the gaps. That keeps lifetime management in one place (the grace window) rather than
+/// splitting it between the request path and a teardown hook.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_entry(
+    state: &AppState,
+    policy: &Arc<SourcePolicy>,
+    mount_path: &str,
+    source: &str,
+    entry: &str,
+    token: Option<&str>,
+    pl: Option<&str>,
+    id: &crate::proxy::Identity,
+    rid: &str,
+) -> axum::response::Response {
+    let lease = subscribe(state, source, entry, pl, policy);
+    let origin = lease.origin().clone();
+    if !wait_ready(&origin, rid).await {
+        return crate::proxy::text(503, "stream warming up: no playable window yet");
+    }
+    let window = origin.window();
+    let body = render_media_playlist(
+        &window,
+        origin.target_duration(),
+        mount_path,
+        source,
+        entry,
+        origin.generation(),
+        token,
+        pl,
+    );
+    log::info("oop", rid, || {
+        format!("origin manifest served ({} segment(s), {} bytes)", window.len(), body.len())
+    });
+    // A manifest poll is the viewer heartbeat, exactly as on the proxy path — the difference is that these
+    // bytes came from RAM, so no upstream fetch was involved and none is reported.
+    state.report(serde_json::json!({
+        "kind": "viewer", "source": source, "entryUrl": entry,
+        "ip": id.ip, "ua": id.ua, "username": id.username,
+        "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
+        "bytes": body.len() as u64,
+    }));
+    crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes())
+}
+
+/// SIDE-2 SEGMENT: serve one ring segment from RAM.
+///
+/// `file` is `<generation>-<seq>.ts`. The generation guard is what makes a stale client URL fail cleanly
+/// after a failover reset instead of being answered with a different timeline's bytes.
+pub async fn serve_segment(
+    state: &AppState,
+    source: &str,
+    entry: &str,
+    file: &str,
+    id: &crate::proxy::Identity,
+    rid: &str,
+) -> axum::response::Response {
+    let stem = file.strip_suffix(".ts").unwrap_or(file);
+    let (gen_s, seq_s) = match stem.split_once('-') {
+        Some(p) => p,
+        None => return crate::proxy::text(400, "bad request: malformed segment name"),
+    };
+    let (want_gen, want_seq) = match (gen_s.parse::<u64>(), seq_s.parse::<u64>()) {
+        (Ok(g), Ok(s)) => (g, s),
+        _ => return crate::proxy::text(400, "bad request: malformed segment name"),
+    };
+    let key = crate::state::target_key(source, entry);
+    let origin = match state.origins().lock_ok().get(&key) {
+        Some(o) => o.clone(),
+        None => {
+            log::warn("oop", rid, || format!("segment {file}: no live ingest for {source}"));
+            return crate::proxy::text(404, "not found: no live ingest");
+        }
+    };
+    if want_gen != origin.generation() {
+        log::trace("oop", rid, || {
+            format!("segment {file}: stale generation (now {}) — 404", origin.generation())
+        });
+        return crate::proxy::text(404, "not found: stale segment");
+    }
+    let seg = origin.window().into_iter().find(|s| s.seq == want_seq);
+    let seg = match seg {
+        Some(s) => s,
+        None => {
+            log::trace("oop", rid, || format!("segment {file}: evicted from the ring — 404"));
+            return crate::proxy::text(404, "not found: segment evicted");
+        }
+    };
+    let n = seg.bytes.len() as u64;
+    log::trace("oop", rid, || format!("segment seq={want_seq} served from ring ({n} bytes)"));
+    // Egress accounting. Ingest bytes are reported separately under kind:"iop" and must never be folded in
+    // here — one upstream byte can serve N viewers, so conflating them would over-count by a factor of N.
+    state.report(serde_json::json!({
+        "kind": "bytes", "source": source, "entryUrl": entry,
+        "ip": id.ip, "ua": id.ua, "username": id.username, "bytes": n,
+    }));
+    crate::proxy::raw(200, "video/mp2t", seg.bytes.to_vec())
+}
+
 /// Emit the Side-1 telemetry event. Distinct `kind` from every egress event so Node can attribute ingest
 /// health separately — ingest bytes must NEVER be folded into the egress byte counters, or one upstream byte
 /// serving N viewers would be counted N+1 times.
@@ -846,6 +1054,110 @@ mod tests {
             boundary_before(&prev, &segref("s10.ts", Some("https://k/a.key"), false), 10, Some(&u)),
             None
         );
+    }
+
+    // ── SIDE-2 renderer ──────────────────────────────────────────────────────────────────────────────────
+    // The upstream shape these are checked against is the REAL pluto media playlist observed live: an
+    // AES-128 key line per segment, clip paths under siloh-ns1.plutotv.net, and #PLUTO-* trailer tags.
+
+    fn window(n: usize, disc_at: &[usize]) -> Vec<Arc<Segment>> {
+        (0..n)
+            .map(|i| {
+                Arc::new(Segment {
+                    seq: 100 + i as u64,
+                    duration: 5.0,
+                    bytes: Bytes::from(vec![0x47u8; 10]),
+                    discontinuity: disc_at.contains(&i),
+                    pdt: SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433),
+                })
+            })
+            .collect()
+    }
+
+    fn render(w: &[Arc<Segment>]) -> String {
+        render_media_playlist(
+            w,
+            5.0,
+            "/api/ext/v1",
+            "pluto",
+            "pluto://us_east/5b4e96a0423e067bd6df6901",
+            0,
+            Some("tok123"),
+            Some("testplaylist"),
+        )
+    }
+
+    /// The DECIDED definition of "clean": no visible origin, encryption, or hops.
+    #[test]
+    fn authored_manifest_meets_the_clean_checklist() {
+        let m = render(&window(3, &[]));
+        assert!(!m.contains("plutotv.net"), "1. no upstream host");
+        assert!(!m.contains("siloh"), "1. no upstream path");
+        assert!(!m.contains("jwt=") && !m.contains("sid="), "1. no upstream session/query");
+        assert!(!m.contains("EXT-X-KEY"), "2. segments are delivered decrypted");
+        assert!(!m.contains("PLUTO-"), "3. no vendor tags");
+        assert!(!m.contains("/h/"), "4. no hop URIs — every path is ours");
+        assert!(m.contains("#EXT-X-MEDIA-SEQUENCE:100"), "5. our sequence, not upstream's");
+    }
+
+    #[test]
+    fn authored_manifest_has_the_expected_structure() {
+        let m = render(&window(3, &[]));
+        assert!(m.starts_with("#EXTM3U\n#EXT-X-VERSION:3\n"));
+        assert!(m.contains("#EXT-X-TARGETDURATION:5"));
+        assert!(m.contains("#EXT-X-PROGRAM-DATE-TIME:2026-08-05T"));
+        assert_eq!(m.matches("#EXTINF:5.000,").count(), 3);
+        // Our segment path shape: /<mount>/<source>/o/<enc-entry>/<generation>-<seq>.ts
+        assert!(m.contains("/api/ext/v1/pluto/o/"));
+        assert!(m.contains("/0-100.ts?token=tok123&pl=testplaylist"));
+        assert!(m.contains("/0-102.ts?token=tok123&pl=testplaylist"));
+    }
+
+    /// The token on every segment URI is what keeps per-account governance meaningful, since our paths are
+    /// guessable by construction. Losing it would silently turn the ring into an open endpoint.
+    #[test]
+    fn every_segment_uri_carries_the_token() {
+        let m = render(&window(4, &[]));
+        let uris: Vec<&str> = m.lines().filter(|l| l.contains("/o/")).collect();
+        assert_eq!(uris.len(), 4);
+        assert!(uris.iter().all(|u| u.contains("token=tok123")), "no segment may be servable without the token");
+    }
+
+    #[test]
+    fn discontinuity_is_emitted_before_its_segment_only() {
+        let m = render(&window(3, &[1]));
+        assert_eq!(m.matches("#EXT-X-DISCONTINUITY").count(), 1);
+        let lines: Vec<&str> = m.lines().collect();
+        let i = lines.iter().position(|l| *l == "#EXT-X-DISCONTINUITY").unwrap();
+        // The tag must sit immediately before the flagged segment's #EXTINF, not anywhere else.
+        assert!(lines[i + 1].starts_with("#EXTINF:"));
+        assert!(lines[i + 2].contains("/0-101.ts"));
+    }
+
+    #[test]
+    fn target_duration_is_an_integer_ceiling_of_the_longest_segment() {
+        // A playlist whose TARGETDURATION is below any #EXTINF is rejected by players.
+        let mut w = window(2, &[]);
+        w[1] = Arc::new(Segment { duration: 5.005, ..(*w[1]).clone() });
+        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None);
+        assert!(m.contains("#EXT-X-TARGETDURATION:6"), "must ceil above the longest EXTINF");
+    }
+
+    #[test]
+    fn generation_appears_in_segment_paths_so_stale_urls_can_404() {
+        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None);
+        assert!(m.contains("/7-100.ts"), "generation is part of the path");
+    }
+
+    #[test]
+    fn rfc3339_formats_a_known_instant() {
+        // 1785931853.433 → 2026-08-05T12:10:53.433Z (verified against `date -u -r 1785931853`).
+        let t = SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433);
+        assert_eq!(fmt_rfc3339(t), "2026-08-05T12:10:53.433Z");
+        assert_eq!(fmt_rfc3339(SystemTime::UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
+        // A leap day — the case a naive day/month calculation gets wrong.
+        let leap = SystemTime::UNIX_EPOCH + Duration::from_secs(1_709_164_800);
+        assert_eq!(fmt_rfc3339(leap), "2024-02-29T00:00:00.000Z");
     }
 
     #[test]
