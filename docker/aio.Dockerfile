@@ -47,7 +47,9 @@ FROM ${NODE_IMAGE} AS spa-build
 WORKDIR /spa
 COPY package.json package-lock.json ./
 RUN npm ci
-COPY tsconfig.json tsconfig.node.json vite.config.ts index.html ./
+# Both HTML entry points (vite.config.ts build.rollupOptions.input): index.html = the SPA,
+# player.html = the Ultimate Player window. Listed by name, so a new entry must be added here too.
+COPY tsconfig.json tsconfig.node.json vite.config.ts index.html player.html ./
 COPY src/ ./src/
 # APP_VERSION = the published image tag (passed by the docker-build-all skill). Baked into the SPA as
 # import.meta.env.VITE_APP_VERSION so the sidebar shows which release is running; 'dev' if unset.

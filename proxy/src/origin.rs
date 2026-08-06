@@ -64,6 +64,14 @@ const IDLE_TICK: Duration = Duration::from_secs(5);
 /// re-resolves (Node re-runs `resolveStream`, driving mirror rotation) rather than spinning on a dead target.
 const MAX_EMPTY_POLLS: u32 = 5;
 
+/// …but re-resolving the SAME candidate only recovers an expired token or a rotated mirror. After this many
+/// consecutive failures to produce a playable window, the ingest advances the stream's failover cursor
+/// instead (`AppState::resolve_advance`) so it reaches the source's alternate upstreams — dlhd's six player
+/// providers are independent, and a channel dropped by one of them is carried by another — and then the
+/// channel's configured backups. Without this an origin-mode stream can never fail over at all: it owns its
+/// own retry loop and never passes through the handler's `failover_walk`.
+const MEDIA_FAIL_ESCALATE: u32 = 2;
+
 /// One ingested segment, ready to serve verbatim. `bytes` is DECRYPTED — ciphertext never enters the ring, so
 /// a renderer never has to know whether the upstream was encrypted.
 // Phase 1 WRITES every field; Phase 2's renderers READ them (seq → #EXT-X-MEDIA-SEQUENCE, duration → #EXTINF,
@@ -335,6 +343,8 @@ async fn ingest(ctx: IngestCtx) {
     let mut key_cache: Option<(String, [u8; 16])> = None;
     let mut warned_floor = false;
     let mut media: Option<(Url, String)> = None;
+    // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
+    let mut media_failures: u32 = 0;
     let mut last_idle_check = Instant::now();
 
     loop {
@@ -359,7 +369,21 @@ async fn ingest(ctx: IngestCtx) {
         let (media_url, media_body) = match media.take() {
             Some(m) => m,
             None => {
-                let resolved = resolve_media(&ctx, &rid).await;
+                // Escalate once the pinned candidate has failed to produce a playable window MEDIA_FAIL_ESCALATE
+                // times running (~a few seconds at the 2 s retry cadence). Below that we re-resolve the same
+                // candidate, which is what recovers an expired token or a rotated dlhd mirror.
+                let escalate = media_failures >= MEDIA_FAIL_ESCALATE;
+                if escalate {
+                    log::warn("iop", &rid, || {
+                        format!("{media_failures} consecutive resolve/ingest failures — advancing to the next candidate")
+                    });
+                    // The counter means "failures since the LAST escalation", not "failures ever": without
+                    // this reset a channel that is dead everywhere would advance on every single pass,
+                    // turning the 2 s retry loop into a hot walk over every candidate (and, for dlhd, a full
+                    // provider re-walk per step). Each candidate now gets its own MEDIA_FAIL_ESCALATE tries.
+                    media_failures = 0;
+                }
+                let resolved = resolve_media(&ctx, &rid, escalate).await;
                 // A fresh resolve may point at a different upstream; the previous window's bytes are from a
                 // different timeline, so drop them rather than splice silently.
                 if resolved.is_some() && ctx.origin.ring_depth() > 0 {
@@ -380,6 +404,7 @@ async fn ingest(ctx: IngestCtx) {
                         continue;
                     }
                     None => {
+                        media_failures = media_failures.saturating_add(1);
                         report_iop(&ctx, "resolve_failed");
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         continue;
@@ -495,6 +520,7 @@ async fn ingest(ctx: IngestCtx) {
 
         if ingested_this_poll > 0 {
             empty_polls = 0;
+            media_failures = 0; // this candidate is producing media — it has earned the cursor back
             report_iop(&ctx, "ok");
         } else {
             empty_polls += 1;
@@ -504,6 +530,7 @@ async fn ingest(ctx: IngestCtx) {
                 });
                 report_iop(&ctx, "stalled");
                 empty_polls = 0;
+                media_failures = media_failures.saturating_add(1);
                 media = None;
                 continue;
             }
@@ -527,6 +554,7 @@ async fn ingest(ctx: IngestCtx) {
             }
             _ => {
                 log::warn("iop", &rid, || "media playlist refresh failed — re-resolving".to_string());
+                media_failures = media_failures.saturating_add(1);
                 media = None;
             }
         }
@@ -551,11 +579,17 @@ async fn ingest(ctx: IngestCtx) {
 
 /// Resolve the entry and walk to the MEDIA playlist to follow (peeking the top variant when the entry is a
 /// master). `None` when nothing usable is reachable — the caller backs off and retries.
-async fn resolve_media(ctx: &IngestCtx, rid: &str) -> Option<MediaSource> {
-    let (policy, target) = ctx
-        .state
-        .resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref())
-        .await
+async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<MediaSource> {
+    // `escalate` = the pinned candidate has failed us repeatedly, so advance the failover cursor instead of
+    // re-resolving the same one. The ingest loop drives its own retries and never enters the handler's
+    // failover_walk, so this is the ONLY way an origin-mode stream reaches the source's alternate upstreams
+    // (dlhd's other player providers) or the channel's configured backups.
+    let resolved = if escalate {
+        ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+    } else {
+        ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+    };
+    let (policy, target) = resolved
         .map_err(|e| {
             log::warn("iop", rid, || format!("resolve failed: {e}"));
         })

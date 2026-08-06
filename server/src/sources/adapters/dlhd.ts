@@ -29,7 +29,7 @@ import {
   playerReferer,
 } from './dlhd/config.js';
 import { parseChannels } from './dlhd/parseDirectory.js';
-import { resolveStreamUrl } from './dlhd/resolveStream.js';
+import { resolveStreamUrl, DlhdResolveError } from './dlhd/resolveStream.js';
 import { getResolution, ensureMirror, reprobeMirror } from './dlhd/mirrorDirectory.js';
 import type { SourceAdapter, ArtifactType, ResolveStreamOptions } from '../types.js';
 import type { DlhdRawChannel } from './dlhd/parseDirectory.js';
@@ -167,8 +167,10 @@ const dlhdAdapter: SourceAdapter = {
   },
 
   // ── stream resolution ────────────────────────────────────────────────────────────
-  // DaddyLive offers Player 1..N per channel (redundant embeds of the one feed) → the operator can prefer one
-  // (source default + per-channel override) and resolveStream falls back through the rest. See resolveStream.ts.
+  // DaddyLive offers Player 1..N per channel, each an INDEPENDENT third-party provider (not redundant embeds
+  // of one feed — see dlhd/config.ts PLAYER_PREFIXES). They don't all carry every channel, so the operator can
+  // prefer one (source default + per-channel override) and resolveStream walks the rest on failure, remembers
+  // the winner, and burns the losers. See resolveStream.ts + playerMemory.ts.
   playerSelectable: true,
   isEntryUrl(url: string) {
     try {
@@ -179,17 +181,26 @@ const dlhdAdapter: SourceAdapter = {
     }
   },
   async resolveStream(entryUrl: string, opts?: ResolveStreamOptions) {
-    // A connection-level failure means the active mirror is unreachable (dlhd domains rotate / get
-    // sinkholed) — distinct from a clean "not live" (no player iframe / no signed master in the page).
-    const looksUnreachable = (msg: string): boolean =>
-      /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|UND_ERR/i.test(msg);
+    // A connection-level failure against the MIRROR means the active mirror is unreachable (dlhd domains
+    // rotate / get sinkholed) — distinct from a clean "not live" (no embed / no signed playlist in it).
+    // resolveStreamUrl decides this explicitly (DlhdResolveError.mirrorUnreachable) rather than by
+    // sniffing the message: its aggregated text now also carries the PROVIDERS' connection errors, and a
+    // dead third-party embed host says nothing about the mirror. The regex stays as the fallback for a
+    // throw from anywhere else in the chain (e.g. ensureMirror itself).
+    const looksUnreachable = (err: unknown): boolean =>
+      err instanceof DlhdResolveError
+        ? err.mirrorUnreachable
+        : /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|UND_ERR/i.test(
+            String((err as Error)?.message ?? ''),
+          );
     try {
       await ensureMirror();
-      const { masterUrl } = await resolveStreamUrl(entryUrl, opts); // 3-hop scrape; seeds the dynamic allowlist
-      return { masterUrl };
+      // 3-hop scrape + player walk; seeds the dynamic allowlist and remembers the winning player.
+      const { masterUrl, playerIndex, playerCount } = await resolveStreamUrl(entryUrl, opts);
+      return { masterUrl, playerIndex, playerCount };
     } catch (err) {
       const msg = (err as Error).message;
-      if (!looksUnreachable(msg)) throw err; // a real "not live" / layout error already reads clearly
+      if (!looksUnreachable(err)) throw err; // a real "not live" / layout error already reads clearly
 
       // The active mirror looks dead. Don't strand the stream until the 30-min mirror TTL lapses: force a
       // fresh directory re-probe NOW and, if a live mirror gets committed, retry the resolve ONCE against it
@@ -199,11 +210,11 @@ const dlhdAdapter: SourceAdapter = {
       const res = await reprobeMirror().catch(() => null);
       if (res && !res.degraded) {
         try {
-          const { masterUrl } = await resolveStreamUrl(entryUrl, opts);
+          const { masterUrl, playerIndex, playerCount } = await resolveStreamUrl(entryUrl, opts);
           if (res.chosen !== deadBase) logger.ok('dlhd', `mirror failover: ${deadBase} → ${res.chosen}`);
-          return { masterUrl };
+          return { masterUrl, playerIndex, playerCount };
         } catch (retryErr) {
-          if (!looksUnreachable((retryErr as Error).message)) throw retryErr;
+          if (!looksUnreachable(retryErr)) throw retryErr;
           // still unreachable after failover → fall through to the actionable error below
         }
       }

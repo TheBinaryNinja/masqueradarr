@@ -7,7 +7,7 @@ import Segmented from './Segmented.vue';
 import GroupPicker from './GroupPicker.vue';
 import GroupManager from './GroupManager.vue';
 import TagPicker from './TagPicker.vue';
-import { type Channel } from '../data';
+import { playerSelectable, type Channel } from '../data';
 
 const props = defineProps<{
   channels: Channel[]; // the SELECTED channels being bulk-edited
@@ -33,7 +33,7 @@ const groupVal = ref<string>('');
 const clearEpg = ref(false);
 // DaddyLive-family (dlhd) player override for the selection. '' = leave unchanged; 0 = Auto (clear the
 // override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
-const supportsPlayer = computed(() => props.channels.some((c) => ['dlhd'].includes(c.origin ?? c.source)));
+const supportsPlayer = computed(() => props.channels.some((c) => playerSelectable(c)));
 const playerVal = ref<number | ''>('');
 
 // Tags — one tri-state picker over the selection (matches the single-channel editor's chip layout). Each tag's

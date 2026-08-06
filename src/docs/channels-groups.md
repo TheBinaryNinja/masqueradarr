@@ -37,6 +37,11 @@ live picture of the channel so you can judge it before you publish it:
 
 - An embedded **player** that streams the channel through the proxy.
 - A live **bitrate chart** so you can watch the stream's health in real time.
+
+  With **Settings → Video Config → Video player** set to **Ultimate**, these two are replaced by a single
+  **Launch Ultimate Video Player** button that opens the channel in a dedicated player window instead —
+  everything below (Technical Details onward) is unchanged.
+
 - **Technical Details** probed from the stream — video and audio codecs, frame rate, and container. These
   appear once the channel has been played and probed at least once. The resolved **stream URL** is always
   shown here — read-only for built-in sources, an editable link input for custom playlists.

@@ -2,6 +2,7 @@ import { getSource } from '../sources/registry.js';
 import { resolveProxyConfig } from '../proxyconfig/resolve.js';
 import type { RuntimeProxyConfig } from '../proxyconfig/translate.js';
 import { PlaylistChannel, type PlaylistChannelDoc } from '../models/PlaylistChannel.js';
+import type { ResolveStreamOptions } from '../sources/types.js';
 import { noteFailoverServing } from '../sources/core/streamTelemetry.js';
 import { logger } from '../sources/core/logger.js';
 import { logMilestone, logTrace } from '../logs/tier.js';
@@ -95,12 +96,16 @@ async function channelPlayerPref(source: string, url: string, pl?: string): Prom
 /**
  * Build the per-stream grant.
  *
- * `attempt` selects the failover candidate: undefined = a NON-failover caller (probeAll — always resolves
- * the requested channel itself and never touches failover attribution); 0 = the data plane's primary
- * attempt (the requested channel; clears any stale failover attribution); >= 1 = the requested channel's
- * Nth ordered failover CHILD (attempt 1 = children[0]), resolved via the CHILD's own adapter. When the
- * requested entry has no (more) candidates the reply is a distinct 410 `failover_exhausted` — Rust's
- * attempt loop terminates on it (a plain 502 means "this candidate failed, try the next").
+ * `attempt` selects the candidate:
+ *   · undefined — a NON-failover caller (probeAll): always resolves the requested channel itself, never
+ *     touches failover attribution, and does NOT get deep validation (its sweep cost stays as it was).
+ *   · 0 — the data plane's primary attempt (the requested channel; clears stale failover attribution).
+ *   · 1 on a `playerSelectable` source — the requested channel again, but through a DIFFERENT alternate
+ *     upstream (dlhd: a different one of DaddyLive's six independent player providers).
+ *   · beyond that — the requested channel's Nth ordered failover CHILD, resolved via the CHILD's own
+ *     adapter, indexed past whatever the alternate-upstream stage consumed.
+ * When the requested entry has no (more) candidates the reply is a distinct 410 `failover_exhausted` —
+ * Rust's attempt loop terminates on it (a plain 502 means "this candidate failed, try the next").
  */
 export async function buildGrant(
   source: string,
@@ -111,10 +116,23 @@ export async function buildGrant(
   const adapter = getSource(source);
   if (!adapter) return { ok: false, status: 404, error: 'unknown_source' };
 
-  // Failover fall-through: resolve the requested channel's Nth child instead. The attempt-0/undefined path
-  // below is byte-identical to the pre-failover seam — ZERO DB reads on the hot path, and the scheduled
-  // probe sweep keeps probing the actual channel (failover can never mask a dead parent as healthy).
-  if (attempt !== undefined && attempt >= 1) return buildFailoverGrant(source, url, pl, attempt);
+  // ALTERNATE-UPSTREAM STAGE (playerSelectable sources — dlhd). DaddyLive's "Player 1..6" are six
+  // INDEPENDENT embed providers, and which of them carries a given channel changes without notice, so the
+  // FIRST failover attempt re-resolves the SAME channel through a different provider before the data plane
+  // starts walking the operator's configured backups (a different real-world feed is the bigger hammer).
+  // ONE attempt is enough because the adapter's own resolve walks every remaining alternate internally —
+  // which also means the offset for child indexing is a CONSTANT, so children stay deterministically
+  // ordered with no per-channel bookkeeping in the seam.
+  const altAttempts = adapter.playerSelectable ? 1 : 0;
+  if (attempt !== undefined && attempt > altAttempts) {
+    return buildFailoverGrant(source, url, pl, attempt, altAttempts);
+  }
+  // `advance` = this is that alternate-upstream attempt: tell the adapter the upstream it last handed us
+  // died so it excludes it. `deep` = validate one level further before accepting an upstream; probeAll is
+  // the ONLY caller that omits `attempt` (the data plane always sends one), so deep validation rides the
+  // live path exclusively and the scheduled sweep's per-channel cost is unchanged.
+  const advance = attempt !== undefined && attempt >= 1;
+  const deep = attempt !== undefined;
 
   // SSRF guard: `url` is the entry taken VERBATIM from the request path, and Rust does NOT run ssrf_ok on the
   // trusted-entry hop (proxy.rs gates hops only) — so an arbitrary URL here would make the data plane fetch it
@@ -133,19 +151,37 @@ export async function buildGrant(
 
   let target = url;
   let isEntry = false;
+  let servingPlayer: { index: number; count: number } | null = null;
   try {
     if (adapter.isEntryUrl(url)) {
       isEntry = true;
-      // playerSelectable sources (dlhd/dami): read the per-channel player override; resolveStream applies the
-      // source-wide default when it's 0/unset, and falls back through the other players on failure.
-      const opts = adapter.playerSelectable
-        ? { player: await channelPlayerPref(source, url, pl) }
-        : undefined;
+      // playerSelectable sources (dlhd): read the per-channel player override; resolveStream applies the
+      // source-wide default when it's 0/unset, prefers the player it last saw work, and falls through the
+      // rest on failure.
+      const opts: ResolveStreamOptions = { deep };
+      if (adapter.playerSelectable) {
+        opts.player = await channelPlayerPref(source, url, pl);
+        opts.advance = advance;
+      }
       const resolved = await adapter.resolveStream(url, opts);
       target = resolved.masterUrl;
+      if (typeof resolved.playerIndex === 'number') {
+        servingPlayer = { index: resolved.playerIndex, count: resolved.playerCount ?? 0 };
+      }
+    }
+    if (advance && !servingPlayer) {
+      // Defensive: an advance attempt that produced no ALTERNATE would hand the data plane the same
+      // upstream that just died and be read as a recovery. 502 instead, so the walk moves to the children.
+      return { ok: false, status: 502, error: 'resolve_failed: no alternate upstream for this entry' };
     }
   } catch (err) {
-    return { ok: false, status: 502, error: `resolve_failed: ${(err as Error).message}` };
+    const msg = (err as Error).message;
+    if (advance) {
+      // Issue-level (≥1): the alternate-upstream stage is the last thing between a dead provider and the
+      // operator's configured backups, so its failure is worth surfacing at the quietest verbosity.
+      logger.warn('failover', `no alternate upstream for ${source} ${url.slice(0, 120)}: ${msg}`);
+    }
+    return { ok: false, status: 502, error: `resolve_failed: ${msg}` };
   }
 
   // The effective proxy config for this stream: the Custom app_<pl> override → the Default app → env defaults.
@@ -164,11 +200,37 @@ export async function buildGrant(
   const probed = adapter.proxy.relabelSegmentContentType('https://x/s.ts', RELABEL_PROBE, 'segment');
   const relabelSegment = probed && probed !== RELABEL_PROBE ? probed : null;
 
-  // An explicit attempt 0 is the data plane (re)trying the channel itself — any prior "child is serving"
-  // attribution is stale the moment this grant is built (a later failed fetch re-sets it via attempt 1).
-  if (attempt === 0) noteFailoverServing(source, url, null);
+  // Attribution. An alternate upstream is a failover in every sense the operator cares about — the channel
+  // it asked for is being carried by something other than its usual provider — so it rides the SAME
+  // telemetry/badge path as a failover-group child, naming the player instead of a sibling channel.
+  //
+  // Reported on a play-time `advance` AND whenever a primary resolve lands on anything but Player 1: with
+  // the resolver's sticky memory, a channel dropped by its default provider silently settles on another one
+  // and would otherwise look completely ordinary in Active Streams. Player 1 is DaddyLive's own default and
+  // the historical single path, so "not Player 1" is exactly the case worth surfacing.
+  // `attempt !== undefined` keeps probeAll out of this entirely (it resolves every channel on a schedule and
+  // must never touch a stream's failover attribution — same discriminator as `deep` above).
+  const failover =
+    attempt !== undefined && servingPlayer && (advance || servingPlayer.index !== 1)
+      ? {
+          attempt: attempt ?? 0,
+          total: servingPlayer.count,
+          candidateId: `${source}:player-${servingPlayer.index}`,
+          candidateName: `Player ${servingPlayer.index}`,
+        }
+      : null;
+  if (failover) {
+    noteFailoverServing(source, url, failover);
+    // Milestone (≥2): an alternate provider is now carrying the channel — the headline event, same tier as
+    // "serving backup N" below.
+    logMilestone('failover', `serving ${failover.candidateName} for ${source} ${url.slice(0, 120)}`);
+  } else if (attempt === 0) {
+    // An explicit attempt 0 is the data plane (re)trying the channel itself — any prior "something else is
+    // serving" attribution is stale the moment this grant is built (a later failed fetch re-sets it).
+    noteFailoverServing(source, url, null);
+  }
 
-  // P1 sources (dulo/dlhd/dami) are all public-CDN + private-IP-rejecting. A future LAN adapter (hdhomerun/
+  // P1 sources (dulo/dlhd) are all public-CDN + private-IP-rejecting. A future LAN adapter (hdhomerun/
   // local) will need a per-adapter signal here to allow private targets; hardcoded false is correct for now.
   return {
     ok: true,
@@ -179,7 +241,7 @@ export async function buildGrant(
     isEntry,
     proxyConfig,
     policySource: source,
-    failover: null,
+    failover,
   };
 }
 
@@ -192,7 +254,15 @@ async function buildFailoverGrant(
   url: string,
   pl: string | undefined,
   attempt: number,
+  /**
+   * How many earlier attempts the seam spent on the source's own alternate upstreams (see the
+   * alternate-upstream stage in buildGrant). Children are indexed by `attempt - offset` so their ordering
+   * is unaffected by that stage, while the wire/log `attempt` stays the data plane's own cursor value —
+   * otherwise Rust's log lines and Node's would disagree about which attempt is which.
+   */
+  offset = 0,
 ): Promise<ResolveGrant | ResolveError> {
+  const childIndex = attempt - offset;
   // Identify the requested channel as a failover PARENT. With ?pl (every exported line stamps it — the
   // owning playlist === the channel doc's `source`) the lookup is exact. The in-app player carries no ?pl,
   // and the same (adapter, entry URL) can back SEVERAL parent docs — the source playlist's own channel
@@ -230,7 +300,7 @@ async function buildFailoverGrant(
   )
     .sort({ failoverOrder: 1 })
     .lean<PlaylistChannelDoc[]>();
-  const cand = children[attempt - 1];
+  const cand = children[childIndex - 1];
   if (!cand) {
     // Every Active backup was tried and none established — the real terminal event. Issue-level (≥1): an
     // operator wants to know a stream fully exhausted its failover chain. Pairs with the Rust data-plane
@@ -248,7 +318,7 @@ async function buildFailoverGrant(
     // A 502 (not 410) so the data plane advances to the NEXT candidate rather than giving up.
     logger.warn(
       'failover',
-      `candidate ${attempt} ("${cand.tvg_name}") for ${parent.id}: unknown adapter '${candSource}'`,
+      `backup ${childIndex} (attempt ${attempt}) ("${cand.tvg_name}") for ${parent.id}: unknown adapter '${candSource}'`,
     );
     return { ok: false, status: 502, error: `resolve_failed: unknown candidate adapter '${candSource}'` };
   }
@@ -260,10 +330,12 @@ async function buildFailoverGrant(
       isEntry = true;
       // Honor the failover child's OWN player override (playerSelectable sources); cand is already loaded, so
       // no extra read. resolveStream falls back to the source default (0/unset) + the other players on failure.
-      const opts =
-        candAdapter.playerSelectable && typeof cand.playerPref === 'number' && cand.playerPref > 0
-          ? { player: cand.playerPref }
-          : undefined;
+      // A backup is a live establish like any other, so it gets the same deep validation as the primary —
+      // serving a backup that resolves but never streams would be the worst of both worlds.
+      const opts: ResolveStreamOptions = { deep: true };
+      if (candAdapter.playerSelectable && typeof cand.playerPref === 'number' && cand.playerPref > 0) {
+        opts.player = cand.playerPref;
+      }
       target = (await candAdapter.resolveStream(target, opts)).masterUrl;
     }
   } catch (err) {
@@ -271,7 +343,7 @@ async function buildFailoverGrant(
     // Issue-level (≥1) — a failing backup is worth surfacing even at the quietest verbosity.
     logger.warn(
       'failover',
-      `candidate ${attempt} ("${cand.tvg_name}") for ${parent.id} resolve failed: ${(err as Error).message}`,
+      `backup ${childIndex} (attempt ${attempt}) ("${cand.tvg_name}") for ${parent.id} resolve failed: ${(err as Error).message}`,
     );
     return { ok: false, status: 502, error: `resolve_failed: ${(err as Error).message}` };
   }
@@ -291,7 +363,7 @@ async function buildFailoverGrant(
   // Milestone (≥2): a backup is now serving in place of the parent — the headline failover event.
   logMilestone(
     'failover',
-    `serving candidate ${attempt}/${failover.total} ("${cand.tvg_name}") for ${parent.id}`,
+    `serving backup ${childIndex}/${failover.total} ("${cand.tvg_name}") for ${parent.id}`,
   );
 
   return {
