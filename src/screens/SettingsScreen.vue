@@ -334,7 +334,10 @@ async function fireReset() {
 
 <template>
   <div>
-    <div class="col settings-col" :style="{ maxWidth: '760px' }">
+    <!-- Doubled from the original 760px: the Video Config panels are two-column, and at the old width each
+         column was narrow enough that every help paragraph wrapped to 3-4 lines and the page read as cramped.
+         This is a MAX — narrower viewports still shrink normally. -->
+    <div class="col settings-col" :style="{ maxWidth: '1520px' }">
     <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
       { value: 'general', label: 'General' },
       { value: 'video', label: 'Video Config' },
