@@ -1,0 +1,982 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Local origin — masqueradarr docs</title>
+<meta name="description" content="Local origin: masqueradarr stops forwarding the provider's playlist and publishes one it wrote itself. One shared ingest per channel, an in-memory ring, two renderers, and the iop/oop observability split.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Local origin — masqueradarr">
+<meta property="og:description" content="One ingest per channel, a RAM-only ring, and a playlist we author ourselves.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="proxy-engine.html">Video proxy engine</a>
+          <a class="nav-link" href="local-origin.html" aria-current="page">Local origin</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>local origin</b> · 08 <span class="rule"></span> republishing the stream</div>
+        <h1>masqueradarr becomes the <span class="em">origin</span></h1>
+        <p class="lede">Turn one switch on and the engine stops forwarding the provider's playlist. Instead, <strong>one ingest per channel</strong> — not per viewer — follows the upstream, decrypts each segment into an in-memory ring, and both output shapes are rendered from that ring. What reaches your player is a stream <em>we authored</em>.</p>
+        <div class="aha" style="margin-top:18px;">
+          <div class="lbl">the one-line version</div>
+          <p><strong>Remux-free is still true; “passthrough” no longer is.</strong> Nothing is ever re-encoded — but with <code>originEnabled</code> on, the bytes a player sees come out of our RAM, under our numbering, with the provider erased from every line of the manifest.</p>
+        </div>
+      </header>
+
+      <!-- WHY ──────────────────────────────────────────────────────────── -->
+      <section id="why">
+        <div class="sec-tag"><span class="n">01</span> Start from zero</div>
+        <h2>A rewriting proxy still shows you their timeline</h2>
+        <p class="col">Everything on the <a href="proxy-engine.html">Video proxy engine</a> page describes a <strong>rewriting proxy</strong>. The upstream playlist is fetched, its URIs are rewritten to point back through masqueradarr, and the rest is passed through. That hides hostnames — which is most of what people want from a proxy — but it leaves two things unsolved.</p>
+        <p class="col">First, <strong>the client is still looking at the provider's timeline</strong>: their media sequence, their <code>#EXT-X-KEY</code>, even their vendor tags. You are relaying someone else's document. Second, <strong>every viewer is a separate trip upstream</strong>. Two people watching the same channel means two full pulls from the provider — the same bytes, fetched twice, because there was nowhere to put them.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● originEnabled: false</span>
+            <h3>Forward their playlist</h3>
+            <p>Fetch the upstream manifest, rewrite each URI to route back through us, pass everything else along. The player follows <strong>their</strong> timeline through our door.</p>
+            <p>One upstream fetch <strong>per viewer</strong>. Encrypted sources are relayed still encrypted — the player does the decrypting, using their key, fetched through us.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● originEnabled: true</span>
+            <h3>Publish our own</h3>
+            <p>One shared ingest follows the upstream, decrypts each segment, and pushes the plaintext into an in-memory <strong>ring</strong>. Every client is served from that ring.</p>
+            <p>One upstream fetch <strong>per channel</strong>. The manifest is a document we wrote: our sequence numbers, our segment paths, <strong>no key line at all</strong>.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">it is a switch, not a mode</div>
+          <p>Both paths live in the same binary, and the choice is made <strong>per request</strong> from the playlist's proxy config. You can run one exported playlist as an origin and leave every other playlist — and the in-app player — on the rewriting path. <strong>Off is the default</strong>, and off is byte-for-byte the output you had before.</p>
+        </div>
+      </section>
+
+      <!-- THE MAP ──────────────────────────────────────────────────────── -->
+      <section id="map">
+        <div class="sec-tag"><span class="n">02</span> The shape of it</div>
+        <h2>One ingest, one ring, two renderers</h2>
+        <p class="col">The design has a left half and a right half that run at <em>different rates</em>, and that is the whole claim. Everything on the left happens <strong>once per channel</strong>. Everything on the right reads the same cached bytes, as many times as there are viewers. The engine names them <strong>Side-1</strong> (ingest, tagged <code>iop</code>) and <strong>Side-2</strong> (serve, tagged <code>oop</code>) — and it tags every log line and every telemetry frame with which side it came from.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> local origin — one ingest, two renderers <span class="rt">iop · ring · oop</span></div>
+          <div class="scroll">
+            <div class="omap">
+
+              <div class="lane-meta" style="padding:2px 0 4px;">
+                <span class="tag">one ingest</span>
+                <span class="desc">the left lane runs once per <em>channel</em>; the right lane runs once per <em>viewer</em> — watch the two cadences, they never couple.</span>
+              </div>
+
+              <div class="omap-map">
+
+                <!-- SIDE-1 · INGEST ─────────────────────────────────────── -->
+                <div class="omap-side omap-in">
+                  <span class="omap-chip">Side-1 · ingest · iop</span>
+                  <div class="omap-stack">
+                    <span class="omap-rail" aria-hidden="true"></span>
+
+                    <div class="omap-card omap-c-up">
+                      <span class="omap-tok omap-tk1" aria-hidden="true">
+                        <span class="omap-hatch"></span>
+                        <span class="omap-g omap-g-lock">●</span>
+                        <span class="omap-g omap-g-open">○</span>
+                      </span>
+                      <div class="omap-t">Upstream</div>
+                      <div class="omap-s">HLS playlist, or a</div>
+                      <div class="omap-s">bare TS socket</div>
+                    </div>
+
+                    <div class="omap-card omap-c-fet">
+                      <span class="omap-tok omap-tk2" aria-hidden="true">
+                        <span class="omap-hatch"></span>
+                        <span class="omap-g omap-g-lock">●</span>
+                        <span class="omap-g omap-g-open">○</span>
+                      </span>
+                      <div class="omap-t">follow + fetch</div>
+                      <div class="omap-s">poll · retry · failover</div>
+                      <div class="omap-s">bare TS → PAT/PMT → cut at RAI</div>
+                    </div>
+
+                    <div class="omap-card omap-c-dec">
+                      <span class="omap-tok omap-tk3" aria-hidden="true">
+                        <span class="omap-hatch"></span>
+                        <span class="omap-g omap-g-lock">●</span>
+                        <span class="omap-g omap-g-open">○</span>
+                      </span>
+                      <div class="omap-t">decrypt AES-128</div>
+                      <div class="omap-s">key cached per rotation</div>
+                      <div class="omap-s">ciphertext never enters the ring</div>
+                    </div>
+
+                  </div>
+                </div>
+
+                <!-- push connector -->
+                <div class="omap-link">
+                  <span class="omap-wire omap-w-push" aria-hidden="true">
+                    <span class="omap-dot omap-ptok"></span>
+                  </span>
+                  <span class="omap-pill">push</span>
+                  <span class="omap-rate" aria-hidden="true">1× / channel</span>
+                </div>
+
+                <!-- THE RING · no lane box, on purpose ──────────────────── -->
+                <div class="omap-core">
+                  <div class="omap-card omap-ring">
+                    <div class="omap-t">RING · RAM only</div>
+                    <div class="omap-s">our own seq · originRingMb</div>
+                    <div class="omap-s">oldest evicted · 3-seg floor</div>
+
+                    <div class="omap-q">
+                      <div class="omap-q-ends" aria-hidden="true"><span>tail</span><span>head</span></div>
+                      <div class="omap-q-row" aria-hidden="true">
+                        <span class="omap-seg omap-seg-tail"></span>
+                        <span class="omap-seg"></span>
+                        <span class="omap-seg"></span>
+                        <span class="omap-seg"></span>
+                        <span class="omap-seg"></span>
+                        <span class="omap-seg"></span>
+                        <span class="omap-seg omap-seg-head"></span>
+                      </div>
+                      <div class="omap-q-cap">oldest out · newest in</div>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- read connector -->
+                <div class="omap-link">
+                  <span class="omap-wire omap-w-read" aria-hidden="true">
+                    <span class="omap-dot omap-rtok omap-r1"></span>
+                    <span class="omap-dot omap-rtok omap-r2"></span>
+                    <span class="omap-dot omap-rtok omap-r3"></span>
+                    <span class="omap-dot omap-rtok omap-r4"></span>
+                  </span>
+                  <span class="omap-pill">read</span>
+                  <span class="omap-rate" aria-hidden="true">N× / viewer</span>
+                </div>
+
+                <!-- SIDE-2 · SERVE ──────────────────────────────────────── -->
+                <div class="omap-side omap-out">
+                  <span class="omap-chip">Side-2 · serve · oop</span>
+                  <div class="omap-stack">
+
+                    <div class="omap-card omap-c-man">
+                      <div class="omap-t">authored manifest</div>
+                      <div class="omap-s">our MEDIA-SEQUENCE / EXTINF</div>
+                      <div class="omap-s">no keys · no vendor tags · no hops</div>
+                    </div>
+                    <div class="omap-card omap-c-ts">
+                      <div class="omap-t">raw TS concat</div>
+                      <div class="omap-s">one continuous video/mp2t</div>
+                      <div class="omap-s">segment boundary = keyframe</div>
+                    </div>
+                    <div class="omap-card omap-c-view">
+                      <div class="omap-t">N viewers</div>
+                      <div class="omap-s">a 2nd viewer costs</div>
+                      <div class="omap-s">NO extra upstream</div>
+                      <div class="omap-eyes" aria-hidden="true">
+                        <span class="omap-eye omap-e1"></span>
+                        <span class="omap-eye omap-e2"></span>
+                        <span class="omap-eye omap-e3"></span>
+                        <span class="omap-eye omap-e4"></span>
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+
+              </div>
+
+              <div class="omap-notes">
+                <p class="omap-note"><span class="omap-n omap-n-never" aria-hidden="true">1</span> Ingress and egress are now INDEPENDENT: one ingest feeds N viewers, so ingest bytes are reported separately (kind:"iop") and never folded into egress counts.</p>
+                <p class="omap-note"><span class="omap-n" aria-hidden="true">2</span> Off by default — with originEnabled false the engine proxies the upstream playlist exactly as before and this whole path is skipped.</p>
+                <p class="omap-note"><span class="omap-n omap-n-never" aria-hidden="true">3</span> Discontinuity is emitted only where the upstream tags one, or a media-sequence gap proves segments were missed — never guessed from URL shape.</p>
+              </div>
+
+              <ul class="omap-legend">
+                <li><span class="omap-kd" aria-hidden="true"></span> Upstream</li>
+                <li class="omap-k-in"><span class="omap-kd" aria-hidden="true"></span> Side-1 · ingest (iop)</li>
+                <li class="omap-k-ring"><span class="omap-kd" aria-hidden="true"></span> Ring · RAM</li>
+                <li class="omap-k-out"><span class="omap-kd" aria-hidden="true"></span> Side-2 · serve (oop)</li>
+                <li><span class="omap-kd" aria-hidden="true"></span> Clients</li>
+              </ul>
+
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">why the ring sits in its own column</div>
+          <p>It is the seam. <strong>One writer, two readers.</strong> The ingest never knows how many viewers there are, and neither renderer ever knows whether the upstream was a playlist or a socket, or whether it was encrypted. All either side shares is a queue of decrypted segments in RAM — which is exactly why adding a viewer costs nothing upstream, and why a second output shape cost almost no new code.</p>
+        </div>
+      </section>
+
+      <!-- THE MATRIX ───────────────────────────────────────────────────── -->
+      <section id="matrix">
+        <div class="sec-tag"><span class="n">03</span> Two knobs, four outputs</div>
+        <h2><code>originEnabled</code> × <code>outputFormat</code></h2>
+        <p class="col">The new switch is orthogonal to the one you already have. <code>outputFormat</code> decides the <em>shape</em> handed to the player; <code>originEnabled</code> decides <em>where the bytes come from</em>. Every combination is valid.</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th></th><th>originEnabled: <strong>false</strong></th><th class="h-ts">originEnabled: <strong>true</strong></th></tr></thead>
+            <tbody>
+              <tr><td>outputFormat: <code>hls</code></td><td>the upstream playlist, URI-rewritten</td><td>a playlist <strong>we authored</strong> + our own segment paths</td></tr>
+              <tr><td>outputFormat: <code>ts</code></td><td>upstream segments concatenated <em>per viewer</em></td><td>the same ring concatenated (decrypts)</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="aha">
+          <div class="lbl">read the bottom-left cell again</div>
+          <p><em>Per viewer</em> appears in exactly one cell. That asymmetry <strong>is</strong> the bandwidth claim — everywhere else on the right-hand column, the work is per channel.</p>
+        </div>
+
+        <h3 style="margin-top:26px;">What the player actually receives</h3>
+        <p class="col">In origin mode the manifest contains <strong>no provider host, path, session id or query; no <code>#EXT-X-KEY</code>; no vendor tags; no proxy hop URLs</strong>. It is short enough to read in full:</p>
+        <div class="code-wrap">
+<pre class="code"><span class="cmt"># the authored media playlist — every line is ours</span>
+#EXTM3U
+#EXT-X-VERSION:3
+#EXT-X-TARGETDURATION:<span class="em">6</span>          <span class="cmt"># ceil() of the longest EXTINF in the window, min 1</span>
+#EXT-X-MEDIA-SEQUENCE:<span class="em">1042</span>     <span class="cmt"># the seq of the ring's oldest held segment</span>
+#EXT-X-PROGRAM-DATE-TIME:2026-08-05T20:14:07.812Z
+#EXTINF:5.005,
+/api/ext/v1/pluto/o/&lt;enc-entry&gt;/<span class="em">0</span>-<span class="em">1042</span>.ts?token=…&amp;pl=…
+#EXTINF:5.005,
+/api/ext/v1/pluto/o/&lt;enc-entry&gt;/<span class="em">0</span>-<span class="em">1043</span>.ts?token=…&amp;pl=…
+<span class="cmt">#EXT-X-DISCONTINUITY  <span class="em">←</span> only at a real splice (see below)</span>
+#EXTINF:4.984,
+/api/ext/v1/pluto/o/&lt;enc-entry&gt;/<span class="em">0</span>-<span class="em">1044</span>.ts?token=…&amp;pl=…</pre>
+        </div>
+        <ul class="col">
+          <li><strong>No <code>#EXT-X-ENDLIST</code> and no <code>#EXT-X-PLAYLIST-TYPE</code></strong>, so any standard player treats it as a live sliding window.</li>
+          <li><strong>The window <em>is</em> the ring.</strong> There is no separate window length — the playlist lists whatever the ring currently holds. That means <code>originRingMb</code> is simultaneously the RAM budget <em>and</em> the advertised live-window length.</li>
+          <li><strong>Every segment line carries the token.</strong> These paths are guessable by construction — a source, an entry, and two integers — so the token on each line is what keeps per-account governance meaningful. It is not a separate gate.</li>
+          <li><strong><code>#EXT-X-PROGRAM-DATE-TIME</code> is a real timestamp</strong>, emitted once in the header from the first segment's ingest wall-clock. It discloses <em>when we ingested</em>, not who we ingested from — but it is not nothing, and it is the only field in the document that isn't a counter.</li>
+          <li><strong>Two numbers in the path.</strong> <code>&lt;generation&gt;-&lt;seq&gt;</code> is not redundant. That is <a href="#generation">its own section</a>.</li>
+        </ul>
+      </section>
+
+      <!-- SIDE 1 · INGEST ──────────────────────────────────────────────── -->
+      <section id="ingest">
+        <div class="sec-tag"><span class="n">04</span> Side-1 · the ingest <code style="font-size:0.8em">iop</code></div>
+        <h2>One per channel, refcounted, self-reaping</h2>
+        <p class="col">An ingest is keyed by <strong>source + entry URL</strong> — not by viewer, not by token, not by playlist. Two people watching the same channel from different accounts and different playlists share exactly one ingest. Starting one is idempotent: whichever request gets there first spawns the task, and everyone after that just increments a subscriber count.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> the ingest loop <span class="rt">resolve · poll · fetch · decrypt · push</span></div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">first viewer arrives</div><div class="act">Subscribe, and maybe spawn</div><div class="note">The registry is checked for this channel's key. On a miss, an ingest task is spawned; on a hit, the existing one is reused and only the subscriber count moves. <span class="branch">concurrent first viewers can never start two ingests</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">resolve</div><div class="act">Ask Node for the upstream, freshly</div><div class="note">The ingest performs its own resolve rather than reusing the request's — deliberately <strong>bypassing the target cache</strong>, so mirror rotation and <a href="failover.html">failover</a> keep working, and a mid-session re-resolve stays on the failover-pinned candidate instead of snapping back to a dead parent.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">peek the first chunk</div><div class="act">Playlist, or a bare socket?</div><div class="note">The response body is <em>peeked</em>, never buffered — the first 16 bytes decide. <span class="branch"><code>#EXTM3U</code> → follow the playlist</span> <span class="branch warn">anything else → <a href="#bare-ts">segment it locally</a></span> Reading a bare TS socket to the end would never return, which is exactly why the peek exists.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">poll</div><div class="act">Follow the live edge</div><div class="note">Cadence is <strong>half the target duration, clamped to 1–10&nbsp;s</strong> (3&nbsp;s if the playlist declares none). The first poll joins at the upstream's live edge rather than replaying its whole window. A master playlist is walked once and the <strong>highest-bandwidth</strong> variant is taken — an origin ingest is single-bitrate.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">fetch + decrypt</div><div class="act">Pull each new segment</div><div class="note">Whole-segment fetch, then <a href="#crypto">AES-128 decrypt</a> if the source is encrypted. Every hop — segment and key alike — passes the same SSRF gate and grows the same allow-set. A failed fetch drops that one segment and leaves a gap the next one <a href="#disc">splices</a>.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">push</div><div class="act">Into the ring, plaintext</div><div class="note">The segment is stamped with <strong>our</strong> sequence number, its duration, its wall-clock, and whether it opens a discontinuity — then appended, and the oldest evicted if the ring is over its cap. <span class="branch ts">ciphertext never enters the ring</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">nothing new, five polls running</div><div class="act">Declare a stall and re-resolve</div><div class="note">Five consecutive polls that ingest nothing logs <code>iop</code> WARN <em>“5 empty polls — re-resolving”</em>, reports status <code>stalled</code>, and forces a fresh resolve. A dead-but-still-<code>200</code> playlist is escaped in five polls instead of spinning forever.</div></div></div>
+          </div>
+        </div>
+
+        <h3 style="margin-top:24px;">When it stops — and the 30-second grace</h3>
+        <p class="col">There is <strong>no reaper task</strong>. The ingest watches itself: every 5 seconds it asks whether it has zero subscribers <em>and</em> nothing has read the ring for 30 seconds. If both hold, it stops — waking every parked reader, removing its own registry entry, and reporting a final <code>closed</code>.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+          <div class="tile"><div class="ic">● any read counts</div><h3>Not just viewers</h3><p>Rendering a manifest, serving a ring segment, or a raw-TS producer checking for new data all restart the idle clock. A player pulling segments without re-polling the manifest still keeps its channel alive.</p></div>
+          <div class="tile ts"><div class="ic">● flip back within 30 s</div><h3>Instant, warm</h3><p>The ring is still full, so playback resumes with <strong>no re-resolve and no warm-up</strong>. This is the payoff for the grace window, and it is why channel-surfing feels different under origin mode.</p></div>
+          <div class="tile"><div class="ic">● flip back after 30 s</div><h3>A brand-new timeline</h3><p>The registry entry is gone, so a fresh ingest is built: sequence numbering and the generation counter both <strong>restart at zero</strong>. It is a new session, not a continued one.</p></div>
+          <div class="tile warn"><div class="ic">● the cost of the grace</div><h3>RAM with nobody watching</h3><p>For those 30 seconds the ring is still committed. An idle-grace origin has <strong>no row on Active Streams</strong> and is invisible per-channel — the process-wide <a href="#observe">memory-pressure</a> reading is the only thing that sees it.</p></div>
+        </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">one asymmetry worth knowing</div>
+          <p>An HLS viewer holds its lease only for the length of each manifest poll — the grace window covers the gaps between polls. A <strong>raw-TS viewer holds one for the whole socket</strong>, because a continuous socket has no polling to renew a lease with. And a bare-TS <em>ingest</em> runs its socket session inline, so the idle check does not run while it is being consumed: such an ingest keeps pulling until the socket ends or errors, even after the last viewer leaves.</p>
+        </div>
+      </section>
+
+      <!-- THE RING ─────────────────────────────────────────────────────── -->
+      <section id="ring">
+        <div class="sec-tag"><span class="n">05</span> The ring</div>
+        <h2>RAM, not disk — and a cap that can be overruled</h2>
+        <p class="col">The ring is a queue of decrypted segments in memory, oldest first. It is <strong>never written to disk</strong>. Each entry holds five things: our sequence number, the duration, the plaintext bytes, whether a discontinuity opens before it, and the wall-clock at ingest. That is all a renderer ever needs — which is why neither renderer has to know anything about the upstream.</p>
+        <p class="col">It is bounded <strong>per channel</strong> by <code>originRingMb</code> (default <strong>25&nbsp;MiB</strong>, roughly a minute at 3.3&nbsp;Mbps). On each push, the oldest segments are evicted until the total is back under the cap — <em>unless</em> doing so would leave fewer than three segments. The floor always wins.</p>
+        <div class="panel">
+                  <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> the ring — 25 MiB cap vs the 3-segment floor <span class="rt">proxy/src/origin.rs · push_back → evict loop</span></div>
+                  <div class="scroll">
+                    <div class="ringcap">
+
+                      <div class="lane-meta" style="padding:2px 0 2px;">
+                        <span class="tag">soft cap</span>
+                        <span class="desc">block width is the segment's bytes — watch the deque hit a hard stop at 3 and the total go over the line anyway.</span>
+                      </div>
+
+                      <!-- which regime is playing + the live readouts -->
+                      <div class="rc-head">
+                        <div class="rc-regime">
+                          <span class="rc-ph rc-ph-a"><span class="rc-g" aria-hidden="true">●</span> phase A · ~3.3 Mbps · the byte cap binds</span>
+                          <span class="rc-ph rc-ph-b"><span class="rc-g" aria-hidden="true">▲</span> phase B · same channel, high-bitrate source · the floor binds</span>
+                        </div>
+                        <div class="rc-reads">
+                          <span><span class="rc-lab">ring</span><span class="rc-reel rc-reel-r"
+                            ><span class="rc-rd rc-v-ar rc-ok" aria-hidden="true">11 seg · 24.2 MiB</span
+                            ><span class="rc-rd rc-v-b1 rc-ok" aria-hidden="true">7 seg · 23.7 MiB</span
+                            ><span class="rc-rd rc-v-b2 rc-ok" aria-hidden="true">3 seg · 23.3 MiB</span
+                            ><span class="rc-rd rc-v-b3 rc-over">3 seg · 31.6 MiB</span
+                          ></span></span>
+                          <span class="rc-capread"><span class="rc-lab">cap</span><b>25 MiB</b></span>
+                          <span><span class="rc-lab">evicted</span><span class="rc-reel rc-reel-e"
+                            ><span class="rc-rd rc-v-a0 rc-num" aria-hidden="true">07</span
+                            ><span class="rc-rd rc-v-a1 rc-num" aria-hidden="true">08</span
+                            ><span class="rc-rd rc-v-a2 rc-num" aria-hidden="true">09</span
+                            ><span class="rc-rd rc-v-a3 rc-num" aria-hidden="true">10</span
+                            ><span class="rc-rd rc-v-b1 rc-num" aria-hidden="true">15</span
+                            ><span class="rc-rd rc-v-b2 rc-num" aria-hidden="true">20</span
+                            ><span class="rc-rd rc-v-b3 rc-num">21</span
+                          ></span></span>
+                        </div>
+                      </div>
+
+                      <!-- the rule the whole picture is about -->
+                      <div class="rc-rule">
+                        <span class="rc-rule-k">on every push</span>
+                        <code>push_back(seg); while total &gt; cap &amp;&amp; ring.len() &gt; MIN_SEGMENTS { pop_front() }</code>
+                      </div>
+
+                      <div class="rc-ends" aria-hidden="true">
+                        <span class="rc-end-l">◀ pop_front · evicted</span>
+                        <span class="rc-end-r">push_back · ingest ▶</span>
+                      </div>
+
+                      <!-- deque, floor bracket and total bar share one horizontal byte scale,
+                           crossed by one cap line -->
+                      <div class="rc-plot">
+                        <div class="rc-capline" aria-hidden="true">
+                          <span class="rc-cap-lbl">cap · <b>originRingMb 25 MiB</b></span>
+                        </div>
+
+                        <div class="rc-deque" aria-hidden="true">
+                          <span class="rc-seg rc-w26 rc-a1"></span>
+                          <span class="rc-seg rc-w19 rc-a2"></span>
+                          <span class="rc-seg rc-w23 rc-a3"></span>
+                          <span class="rc-seg rc-w23 rc-g1"></span>
+                          <span class="rc-seg rc-w22 rc-g1"></span>
+                          <span class="rc-seg rc-w20 rc-g1"></span>
+                          <span class="rc-seg rc-w24 rc-g1"></span>
+                          <span class="rc-seg rc-w21 rc-g1"></span>
+                          <span class="rc-seg rc-w22 rc-g2"></span>
+                          <span class="rc-seg rc-w20 rc-g2"></span>
+                          <span class="rc-seg rc-w22 rc-g2"></span>
+                          <span class="rc-seg rc-w20 rc-p1"></span>
+                          <span class="rc-seg rc-w26 rc-p2"></span>
+                          <span class="rc-seg rc-w22 rc-p3"></span>
+                          <span class="rc-seg rc-wfat rc-f1"><span class="rc-seg-lbl">one segment</span></span>
+                          <span class="rc-seg rc-wfat rc-f2"><span class="rc-seg-lbl">one segment</span></span>
+                          <span class="rc-seg rc-wfat rc-f3"><span class="rc-seg-lbl">one segment</span></span>
+                        </div>
+
+                        <div class="rc-floorbar"><span class="rc-floor-lbl">floor · ring.len() = 3 · pop_front() refused</span></div>
+
+                        <div class="rc-meter" aria-hidden="true"><span class="rc-bar"></span></div>
+                      </div>
+
+                      <div class="rc-scale">
+                        <span class="rc-law"><b>MIN_SEGMENTS = 3</b> · the floor always beats the cap</span>
+                        <span class="rc-overtag"><span class="rc-g" aria-hidden="true">▲</span> over cap by 6.6 MiB · held anyway</span>
+                      </div>
+
+                      <!-- the log slot: quiet while the cap holds, one latched WARN when it stops -->
+                      <div class="rc-logslot">
+                        <div class="rc-warn">
+                          <span class="rc-warn-tag">iop WARN</span>
+                          <span class="rc-warn-msg">ring cap 25 MiB is too small for this bitrate — holding 3 segment(s) / 31.6 MiB to keep a playable window. Raise originRingMb.</span>
+                          <span class="rc-warn-latch">once per transition · warned_floor</span>
+                        </div>
+                        <div class="rc-quiet">
+                          <span class="rc-quiet-tag">iop</span>
+                          <span class="rc-quiet-msg">quiet — every push pops back under 25 MiB, so the floor is never reached and nothing is logged.</span>
+                        </div>
+                      </div>
+
+                      <div class="rc-caps">
+                        <span class="rc-serve"><span class="rc-g" aria-hidden="true">▶</span> serve · those 3 segments are the playable window</span>
+                        <span class="rc-note">block width ∝ segment bytes · the ring never touches disk</span>
+                      </div>
+
+                    </div>
+                  </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">so the cap is a target, not a guarantee</div>
+          <p>On a high-bitrate channel the ring will legitimately <strong>exceed</strong> the MiB you configured, rather than serve a window too short to play. When that happens the engine says so — once, on the transition, not once per segment:</p>
+          <p style="font-family:var(--mono);font-size:12.5px;margin-top:8px;">ring cap 25 MiB is too small for this bitrate — holding 3 segment(s) / 31.6 MiB to keep a playable window. Raise originRingMb.</p>
+          <p>Raising the dial takes effect on the next subscribe for that channel — no restart, no dropping viewers. It grows immediately and shrinks lazily, as later pushes evict against the new cap.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">size the box yourself — there is no global ceiling</div>
+          <p><code>originRingMb</code> bounds <strong>one channel</strong>. Nothing yet bounds the sum across channels, so worst-case sidecar RAM is <em>concurrent origin channels × their caps</em> — with an overshoot on top wherever the 3-segment floor is winning. A many-channel box wants a conservative per-channel value. The <a href="#observe">memory-pressure</a> tile exists precisely because this number is currently un-enforced; watch it before you scale the channel count.</p>
+        </div>
+      </section>
+
+      <!-- GENERATION ───────────────────────────────────────────────────── -->
+      <section id="generation">
+        <div class="sec-tag"><span class="n">06</span> Two numbers in a path</div>
+        <h2>Why <code>&lt;generation&gt;-&lt;seq&gt;</code> and not just a sequence</h2>
+        <p class="col">Our sequence number counts segments and never goes backwards for the life of an ingest — not across a mirror rotation, not across a failover. That matters because a <strong>backwards <code>#EXT-X-MEDIA-SEQUENCE</code> stalls players</strong>. But a failover onto a different upstream <em>does</em> invalidate the ring: those bytes came from somewhere else. So the ring gets a second counter.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> generation · seq — two numbers on one path <span class="rt">origin.rs · reset_ring() · serve_segment()</span></div>
+          <div class="genbump">
+
+            <div class="lane-meta" style="padding:2px 0 4px;">
+              <span class="tag">two numbers</span>
+              <span class="desc">one is ours and only ever climbs; the other names the ring's timeline, and only moves when the ring is thrown away.</span>
+            </div>
+
+            <!-- thesis: the URI shape, with its two numeric fields tinted by owner -->
+            <div class="gb-uri"><span class="gb-dim">{mount}/{source}/o/{enc_entry}/</span><b class="gb-uri-gen">{generation}</b><span class="gb-dim">-</span><b class="gb-uri-seq">{seq}</b><span class="gb-dim">.ts &nbsp;?token=…&amp;pl=…</span></div>
+
+            <!-- ROW A · the segment URLs the client is already holding -->
+            <div class="gb-row-lbl">client · segment URLs already queued</div>
+            <div class="gb-chips">
+              <div class="gb-chip gb-q1">
+                <div class="gb-chip-u">…/o/…/0-101.ts</div>
+                <div class="gb-chip-st"><span class="gb-st-live">in flight</span><span class="gb-st-done">served from ring</span></div>
+              </div>
+              <div class="gb-chip gb-q2">
+                <div class="gb-chip-u">…/o/…/0-102.ts</div>
+                <div class="gb-chip-st"><span class="gb-st-live">in flight</span><span class="gb-st-404">404 · stale segment</span></div>
+              </div>
+              <div class="gb-chip gb-q3">
+                <div class="gb-chip-u">…/o/…/0-103.ts</div>
+                <div class="gb-chip-st"><span class="gb-st-live">in flight</span><span class="gb-st-404">404 · stale segment</span></div>
+              </div>
+              <div class="gb-chip gb-q4">
+                <div class="gb-chip-u">…/o/…/1-104.ts</div>
+                <div class="gb-chip-st"><span class="gb-st-live">in flight</span></div>
+              </div>
+              <div class="gb-ghost" aria-hidden="true">…</div>
+            </div>
+            <div class="gb-guard"><span class="gb-dim">serve_segment()</span> compares the requested generation against the current one — a mismatch answers <b>404 · not found: stale segment</b>, never another timeline's bytes.</div>
+
+            <!-- the instant, drawn across both rows -->
+            <div class="gb-tick">
+              <span class="gb-tick-rule" aria-hidden="true"></span>
+              <span class="gb-tick-lbl"><span class="gb-gl" aria-hidden="true">↻</span> re-resolve · failover onto a different upstream</span>
+              <span class="gb-tick-rule" aria-hidden="true"></span>
+            </div>
+
+            <!-- ROW B · same anatomy, opposite behaviour, side by side on purpose -->
+            <div class="gb-reads">
+              <div class="gb-read gb-gen-c">
+                <div class="gb-lbl">generation</div>
+                <div class="gb-num"><span class="gb-reel"><span class="gb-d gb-g0">0</span><span class="gb-d gb-g1">1</span></span></div>
+                <span class="gb-pill gb-pill-ts">reset_ring() · +1</span>
+                <div class="gb-strip" aria-hidden="true">
+                  <span class="gb-cell gb-k1"></span><span class="gb-cell gb-k2"></span><span class="gb-cell gb-k3"></span>
+                  <span class="gb-cell gb-k4"></span><span class="gb-cell gb-k5"></span><span class="gb-cell gb-k6"></span>
+                </div>
+                <div class="gb-note">the ring deque — cleared on reset, refilled from the new upstream</div>
+              </div>
+
+              <div class="gb-read gb-seq-c">
+                <div class="gb-lbl">#EXT-X-MEDIA-SEQUENCE</div>
+                <div class="gb-num"><span class="gb-fix">10</span><span class="gb-reel"><span class="gb-d gb-s1">1</span><span class="gb-d gb-s2">2</span><span class="gb-d gb-s3">3</span><span class="gb-d gb-s4">4</span><span class="gb-d gb-s5">5</span></span></div>
+                <span class="gb-pill gb-pill-ac">next_seq · untouched</span>
+                <div class="gb-stair" aria-hidden="true">
+                  <span class="gb-bar gb-b1"></span><span class="gb-bar gb-b2"></span><span class="gb-bar gb-b3"></span>
+                  <span class="gb-cut"></span>
+                  <span class="gb-bar gb-b4"></span><span class="gb-bar gb-b5"></span>
+                </div>
+                <div class="gb-note"><span aria-hidden="true">▲</span> monotonic · never rewinds — a backwards media sequence stalls players</div>
+              </div>
+            </div>
+
+            <p class="gb-cap"><code>reset_ring()</code> bumps the generation and clears the deque — but deliberately never rewinds our sequence, because a backwards <code>#EXT-X-MEDIA-SEQUENCE</code> stalls players.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">the reason both numbers are needed</div>
+          <p>When a re-resolve lands on a different upstream while the ring still holds segments, the ring is cleared and the <strong>generation</strong> is bumped — but the <strong>sequence deliberately is not</strong>. A client holding queued URLs from the old timeline gets a clean <code>404 · stale segment</code> instead of a different stream's bytes, while the media sequence it is reading keeps climbing without a hitch. One resets for correctness; the other refuses to reset, for exactly the same reason.</p>
+        </div>
+      </section>
+
+      <!-- BARE TS ──────────────────────────────────────────────────────── -->
+      <section id="bare-ts">
+        <div class="sec-tag"><span class="n">07</span> Bare MPEG-TS</div>
+        <h2>Cutting a socket that has no playlist</h2>
+        <p class="col">A <code>direct</code> or <code>hdhomerun</code> upstream arrives as one endless socket with no playlist at all. There is nothing to poll and nothing that says where a segment ends. So the engine finds the boundaries itself — <strong>without an <code>ffmpeg</code>, and without decoding a single frame</strong>.</p>
+        <p class="col">This is a content decision, not a per-adapter one: the engine sniffs what the entry actually returned. Anything that doesn't start <code>#EXTM3U</code> is segmented locally, whatever source it came from.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> cutting a bare MPEG-TS socket <span class="rt">proxy/src/tsseg.rs · TsSegmenter</span></div>
+          <div class="scroll">
+            <div class="cutdec">
+
+              <div class="cd-intro">
+                <span class="cd-tag">the cut</span>
+                <span class="cd-desc">No playlist, no boundaries — just <code>188</code>-byte packets behind sync byte <code>0x47</code>. The segmenter reads <code>PID 0 → PAT → PMT</code> to learn the video PID, then cuts where the stream itself says a decoder can start cold.</span>
+              </div>
+
+              <!-- the three indicators: are we armed, what does the stream's clock say,
+                   and how far into the segment budget are we -->
+              <div class="cd-lamps">
+                <div class="cd-lamp">
+                  <span class="cd-lk">ready</span>
+                  <span class="cd-ledrow">
+                    <span class="cd-led" aria-hidden="true"></span>
+                    <span class="cd-swap">
+                      <span class="cd-sw cd-sw-wait">waiting for PMT</span>
+                      <span class="cd-sw cd-sw-rdy">ready · cuts armed</span>
+                    </span>
+                  </span>
+                  <span class="cd-lv">PID 0 → PAT → PMT → video PID</span>
+                </div>
+
+                <div class="cd-lamp">
+                  <span class="cd-lk">pcr Δ</span>
+                  <span class="cd-odo" aria-hidden="true">
+                    <span class="cd-reel"><span class="cd-dg cd-t0">0</span><span class="cd-dg cd-t1">1</span></span>
+                    <span class="cd-reel"><span class="cd-dg cd-o0">0</span><span class="cd-dg cd-o1">1</span><span class="cd-dg cd-o2">2</span><span class="cd-dg cd-o3">3</span><span class="cd-dg cd-o4">4</span><span class="cd-dg cd-o5">5</span><span class="cd-dg cd-o6">6</span><span class="cd-dg cd-o7">7</span><span class="cd-dg cd-o8">8</span><span class="cd-dg cd-o9">9</span></span>
+                    <span class="cd-unit">s</span>
+                  </span>
+                  <span class="cd-lv">33-bit PCR base · 90 kHz</span>
+                </div>
+
+                <div class="cd-lamp cd-grow">
+                  <span class="cd-lk">segment length</span>
+                  <div class="cd-barwrap">
+                    <div class="cd-bar" aria-hidden="true">
+                      <span class="cd-barfill"></span>
+                      <span class="cd-tick cd-tick-t"><i>target 5.0 s</i></span>
+                      <span class="cd-tick cd-tick-3"><i>max_duration · 3 × target · 15.0 s</i></span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- RUN 1 · the stream signals RAI -->
+              <div class="cd-run cd-run1">
+                <div class="cd-rk">
+                  <span class="cd-rn">run 1</span>
+                  <span class="cd-rd">a stream that signals random access</span>
+                </div>
+                <div class="cd-belt">
+                  <div class="cd-strip" aria-hidden="true">
+                    <span class="cd-pk cd-psi cd-p-pat"><span class="cd-pl">PAT</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-psi cd-p-pmt"><span class="cd-pl">PMT</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-vid cd-p-skip"><span class="cd-rai"></span><span class="cd-pl">RAI</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid cd-p-cut"><span class="cd-rai"></span><span class="cd-pl">RAI</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-band cd-band1"></span>
+                    <span class="cd-blade cd-blade1"></span>
+                  </div>
+                  <div class="cd-annos" aria-hidden="true">
+                    <span class="cd-anno cd-an-psi cd-a-pat">PAT → PMT PID</span>
+                    <span class="cd-anno cd-an-psi cd-a-pmt">PMT → video PID · ready</span>
+                    <span class="cd-anno cd-an-off cd-a-skip">skipped · below target</span>
+                    <span class="cd-anno cd-an-warn cd-a-cut">CUT · RAI</span>
+                  </div>
+                  <p class="cd-narr">The first PAT hands over the PMT PID; the PMT hands over the first elementary PID whose stream type is video, and only then is the segmenter <strong>ready</strong>. The RAI at packet 7 arrives with the segment barely half its target, so it is <strong>walked past</strong>. The next RAI arrives with the clock at 5.0 s — both halves of the predicate are true, and that is the cut.</p>
+                </div>
+              </div>
+
+              <!-- RUN 2 · same socket, later: the encoder has stopped signalling RAI -->
+              <div class="cd-run cd-run2">
+                <div class="cd-rk">
+                  <span class="cd-rn">run 2</span>
+                  <span class="cd-rd">the same socket, no RAI anywhere</span>
+                </div>
+                <div class="cd-belt">
+                  <div class="cd-strip" aria-hidden="true">
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-pk cd-vid"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-vid cd-p-cap"><span class="cd-pl">vid</span></span>
+                    <span class="cd-pk cd-aud"><span class="cd-pl">aud</span></span>
+                    <span class="cd-band cd-band2"></span>
+                    <span class="cd-blade cd-blade2"></span>
+                  </div>
+                  <div class="cd-annos" aria-hidden="true">
+                    <span class="cd-anno cd-an-warn cd-mid cd-a-cap">hard cap · 3 × target</span>
+                  </div>
+                  <p class="cd-narr">Nothing on this stretch sets the random-access-indicator, so the RAI half of the predicate never becomes true. The segment grows past target and keeps going — until <code>elapsed &gt;= max_duration</code> forces a cut on an ordinary video packet, mid-GOP. A viewer joining exactly there gets nothing decodable until the next real keyframe; the code takes that over a segment that grows forever.</p>
+                </div>
+              </div>
+
+              <!-- what actually landed in the ring -->
+              <div class="cd-out">
+                <span class="cd-outk">→ ring · emitted
+                  <span class="cd-reel" aria-hidden="true"><span class="cd-dg cd-n0">0</span><span class="cd-dg cd-n1">1</span><span class="cd-dg cd-n2">2</span></span>
+                </span>
+                <span class="cd-seg cd-sg1">
+                  <span class="cd-sgi">#EXTINF:5.000</span>
+                  <span class="cd-sgd">cut at an RAI · target met</span>
+                </span>
+                <span class="cd-seg cd-sg2">
+                  <span class="cd-sgi">#EXTINF:15.000</span>
+                  <span class="cd-sgd">forced · no RAI ever came</span>
+                  <span class="cd-flag">mid-GOP · no clean start</span>
+                </span>
+              </div>
+
+              <ul class="cd-caps">
+                <li>duration comes from the stream's own 33-bit PCR base at 90 kHz — never wall clock</li>
+                <li>keyframe detection depth is zero: it trusts the adaptation field's random-access-indicator bit</li>
+                <li>before the first PMT is parsed, nothing can be cut</li>
+              </ul>
+
+            </div>
+          </div>
+        </div>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-top:16px;">
+          <div class="tile"><div class="ic">● the PSI walk</div><h3>PAT → PMT → video PID</h3><p>Two hops through the stream's own tables to learn which packet stream carries the video. Until that lands, <strong>nothing can be cut</strong> — so no segment is ever published that a decoder cannot start cold.</p></div>
+          <div class="tile"><div class="ic">● the cut</div><h3>Trust the RAI bit</h3><p>A cut needs a random-access-indicator packet <em>on the video PID</em> <strong>and</strong> a segment already at its target length. Keyframe detection depth is zero — no PES header, no NAL inspection. It trusts the muxer's own flag.</p></div>
+          <div class="tile warn"><div class="ic">● the escape hatch</div><h3>Hard cap at 3× target</h3><p>A stream that never signals a random-access point would otherwise grow one segment forever. At three times the target the engine cuts anyway, mid-GOP — a deliberate trade against an unbounded segment.</p></div>
+          <div class="tile ts"><div class="ic">● the clock</div><h3>PCR, at 90&nbsp;kHz</h3><p>Durations come from the stream's own 33-bit program clock, wrap-corrected — <strong>never wall-clock</strong>. A source arriving faster than real time still produces correct <code>#EXTINF</code> values.</p></div>
+        </div>
+        <div class="aha">
+          <div class="lbl">what this actually unlocks</div>
+          <p>Those locally-cut segments join the same ring as everything else, so <strong>a tuner republishes as ordinary HLS</strong>. HDHomeRun playback is no longer waiting on a TS→HLS remux — it is waiting on nothing; it needs <code>originEnabled</code> on for that playlist. Be aware this path is newer and has had far less live mileage than the HLS side, and it emits no <code>#EXT-X-DISCONTINUITY</code> ever: a bare socket is one continuous encode and carries no splice signal that could be honestly propagated.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">the boundaries of the parser</div>
+          <p>Packets are assumed to be a strict <strong>188 bytes</strong> — there is no handling for 192-byte M2TS or 204-byte FEC framing, so such a stream never syncs and produces no segments rather than bad ones. Only the <strong>first program and first video stream</strong> are followed, which is right for a single-channel tuner feed and wrong for a full multiplex. A PMT too large for one packet is not reassembled. And a transport stream carrying <em>no</em> PCR at all is never cut.</p>
+        </div>
+      </section>
+
+      <!-- CRYPTO ───────────────────────────────────────────────────────── -->
+      <section id="crypto">
+        <div class="sec-tag"><span class="n">08</span> Encryption</div>
+        <h2>AES-128 is decrypted at ingest — and what still declines</h2>
+        <p class="col">On the rewriting path, an encrypted source is relayed still encrypted: the player fetches the key through us and does the work. Under local origin the engine decrypts at ingest instead, so the ring holds plaintext and <strong>the authored manifest has no key line at all</strong>. It is pure Rust (no system OpenSSL), using hardware AES where the CPU has it.</p>
+        <div class="pair">
+          <div class="fcard ts">
+            <span class="badge">● supported</span>
+            <h3><code>METHOD=AES-128</code></h3>
+            <p>Full-segment AES-128-CBC with PKCS7. The key is fetched through the same SSRF gate as any segment, and cached <strong>per ingest</strong> in a single slot keyed by the full key URL — so a source that rotates its keyfile mid-clip costs <strong>one fetch per rotation</strong>, shared by every viewer.</p>
+            <p>The IV is the explicit <code>IV=0x…</code> attribute when the playlist carries one; otherwise it is derived per RFC 8216 §5.2 from the segment's <strong>upstream</strong> media sequence. Using ours would decrypt to noise.</p>
+          </div>
+          <div class="fcard risk">
+            <span class="badge">● declines</span>
+            <h3>fMP4 and <code>SAMPLE-AES</code></h3>
+            <p>An <code>#EXT-X-MAP</code> init segment, or any <code>METHOD</code> other than <code>NONE</code>/<code>AES-128</code> (<code>SAMPLE-AES</code>, FairPlay), makes the channel ineligible for origin ingest. Each is refused with a WARN naming which one fired.</p>
+            <p><strong>There is no fallback.</strong> Once <code>originEnabled</code> is on, an ineligible channel does not quietly revert to the rewriting proxy — it retries every 2 seconds while client requests time out. Read the next block before switching origin on for a playlist you haven't checked.</p>
+          </div>
+        </div>
+        <div class="note-block">
+          <div class="lbl">the failure you will actually see</div>
+          <p>An fMP4 or <code>SAMPLE-AES</code> channel with origin enabled looks like this: the player waits, then gets <strong><code>503 · stream warming up: no playable window yet</code></strong> after 20 seconds, and keeps getting it. The explanation is a single <code>iop</code> WARN — <em>“fMP4 (#EXT-X-MAP) — origin ingest not eligible”</em> or <em>“unsupported encryption METHOD=SAMPLE-AES — origin ingest not eligible”</em>. If a channel goes dead the moment you flip the switch, that log line is the first place to look, and turning <code>originEnabled</code> back off is the fix.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">a bad segment is a gap, not a failure</div>
+          <p>Every per-segment crypto failure — key fetch non-<code>200</code>, a key that isn't exactly 16 bytes, a decrypt that fails — <strong>drops that one segment</strong> with a named WARN and carries on. The next segment sees the sequence jump and opens a discontinuity. One bad segment degrades the picture briefly; it never kills the channel.</p>
+        </div>
+      </section>
+
+      <!-- DISCONTINUITY ────────────────────────────────────────────────── -->
+      <section id="disc">
+        <div class="sec-tag"><span class="n">09</span> Discontinuity</div>
+        <h2>Two triggers, and a third that was deleted</h2>
+        <p class="col">Ad-stitched sources splice. When they do, the authored playlist emits <code>#EXT-X-DISCONTINUITY</code> — and that is <strong>in-spec output, not a leak</strong>. It says nothing about where the stream came from, and every player handles it. “Clean” here means no visible origin, no encryption and no hop URLs; it does not mean one unbroken timeline.</p>
+        <p class="col">The rule is exactly two triggers, each independently sufficient:</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● trigger 1</span>
+            <h3>The upstream tagged one</h3>
+            <p>The source's own <code>#EXT-X-DISCONTINUITY</code>, carried through positionally onto the segment that follows it. (The parser explicitly steps over <code>#EXT-X-DISCONTINUITY-SEQUENCE</code>, which is a playlist header, not a splice — without that guard, every playlist carrying one would splice its first segment on every poll.)</p>
+          </div>
+          <div class="fcard accent">
+            <span class="badge">● trigger 2</span>
+            <h3>A sequence gap proves it</h3>
+            <p>The upstream's sequence jumped: this segment is not the previous one plus one. Something was missed — a failed fetch, a dropped key, a playlist that skipped — so the bytes on either side are not contiguous, whether or not anyone tagged it.</p>
+          </div>
+        </div>
+        <div class="note-block">
+          <div class="lbl">the heuristic that was tried and removed</div>
+          <p>A third signal was implemented and then deleted: <em>the segment URL's directory changed</em>. It seemed obvious — ad clips live somewhere else. In practice it produced <strong>~9 spurious splices per window and never once a true positive the upstream tag had missed</strong>, from two independent false-positive classes on live Pluto: a keyfile rotating <em>within</em> a clip (<code>…keyfile_5 → _6 → _7</code>, same directory), and CDN paths carrying a per-segment opaque token. Every false positive forces a needless decoder reset in the client. Boundary detection now looks at <strong>nothing but the tag and the sequence</strong> — and the splice log prints what the decision was made <em>against</em>, so a future detector bug is visible rather than inferred.</p>
+        </div>
+      </section>
+
+      <!-- OBSERVABILITY ────────────────────────────────────────────────── -->
+      <section id="observe">
+        <div class="sec-tag"><span class="n">10</span> Observability · <code style="font-size:0.8em">iop</code> vs <code style="font-size:0.8em">oop</code></div>
+        <h2>Ingress and egress stopped being the same number</h2>
+        <p class="col">This is the part that changes how you read every existing screen. Once one ingest feeds N viewers, <strong>“the channel is stuttering” has two possible causes</strong> — the ingest can't keep up, or serving can't keep up — and they need telling apart. So every log line and every telemetry frame is tagged with which side produced it: <code>iop</code> for input operations (resolve, poll, fetch, decrypt, ring push and evict), <code>oop</code> for output ones (manifest render, segment serve, TS concat).</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> ingress &ne; egress &mdash; one ingest, N viewers <span class="rt">iop &middot; ring &middot; oop</span></div>
+          <div class="ioop">
+
+            <div class="lane-meta" style="padding:2px 0 4px;">
+              <span class="tag">the split</span>
+              <span class="desc">one ingest fills the ring; every viewer is served out of RAM &mdash; so upstream bytes follow the <em>channel</em> and client bytes follow the <em>audience</em>.</span>
+            </div>
+
+            <!-- the audience — only the TEAL side is allowed to feel it -->
+            <div class="io-roster">
+              <span class="io-roster-lbl">viewer roster &middot; 1 &rarr; 2 &rarr; 5 &rarr; 0</span>
+              <span class="io-chips" aria-hidden="true">
+                <span class="io-vc io-v1"><span class="io-vg"></span>viewer 1</span>
+                <span class="io-vc io-v2"><span class="io-vg"></span>viewer 2</span>
+                <span class="io-vc io-v3"><span class="io-vg"></span>viewer 3</span>
+                <span class="io-vc io-v4"><span class="io-vg"></span>viewer 4</span>
+                <span class="io-vc io-v5"><span class="io-vg"></span>viewer 5</span>
+              </span>
+              <span class="io-tally" aria-hidden="true">
+                <span class="io-tally-lbl">watching</span>
+                <span class="io-reel">
+                  <span class="io-n io-n1">1</span>
+                  <span class="io-n io-n2">2</span>
+                  <span class="io-n io-n5">5</span>
+                  <span class="io-n io-n0">0</span>
+                </span>
+              </span>
+            </div>
+
+            <!-- two readouts, one scale — they start together and diverge -->
+            <div class="io-gauges">
+
+              <div class="io-gauge io-in">
+                <div class="io-g-head">
+                  <span class="io-g-lbl">iop &middot; upstream pulled</span>
+                  <span class="io-g-val" aria-hidden="true">
+                    <span class="io-v io-k0">0 MB</span>
+                    <span class="io-v io-k1">10 MB</span>
+                    <span class="io-v io-k2">20 MB</span>
+                    <span class="io-v io-k3">30 MB</span>
+                    <span class="io-v io-k4">40 MB</span>
+                    <span class="io-v io-k5">55 MB</span>
+                  </span>
+                </div>
+                <div class="io-track" aria-hidden="true"><span class="io-fill io-fill-in"></span></div>
+                <div class="io-scale" aria-hidden="true"><span>0</span><span>140 MB &middot; shared scale</span></div>
+                <div class="io-slopes" aria-hidden="true"><span class="io-sl io-sl-fixed">&times;1 &middot; always</span></div>
+                <div class="io-g-foot">One ingest per channel, so the slope is <b>constant</b>. It does not tilt when a viewer joins, and it keeps climbing after the last one leaves.</div>
+              </div>
+
+              <div class="io-gauge io-out">
+                <div class="io-g-head">
+                  <span class="io-g-lbl">oop &middot; delivered to viewers</span>
+                  <span class="io-g-val" aria-hidden="true">
+                    <span class="io-v io-k0">0 MB</span>
+                    <span class="io-v io-k1">10 MB</span>
+                    <span class="io-v io-k2">30 MB</span>
+                    <span class="io-v io-k3">80 MB</span>
+                    <span class="io-v io-k45">130 MB</span>
+                  </span>
+                </div>
+                <div class="io-track" aria-hidden="true"><span class="io-fill io-fill-out"></span></div>
+                <div class="io-scale" aria-hidden="true"><span>0</span><span>140 MB &middot; shared scale</span></div>
+                <div class="io-slopes" aria-hidden="true">
+                  <span class="io-sl io-sl1">&times;1</span>
+                  <span class="io-sl io-sl2">&times;2</span>
+                  <span class="io-sl io-sl5">&times;5</span>
+                  <span class="io-sl io-sl0">&times;0</span>
+                </div>
+                <div class="io-g-foot">Served from the ring, so the slope <b>is the audience</b>. It steepens on every join and goes flat the moment the last viewer leaves.</div>
+              </div>
+
+            </div>
+
+            <!-- the one edge that is refused — a rule, so it is drawn already struck -->
+            <div class="io-forbid">
+              <span class="io-fb-node io-fb-a">iop</span>
+              <span class="io-fb-wire" aria-hidden="true"></span>
+              <span class="io-fb-tag">never noteBytes</span>
+              <span class="io-fb-wire io-fb-tip" aria-hidden="true"></span>
+              <span class="io-fb-node io-fb-b">oop</span>
+            </div>
+            <p class="io-fb-note">Node's telemetry ingest handles <code>kind:"iop"</code> and returns <strong>without ever calling <code>noteBytes</code></strong> &mdash; <code>ingestedBytes</code> measures the upstream pull, <code>noteBytes</code> measures viewer egress. Folding one into the other would over-count egress by roughly the viewer count and destroy the very attribution the split exists to provide.</p>
+
+            <!-- the third quantity: RAM held with nobody watching -->
+            <div class="io-gauge io-rg">
+              <div class="io-g-head">
+                <span class="io-g-lbl">ring footprint &middot; <code>kind:"ring"</code> every 2.5 s</span>
+                <span class="io-g-val" aria-hidden="true">
+                  <span class="io-v io-rv0">0 MB</span>
+                  <span class="io-v io-rv1">12 MB</span>
+                  <span class="io-v io-rv2">24 MB</span>
+                </span>
+              </div>
+              <div class="io-track" aria-hidden="true"><span class="io-fill io-fill-ring"></span></div>
+              <div class="io-scale" aria-hidden="true"><span>0</span><span>cap &middot; originRingMb</span></div>
+              <div class="io-ringrow">
+                <span class="io-chip">IDLE_GRACE 30 s</span>
+                <span class="io-chip">IDLE_TICK 5 s</span>
+                <span class="io-chip io-chip-hold" aria-hidden="true">holding &middot;
+                  <span class="io-grace-reel">
+                    <span class="io-gd io-gd0">30 s</span>
+                    <span class="io-gd io-gd1">25 s</span>
+                    <span class="io-gd io-gd2">20 s</span>
+                    <span class="io-gd io-gd3">15 s</span>
+                    <span class="io-gd io-gd4">10 s</span>
+                    <span class="io-gd io-gd5">5 s</span>
+                    <span class="io-gd io-gd6">0 s</span>
+                  </span></span>
+                <span class="io-chip io-chip-rows" aria-hidden="true">Active Streams &middot; 0 rows</span>
+              </div>
+              <div class="io-g-foot">an origin inside its 30 s idle grace still holds its bytes with no viewer to hang them off &mdash; the process-wide <code>kind:"ring"</code> frame is the only thing that still sees them.</div>
+            </div>
+
+            <p class="io-cap">iop and oop both resolve to the proxy log category &mdash; the split is attribution inside the engine, not a new bucket.</p>
+
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">they are tags, not categories</div>
+          <p>Both resolve to the existing <code>proxy</code> log category — the split is attribution <em>within</em> the engine, not a new bucket in the Logs drawer. Filter to <code>proxy</code> as you always did, then read the tag. One quirk worth knowing: the retry/backoff lines for origin's upstream hops are emitted under the <code>proxy</code> tag rather than <code>iop</code>, with labels like <code>iop-segment</code> and <code>iop-key</code> in the message body — so filtering strictly on the tag will miss them.</p>
+        </div>
+
+        <h3 style="margin-top:24px;">Where the two sides show up in the app</h3>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Screen</th><th class="h-accent">Reads</th><th>Which side</th></tr></thead>
+            <tbody>
+              <tr><td>Active Streams</td><td><strong>Delivery</strong> — <code>HLS</code> / <code>Raw TS</code> / <code>Mixed</code></td><td><span class="em-accent">Side-2</span> — what viewers receive</td></tr>
+              <tr><td>Active Streams</td><td><strong>Ingest</strong> — <code>&lt;status&gt; · N viewer(s) sharing</code></td><td><span style="color:var(--cfg)">Side-1</span> — amber when the status isn't <code>ok</code></td></tr>
+              <tr><td>Active Streams</td><td><strong>Ring</strong> — <code>N seg · N.N MiB</code> <span style="color:var(--text-3)">(+ <code>· N evicted</code>)</span></td><td><span class="em-ts">the ring</span> — directly comparable to your <code>originRingMb</code></td></tr>
+              <tr><td>Active Streams</td><td><strong>Upstream pulled</strong> — <code>N seg · N.N MiB</code></td><td><span style="color:var(--cfg)">Side-1</span> — one shared pull, <em>not</em> the bandwidth chart</td></tr>
+              <tr><td>Dashboard</td><td><strong>Memory pressure</strong> — total ring bytes, colour-coded</td><td>process-wide — every ring, including idle-grace ones</td></tr>
+              <tr><td>Logs → <code>proxy</code></td><td>tag <code>iop</code> / tag <code>oop</code></td><td>which side a line came from</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">the misreading to expect</div>
+          <p><strong>“Upstream pulled” will not match the bitrate chart above it, and that is correct.</strong> One is a single shared ingest; the other is egress summed across every viewer. With five viewers they differ by roughly five times. Reading them as the same number is the natural mistake — and the divergence is the feature doing its job. The engine enforces this on both sides of the seam: ingest bytes are never folded into the viewer byte counters, because doing so would over-count egress by a factor of N and destroy the attribution the whole split exists to provide.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">grepping the engine log</div>
+          <p>Ingest lines carry a request id of the form <code>iopts0</code>, <code>iopts1</code>, … while the serving lines share the normal 8-hex per-channel id. They do <strong>not</strong> stitch together on one id — that is a consequence of the two sides genuinely being independent, not an oversight. The <code>iop</code> statuses you will see are <code>ok</code>, <code>stalled</code>, <code>resolve_failed</code> and <code>closed</code>, printed raw.</p>
+        </div>
+      </section>
+
+      <!-- TUNING ───────────────────────────────────────────────────────── -->
+      <section id="tuning">
+        <div class="sec-tag"><span class="n">11</span> Turning it on</div>
+        <h2>Two controls, Default or per playlist</h2>
+        <p class="col">Both knobs live in the <code>proxyconfigs</code> subsystem alongside the rest of the engine's settings, so both can be set globally <em>or</em> overridden for a single playlist. They sit deliberately <strong>directly above Output format</strong>, because local origin changes what that setting means.</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Knob</th><th>Default</th><th class="h-accent">Effect</th></tr></thead>
+            <tbody>
+              <tr><td>originEnabled</td><td><strong>off</strong></td><td>“Re-publish streams from masqueradarr instead of passing the provider's playlist through. One ingest per channel decrypts and caches segments in memory, and players receive a stream we authored — our own numbering, no encryption keys, no provider URLs. Extra viewers of the same channel then cost <strong>no additional upstream bandwidth</strong>. Off is exactly today's behaviour.”</td></tr>
+              <tr><td>originRingMb</td><td><strong>25</strong> <span style="color:var(--text-3)">(1–4096)</span></td><td>“How much memory one channel's live window may hold — bigger means a longer buffer against upstream hiccups. 25&nbsp;MiB is roughly a minute at 3.3&nbsp;Mbps. A minimum of 3 segments is always kept even if that exceeds the cap, and the engine logs a warning when it has to.” Inert while <code>originEnabled</code> is off.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel" style="margin-top:16px;">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> where the switch lives <span class="rt">default · custom · grant</span></div>
+          <div class="scroll">
+            <div class="cfgflow">
+              <div class="stage"><div class="t">Default</div><div class="v">Settings → Video Config</div><small>“Video Proxy Engine (Default)” — applies to everything that hasn't detached</small></div>
+              <div class="arr">→</div>
+              <div class="stage warn"><div class="t">Custom</div><div class="v">playlist drawer</div><small>“Proxy engine overrides” — a snapshot copy taken at detach; the Default stops propagating</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">Resolve</div><div class="v">per request</div><small>the <code>?pl=</code> on the stream URL picks which config applies</small></div>
+              <div class="arr">→</div>
+              <div class="stage ts"><div class="t">Grant</div><div class="v">into Rust</div><small>Node resolves the knobs into each grant — Rust never reads MongoDB</small></div>
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">there is no confirm step</div>
+          <p>The panel <strong>auto-saves</strong> — no Save button, about half a second of debounce. Flipping local origin on takes effect on <em>new</em> streams almost immediately. And because the in-app player never sends a <code>?pl=</code>, it always resolves the <strong>Default</strong> config: enabling origin on one playlist's Custom override does not change what you see when you press play inside masqueradarr.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">a security consequence of per-playlist config</div>
+          <p>Because <code>?pl=</code> now selects which playlist's engine settings apply, the stream gate gained a rung: a non-admin passing a <code>pl</code> that isn't their own — and isn't the source id — is refused with <strong>403 <em>“Forbidden: you do not have access to this playlist”</em></strong>, checked against the union of their allowed playlists and allowed custom playlists. In <a href="proxy-engine.html#edge">edge mode</a> the sidecar's auth cache is keyed on the playlist too, so one authorized <code>pl</code> can't mint a cached allow that a different one rides.</p>
+        </div>
+      </section>
+
+      <!-- SCOPE ────────────────────────────────────────────────────────── -->
+      <section id="scope">
+        <div class="sec-tag"><span class="n">12</span> Honest scope</div>
+        <h2>What to know before you switch it on</h2>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">
+          <div class="tile ts"><div class="ic">● off by default</div><h3>Nothing changed until you act</h3><p>With <code>originEnabled</code> false the engine proxies the upstream playlist exactly as before — the same output, byte for byte. Every behaviour on this page is opt-in, per playlist.</p></div>
+          <div class="tile warn"><div class="ic">● first play is slower</div><h3>Up to a 20-second warm-up</h3><p>A cold ring will not be served. The first request waits for three segments and then answers <code>503 · stream warming up</code> if they haven't arrived within 20&nbsp;s. On a bare-TS source at the 5-second default that first play is around 15&nbsp;s — uncomfortably close to the ceiling.</p></div>
+          <div class="tile warn"><div class="ic">● no global RAM ceiling</div><h3>You are the admission control</h3><p><code>originRingMb</code> bounds one channel. The sum across channels is unbounded, and the 3-segment floor can push any single channel over its own cap. Watch the memory-pressure tile.</p></div>
+          <div class="tile risk"><div class="ic">● ineligible sources break</div><h3>No fallback to the proxy path</h3><p>fMP4 and <code>SAMPLE-AES</code> channels do not degrade gracefully once origin is on — they 503. Check a playlist's sources before enabling it wholesale.</p></div>
+          <div class="tile"><div class="ic">● reconnect after 30 s</div><h3>Sequence restarts at zero</h3><p>Past the idle grace the ingest is gone and a new one starts numbering from scratch. Players handle it as a new session, which it is — but it is not a continued timeline.</p></div>
+          <div class="tile"><div class="ic">● first play costs two resolves</div><h3>A little extra load on Node</h3><p>The request path resolves once to learn the policy, and the ingest then resolves again for itself. Only on a cold channel, and only once — but worth knowing if you are watching resolve load.</p></div>
+        </div>
+        <div class="aha">
+          <div class="lbl">the honest summary</div>
+          <p>Local origin is the newest part of the data plane and it is doing genuinely more than the path beside it — holding decrypted media in RAM, parsing transport streams, authoring manifests. The HLS ingest is the well-trodden half; the <a href="#bare-ts">bare-TS segmenter</a> is the newer one. Turn it on for one playlist, watch the <code>iop</code> lines and the memory-pressure tile for an evening, and expand from there. Turning it back off is a single toggle and returns you to the previous behaviour immediately.</p>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Local origin — republishing the stream</span>
+          <span class="ref"><b>proxy/</b> crate · <code>origin.rs</code> · <code>tsseg.rs</code> · <code>tsmux.rs</code></span>
+          <span class="ref"><b>Settings</b> · Video Config → Video Proxy Engine</span>
+          <span class="ref">next → <b>Users &amp; access</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · local origin</span>
+        <span>one ingest · one ring · two renderers</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

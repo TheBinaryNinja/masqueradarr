@@ -362,3 +362,1571 @@
   .fo-serve { opacity: 1; transform: none; }
   .fo-pl-dot { opacity: 1; box-shadow: 0 0 7px var(--ts); }
 }
+
+
+/* ═══ NEW · .omap — animated LOCAL ORIGIN map: one ingest, two renderers ════
+   Three columns: SIDE-1 · INGEST (amber, iop) → the RING (green, RAM-only) →
+   SIDE-2 · SERVE (teal, oop). The ring deliberately gets NO lane box around it
+   — it is not a stage in either pipeline, it is the one thing both sides share,
+   and fencing it would re-read as "a third step".
+
+   Why this earns motion. The whole claim of local origin — "one ingest feeds N
+   viewers" — is a claim about two DIFFERENT RATES, and a rate is the one thing
+   a still picture cannot draw. So the left lane runs exactly ONE ingest cursor
+   per cycle (upstream → follow+fetch → decrypt, where its hatch clears and ●
+   becomes ○: the ciphertext→plaintext instant) and lands exactly ONE segment at
+   the ring's head, while the right lane fires FOUR reads over the same cycle
+   and flares a viewer dot under every one. The left cadence never accelerates
+   when the right gets busy — that non-coupling IS the bandwidth claim, and it
+   is only legible watching both sides at once.
+
+   Two mechanics worth not re-inventing:
+
+   · The cursor is THREE per-card tokens cross-faded with a downward nudge, not
+     one token sliding down a rail (the .fowalk idiom). A rail would have to
+     stop at each card's centre in percentages of the lane, and the three cards
+     are NOT equal height — their sub-lines wrap differently at every column
+     width, so a percentage rail drifts up to ~16px off. Anchoring a token to
+     each card is exact at any width, in either layout.
+
+   · The queue is a 7-slot row where the tail collapses (width + margin +
+     BORDER-WIDTH → 0) by exactly what the head gains. Border-width matters:
+     these are border-box slots, so width:0 alone still leaves a 2px bordered
+     sliver and the row jitters at the loop wrap. Zeroing all three keeps total
+     row width constant and makes the wrap pixel-identical — a marquee with no
+     snap, no JS, no @property.
+
+   One shared timeline (--omap-dur) drives every track by percentage; no delay
+   chains, so the whole map freezes coherently. Tokens only, so both themes come
+   for free. */
+.omap { --omap-dur: 12s; padding: 6px 14px 14px; }
+
+/* — the three columns + the two connectors between them — */
+.omap-map { display: flex; align-items: stretch; gap: 0; padding: 22px 0 6px; min-width: 620px; }
+.omap-side { position: relative; flex: 1 1 0; min-width: 0; border-radius: var(--radius-m); border: 1px dashed var(--hairline-strong); padding: 16px 12px 14px; }
+.omap-in  { border-color: var(--cfg-line);    background: var(--cfg-soft);    padding-left: 28px; }
+.omap-out { border-color: var(--accent-line); background: var(--accent-soft); }
+/* the label chip rides the top border — bg-1 punches the dashed line out */
+.omap-chip { position: absolute; top: 0; left: 14px; transform: translateY(-50%); background: var(--bg-1); padding: 1px 8px; border-radius: 999px; font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; white-space: nowrap; }
+.omap-in  .omap-chip { color: var(--cfg-hi); }
+.omap-out .omap-chip { color: var(--accent-hi); }
+
+.omap-stack { position: relative; display: flex; flex-direction: column; gap: 12px; height: 100%; }
+
+/* — cards · the left rail bar carries the role colour (.nm-card / .tx-leaf) — */
+.omap-card { position: relative; overflow: hidden; border: 1px solid var(--hairline); background: var(--bg-1); border-radius: var(--radius-s); padding: 10px 11px 10px 13px; }
+.omap-card::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; border-radius: var(--radius-s) 0 0 var(--radius-s); background: var(--omap-rail, var(--text-3)); }
+.omap-side .omap-card { flex: 1 1 auto; min-height: 84px; display: flex; flex-direction: column; justify-content: center; }
+/* the ingest cards must not clip — the cursor hangs off their left edge */
+.omap-in .omap-card { overflow: visible; }
+.omap-t { color: var(--text-0); font-weight: 600; font-size: 13px; letter-spacing: -0.01em; line-height: 1.3; }
+.omap-s { color: var(--text-2); font-size: 11.5px; line-height: 1.4; margin-top: 2px; }
+.omap-c-up   { --omap-rail: var(--text-3); }
+.omap-c-fet  { --omap-rail: var(--cfg); }
+.omap-c-dec  { --omap-rail: var(--cfg); }
+.omap-c-man  { --omap-rail: var(--accent); }
+.omap-c-ts   { --omap-rail: var(--accent); }
+.omap-c-view { --omap-rail: var(--text-3); }
+
+/* — the ingest cursor: a dashed guide down the lane + one token per card — */
+.omap-rail { position: absolute; left: -10px; top: 8px; bottom: 8px; width: 2px; transform: translateX(-50%); border-radius: 2px; background: repeating-linear-gradient(180deg, var(--cfg-line) 0 6px, transparent 6px 11px); }
+.omap-tok { position: absolute; left: -10px; top: 50%; z-index: 2; width: 20px; height: 20px; border-radius: 50%; opacity: 0; transform: translate(-50%, -50%); display: grid; place-items: center; background: var(--bg-1); border: 1px solid var(--cfg); box-shadow: 0 0 0 3px var(--cfg-soft); }
+.omap-hatch { position: absolute; inset: 0; border-radius: 50%; background: repeating-linear-gradient(45deg, var(--cfg-line) 0 2px, transparent 2px 4px); }
+.omap-g { grid-area: 1 / 1; font-family: var(--mono); font-size: 10px; line-height: 1; color: var(--cfg); }
+.omap-g-open { opacity: 0; }
+
+/* — connectors: a dashed wire with an opaque pill sitting ON it, so the line
+     never runs through the type. The pill names the operation; the tag under it
+     names the RATE, the one fact the geometry alone cannot carry. — */
+.omap-link { position: relative; flex: 0 0 80px; align-self: center; min-height: 104px; }
+.omap-wire { position: absolute; left: 50%; top: 50%; width: calc(100% - 6px); height: 2px; transform: translate(-50%, -50%); border-radius: 2px; }
+.omap-w-push { background: repeating-linear-gradient(90deg, var(--cfg-line) 0 6px, transparent 6px 11px); }
+.omap-w-read { background: repeating-linear-gradient(90deg, var(--accent-line) 0 6px, transparent 6px 11px); }
+.omap-dot { position: absolute; top: 50%; width: 9px; height: 9px; border-radius: 50%; transform: translate(-50%, -50%); opacity: 0; }
+.omap-ptok { background: var(--cfg); box-shadow: 0 0 9px var(--cfg); }
+.omap-rtok { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.omap-pill { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); z-index: 2; font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--ts-hi); background: var(--bg-2); border: 1px solid var(--ts-line); border-radius: 999px; padding: 2px 7px; }
+.omap-rate { position: absolute; left: 50%; top: 50%; transform: translate(-50%, 12px); z-index: 2; font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em; color: var(--text-3); background: var(--bg-1); padding: 0 4px; white-space: nowrap; }
+
+/* — the ring: the hero card, a deeper fill than anything in either lane — */
+.omap-core { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; justify-content: center; }
+.omap-ring { --omap-rail: var(--ts); background: var(--bg-3); border-color: var(--ts-line); padding-bottom: 12px; }
+
+/* — the live segment queue: 7 slots, only ever 6 of them wide — */
+.omap-q { margin-top: 10px; padding-top: 9px; border-top: 1px dashed var(--ts-line); }
+.omap-q-ends { display: flex; justify-content: space-between; max-width: 120px; margin: 0 auto 5px; font-family: var(--mono); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-2); }
+.omap-q-row { display: flex; align-items: center; justify-content: center; }
+.omap-seg { position: relative; flex: 0 0 auto; overflow: hidden; width: 16px; height: 26px; margin-right: 4px; border-radius: 3px; background: var(--ts-soft); border: 1px solid var(--ts-line); }
+.omap-seg::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--ts); opacity: 0.7; }
+.omap-seg-head { width: 0; margin-right: 0; border-width: 0; opacity: 0; }
+.omap-q-cap { text-align: center; margin-top: 7px; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.02em; color: var(--text-2); }
+
+/* — clients: one dot per concurrent viewer, flared by the read that served it — */
+.omap-eyes { display: flex; gap: 6px; margin-top: 7px; }
+.omap-eye { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+
+/* — footnotes · the two RED indices are the two prohibitions, nothing else — */
+.omap-notes { display: flex; flex-direction: column; gap: 7px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.omap-note { display: flex; gap: 9px; margin: 0; font-size: 12px; line-height: 1.5; color: var(--text-2); }
+.omap-n { flex: none; width: 16px; height: 16px; margin-top: 2px; border-radius: 50%; display: grid; place-items: center; font-family: var(--mono); font-size: 9px; color: var(--text-3); background: var(--bg-2); border: 1px solid var(--hairline-strong); }
+.omap-n-never { color: var(--risk); background: var(--risk-soft); border-color: var(--risk-line); }
+
+/* — legend — */
+.omap-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; margin: 12px 0 0; padding: 0; list-style: none; }
+.omap-legend li { position: static; padding: 0; margin: 0; display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--text-2); }
+.omap-legend li::before { display: none; }          /* beat the global ul bullet */
+.omap-kd { width: 8px; height: 8px; border-radius: 50%; flex: none; background: var(--text-3); }
+.omap-k-in   .omap-kd { background: var(--cfg); }
+.omap-k-ring .omap-kd { background: var(--ts); }
+.omap-k-out  .omap-kd { background: var(--accent); }
+
+/* ── animation wiring — one shared timeline, every track percentage-driven ── */
+.omap-tk1 { animation: omap-tk1 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
+.omap-tk2 { animation: omap-tk2 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
+.omap-tk3 { animation: omap-tk3 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
+.omap-tk3 .omap-hatch  { animation: omap-hatchout var(--omap-dur) linear infinite; }
+.omap-tk3 .omap-g-lock { animation: omap-lockg    var(--omap-dur) linear infinite; }
+.omap-tk3 .omap-g-open { animation: omap-openg    var(--omap-dur) linear infinite; }
+.omap-c-up  { animation: omap-upcard  var(--omap-dur) ease infinite; }
+.omap-c-fet { animation: omap-fetcard var(--omap-dur) ease infinite; }
+.omap-c-dec { animation: omap-deccard var(--omap-dur) ease infinite; }
+.omap-ptok  { animation: omap-push var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
+.omap-r1 { animation: omap-rd1 var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
+.omap-r2 { animation: omap-rd2 var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
+.omap-r3 { animation: omap-rd3 var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
+.omap-r4 { animation: omap-rd4 var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
+.omap-seg-tail { animation: omap-qtail var(--omap-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.omap-seg-head { animation: omap-qhead var(--omap-dur) cubic-bezier(.4,0,.2,1) infinite, omap-qglow var(--omap-dur) ease-out infinite; }
+.omap-c-man { animation: omap-man   var(--omap-dur) ease infinite; }
+.omap-c-ts  { animation: omap-rawts var(--omap-dur) ease infinite; }
+.omap-e1 { animation: omap-eye1 var(--omap-dur) ease-out infinite; }
+.omap-e2 { animation: omap-eye2 var(--omap-dur) ease-out infinite; }
+.omap-e3 { animation: omap-eye3 var(--omap-dur) ease-out infinite; }
+.omap-e4 { animation: omap-eye4 var(--omap-dur) ease-out infinite; }
+
+/* ONE descent per cycle. Each token enters from above and leaves downward, so
+   the hand-off reads as a single cursor stepping down the lane; the third one
+   then PARKS for half the cycle — that park is the resting beat the freeze
+   pins, and the reset happens under opacity 0 so nothing ever flies back up. */
+@keyframes omap-tk1 {
+  0%       { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
+  4%,13%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  19%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
+}
+@keyframes omap-tk2 {
+  0%,15%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
+  20%,33%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  39%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
+}
+@keyframes omap-tk3 {
+  0%,33%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
+  38%,94%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  99%,100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
+}
+/* the ciphertext→plaintext instant: the hatch clears and ● becomes ○ */
+@keyframes omap-hatchout { 0%,44%{opacity:1} 49%,100%{opacity:0} }
+@keyframes omap-lockg    { 0%,44%{opacity:1} 48%,100%{opacity:0} }
+@keyframes omap-openg    { 0%,44%{opacity:0} 48%,100%{opacity:1} }
+
+/* upstream stays NEUTRAL when touched — it is not ours; the two amber cards
+   light amber, and decrypt holds its lit state right through the park. */
+@keyframes omap-upcard {
+  0%,3%    { background: var(--bg-1); border-color: var(--hairline); }
+  6%,12%   { background: var(--bg-2); border-color: var(--hairline-strong); }
+  18%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes omap-fetcard {
+  0%,19%   { background: var(--bg-1); border-color: var(--hairline); }
+  22%,33%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  38%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes omap-deccard {
+  0%,37%   { background: var(--bg-1); border-color: var(--hairline); }
+  41%,94%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  99%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+
+/* ONE push per cycle — this is the channel's entire upstream cost */
+@keyframes omap-push {
+  0%,49%   { left: 0%;   opacity: 0; }
+  52%      { left: 8%;   opacity: 1; }
+  62%      { left: 90%;  opacity: 1; }
+  65%,100% { left: 100%; opacity: 0; }
+}
+/* FOUR reads per cycle off the same clock — the asymmetry IS the diagram */
+@keyframes omap-rd1 { 0%,1%{left:0%;opacity:0}   4%{left:8%;opacity:1} 14%{left:90%;opacity:1} 17%,100%{left:100%;opacity:0} }
+@keyframes omap-rd2 { 0%,26%{left:0%;opacity:0} 29%{left:8%;opacity:1} 39%{left:90%;opacity:1} 42%,100%{left:100%;opacity:0} }
+@keyframes omap-rd3 { 0%,51%{left:0%;opacity:0} 54%{left:8%;opacity:1} 64%{left:90%;opacity:1} 67%,100%{left:100%;opacity:0} }
+@keyframes omap-rd4 { 0%,76%{left:0%;opacity:0} 79%{left:8%;opacity:1} 89%{left:90%;opacity:1} 92%,100%{left:100%;opacity:0} }
+
+/* the tail gives up exactly what the head takes — width AND margin AND border,
+   or the border-box sliver left behind jitters the row at the loop wrap */
+@keyframes omap-qtail {
+  0%,58%   { width: 16px; margin-right: 4px; border-width: 1px; opacity: 0.9; }
+  68%,100% { width: 0;    margin-right: 0;   border-width: 0;   opacity: 0; }
+}
+@keyframes omap-qhead {
+  0%,58%   { width: 0;    margin-right: 0;   border-width: 0;   opacity: 0; }
+  68%,100% { width: 16px; margin-right: 4px; border-width: 1px; opacity: 1; }
+}
+@keyframes omap-qglow {
+  0%,59%   { box-shadow: 0 0 0 0 transparent; }
+  68%      { box-shadow: 0 0 10px 1px var(--ts); }
+  84%,100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* each renderer lights on the read that fed it — manifest on reads 1 and 3,
+   raw TS on reads 2 and 4. Same bytes, two shapes, never a second fetch. */
+@keyframes omap-man {
+  0%,14%   { background: var(--bg-1); border-color: var(--hairline); }
+  17%,26%  { background: var(--accent-soft); border-color: var(--accent-line); }
+  31%,64%  { background: var(--bg-1); border-color: var(--hairline); }
+  67%,76%  { background: var(--accent-soft); border-color: var(--accent-line); }
+  81%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes omap-rawts {
+  0%,39%   { background: var(--bg-1); border-color: var(--hairline); }
+  42%,51%  { background: var(--accent-soft); border-color: var(--accent-line); }
+  56%,89%  { background: var(--bg-1); border-color: var(--hairline); }
+  92%,97%  { background: var(--accent-soft); border-color: var(--accent-line); }
+  100%     { background: var(--bg-1); border-color: var(--hairline); }
+}
+
+/* viewer dots stay lit and flare under their own read — N viewers, one ingest */
+@keyframes omap-eye1 { 0%,13%{transform:scale(1);box-shadow:0 0 0 0 transparent} 16%{transform:scale(1.55);box-shadow:0 0 8px 1px var(--accent)} 27%,100%{transform:scale(1);box-shadow:0 0 0 0 transparent} }
+@keyframes omap-eye2 { 0%,38%{transform:scale(1);box-shadow:0 0 0 0 transparent} 41%{transform:scale(1.55);box-shadow:0 0 8px 1px var(--accent)} 52%,100%{transform:scale(1);box-shadow:0 0 0 0 transparent} }
+@keyframes omap-eye3 { 0%,63%{transform:scale(1);box-shadow:0 0 0 0 transparent} 66%{transform:scale(1.55);box-shadow:0 0 8px 1px var(--accent)} 77%,100%{transform:scale(1);box-shadow:0 0 0 0 transparent} }
+@keyframes omap-eye4 { 0%,88%{transform:scale(1);box-shadow:0 0 0 0 transparent} 91%{transform:scale(1.55);box-shadow:0 0 8px 1px var(--accent)} 99%,100%{transform:scale(1);box-shadow:0 0 0 0 transparent} }
+
+/* ── narrow: stack Side-1 → Ring → Side-2, connectors rotate to vertical ────
+   1280px, not 900px: measure the COLUMN, not the page. With the sidebar (and,
+   above 1180px, the TOC) taking their share, the doc column is only ~555–700px
+   wide, so the three-column form runs out of room long before the viewport
+   does. The wire is a fixed-length strip rotated 90°, which lets the SAME
+   left: 0→100% keyframes drive it downward — no second set of tracks to keep
+   in sync, and the pills stay upright because they sit outside it. */
+@media (max-width: 1280px) {
+  .omap-map { flex-direction: column; align-items: stretch; min-width: 0; }
+  .omap-link { flex: 0 0 auto; align-self: stretch; width: 100%; min-height: 88px; }
+  .omap-wire { width: 72px; transform: translate(-50%, -50%) rotate(90deg); }
+  .omap-side .omap-card { flex: 0 0 auto; min-height: 0; }
+  .omap-core { align-self: center; width: 100%; max-width: 420px; }
+}
+@media (max-width: 720px) {
+  .omap { padding: 4px 8px 12px; }
+  .omap-side { padding: 16px 10px 12px; }
+  .omap-in { padding-left: 24px; }
+  .omap-note { font-size: 11.5px; }
+}
+
+/* ── reduced motion — freeze on the STEADY STATE, never a mid-transition ────
+   ring full with the oldest slot caught mid-eviction; the cursor parked on
+   decrypt in its UNLOCKED state with the decrypt card still lit; ONE push in
+   flight against THREE reads — the rate asymmetry, held still; both renderers
+   lit off the same bytes; every viewer dot on. */
+@media (prefers-reduced-motion: reduce) {
+  .omap *, .omap *::before, .omap *::after { animation: none !important; }
+
+  .omap-tk1, .omap-tk2 { opacity: 0; }
+  .omap-tk3 { opacity: 1; transform: translate(-50%, -50%); }
+  .omap-tk3 .omap-hatch, .omap-tk3 .omap-g-lock { opacity: 0; }
+  .omap-tk3 .omap-g-open { opacity: 1; }
+  .omap-c-dec { background: var(--cfg-soft); border-color: var(--cfg-line); }
+
+  .omap-seg-tail { width: 7px; margin-right: 4px; border-width: 1px; opacity: 0.32; }
+  .omap-seg-head { width: 16px; margin-right: 4px; border-width: 1px; opacity: 1; box-shadow: 0 0 9px 1px var(--ts); }
+
+  /* these positions dodge the opaque pill, which masks the wire's middle half */
+  .omap-ptok { left: 14%; opacity: 1; }
+  .omap-r1 { left: 6%;  opacity: 1; }
+  .omap-r2 { left: 20%; opacity: 1; }
+  .omap-r3 { left: 90%; opacity: 1; }
+  .omap-r4 { opacity: 0; }
+
+  .omap-c-man, .omap-c-ts { background: var(--accent-soft); border-color: var(--accent-line); }
+  .omap-eye { box-shadow: 0 0 7px var(--accent); }
+}
+
+/* ═══ NEW · .ringcap — the byte cap, and the 3-segment floor that beats it ═══
+   The origin ring is a deque of decrypted segments. On every push the ingest
+   runs, verbatim:
+
+       push_back(seg);
+       while total > cap && ring.len() > MIN_SEGMENTS { pop_front() }
+
+   MIN_SEGMENTS is 3; cap is originRingMb (default 25 MiB). So the byte cap is
+   SOFT — the floor always wins, and on a high-bitrate channel the ring holds
+   MORE than its configured MiB rather than collapse to an unplayable window.
+   That overshoot is the whole reason this page exists (it decides how much RAM
+   a box actually needs) and it is invisible in prose: a static picture can only
+   draw one of the two regimes, and the reader has to be told the other one.
+   So the component plays BOTH on one 16s timeline (var --rc-dur):
+     · phase A ~3.3 Mbps — 11 slim segments, the total resting just under the
+       cap line, the cap doing its job on every push;
+     · phase B high bitrate — fat segments, the while-loop draining 5 at a time
+       (11 → 7 → 3), then STOPPING DEAD at 3 while the total sails past the cap
+       line and turns amber. The `iop` WARN latches once, at the crossing.
+   The reader's takeaway has to be a MOTION: the queue hit a hard stop and the
+   bytes went over the line anyway.
+
+   Two drawing decisions worth knowing before editing:
+   (1) Block width is literally proportional to that segment's bytes (1 MiB =
+       2.941% of the track, so the track spans 34 MiB) and the total bar under-
+       neath is authored to the same scale. That is what lets ONE vertical cap
+       line at 73.53% (= 25 MiB) serve both. Change the scale and you must move
+       the line, every --w, and every rc-barw stop together.
+   (2) The drain is drawn LEADING the push, though the code pushes first. Draw
+       the true one-push overshoot and the total pops over the cap line on every
+       single beat — which would pre-empt the one crossing this picture exists
+       to teach. The mono rule line in the markup carries the real order.
+
+   Palette per the page contract: AMBER = ingest / the cap knob / the refusal to
+   evict, GREEN = the ring itself, TEAL = the serve side, --text-3 = inert. The
+   cap line is deliberately NEUTRAL: it is a measurement gridline, and keeping
+   amber off it is what makes the amber crossing read.
+
+   Like .fowalk, every track resets to its phase-A state inside a short blackout
+   at 94.8–96.8% so the loop is seamless; the reduced-motion block then re-
+   declares phase B's end state statically, because that frozen frame — 3 fat
+   blocks, the bar over the line, the WARN latched — is the one worth teaching. */
+.ringcap { --rc-dur: 16s; min-width: 600px; padding: 6px 14px 14px; }
+
+/* — head: which regime is playing, and the three live readouts — */
+.rc-head { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 18px; padding: 10px 2px 4px; }
+.rc-regime { position: relative; flex: 1 1 320px; min-width: 0; height: 26px; }
+.rc-ph {
+  position: absolute; inset: 0 auto auto 0; display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.03em; white-space: nowrap;
+  border: 1px solid; border-radius: 999px; padding: 3px 11px;
+}
+.rc-ph-a { color: var(--ts-hi); background: var(--ts-soft); border-color: var(--ts-line); }
+.rc-ph-b { color: var(--cfg-hi);   background: var(--cfg-soft); border-color: var(--cfg-line); opacity: 0; }
+.rc-g { font-size: 0.95em; }
+
+.rc-reads { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 16px; margin-left: auto; font-family: var(--mono); font-size: 12px; }
+.rc-lab { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); margin-right: 5px; }
+/* digit-reel idiom (.fo-odo / .fo-dig): absolutely-stacked strings, opacity
+   keyframed — exact values, no @property, no counter arithmetic. */
+.rc-reel { position: relative; display: inline-block; height: 1.35em; vertical-align: -0.28em; }
+.rc-reel-r { width: 17ch; }
+.rc-reel-e { width: 2ch; }
+.rc-rd { position: absolute; inset: 0; white-space: nowrap; opacity: 0; }
+.rc-ok   { color: var(--ts-hi); }
+.rc-over { color: var(--cfg); }
+.rc-num  { color: var(--text-1); }
+.rc-capread { color: var(--text-2); }
+.rc-capread b { color: var(--text-0); font-weight: 500; }
+
+/* — the rule the whole picture is about — */
+.rc-rule { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 10px; padding: 2px 2px 12px; }
+.rc-rule-k { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.rc-rule code { font-size: 11.5px; white-space: normal; }
+
+/* — which end is which: ingest pushes at the back, eviction pops the front — */
+/* NB: no text-transform here — pop_front / push_back are real identifiers and
+   uppercasing them would misquote the code. */
+.rc-ends { display: flex; justify-content: space-between; gap: 12px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; }
+.rc-end-l { color: var(--text-3); }
+.rc-end-r { color: var(--cfg); }
+
+/* — the plot: deque + floor bracket + total bar, all on ONE horizontal scale,
+     crossed by ONE cap line — */
+.rc-plot { position: relative; padding-top: 22px; margin-top: 5px; }
+.rc-capline { position: absolute; left: 73.53%; top: 22px; bottom: 0; z-index: 3; width: 0; border-left: 1px dashed var(--text-3); }
+.rc-cap-lbl {
+  position: absolute; bottom: 100%; right: 5px; margin-bottom: 4px; white-space: nowrap;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; color: var(--text-3);
+}
+.rc-cap-lbl b { color: var(--text-1); font-weight: 500; }
+
+.rc-deque { position: relative; display: flex; align-items: stretch; height: 54px; border-bottom: 1px dashed var(--hairline); }
+.rc-seg { position: relative; flex: 0 0 auto; min-width: 0; width: var(--w); overflow: hidden; }
+/* one tint step past --ts-soft: these blocks are 54px tall, and at the light
+   theme's 10% the fill disappears into the panel. 15% matches what --ts-soft
+   already is in dark, so the two themes end up at the same weight. */
+.rc-seg::before {
+  content: ""; position: absolute; inset: 0 3px 0 0; border-radius: 4px;
+  background: color-mix(in oklch, var(--ts) 15%, transparent); border: 1px solid var(--ts-line);
+}
+.rc-seg-lbl {
+  position: absolute; inset: 0 3px 0 0; display: grid; place-items: center;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--ts-hi); white-space: nowrap;
+}
+/* segment bytes → track width. 1 MiB = 2.941% (track = 34 MiB). */
+.rc-w19 { --w: 5.59%; }   /* 1.9 MiB */
+.rc-w20 { --w: 5.88%; }   /* 2.0 */
+.rc-w21 { --w: 6.18%; }   /* 2.1 */
+.rc-w22 { --w: 6.47%; }   /* 2.2 */
+.rc-w23 { --w: 6.76%; }   /* 2.3 */
+.rc-w24 { --w: 7.06%; }   /* 2.4 */
+.rc-w26 { --w: 7.65%; }   /* 2.6 */
+.rc-wfat { --w: 30.97%; } /* 10.53 MiB — 3 of these = 31.6 MiB */
+
+/* the floor bracket — exactly as wide as the 3 held segments (3 × 30.97%) */
+.rc-floorbar { position: relative; width: 92.91%; height: 21px; margin-top: 5px; border-top: 1px solid var(--cfg-line); opacity: 0; }
+.rc-floorbar::before, .rc-floorbar::after { content: ""; position: absolute; top: 0; width: 1px; height: 5px; background: var(--cfg-line); }
+.rc-floorbar::before { left: 0; }
+.rc-floorbar::after { right: 0; }
+.rc-floor-lbl { position: absolute; top: 5px; left: 50%; transform: translateX(-50%); white-space: nowrap; font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; color: var(--cfg); }
+
+.rc-meter { position: relative; height: 12px; margin-top: 2px; border-radius: 999px; background: var(--bg-3); }
+.rc-bar { position: absolute; left: 0; top: 0; bottom: 0; width: 71.2%; border-radius: 999px; background: var(--ts); }
+
+.rc-scale { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 14px; margin-top: 10px; }
+.rc-law { font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; color: var(--text-2); }
+.rc-law b { color: var(--cfg); font-weight: 500; }
+.rc-overtag { margin-left: auto; font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; color: var(--cfg); opacity: 0; }
+
+/* — the log slot. The WARN sits in flow and sets the slot's height; the quiet
+     line is laid over it and cross-fades, so nothing below ever jumps AND the
+     resting phase-A frame teaches the other half of the latch: while the cap is
+     holding there is no warning at all, and there is only ever ONE when it
+     stops holding. — */
+.rc-logslot { position: relative; margin-top: 13px; }
+.rc-warn {
+  display: flex; flex-wrap: wrap; align-items: flex-start; gap: 8px 11px;
+  padding: 10px 13px; border-radius: var(--radius-m);
+  border: 1px solid var(--cfg-line); background: var(--cfg-soft); opacity: 0;
+}
+.rc-warn-tag { flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--cfg); background: var(--bg-1); border: 1px solid var(--cfg-line); border-radius: 999px; padding: 2px 9px; }
+.rc-warn-msg { flex: 1 1 280px; min-width: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--text-1); }
+.rc-warn-latch { flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-2); }
+.rc-quiet {
+  position: absolute; inset: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 11px;
+  padding: 10px 13px; border-radius: var(--radius-m);
+  border: 1px dashed var(--hairline-strong); background: var(--bg-2);
+}
+.rc-quiet-tag { flex: none; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); border: 1px solid var(--hairline-strong); border-radius: 999px; padding: 2px 9px; }
+.rc-quiet-msg { flex: 1 1 240px; min-width: 0; font-family: var(--mono); font-size: 11.5px; line-height: 1.6; color: var(--text-2); }
+
+/* — why the floor exists at all: it IS the serve side's playable window — */
+.rc-caps { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 11px; }
+.rc-serve { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em; color: var(--accent-hi); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 999px; padding: 3px 10px; }
+.rc-note { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em; color: var(--text-3); }
+
+/* — animation wiring (one shared timeline, percentage-driven, no delay chains) — */
+.rc-deque { animation: rc-cut var(--rc-dur) linear infinite; }
+.rc-bar { animation: rc-barw var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-ph-a { animation: rc-phA var(--rc-dur) linear infinite; }
+.rc-ph-b { animation: rc-phB var(--rc-dur) linear infinite; }
+.rc-warn, .rc-floorbar, .rc-overtag { animation: rc-warnin var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-quiet { animation: rc-quietout var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-f1::before, .rc-f2::before, .rc-f3::before { animation: rc-floor var(--rc-dur) linear infinite; }
+
+.rc-a1 { animation: rc-a1 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-a2 { animation: rc-a2 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-a3 { animation: rc-a3 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-g1 { animation: rc-g1 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-g2 { animation: rc-g2 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-p1 { animation: rc-p1 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-p2 { animation: rc-p2 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-p3 { animation: rc-p3 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-f1 { animation: rc-f1 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-f2 { animation: rc-f2 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.rc-f3 { animation: rc-f3 var(--rc-dur) cubic-bezier(.4,0,.2,1) infinite; }
+
+.rc-v-a0 { animation: rc-vA0 var(--rc-dur) linear infinite; }
+.rc-v-a1 { animation: rc-vA1 var(--rc-dur) linear infinite; }
+.rc-v-a2 { animation: rc-vA2 var(--rc-dur) linear infinite; }
+.rc-v-a3 { animation: rc-vA3 var(--rc-dur) linear infinite; }
+.rc-v-ar { animation: rc-vAr var(--rc-dur) linear infinite; }
+.rc-v-b1 { animation: rc-vB1 var(--rc-dur) linear infinite; }
+.rc-v-b2 { animation: rc-vB2 var(--rc-dur) linear infinite; }
+.rc-v-b3 { animation: rc-vB3 var(--rc-dur) linear infinite; }
+
+/* segment lifetimes. Blocks that die in the SAME while-loop pass share one
+   track on purpose — the loop drains them in a single tick, so they must
+   vanish together; staggering them would misdescribe the code. --w carries
+   each segment's byte width so one track can drive five different sizes. */
+@keyframes rc-a1 { 0%,8.4%{width:var(--w);opacity:1} 10.2%,95.2%{width:0%;opacity:0} 96.4%,100%{width:var(--w);opacity:1} }
+@keyframes rc-a2 { 0%,17.4%{width:var(--w);opacity:1} 19.2%,95.2%{width:0%;opacity:0} 96.4%,100%{width:var(--w);opacity:1} }
+@keyframes rc-a3 { 0%,26.4%{width:var(--w);opacity:1} 28.2%,95.2%{width:0%;opacity:0} 96.4%,100%{width:var(--w);opacity:1} }
+/* burst 1 — the first fat push drains five slim segments at once (11 → 7) */
+@keyframes rc-g1 { 0%,49.2%{width:var(--w);opacity:1} 51%,95.2%{width:0%;opacity:0} 96.4%,100%{width:var(--w);opacity:1} }
+/* burst 2 — five more (7 → 3): the floor is now reached, still under cap */
+@keyframes rc-g2 { 0%,58.4%{width:var(--w);opacity:1} 60%,95.2%{width:0%;opacity:0} 96.4%,100%{width:var(--w);opacity:1} }
+/* the three phase-A pushes: born mid-cycle, culled with their burst */
+@keyframes rc-p1 { 0%,9.4%{width:0%;opacity:0} 11.6%,58.4%{width:var(--w);opacity:1} 60%,100%{width:0%;opacity:0} }
+@keyframes rc-p2 { 0%,18.4%{width:0%;opacity:0} 20.6%,58.4%{width:var(--w);opacity:1} 60%,100%{width:0%;opacity:0} }
+/* burst 3 — the LAST slim segment goes, and the ring is 3 fat segments */
+@keyframes rc-p3 { 0%,27.4%{width:0%;opacity:0} 29.6%,66.4%{width:var(--w);opacity:1} 68.2%,100%{width:0%;opacity:0} }
+/* the fat arrivals. F3 is the push that takes the total over the cap — after
+   it, ring.len() == MIN_SEGMENTS and the while-loop cannot pop again. */
+@keyframes rc-f1 { 0%,50%{width:0%;opacity:0} 52.4%,95.2%{width:var(--w);opacity:1} 96.4%,100%{width:0%;opacity:0} }
+@keyframes rc-f2 { 0%,59%{width:0%;opacity:0} 61.4%,95.2%{width:var(--w);opacity:1} 96.4%,100%{width:0%;opacity:0} }
+@keyframes rc-f3 { 0%,67%{width:0%;opacity:0} 69.4%,95.2%{width:var(--w);opacity:1} 96.4%,100%{width:0%;opacity:0} }
+
+/* the total bar. Every stop is a real ring total on the 34 MiB scale:
+   24.2→71.2%  23.6→69.4%  24.3→71.5%  23.73→69.8%  23.26→68.4%  31.59→92.9%
+   the cap line is at 73.53%, so phase A's peaks stay under it and the single
+   crossing happens at ~68.3% of the timeline, on the F3 push. */
+@keyframes rc-barw {
+  0%,8.4%    { width: 71.2%; background: var(--ts); }
+  10.4%      { width: 64.7%; }   /* pop_front lands before the new segment does */
+  11.6%      { width: 69.4%; }
+  17.4%      { width: 69.4%; }
+  19.2%      { width: 64.7%; }
+  20.6%      { width: 71.5%; }
+  26.4%      { width: 71.5%; }
+  28.2%      { width: 65.3%; }
+  29.6%      { width: 71.2%; }
+  49.2%      { width: 71.2%; }
+  51%        { width: 48.2%; }   /* the while-loop drains five */
+  52.4%      { width: 69.8%; }
+  58.4%      { width: 69.8%; }
+  60%        { width: 46.8%; }   /* five more — ring.len() is now 3 */
+  61.4%      { width: 68.4%; }
+  66.4%      { width: 68.4%; background: var(--ts); }
+  69.4%      { width: 92.9%; background: var(--cfg); }   /* over the line, and stuck there */
+  94.2%      { width: 92.9%; background: var(--cfg); }
+  97.5%,100% { width: 71.2%; background: var(--ts); }
+}
+
+/* the held segments pick up an amber inner ring at the exact instant the floor
+   binds — same green fill, because they are still the ring; the amber is the
+   constraint, not the content. */
+@keyframes rc-floor {
+  0%,67.8%    { border-color: var(--ts-line); box-shadow: inset 0 0 0 0 transparent; }
+  69.8%,94%   { border-color: var(--cfg);     box-shadow: inset 0 0 0 2px var(--cfg-soft); }
+  95.4%,100%  { border-color: var(--ts-line); box-shadow: inset 0 0 0 0 transparent; }
+}
+
+/* WARN chip + floor bracket + overshoot tag all land on the crossing and latch
+   for the rest of the phase — one transition, one warning (warned_floor). */
+@keyframes rc-warnin {
+  0%,68%      { opacity: 0; transform: translateY(-5px); }
+  70.5%,94%   { opacity: 1; transform: none; }
+  95.4%,100%  { opacity: 0; transform: translateY(-5px); }
+}
+
+/* the quiet line is fully gone BEFORE the WARN starts arriving — overlapping
+   them leaves two log lines stacked in the same box, which reads as a bug */
+@keyframes rc-quietout {
+  0%,66.5%    { opacity: 1; }
+  68.5%,94%   { opacity: 0; }
+  95.4%,100%  { opacity: 1; }
+}
+
+@keyframes rc-phA { 0%,44%{opacity:1;transform:none} 46%,95.2%{opacity:0;transform:translateY(-5px)} 96.4%,100%{opacity:1;transform:none} }
+@keyframes rc-phB { 0%,44%{opacity:0;transform:translateY(5px)} 46%,94%{opacity:1;transform:none} 95.4%,100%{opacity:0;transform:translateY(5px)} }
+
+/* readout reels. rc-vB1/2/3 are shared by the ring readout AND the eviction
+   counter because both change on the same tick — one pass of the while loop. */
+@keyframes rc-vA0 { 0%,9.5%{opacity:1} 10.5%,95.2%{opacity:0} 96.4%,100%{opacity:1} }
+@keyframes rc-vA1 { 0%,9.5%{opacity:0} 10.5%,18.5%{opacity:1} 19.5%,100%{opacity:0} }
+@keyframes rc-vA2 { 0%,18.5%{opacity:0} 19.5%,27.5%{opacity:1} 28.5%,100%{opacity:0} }
+@keyframes rc-vA3 { 0%,27.5%{opacity:0} 28.5%,50.6%{opacity:1} 52%,100%{opacity:0} }
+@keyframes rc-vAr { 0%,50.6%{opacity:1} 52%,95.2%{opacity:0} 96.4%,100%{opacity:1} }
+@keyframes rc-vB1 { 0%,51.4%{opacity:0} 52.6%,58%{opacity:1} 59.2%,100%{opacity:0} }
+@keyframes rc-vB2 { 0%,60.4%{opacity:0} 61.6%,66%{opacity:1} 67.2%,100%{opacity:0} }
+@keyframes rc-vB3 { 0%,68.4%{opacity:0} 69.6%,94%{opacity:1} 95.4%,100%{opacity:0} }
+
+/* the loop's seam: 17 blocks cannot morph from 3 fat back to 11 slim, so the
+   deque alone blinks out for ~0.35s while every width track resets. Everything
+   else (bar, reels, chips) cross-fades in the open. */
+@keyframes rc-cut { 0%,93.5%{opacity:1} 94.8%,96.8%{opacity:0} 98.5%,100%{opacity:1} }
+
+@media (max-width: 900px) {
+  .ringcap { padding: 6px 10px 12px; }
+  .rc-deque { height: 46px; }
+  .rc-warn-msg { font-size: 11px; }
+}
+
+/* ── reduced motion — freeze on PHASE B's end state ────────────────────────
+   Not a mid-transition frame and not phase A: the frame worth teaching is the
+   one where the mechanism is counter-intuitive — exactly 3 fat segments, the
+   total bar past the cap line in amber, the WARN latched, the readout showing
+   ring 3 seg · 31.6 MiB against cap 25 MiB. */
+@media (prefers-reduced-motion: reduce) {
+  .ringcap *, .ringcap *::before, .ringcap *::after { animation: none !important; }
+  .rc-deque { opacity: 1; }
+  .rc-a1, .rc-a2, .rc-a3, .rc-g1, .rc-g2, .rc-p1, .rc-p2, .rc-p3 { width: 0%; opacity: 0; }
+  .rc-f1, .rc-f2, .rc-f3 { width: var(--w); opacity: 1; }
+  .rc-f1::before, .rc-f2::before, .rc-f3::before { border-color: var(--cfg); box-shadow: inset 0 0 0 2px var(--cfg-soft); }
+  .rc-bar { width: 92.9%; background: var(--cfg); }
+  .rc-ph-a { opacity: 0; }
+  .rc-ph-b { opacity: 1; transform: none; }
+  .rc-v-a0, .rc-v-a1, .rc-v-a2, .rc-v-a3, .rc-v-ar, .rc-v-b1, .rc-v-b2 { opacity: 0; }
+  .rc-v-b3 { opacity: 1; }
+  .rc-warn, .rc-floorbar, .rc-overtag { opacity: 1; transform: none; }
+  .rc-quiet { opacity: 0; }
+}
+
+/* ═══ NEW · .genbump — why ONE ring segment path carries TWO numbers ════════
+   Every authored segment URI is `{mount}/{source}/o/{enc_entry}/{gen}-{seq}.ts`,
+   and a reader's first instinct is that one of those numbers is redundant. It
+   isn't — and the proof is a single INSTANT, which is exactly why this is an
+   animation and not a picture. A static frame can show both counters; only a
+   shared clock can show them being hit by the SAME event and reacting in
+   OPPOSITE directions: at `reset_ring()` the generation bumps 0 → 1 (the ring's
+   timeline id — the old bytes are gone) while `next_seq` is deliberately left
+   alone, so `#EXT-X-MEDIA-SEQUENCE` keeps climbing 103 → 104 → 105 and never
+   rewinds (players stall on a backwards media sequence). The two readouts sit
+   side by side so ONE fixation catches both changing differently; the bump
+   lands at 33% of the timeline and every track is keyed off that landmark.
+   Row A carries the consequence: URLs the client already queued on the old
+   timeline are refused `404 · not found: stale segment` rather than answered
+   with another timeline's bytes.
+   Palette follows the page's roles: AMBER = the ingest-side re-resolve, GREEN =
+   the ring (generation, deque), TEAL = the serving side (manifest, seq, the
+   client's in-flight requests), RED = refusals only.
+   One shared ~11s timeline (var --gb-dur) drives every track by percentage —
+   no delay chains, so the whole thing can be frozen coherently. Every track
+   loops out through a short neutral fade at 92-96%: the diagram's counters
+   "rewind" only there, masked, because the mechanism's never do.
+   Tokens only, so both themes come for free. */
+.genbump { --gb-dur: 11s; padding: 6px 14px 16px; }
+
+/* — thesis: the authored URI, its two numeric fields tinted by their owner — */
+.gb-uri {
+  margin: 8px 0 16px; padding: 10px 12px; border-radius: var(--radius-s);
+  background: var(--bg-2); border: 1px solid var(--hairline);
+  font-family: var(--mono); font-size: 11.5px; line-height: 1.9; overflow-wrap: anywhere;
+}
+.gb-dim { color: var(--text-2); }
+.gb-uri b { font-weight: 600; border-radius: 5px; padding: 2px 5px; white-space: nowrap; }
+.gb-uri-gen { color: var(--ts-hi); background: var(--ts-soft); box-shadow: inset 0 -1.5px 0 var(--ts-line); }
+.gb-uri-seq { color: var(--accent-hi); background: var(--accent-soft); box-shadow: inset 0 -1.5px 0 var(--accent-line); }
+
+/* — ROW A · the segment URLs the client already holds — */
+.gb-row-lbl { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); margin-bottom: 8px; }
+.gb-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.gb-chip { flex: 0 0 132px; min-width: 0; padding: 8px 9px 7px; border-radius: var(--radius-s); border: 1px solid var(--accent-line); background: var(--accent-soft); }
+.gb-chip-u { font-family: var(--mono); font-size: 10.5px; color: var(--text-0); white-space: nowrap; }
+/* the state line is a fixed-height stage: the verdicts are stacked and
+   crossfaded, so a chip never changes width as its answer changes */
+.gb-chip-st { position: relative; height: 14px; margin-top: 4px; }
+.gb-chip-st > span { position: absolute; inset: 0; font-family: var(--mono); font-size: 8.8px; letter-spacing: 0.01em; white-space: nowrap; opacity: 0; }
+.gb-st-live { color: var(--accent-hi); }
+.gb-st-done { color: var(--text-3); }
+.gb-st-404  { color: var(--risk); }
+.gb-q4 { opacity: 0; }                        /* the new-timeline chip — revealed by the walk */
+.gb-ghost { flex: 0 0 46px; display: grid; place-items: center; border-radius: var(--radius-s); border: 1px dashed var(--hairline-strong); color: var(--text-3); font-family: var(--mono); font-size: 13px; opacity: 0; }
+.gb-guard { margin-top: 10px; font-family: var(--mono); font-size: 10px; line-height: 1.65; color: var(--text-2); }
+/* the sentence is a standing rule, so it is always legible; only the refusal
+   itself goes RED, and only once a request has actually been refused. */
+.gb-guard b { color: var(--text-3); font-weight: 500; }
+
+/* — the instant itself: an ingest-side re-resolve, drawn across both rows — */
+.gb-tick { display: flex; align-items: center; gap: 10px; margin: 14px 0 12px; }
+.gb-tick-rule { flex: 1 1 0; min-width: 10px; height: 0; border-top: 1px dashed var(--cfg-line); opacity: 0; }
+.gb-tick-lbl {
+  flex: 0 1 auto; display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.02em;
+  color: var(--cfg); background: var(--cfg-soft); border: 1px solid var(--cfg-line);
+  border-radius: 999px; padding: 3px 11px; opacity: 0;
+}
+.gb-gl { font-size: 0.95em; }
+
+/* — ROW B · the two readouts, same anatomy, opposite behaviour — */
+.gb-reads { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.gb-read { position: relative; overflow: hidden; min-width: 0; padding: 12px 13px 13px 16px; border-radius: var(--radius-m); border: 1px solid var(--hairline); background: var(--bg-1); }
+.gb-read::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; }
+.gb-gen-c::before { background: var(--ts); }
+.gb-seq-c::before { background: var(--accent); }
+/* the SERVE card's frame never flinches — only its counter moves. That the
+   ring card visibly changes state beside it is the whole point. */
+.gb-seq-c { border-color: var(--accent-line); }
+.gb-lbl { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.1em; text-transform: uppercase; overflow-wrap: anywhere; }
+.gb-gen-c .gb-lbl { color: var(--ts-hi); }
+.gb-seq-c .gb-lbl { color: var(--accent-hi); }
+.gb-num { display: flex; align-items: center; font-family: var(--mono); font-size: 26px; font-weight: 700; line-height: 1.1; margin-top: 4px; transform-origin: left center; }
+.gb-gen-c .gb-num { color: var(--ts-hi); }
+.gb-seq-c .gb-num { color: var(--accent-hi); }
+/* digit reel — the .fo-odo idiom: stacked digits, opacity-keyed. Exact counting
+   with no @property and no layout thrash. */
+.gb-reel { position: relative; width: 1ch; height: 1.1em; overflow: hidden; }
+.gb-d { position: absolute; inset: 0; display: grid; place-items: center; line-height: 1; opacity: 0; }
+.gb-fix { line-height: 1.1; }
+.gb-pill { display: inline-flex; align-items: center; gap: 5px; margin-top: 7px; max-width: 100%; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.01em; white-space: nowrap; background: var(--bg-1); border: 1px solid; border-radius: 999px; padding: 2px 8px; opacity: 0; }
+.gb-pill-ts { color: var(--ts-hi); border-color: var(--ts-line); }
+.gb-pill-ac { color: var(--accent-hi); border-color: var(--accent-line); }
+
+/* the deque: cleared at the bump, refilled on the new timeline */
+.gb-strip { display: flex; align-items: flex-end; gap: 3px; height: 16px; margin-top: 10px; }
+.gb-cell { flex: 1 1 0; height: 12px; border-radius: 3px; background: color-mix(in oklch, var(--ts) 22%, transparent); border: 1px solid var(--ts-line); }
+/* the staircase: one rung per issued sequence. A rung, once lit, never goes
+   out — the reset cut passes straight through it. */
+.gb-stair { display: flex; align-items: flex-end; gap: 3px; height: 16px; margin-top: 10px; }
+.gb-bar { flex: 1 1 0; border-radius: 2px 2px 0 0; background: var(--accent); opacity: 0.18; }
+.gb-b1 { height: 4px; opacity: 1; } .gb-b2 { height: 7px; } .gb-b3 { height: 10px; }
+.gb-b4 { height: 13px; } .gb-b5 { height: 16px; }
+/* the reset cut is drawn TALLER than the rungs so you can see the staircase
+   walk straight through it rather than restart on the far side */
+.gb-cut { flex: 0 0 0; align-self: stretch; border-left: 1px dashed var(--cfg); margin: -4px 3px 0; opacity: 0; }
+.gb-note { font-family: var(--mono); font-size: 9.5px; line-height: 1.55; color: var(--text-2); margin-top: 8px; }
+
+.gb-cap { margin: 14px 0 0; font-size: 13px; color: var(--text-2); max-width: var(--measure); }
+.gb-cap code { white-space: normal; }
+
+/* — animation wiring (one shared timeline, percentage-driven) — */
+.gb-q1 { animation: gb-chip1 var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-q2, .gb-q3 { animation: gb-chip2 var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-q4 { animation: gb-chip4 var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-q1 .gb-st-live { animation: gb-live1 var(--gb-dur) linear infinite; }
+.gb-q1 .gb-st-done { animation: gb-done1 var(--gb-dur) linear infinite; }
+.gb-q2 .gb-st-live, .gb-q3 .gb-st-live { animation: gb-live2 var(--gb-dur) linear infinite; }
+.gb-q2 .gb-st-404,  .gb-q3 .gb-st-404  { animation: gb-stale var(--gb-dur) linear infinite; }
+.gb-q4 .gb-st-live { animation: gb-live4 var(--gb-dur) linear infinite; }
+.gb-ghost { animation: gb-ghostin var(--gb-dur) linear infinite; }
+.gb-guard b { animation: gb-guardin var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-tick-rule { animation: gb-rule var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-tick-lbl, .gb-cut { animation: gb-snapin var(--gb-dur) cubic-bezier(.5,-0.3,.3,1.5) infinite; }
+.gb-gen-c { animation: gb-gencard var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-gen-c .gb-num { animation: gb-genpop var(--gb-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.gb-g0 { animation: gb-g0k var(--gb-dur) linear infinite; }
+.gb-g1 { animation: gb-g1k var(--gb-dur) linear infinite; }
+.gb-s1 { animation: gb-s1k var(--gb-dur) linear infinite; }
+.gb-s2 { animation: gb-s2k var(--gb-dur) linear infinite; }
+.gb-s3 { animation: gb-s3k var(--gb-dur) linear infinite; }
+.gb-s4 { animation: gb-s4k var(--gb-dur) linear infinite; }
+.gb-s5 { animation: gb-s5k var(--gb-dur) linear infinite; }
+/* both pills share ONE keyframe so they can never drift apart — the
+   simultaneity of "+1" and "untouched" is the insight being taught */
+.gb-pill { animation: gb-pillpop var(--gb-dur) cubic-bezier(.5,-0.3,.3,1.5) infinite; }
+.gb-k1 { animation: gb-k1k var(--gb-dur) linear infinite; }
+.gb-k2 { animation: gb-k2k var(--gb-dur) linear infinite; }
+.gb-k3 { animation: gb-k3k var(--gb-dur) linear infinite; }
+.gb-k4 { animation: gb-k4k var(--gb-dur) linear infinite; }
+.gb-k5 { animation: gb-k5k var(--gb-dur) linear infinite; }
+.gb-k6 { animation: gb-k6k var(--gb-dur) linear infinite; }
+.gb-b2 { animation: gb-b2k var(--gb-dur) linear infinite; }
+.gb-b3 { animation: gb-b3k var(--gb-dur) linear infinite; }
+.gb-b4 { animation: gb-b4k var(--gb-dur) linear infinite; }
+.gb-b5 { animation: gb-b5k var(--gb-dur) linear infinite; }
+
+/* ROW A — 0-101 lands normally; 0-102 / 0-103 are still queued when the ring
+   is thrown away at 33%, so they can only be refused. */
+@keyframes gb-chip1 {
+  0%,6%    { background: var(--accent-soft); border-color: var(--accent-line); }
+  10%,92%  { background: var(--bg-2); border-color: var(--hairline); }
+  96%,100% { background: var(--accent-soft); border-color: var(--accent-line); }
+}
+@keyframes gb-chip2 {
+  0%,33%   { background: var(--accent-soft); border-color: var(--accent-line); }
+  36%,92%  { background: var(--risk-soft); border-color: var(--risk-line); }
+  96%,100% { background: var(--accent-soft); border-color: var(--accent-line); }
+}
+@keyframes gb-chip4 {
+  0%,43%   { opacity: 0; transform: translateY(4px); }
+  47%,92%  { opacity: 1; transform: none; }
+  96%,100% { opacity: 0; transform: translateY(4px); }
+}
+@keyframes gb-live1 { 0%,6%{opacity:1} 9%,100%{opacity:0} }
+@keyframes gb-done1 { 0%,8%{opacity:0} 11%,92%{opacity:1} 95%,100%{opacity:0} }
+@keyframes gb-live2 { 0%,33%{opacity:1} 35%,95%{opacity:0} 97%,100%{opacity:1} }
+@keyframes gb-stale { 0%,35%{opacity:0} 37%,92%{opacity:1} 95%,100%{opacity:0} }
+@keyframes gb-live4 { 0%,45%{opacity:0} 48%,92%{opacity:1} 95%,100%{opacity:0} }
+@keyframes gb-ghostin { 0%,48%{opacity:0} 53%,92%{opacity:.85} 95%,100%{opacity:0} }
+@keyframes gb-guardin { 0%,35%{color:var(--text-3)} 39%,92%{color:var(--risk)} 95%,100%{color:var(--text-3)} }
+
+/* the instant — amber, because a re-resolve is ingest-side work */
+@keyframes gb-rule { 0%,30%{opacity:0} 34%,92%{opacity:1} 95%,100%{opacity:0} }
+@keyframes gb-snapin {
+  0%,30%   { opacity: 0; transform: scale(.86); }
+  34%,92%  { opacity: 1; transform: none; }
+  95%,100% { opacity: 0; transform: scale(.86); }
+}
+
+/* ROW B · generation — the ring card visibly changes state … */
+@keyframes gb-gencard {
+  0%,31%   { background: var(--bg-1); border-color: var(--hairline); }
+  35%,92%  { background: var(--ts-soft); border-color: var(--ts-line); }
+  96%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes gb-genpop { 0%,32%{transform:none} 36%{transform:scale(1.2)} 41%,100%{transform:none} }
+@keyframes gb-g0k { 0%,32%{opacity:1} 33%,95%{opacity:0} 96%,100%{opacity:1} }
+@keyframes gb-g1k { 0%,32%{opacity:0} 33%,95%{opacity:1} 96%,100%{opacity:0} }
+
+/* … while #EXT-X-MEDIA-SEQUENCE walks straight past the same instant.
+   101 → 102 → 103 · BUMP AT 33% · 104 → 105. No step goes down. 104 is the
+   long resting hold (47-75%) — the frame reduced motion freezes on. */
+@keyframes gb-s1k { 0%,5%{opacity:1} 6%,94%{opacity:0} 96%,100%{opacity:1} }
+@keyframes gb-s2k { 0%,5%{opacity:0} 6%,14%{opacity:1} 15%,100%{opacity:0} }
+@keyframes gb-s3k { 0%,14%{opacity:0} 15%,46%{opacity:1} 47%,100%{opacity:0} }
+@keyframes gb-s4k { 0%,46%{opacity:0} 47%,75%{opacity:1} 76%,100%{opacity:0} }
+@keyframes gb-s5k { 0%,75%{opacity:0} 76%,93%{opacity:1} 95%,100%{opacity:0} }
+@keyframes gb-pillpop {
+  0%,31%   { opacity: 0; transform: scale(.72); }
+  36%,92%  { opacity: 1; transform: none; }
+  95%,100% { opacity: 0; transform: scale(.72); }
+}
+
+/* the deque empties in one frame and refills cell by cell — one ingest, one
+   ring, so the window has to be rebuilt before anything can be served */
+@keyframes gb-k1k { 0%,32%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} 35%,40%{background:transparent;border-color:var(--hairline)} 43%,100%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} }
+@keyframes gb-k2k { 0%,32%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} 35%,42%{background:transparent;border-color:var(--hairline)} 45%,100%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} }
+@keyframes gb-k3k { 0%,32%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} 35%,44%{background:transparent;border-color:var(--hairline)} 47%,100%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} }
+@keyframes gb-k4k { 0%,32%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} 35%,46%{background:transparent;border-color:var(--hairline)} 49%,100%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} }
+@keyframes gb-k5k { 0%,32%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} 35%,48%{background:transparent;border-color:var(--hairline)} 51%,100%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} }
+@keyframes gb-k6k { 0%,32%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} 35%,50%{background:transparent;border-color:var(--hairline)} 53%,100%{background:color-mix(in oklch, var(--ts) 22%, transparent);border-color:var(--ts-line)} }
+
+/* rungs light as the sequence passes them and stay lit — including across the
+   cut. A rung that went dark would be the rewind we are promising never happens. */
+@keyframes gb-b2k { 0%,5%{opacity:.18}  6%,94%{opacity:1} 96%,100%{opacity:.18} }
+@keyframes gb-b3k { 0%,14%{opacity:.18} 15%,94%{opacity:1} 96%,100%{opacity:.18} }
+@keyframes gb-b4k { 0%,46%{opacity:.18} 47%,94%{opacity:1} 96%,100%{opacity:.18} }
+@keyframes gb-b5k { 0%,75%{opacity:.18} 76%,94%{opacity:1} 96%,100%{opacity:.18} }
+
+@media (max-width: 720px) {
+  .genbump { padding: 6px 10px 14px; }
+  .gb-chip { flex: 1 1 124px; }
+}
+/* the two readouts stay side by side at every width ON PURPOSE — stacking them
+   costs the single fixation that makes "one resets, one doesn't" land. Type
+   shrinks instead. */
+@media (max-width: 540px) {
+  .gb-reads { gap: 8px; }
+  .gb-read { padding: 10px 9px 11px 13px; }
+  .gb-lbl { font-size: 8.6px; letter-spacing: 0.06em; }
+  .gb-num { font-size: 21px; }
+  .gb-pill { font-size: 8.6px; padding: 2px 6px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* .genbump — freeze one beat AFTER the bump, the frame where the two
+     readouts have visibly disagreed: generation reads 1 and its deque has been
+     cleared and refilled on the new timeline; the two segment URLs the client
+     had already queued on the OLD timeline are refused 404 · stale segment; a
+     fresh 1-104.ts is in flight; and #EXT-X-MEDIA-SEQUENCE reads 104 — one
+     rung higher than 103, having walked straight through the reset cut. */
+  .genbump *, .genbump *::before, .genbump *::after { animation: none !important; }
+  .gb-q1 { background: var(--bg-2); border-color: var(--hairline); }
+  .gb-q1 .gb-st-live { opacity: 0; }
+  .gb-q1 .gb-st-done { opacity: 1; }
+  .gb-q2, .gb-q3 { background: var(--risk-soft); border-color: var(--risk-line); }
+  .gb-q2 .gb-st-live, .gb-q3 .gb-st-live { opacity: 0; }
+  .gb-q2 .gb-st-404,  .gb-q3 .gb-st-404  { opacity: 1; }
+  .gb-q4 { opacity: 1; transform: none; }
+  .gb-q4 .gb-st-live { opacity: 1; }
+  .gb-ghost { opacity: .85; }
+  .gb-guard b { color: var(--risk); }
+  .gb-tick-rule { opacity: 1; }
+  .gb-tick-lbl, .gb-cut { opacity: 1; transform: none; }
+  .gb-gen-c { background: var(--ts-soft); border-color: var(--ts-line); }
+  .gb-gen-c .gb-num { transform: none; }
+  .gb-g0 { opacity: 0; }
+  .gb-g1 { opacity: 1; }
+  .gb-s1, .gb-s2, .gb-s3, .gb-s5 { opacity: 0; }
+  .gb-s4 { opacity: 1; }
+  .gb-pill { opacity: 1; transform: none; }
+  .gb-cell { background: color-mix(in oklch, var(--ts) 22%, transparent); border-color: var(--ts-line); }
+  .gb-b2, .gb-b3, .gb-b4 { opacity: 1; }   /* 101-104 issued … */
+  .gb-b5 { opacity: .18; }                 /* … 105 not yet — the climb continues */
+}
+
+/* ═══ NEW · .cutdec — where a BARE MPEG-TS socket gets cut into segments ════
+   A `direct` / `hdhomerun` upstream is one endless socket with no playlist, so
+   the segmenter has to FIND its own boundaries. A static picture can show the
+   packet strip, but it cannot show the thing that actually confuses people:
+   the cut is a PREDICATE over time, not a position on a strip. Two conditions
+   have to be true at the same instant — an RAI bit on the video PID, AND an
+   elapsed clock that has already reached target — and the whole point is what
+   happens when they DISAGREE. So the component plays the disagreement twice:
+   run 1 walks past an RAI that arrives too early (skipped), then cuts on the
+   next one; run 2 never gets an RAI at all and is cut anyway by the 3× hard
+   cap. You cannot draw "walked past it" without motion.
+
+   Palette follows the page's roles: AMBER --cfg is the ingest side (the
+   packets, the read head, the accumulating segment), GREEN --ts is the ring
+   the finished segments land in, TEAL --accent is structure/PSI (PAT + PMT are
+   metadata, not media). RED --risk appears exactly twice and only on the same
+   fact: run 2's blade and its `mid-GOP` chip, marking the one cut a decoder
+   cannot start cold from — the trade the code deliberately takes over an
+   unbounded segment. Nothing else is red.
+
+   One shared timeline (--cd-dur) drives every track by percentage; there are
+   no animation-delay chains, because a delay chain cannot be frozen coherently
+   and this component has two runs that must not drift apart. 100% is byte-
+   identical to 0% (idle) so the infinite loop has no seam — the legible frozen
+   frame is therefore stated EXPLICITLY in the reduced-motion block, which pins
+   run 1 at the cut with the earlier `skipped` verdict still on screen so both
+   halves of the predicate read at once.
+
+   The clock readout uses the .fo-odo/.fo-dig digit-reel idiom (stacked digits,
+   keyframed opacity) rather than @property counters — exact, and supported
+   everywhere this file already targets. */
+.cutdec { --cd-dur: 18s; min-width: 560px; padding: 6px 14px 16px; }
+
+/* — intro strip (shaped like .lane-meta, but amber: this is the ingest side) — */
+.cd-intro { display: flex; align-items: center; gap: 10px; padding: 8px 0 10px; }
+.cd-intro .cd-tag { flex: none; white-space: nowrap; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; padding: 3px 8px; border-radius: 999px; color: var(--cfg-hi); background: var(--cfg-soft); }
+.cd-intro .cd-desc { font-size: 13.5px; color: var(--text-2); }
+.cd-intro .cd-desc code { font-size: 0.88em; white-space: normal; }
+
+/* ── the three lamps ─────────────────────────────────────────────────────── */
+.cd-lamps { display: flex; flex-wrap: wrap; align-items: stretch; gap: 10px; padding: 2px 0 14px; }
+.cd-lamp { flex: 0 0 auto; display: flex; flex-direction: column; gap: 5px; padding: 9px 12px; border-radius: var(--radius-s); background: var(--bg-2); border: 1px solid var(--hairline); }
+.cd-lamp.cd-grow { flex: 1 1 220px; min-width: 0; }
+.cd-lk { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.cd-lv { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--text-2); }
+
+/* lamp 1 · READY — dark until the PMT is parsed, then lit for good */
+.cd-ledrow { display: flex; align-items: center; gap: 8px; }
+.cd-led { width: 9px; height: 9px; border-radius: 50%; flex: none; background: var(--bg-3); border: 1px solid var(--hairline-strong); }
+.cd-swap { position: relative; min-width: 15ch; height: 1.25em; font-family: var(--mono); font-size: 12px; }
+.cd-sw { position: absolute; inset: 0; display: flex; align-items: center; white-space: nowrap; opacity: 0; }
+.cd-sw-wait { color: var(--text-3); }
+.cd-sw-rdy { color: var(--ts-hi); font-weight: 600; }
+
+/* lamp 2 · the PCR odometer — the stream's own clock, not the wall's */
+.cd-odo { display: inline-flex; align-items: baseline; gap: 1px; font-family: var(--mono); }
+.cd-reel { position: relative; width: 1ch; height: 1.2em; overflow: hidden; font-size: 15px; }
+.cd-dg { position: absolute; inset: 0; display: grid; place-items: center; line-height: 1; font-weight: 700; color: var(--cfg); opacity: 0; }
+.cd-unit { font-size: 11px; color: var(--text-3); margin-left: 4px; }
+
+/* lamp 3 · the duration bar. Full width == max_duration (3 × target), so BOTH
+   thresholds are on one scale — run 1 stops at the first tick, run 2 runs the
+   whole bar. Drawing the bar at 1× would make the hard cap unplottable. */
+.cd-bar { position: relative; height: 12px; border-radius: 999px; background: var(--bg-3); border: 1px solid var(--hairline); overflow: visible; }
+.cd-barfill { position: absolute; left: 0; top: 0; bottom: 0; width: 0; border-radius: 999px; background: var(--cfg); opacity: 0.85; }
+.cd-tick { position: absolute; top: -3px; bottom: -3px; width: 1px; background: var(--text-3); }
+.cd-tick i { position: absolute; top: calc(100% + 3px); font-family: var(--mono); font-size: 9px; font-style: normal; letter-spacing: 0.04em; color: var(--text-3); white-space: nowrap; }
+.cd-tick-t { left: 33.333%; }
+.cd-tick-t i { left: 0; transform: translateX(-50%); }
+.cd-tick-3 { left: 100%; background: var(--risk-line); }
+.cd-tick-3 i { right: 0; color: var(--text-2); }
+.cd-barwrap { padding-bottom: 15px; }
+
+/* ── a run: label + strip + annotation grid ──────────────────────────────── */
+.cd-run { display: grid; grid-template-columns: 106px 1fr; gap: 12px; align-items: start; padding: 10px 0; }
+.cd-run + .cd-run { border-top: 1px dashed var(--hairline); }
+.cd-rk { display: flex; flex-direction: column; gap: 2px; padding-top: 6px; }
+.cd-rn { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; color: var(--text-1); }
+.cd-rd { font-size: 11.5px; line-height: 1.35; color: var(--text-3); }
+.cd-belt { min-width: 0; }
+
+/* The strip and the annotation grid share ONE column template, which is the
+   only reason a chip can be anchored under the exact packet it describes. */
+.cd-strip, .cd-annos { display: grid; grid-template-columns: repeat(14, minmax(24px, 1fr)); gap: 3px; }
+.cd-strip { position: relative; padding-top: 7px; }
+.cd-annos { margin-top: 9px; row-gap: 6px; }
+
+/* prose per run — this is also the strip's text alternative: the strip itself
+   is aria-hidden, so if CSS never loads (or a screen reader is driving) the
+   mechanism still reads in full from these two paragraphs */
+.cd-narr { margin: 9px 0 0; max-width: 82ch; font-size: 12.5px; line-height: 1.5; color: var(--text-2); }
+.cd-narr code { font-size: 0.9em; white-space: normal; }
+
+.cd-pk { position: relative; height: 34px; border-radius: 4px; display: flex; align-items: flex-end; justify-content: center; padding-bottom: 4px; background: var(--bg-2); border: 1px solid var(--hairline); }
+.cd-pk::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 3px 0 0 3px; background: var(--text-3); opacity: 0.55; }   /* the 0x47 sync byte */
+.cd-pl { font-family: var(--mono); font-size: 8px; letter-spacing: 0.02em; color: var(--text-3); }
+/* PID colouring — PAT/PMT are structure (teal), video is the ingest (amber),
+   audio is inert (neutral). Only the video PID can ever host a cut. */
+.cd-psi { background: var(--accent-soft); border-color: var(--accent-line); }
+.cd-psi::before { background: var(--accent); opacity: 1; }
+.cd-psi .cd-pl { color: var(--accent-hi); }
+.cd-vid { background: var(--cfg-soft); border-color: var(--cfg-line); }
+.cd-vid::before { background: var(--cfg); opacity: 1; }
+.cd-vid .cd-pl { color: var(--cfg-hi); }
+.cd-aud { background: var(--bg-2); border-color: var(--hairline); }
+.cd-rai { position: absolute; top: -5px; left: 50%; width: 7px; height: 7px; transform: translateX(-50%) rotate(45deg); background: var(--cfg); box-shadow: 0 0 6px var(--cfg); border-radius: 1px; }
+
+/* The read head + the accumulating segment are ONE element: a translucent wash
+   whose right border IS the head. When a cut fires only its LEFT edge jumps
+   forward (to the cut packet) — the head never stutters, which is exactly what
+   `seg_start_pcr = pcr` does in the code. The wash is kept faint and paired
+   with a bottom rule: a heavier tint would swamp the PID colouring underneath,
+   and that colouring is the other half of what the strip teaches. */
+.cd-band { position: absolute; top: 7px; bottom: 0; left: 0; width: 0; pointer-events: none; z-index: 2; border-radius: 3px; background: color-mix(in oklch, var(--cfg) 14%, transparent); border-right: 2px solid var(--cfg); border-bottom: 2px solid var(--cfg); opacity: 0; }
+/* the blade sits on the LEFT edge of the cut packet — the code flushes `cur`
+   BEFORE appending it, so the boundary is in FRONT of the packet, not behind.
+   It over-runs the strip vertically on purpose: at the cut instant the packet
+   right behind it is lit too, and a blade confined to the packet height gets
+   swallowed by that glow — the one thing the frame must not lose. */
+.cd-blade { position: absolute; top: -5px; bottom: -9px; width: 2px; z-index: 4; border-radius: 2px; background: var(--cfg); box-shadow: 0 0 0 1px var(--bg-1), 0 0 9px var(--cfg); opacity: 0; transform: scaleY(0); transform-origin: 50% 50%; }
+.cd-blade1 { left: 78.57%; }
+.cd-blade2 { left: 85.71%; background: var(--risk); box-shadow: 0 0 0 1px var(--bg-1), 0 0 9px var(--risk); }
+
+/* width:max-content is load-bearing — the chip is ANCHORED to its packet's grid
+   column but must be allowed to run wider than that column, or the pill clips
+   its own label and the text spills outside the background */
+.cd-anno { position: relative; align-self: start; width: max-content; white-space: nowrap; font-family: var(--mono); font-size: 9px; letter-spacing: 0.03em; padding: 2px 7px; border-radius: 999px; border: 1px solid; opacity: 0; }
+/* a 1px riser instead of a triangle caret — the chips are translucent, and a
+   caret's border would cross the chip's own top border and read as a seam */
+.cd-anno::before { content: ""; position: absolute; left: 10px; bottom: 100%; width: 1px; height: 6px; background: currentColor; opacity: .55; }
+.cd-anno.cd-mid::before { left: 50%; }
+.cd-an-psi { color: var(--accent-hi); background: var(--accent-soft); border-color: var(--accent-line); }
+.cd-an-warn { color: var(--cfg); background: var(--cfg-soft); border-color: var(--cfg-line); }
+.cd-an-off { color: var(--text-3); background: var(--bg-3); border-color: var(--hairline-strong); }
+.cd-a-pat  { grid-row: 1; grid-column: 1  / span 2; }
+.cd-a-pmt  { grid-row: 2; grid-column: 3  / span 2; }
+.cd-a-skip { grid-row: 3; grid-column: 7  / span 2; }
+.cd-a-cut  { grid-row: 3; grid-column: 12 / span 3; font-weight: 600; }
+.cd-a-cap  { grid-row: 1; grid-column: 8  / span 7; justify-self: end; }
+
+/* ── what came out: the ring's inbox ─────────────────────────────────────── */
+.cd-out { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-m); border: 1px dashed var(--ts-line); background: var(--ts-soft); }
+.cd-outk { display: inline-flex; align-items: baseline; gap: 6px; font-family: var(--mono); font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ts-hi); }
+.cd-outk .cd-reel { font-size: 13px; }
+.cd-outk .cd-dg { color: var(--ts-hi); }
+.cd-seg { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 11px; border-radius: var(--radius-s); background: var(--bg-1); border: 1px solid var(--ts-line); opacity: 0; }
+.cd-sgi { font-family: var(--mono); font-size: 12px; font-weight: 600; color: var(--ts-hi); }
+.cd-sgd { font-size: 11.5px; color: var(--text-2); }
+.cd-flag { font-family: var(--mono); font-size: 9px; letter-spacing: 0.06em; text-transform: uppercase; padding: 2px 7px; border-radius: 999px; color: var(--risk); background: var(--risk-soft); border: 1px solid var(--risk-line); }
+
+/* ── captions the animation cannot say out loud ──────────────────────────── */
+.cd-caps { display: flex; flex-direction: column; gap: 5px; margin: 12px 0 0; padding: 0; list-style: none; }
+.cd-caps li { position: relative; margin: 0; padding-left: 15px; font-family: var(--mono); font-size: 10.5px; line-height: 1.5; letter-spacing: 0.02em; color: var(--text-2); }
+.cd-caps li::before { content: "·"; position: absolute; left: 4px; top: 0; width: auto; height: auto; background: none; border-radius: 0; color: var(--cfg); opacity: 1; }
+
+/* ═══ animation wiring — one clock, everything on percentages ══════════════
+   0–60 %  run 1 (a stream that signals RAI)
+   62–99 % run 2 (the same socket, later, after the encoder stops signalling)
+   100 %  == 0 % exactly, so the loop has no visible seam.                  */
+.cd-run1  { animation: cd-act1 var(--cd-dur) linear infinite; }
+.cd-run2  { animation: cd-act2 var(--cd-dur) linear infinite; }
+.cd-band1 { animation: cd-band1 var(--cd-dur) linear infinite; }
+.cd-band2 { animation: cd-band2 var(--cd-dur) linear infinite; }
+.cd-blade1 { animation: cd-blade1 var(--cd-dur) cubic-bezier(.3,0,.2,1) infinite; }
+.cd-blade2 { animation: cd-blade2 var(--cd-dur) cubic-bezier(.3,0,.2,1) infinite; }
+.cd-led   { animation: cd-led var(--cd-dur) linear infinite; }
+.cd-sw-wait { animation: cd-swwait var(--cd-dur) linear infinite; }
+.cd-sw-rdy  { animation: cd-swrdy var(--cd-dur) linear infinite; }
+.cd-barfill { animation: cd-fill var(--cd-dur) linear infinite; }
+.cd-p-pat  { animation: cd-pat  var(--cd-dur) linear infinite; }
+.cd-p-pmt  { animation: cd-pmt  var(--cd-dur) linear infinite; }
+.cd-p-skip { animation: cd-skip var(--cd-dur) linear infinite; }
+.cd-p-skip .cd-rai { animation: cd-skiprai var(--cd-dur) linear infinite; }
+.cd-p-cut  { animation: cd-cut  var(--cd-dur) linear infinite; }
+.cd-p-cut .cd-rai { animation: cd-cutrai var(--cd-dur) linear infinite; }
+.cd-p-cap  { animation: cd-cap  var(--cd-dur) linear infinite; }
+.cd-a-pat  { animation: cd-apat  var(--cd-dur) linear infinite; }
+.cd-a-pmt  { animation: cd-apmt  var(--cd-dur) linear infinite; }
+.cd-a-skip { animation: cd-askip var(--cd-dur) linear infinite; }
+.cd-a-cut  { animation: cd-acut  var(--cd-dur) linear infinite; }
+.cd-a-cap  { animation: cd-acap  var(--cd-dur) linear infinite; }
+.cd-sg1 { animation: cd-seg1 var(--cd-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.cd-sg2 { animation: cd-seg2 var(--cd-dur) cubic-bezier(.4,0,.2,1) infinite; }
+.cd-n0 { animation: cd-n0 var(--cd-dur) linear infinite; }
+.cd-n1 { animation: cd-n1 var(--cd-dur) linear infinite; }
+.cd-n2 { animation: cd-n2 var(--cd-dur) linear infinite; }
+.cd-t0 { animation: cd-t0 var(--cd-dur) linear infinite; }
+.cd-t1 { animation: cd-t1 var(--cd-dur) linear infinite; }
+.cd-o0 { animation: cd-o0 var(--cd-dur) linear infinite; }
+.cd-o1 { animation: cd-o1 var(--cd-dur) linear infinite; }
+.cd-o2 { animation: cd-o2 var(--cd-dur) linear infinite; }
+.cd-o3 { animation: cd-o3 var(--cd-dur) linear infinite; }
+.cd-o4 { animation: cd-o4 var(--cd-dur) linear infinite; }
+.cd-o5 { animation: cd-o5 var(--cd-dur) linear infinite; }
+.cd-o6 { animation: cd-o6 var(--cd-dur) linear infinite; }
+.cd-o7 { animation: cd-o7 var(--cd-dur) linear infinite; }
+.cd-o8 { animation: cd-o8 var(--cd-dur) linear infinite; }
+.cd-o9 { animation: cd-o9 var(--cd-dur) linear infinite; }
+
+/* which run has the floor */
+@keyframes cd-act1 { 0% { opacity: .46; } 3%,58% { opacity: 1; } 61%,100% { opacity: .46; } }
+@keyframes cd-act2 { 0%,60% { opacity: .46; } 63%,97% { opacity: 1; } 99%,100% { opacity: .46; } }
+
+/* head + accumulation. The 49→50 % step is the cut: the left edge leaps to the
+   cut packet while the right edge (the head) keeps its exact position. */
+@keyframes cd-band1 {
+  0%,2%   { left: 0; width: 0%; opacity: 0; }
+  4%      { left: 0; width: 3.6%; opacity: 1; }
+  49%     { left: 0; width: 83.9%; opacity: 1; }
+  50%     { left: 78.57%; width: 5.33%; opacity: 1; }
+  58%     { left: 78.57%; width: 21.43%; opacity: 1; }
+  60%     { left: 78.57%; width: 21.43%; opacity: 0; }
+  99%,100% { left: 0; width: 0%; opacity: 0; }
+}
+@keyframes cd-band2 {
+  0%,62%  { left: 0; width: 0%; opacity: 0; }
+  64%     { left: 0; width: 2.9%; opacity: 1; }
+  93%     { left: 0; width: 88.2%; opacity: 1; }
+  94%     { left: 85.71%; width: 2.5%; opacity: 1; }
+  97%     { left: 85.71%; width: 14.29%; opacity: 1; }
+  98%     { left: 85.71%; width: 14.29%; opacity: 0; }
+  99%,100% { left: 0; width: 0%; opacity: 0; }
+}
+/* the blade stays up after the cut so the boundary is still readable */
+@keyframes cd-blade1 { 0%,48.9% { opacity: 0; transform: scaleY(0); } 50%,97% { opacity: 1; transform: scaleY(1); } 99%,100% { opacity: 0; transform: scaleY(0); } }
+@keyframes cd-blade2 { 0%,92.9% { opacity: 0; transform: scaleY(0); } 94%,98% { opacity: 1; transform: scaleY(1); } 99%,100% { opacity: 0; transform: scaleY(0); } }
+
+/* READY — dark until the PMT hands over the video PID at 14 %, lit thereafter */
+@keyframes cd-led {
+  0%,13.9%  { background: var(--bg-3); border-color: var(--hairline-strong); box-shadow: none; }
+  14%,97.9% { background: var(--ts); border-color: var(--ts); box-shadow: 0 0 8px var(--ts); }
+  98%,100%  { background: var(--bg-3); border-color: var(--hairline-strong); box-shadow: none; }
+}
+@keyframes cd-swwait { 0%,13.9% { opacity: 1; } 14%,97.9% { opacity: 0; } 98%,100% { opacity: 1; } }
+@keyframes cd-swrdy  { 0%,13.9% { opacity: 0; } 14%,97.9% { opacity: 1; } 98%,100% { opacity: 0; } }
+
+/* the duration bar: 33.33 % is target (5.0 s), 100 % is max_duration (15.0 s) */
+@keyframes cd-fill {
+  0%,2%    { width: 0%; }
+  49%,51%  { width: 33.333%; }
+  53%,63%  { width: 0%; }
+  93%,97%  { width: 100%; }
+  99%,100% { width: 0%; }
+}
+
+/* PSI packets pulse as they are read; the annotation chips carry the memory */
+@keyframes cd-pat {
+  0%,4.9% { border-color: var(--accent-line); box-shadow: none; transform: none; }
+  6%,9%   { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-soft); transform: translateY(-2px); }
+  11%,100% { border-color: var(--accent-line); box-shadow: none; transform: none; }
+}
+@keyframes cd-pmt {
+  0%,12.9% { border-color: var(--accent-line); box-shadow: none; transform: none; }
+  14%,17%  { border-color: var(--accent); box-shadow: 0 0 10px var(--accent-soft); transform: translateY(-2px); }
+  19%,100% { border-color: var(--accent-line); box-shadow: none; transform: none; }
+}
+/* the RAI that arrives too early: it flashes, then goes STRUCK and stays that
+   way — the "walked past it" state has to survive to the end of the run or the
+   rule reads as "cut on every RAI", which is the whole misconception */
+@keyframes cd-skip {
+  0%,26.9% { background: var(--cfg-soft); border-color: var(--cfg-line); border-style: solid; opacity: 1; }
+  28%,31%  { background: var(--cfg-soft); border-color: var(--cfg); border-style: solid; opacity: 1; }
+  33%,97%  { background: var(--bg-2); border-color: var(--hairline-strong); border-style: dashed; opacity: .55; }
+  99%,100% { background: var(--cfg-soft); border-color: var(--cfg-line); border-style: solid; opacity: 1; }
+}
+@keyframes cd-skiprai {
+  0%,26.9% { background: var(--cfg); box-shadow: 0 0 6px var(--cfg); opacity: 1; }
+  28%,31%  { background: var(--cfg); box-shadow: 0 0 12px var(--cfg); opacity: 1; }
+  33%,97%  { background: var(--text-3); box-shadow: none; opacity: .5; }
+  99%,100% { background: var(--cfg); box-shadow: 0 0 6px var(--cfg); opacity: 1; }
+}
+/* the RAI that fires the cut: both halves of the predicate are true at once */
+@keyframes cd-cut {
+  0%,47.9% { background: var(--cfg-soft); border-color: var(--cfg-line); box-shadow: none; transform: none; }
+  49%,52%  { background: var(--cfg-soft); border-color: var(--cfg); box-shadow: 0 0 14px var(--cfg-soft); transform: translateY(-3px); }
+  54%,97%  { background: var(--cfg-soft); border-color: var(--cfg); box-shadow: 0 0 8px var(--cfg-soft); transform: none; }
+  99%,100% { background: var(--cfg-soft); border-color: var(--cfg-line); box-shadow: none; transform: none; }
+}
+@keyframes cd-cutrai {
+  0%,47.9% { box-shadow: 0 0 6px var(--cfg); transform: translateX(-50%) rotate(45deg) scale(1); }
+  49%,52%  { box-shadow: 0 0 14px var(--cfg); transform: translateX(-50%) rotate(45deg) scale(1.5); }
+  54%,97%  { box-shadow: 0 0 10px var(--cfg); transform: translateX(-50%) rotate(45deg) scale(1.2); }
+  99%,100% { box-shadow: 0 0 6px var(--cfg); transform: translateX(-50%) rotate(45deg) scale(1); }
+}
+/* run 2's cut lands on an ordinary packet — no RAI anywhere on this strip */
+@keyframes cd-cap {
+  0%,91.9% { background: var(--cfg-soft); border-color: var(--cfg-line); box-shadow: none; transform: none; }
+  93%,96%  { background: var(--risk-soft); border-color: var(--risk); box-shadow: 0 0 14px var(--risk-soft); transform: translateY(-3px); }
+  97%,98%  { background: var(--risk-soft); border-color: var(--risk); box-shadow: 0 0 8px var(--risk-soft); transform: none; }
+  99%,100% { background: var(--cfg-soft); border-color: var(--cfg-line); box-shadow: none; transform: none; }
+}
+
+@keyframes cd-apat  { 0%,5.9%  { opacity: 0; transform: translateY(-4px); } 7%,58%  { opacity: 1; transform: none; } 60%,100% { opacity: 0; transform: translateY(-4px); } }
+@keyframes cd-apmt  { 0%,13.9% { opacity: 0; transform: translateY(-4px); } 15%,58% { opacity: 1; transform: none; } 60%,100% { opacity: 0; transform: translateY(-4px); } }
+@keyframes cd-askip { 0%,27.9% { opacity: 0; transform: translateY(-4px); } 29%,58% { opacity: 1; transform: none; } 60%,100% { opacity: 0; transform: translateY(-4px); } }
+@keyframes cd-acut  { 0%,48.9% { opacity: 0; transform: translateY(-4px); } 50%,58% { opacity: 1; transform: none; } 60%,100% { opacity: 0; transform: translateY(-4px); } }
+@keyframes cd-acap  { 0%,92.9% { opacity: 0; transform: translateY(-4px); } 94%,97% { opacity: 1; transform: none; } 99%,100% { opacity: 0; transform: translateY(-4px); } }
+
+@keyframes cd-seg1 { 0%,49.9% { opacity: 0; transform: translateY(-10px) scale(.94); } 52%,97% { opacity: 1; transform: none; } 99%,100% { opacity: 0; transform: translateY(-10px) scale(.94); } }
+@keyframes cd-seg2 { 0%,93.9% { opacity: 0; transform: translateY(-10px) scale(.94); } 95.5%,98% { opacity: 1; transform: none; } 99%,100% { opacity: 0; transform: translateY(-10px) scale(.94); } }
+
+/* segment counter */
+@keyframes cd-n0 { 0%,50.9% { opacity: 1; } 51%,98.9% { opacity: 0; } 99%,100% { opacity: 1; } }
+@keyframes cd-n1 { 0%,50.9% { opacity: 0; } 51%,93.9% { opacity: 1; } 94%,100% { opacity: 0; } }
+@keyframes cd-n2 { 0%,93.9% { opacity: 0; } 94%,98.9% { opacity: 1; } 99%,100% { opacity: 0; } }
+
+/* PCR odometer — run 1 counts 0→5 s (target), run 2 counts 0→15 s (3 × target).
+   Digit-reel idiom: one keyframe track per glyph, opacity only. */
+@keyframes cd-t0 { 0%,82.9% { opacity: 1; } 83%,97.9% { opacity: 0; } 98%,100% { opacity: 1; } }
+@keyframes cd-t1 { 0%,82.9% { opacity: 0; } 83%,97.9% { opacity: 1; } 98%,100% { opacity: 0; } }
+@keyframes cd-o0 { 0%,11.3% { opacity: 1; } 11.4%,52.9% { opacity: 0; } 53%,64.9% { opacity: 1; } 65%,82.9% { opacity: 0; } 83%,84.9% { opacity: 1; } 85%,97.9% { opacity: 0; } 98%,100% { opacity: 1; } }
+@keyframes cd-o1 { 0%,11.3% { opacity: 0; } 11.4%,20.7% { opacity: 1; } 20.8%,64.9% { opacity: 0; } 65%,66.9% { opacity: 1; } 67%,84.9% { opacity: 0; } 85%,86.9% { opacity: 1; } 87%,100% { opacity: 0; } }
+@keyframes cd-o2 { 0%,20.7% { opacity: 0; } 20.8%,30.1% { opacity: 1; } 30.2%,66.9% { opacity: 0; } 67%,68.9% { opacity: 1; } 69%,86.9% { opacity: 0; } 87%,88.9% { opacity: 1; } 89%,100% { opacity: 0; } }
+@keyframes cd-o3 { 0%,30.1% { opacity: 0; } 30.2%,39.5% { opacity: 1; } 39.6%,68.9% { opacity: 0; } 69%,70.9% { opacity: 1; } 71%,88.9% { opacity: 0; } 89%,90.9% { opacity: 1; } 91%,100% { opacity: 0; } }
+@keyframes cd-o4 { 0%,39.5% { opacity: 0; } 39.6%,48.9% { opacity: 1; } 49%,70.9% { opacity: 0; } 71%,72.9% { opacity: 1; } 73%,90.9% { opacity: 0; } 91%,92.9% { opacity: 1; } 93%,100% { opacity: 0; } }
+@keyframes cd-o5 { 0%,48.9% { opacity: 0; } 49%,52.9% { opacity: 1; } 53%,72.9% { opacity: 0; } 73%,74.9% { opacity: 1; } 75%,92.9% { opacity: 0; } 93%,97.9% { opacity: 1; } 98%,100% { opacity: 0; } }
+@keyframes cd-o6 { 0%,74.9% { opacity: 0; } 75%,76.9% { opacity: 1; } 77%,100% { opacity: 0; } }
+@keyframes cd-o7 { 0%,76.9% { opacity: 0; } 77%,78.9% { opacity: 1; } 79%,100% { opacity: 0; } }
+@keyframes cd-o8 { 0%,78.9% { opacity: 0; } 79%,80.9% { opacity: 1; } 81%,100% { opacity: 0; } }
+@keyframes cd-o9 { 0%,80.9% { opacity: 0; } 81%,82.9% { opacity: 1; } 83%,100% { opacity: 0; } }
+
+@media (max-width: 900px) {
+  .cd-run { grid-template-columns: 82px 1fr; gap: 10px; }
+  .cd-rd { font-size: 11px; }
+}
+@media (max-width: 720px) {
+  .cutdec { min-width: 520px; padding: 4px 8px 14px; }
+  .cd-run { grid-template-columns: 1fr; gap: 5px; padding: 8px 0; }
+  .cd-rk { flex-direction: row; align-items: baseline; gap: 8px; padding-top: 0; }
+  .cd-rd { font-size: 11px; }
+  .cd-lamps { gap: 8px; }
+  .cd-lamp.cd-grow { flex-basis: 100%; }
+  .cd-intro .cd-desc { font-size: 12.5px; }
+}
+
+/* ── reduced motion — freeze on RUN 1's CUT ────────────────────────────────
+   The frame has to carry BOTH halves of the predicate at once, so it pins the
+   moment the cut fires: READY lit, the clock reading 05 s, the bar exactly on
+   the target tick, the blade down in front of the cut packet, one
+   #EXTINF:5.000 in the ring — and the earlier RAI still struck through with
+   `skipped · below target`, which is the half a static picture always loses.
+   Run 2 rests at full opacity showing its hard-cap outcome, so the second
+   lesson is legible too rather than blank. */
+@media (prefers-reduced-motion: reduce) {
+  .cutdec *, .cutdec *::before, .cutdec *::after { animation: none !important; }
+
+  .cd-run1, .cd-run2 { opacity: 1; }
+
+  /* READY is lit, and stays lit */
+  .cd-led { background: var(--ts); border-color: var(--ts); box-shadow: 0 0 8px var(--ts); }
+  .cd-sw-wait { opacity: 0; }
+  .cd-sw-rdy { opacity: 1; }
+
+  /* clock reads 05 s — target reached, which is why the cut was legal */
+  .cd-t0 { opacity: 1; }
+  .cd-t1 { opacity: 0; }
+  .cd-o5 { opacity: 1; }
+  .cd-o0, .cd-o1, .cd-o2, .cd-o3, .cd-o4, .cd-o6, .cd-o7, .cd-o8, .cd-o9 { opacity: 0; }
+
+  /* bar sits exactly on the target tick */
+  .cd-barfill { width: 33.333%; }
+
+  /* run 1: the segment being handed to the ring ends exactly at the blade */
+  .cd-band1 { left: 0; width: 78.57%; opacity: 1; }
+  .cd-blade1 { opacity: 1; transform: scaleY(1); }
+  .cd-p-skip { background: var(--bg-2); border-color: var(--hairline-strong); border-style: dashed; opacity: .55; }
+  .cd-p-skip .cd-rai { background: var(--text-3); box-shadow: none; opacity: .5; }
+  .cd-p-cut { border-color: var(--cfg); box-shadow: 0 0 8px var(--cfg-soft); }
+  .cd-p-cut .cd-rai { box-shadow: 0 0 10px var(--cfg); transform: translateX(-50%) rotate(45deg) scale(1.2); }
+  .cd-a-pat, .cd-a-pmt, .cd-a-skip, .cd-a-cut { opacity: 1; transform: none; }
+
+  /* run 2 rests on its own outcome: the hard cap already fired */
+  .cd-band2 { left: 0; width: 85.71%; opacity: 1; }
+  .cd-blade2 { opacity: 1; transform: scaleY(1); }
+  .cd-p-cap { background: var(--risk-soft); border-color: var(--risk); box-shadow: 0 0 8px var(--risk-soft); }
+  .cd-a-cap { opacity: 1; transform: none; }
+
+  /* both segments are in the ring; the counter shows 2 */
+  .cd-sg1, .cd-sg2 { opacity: 1; transform: none; }
+  .cd-n0, .cd-n1 { opacity: 0; }
+  .cd-n2 { opacity: 1; }
+}
+
+
+
+
+/* ═══ NEW · .ioop — ingress and egress as two independent quantities ═══════
+   With local origin on, ONE ingest per channel fills the ring and every viewer
+   is served out of RAM. So the AMBER iop (input operation) readout is a
+   function of the CHANNEL — constant slope, whatever the audience — while the
+   TEAL oop (output operation) readout is a function of the AUDIENCE. The two
+   start together and diverge, and that divergence IS the feature.
+   Why this animates: a still frame of two bars is just two bars. Only a shared
+   clock makes the SLOPES comparable — you watch the teal track kink steeper the
+   instant a viewer joins (×1 → ×2 → ×5) while the amber track never flinches,
+   and you watch amber keep climbing after the last viewer has gone. A static
+   picture would have to assert that in a caption; here you can see it happen.
+   The GREEN gauge carries the third quantity neither readout can express: an
+   ingest survives IDLE_GRACE 30 s past its last viewer (polled on a 5 s
+   IDLE_TICK — which is why the countdown steps by five), so RAM is held while
+   both the viewer count and the Active Streams row count are zero.
+   One shared ~14s timeline (var --io-dur) drives every track by percentage — no
+   animation-delay chains, which drift apart and cannot be frozen coherently.
+   The timeline maps 1.25 depicted stream-seconds to 1%, so the amber track is
+   literally a straight line and the teal kinks are exactly 1 : 2 : 5. Every
+   track ends at 100% on the values it holds at 0%, so the loop seam is
+   invisible; reduced motion then pins the max-divergence beat outright.
+   The forbidden edge under the gauges is DELIBERATELY STATIC. It is a rule, not
+   an event — Node's telemetry ingest handles kind:"iop" and never calls
+   noteBytes — so drawing it and then striking it would imply the fold sometimes
+   happens and gets caught, which is the opposite of the truth. --risk is spent
+   there and nowhere else in the component.
+   Tokens only — both themes for free. No min-width anywhere: the gauges stack
+   at 720px and everything reflows, so this needs no .scroll wrapper. */
+.ioop { --io-dur: 14s; padding: 6px 14px 16px; }
+
+/* — viewer roster: the audience, which only the TEAL side is allowed to feel — */
+.io-roster { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 10px 2px 12px; }
+.io-roster-lbl { font-family: var(--mono); font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.io-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.io-vc {
+  display: inline-flex; align-items: center; gap: 6px; white-space: nowrap;
+  font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em;
+  padding: 3px 9px; border-radius: 999px; border: 1px solid var(--hairline);
+  background: transparent; color: var(--text-3); opacity: 0.5; transform: scale(0.92);
+}
+.io-vg { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.io-tally { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; font-family: var(--mono); background: var(--bg-2); border: 1px solid var(--accent-line); border-radius: 999px; padding: 4px 13px 4px 11px; }
+.io-tally-lbl { font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.io-reel { position: relative; width: 1ch; height: 1.2em; overflow: hidden; font-size: 15px; }
+.io-n { position: absolute; inset: 0; display: grid; place-items: center; line-height: 1; font-weight: 700; color: var(--accent-hi); opacity: 0; }
+
+/* — the two comparable gauges — */
+.io-gauges { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.io-gauge { position: relative; overflow: hidden; min-width: 0; border: 1px solid var(--hairline); background: var(--bg-1); border-radius: var(--radius-m); padding: 13px 15px 14px; }
+.io-gauge::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--text-3); }
+.io-in::before  { background: var(--cfg); }
+.io-out::before { background: var(--accent); }
+.io-rg::before  { background: var(--ts); }
+.io-out { border-color: var(--accent-line); }
+
+.io-g-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; }
+.io-g-lbl { font-family: var(--mono); font-size: 11.5px; letter-spacing: 0.03em; color: var(--text-2); min-width: 0; }
+.io-in  .io-g-lbl { color: var(--cfg); }
+.io-out .io-g-lbl { color: var(--accent-hi); }
+.io-rg  .io-g-lbl { color: var(--ts-hi); }
+.io-g-lbl code { font-size: 0.86em; }
+.io-g-val { margin-left: auto; position: relative; width: 6.2ch; height: 1.15em; overflow: hidden; font-family: var(--mono); font-size: 19px; font-weight: 700; }
+.io-v { position: absolute; inset: 0; display: grid; place-items: center end; line-height: 1; white-space: nowrap; opacity: 0; }
+.io-in  .io-v { color: var(--cfg); }
+.io-out .io-v { color: var(--accent-hi); }
+.io-rg  .io-v { color: var(--ts-hi); }
+
+.io-track { position: relative; height: 10px; margin-top: 9px; border-radius: 999px; background: var(--bg-2); border: 1px solid var(--hairline); overflow: hidden; }
+.io-fill { position: absolute; inset: 0 auto 0 0; width: 0; border-radius: 999px; }
+.io-in  .io-fill { background: linear-gradient(90deg, color-mix(in oklch, var(--cfg) 40%, transparent), var(--cfg)); }
+.io-out .io-fill { background: linear-gradient(90deg, color-mix(in oklch, var(--accent) 40%, transparent), var(--accent)); }
+.io-rg  .io-fill { background: linear-gradient(90deg, color-mix(in oklch, var(--ts) 40%, transparent), var(--ts)); }
+/* the scale is printed on BOTH bars — comparability has to be provable, not
+   asserted; the two tracks are the same pixels wide and the same MB wide. */
+.io-scale { display: flex; justify-content: space-between; gap: 8px; margin-top: 5px; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.08em; color: var(--text-3); }
+
+.io-slopes { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; margin-top: 10px; }
+.io-sl { font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; white-space: nowrap; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--hairline); background: transparent; color: var(--text-3); opacity: 0.45; }
+.io-sl-fixed { border-color: var(--cfg-line); background: var(--cfg-soft); color: var(--cfg-hi); opacity: 1; }
+.io-g-foot { font-size: 12.5px; color: var(--text-2); line-height: 1.45; margin-top: 10px; }
+.io-g-foot b { color: var(--text-0); font-weight: 620; }
+
+/* — the forbidden edge · the only --risk in the component (see banner) — */
+.io-forbid { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 10px; margin-top: 14px; padding: 11px 14px; border: 1px dashed var(--risk-line); background: var(--risk-soft); border-radius: var(--radius-m); }
+.io-fb-node { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.12em; text-transform: uppercase; white-space: nowrap; }
+.io-fb-a { color: var(--cfg-hi); }
+.io-fb-b { color: var(--accent-hi); }
+.io-fb-wire { position: relative; flex: 1 1 34px; min-width: 22px; height: 2px; background: repeating-linear-gradient(90deg, var(--risk-line) 0 6px, transparent 6px 11px); }
+.io-fb-tip::after { content: ""; position: absolute; right: -1px; top: 50%; transform: translateY(-50%); border: 4px solid transparent; border-left-color: var(--risk); }
+.io-fb-tag { position: relative; flex: 0 0 auto; font-family: var(--mono); font-size: 11px; letter-spacing: 0.02em; white-space: nowrap; color: var(--risk); background: var(--bg-1); border: 1px solid var(--risk-line); border-radius: 999px; padding: 3px 10px; }
+/* the strike is a drawn bar, not text-decoration: it has to sit on the EDGE at
+   the same weight as the wire it cancels. (Below 720px the label takes a line of
+   its own and a drawn bar would stretch with it, so the breakpoint swaps in a
+   text-decoration that hugs the words instead.) */
+.io-fb-tag::after { content: ""; position: absolute; left: 4px; right: 4px; top: 50%; height: 2px; border-radius: 2px; background: var(--risk); transform: translateY(-50%); }
+.io-fb-note { max-width: var(--measure); margin: 10px 2px 0; font-size: 12.5px; color: var(--text-2); line-height: 1.5; }
+
+/* — third quantity: the ring, and the grace that outlives the audience — */
+.io-rg { margin-top: 14px; }
+.io-ringrow { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; margin-top: 11px; }
+.io-chip { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; font-family: var(--mono); font-size: 10px; letter-spacing: 0.06em; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--hairline-strong); background: var(--bg-2); color: var(--text-3); }
+/* one countdown chip, not a countdown chip PLUS a teardown chip: a second
+   transient chip pushed an invisible extra row into the wrap and left a hole
+   under the gauge at ~700px. The same chip goes neutral at 0 s instead. */
+.io-chip-hold { border-color: var(--ts-line); background: var(--ts-soft); color: var(--ts-hi); opacity: 0; }
+.io-chip-rows { opacity: 0; }
+.io-grace-reel { position: relative; display: inline-block; width: 4.2ch; height: 1.15em; overflow: hidden; vertical-align: -0.22em; }
+.io-gd { position: absolute; inset: 0; display: grid; place-items: center end; line-height: 1.15; opacity: 0; }
+.io-cap { max-width: var(--measure); margin: 14px 2px 0; font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.02em; line-height: 1.6; color: var(--text-2); }
+
+/* — animation wiring (one shared timeline, percentage-driven) —
+   0–4 arm · 4–20 one viewer · 20–36 two · 36–68 five · 68–92 idle grace at zero
+   viewers · 92–97 teardown and rewind. 1.25 depicted stream-seconds per 1%. */
+.io-v1 { animation: io-seatA var(--io-dur) ease infinite; }
+.io-v2 { animation: io-seatB var(--io-dur) ease infinite; }
+.io-v3, .io-v4, .io-v5 { animation: io-seatC var(--io-dur) ease infinite; }
+.io-n1 { animation: io-cnt1 var(--io-dur) linear infinite; }
+.io-n2 { animation: io-cnt2 var(--io-dur) linear infinite; }
+.io-n5 { animation: io-cnt5 var(--io-dur) linear infinite; }
+.io-n0 { animation: io-cnt0 var(--io-dur) linear infinite; }
+
+.io-fill-in   { animation: io-pull var(--io-dur) linear infinite; }
+.io-fill-out  { animation: io-serve var(--io-dur) linear infinite; }
+.io-fill-ring { animation: io-hold var(--io-dur) linear infinite; }
+.io-out { animation: io-join var(--io-dur) linear infinite; }
+
+/* value reels — both gauges step on the SAME checkpoints (20/36/52/68/92) so
+   the pair can be read together at every beat instead of racing each other. */
+.io-k0  { animation: io-step0 var(--io-dur) linear infinite; }
+.io-k1  { animation: io-step1 var(--io-dur) linear infinite; }
+.io-k2  { animation: io-step2 var(--io-dur) linear infinite; }
+.io-k3  { animation: io-step3 var(--io-dur) linear infinite; }
+.io-k4  { animation: io-step4 var(--io-dur) linear infinite; }
+.io-k5  { animation: io-step5 var(--io-dur) linear infinite; }
+.io-k45 { animation: io-step45 var(--io-dur) linear infinite; }
+/* the ×N scale stays legible end to end — only the CURRENT multiplier lights */
+.io-sl1 { animation: io-lit0 var(--io-dur) linear infinite; }
+.io-sl2 { animation: io-lit1 var(--io-dur) linear infinite; }
+.io-sl5 { animation: io-lit23 var(--io-dur) linear infinite; }
+.io-sl0 { animation: io-lit45 var(--io-dur) linear infinite; }
+.io-rv0 { animation: io-ring0 var(--io-dur) linear infinite; }
+.io-rv1 { animation: io-ring1 var(--io-dur) linear infinite; }
+.io-rv2 { animation: io-ring2 var(--io-dur) linear infinite; }
+
+.io-chip-hold { animation: io-holdin var(--io-dur) ease infinite; }
+.io-chip-rows { animation: io-gracein var(--io-dur) ease infinite; }
+.io-gd0 { animation: io-tick0 var(--io-dur) linear infinite; }
+.io-gd1 { animation: io-tick1 var(--io-dur) linear infinite; }
+.io-gd2 { animation: io-tick2 var(--io-dur) linear infinite; }
+.io-gd3 { animation: io-tick3 var(--io-dur) linear infinite; }
+.io-gd4 { animation: io-tick4 var(--io-dur) linear infinite; }
+.io-gd5 { animation: io-tick5 var(--io-dur) linear infinite; }
+.io-gd6 { animation: io-tick6 var(--io-dur) linear infinite; }
+
+/* seats — v1 is already watching at 0%, so its track has to come back ON before
+   100% or the loop seam would flash an empty roster over a full oop bar. */
+@keyframes io-seatA {
+  0%,67%   { opacity: 1; transform: none; background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-hi); }
+  69%,97%  { opacity: .5; transform: scale(.92); background: transparent; border-color: var(--hairline); color: var(--text-3); }
+  99%,100% { opacity: 1; transform: none; background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-hi); }
+}
+@keyframes io-seatB {
+  0%,19%   { opacity: .5; transform: scale(.92); background: transparent; border-color: var(--hairline); color: var(--text-3); }
+  21%,67%  { opacity: 1; transform: none; background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-hi); }
+  69%,100% { opacity: .5; transform: scale(.92); background: transparent; border-color: var(--hairline); color: var(--text-3); }
+}
+@keyframes io-seatC {
+  0%,35%   { opacity: .5; transform: scale(.92); background: transparent; border-color: var(--hairline); color: var(--text-3); }
+  37%,67%  { opacity: 1; transform: none; background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-hi); }
+  69%,100% { opacity: .5; transform: scale(.92); background: transparent; border-color: var(--hairline); color: var(--text-3); }
+}
+
+/* live count 1 → 2 → 5 → 0, hard-stepped (the .fo-dig digit-reel idiom) */
+@keyframes io-cnt1 { 0%,19%{opacity:1} 20%,97%{opacity:0} 99%,100%{opacity:1} }
+@keyframes io-cnt2 { 0%,19%{opacity:0} 20%,35%{opacity:1} 36%,100%{opacity:0} }
+@keyframes io-cnt5 { 0%,35%{opacity:0} 36%,67%{opacity:1} 68%,100%{opacity:0} }
+@keyframes io-cnt0 { 0%,67%{opacity:0} 68%,97%{opacity:1} 99%,100%{opacity:0} }
+
+/* AMBER · one straight line from 4% to 92% — 0 → 55 MB on a 140 MB scale. It
+   does NOT kink at 20/36 when viewers join, and it does NOT stop at 68 when the
+   last one leaves: the ingest keeps pulling all the way through idle grace. */
+@keyframes io-pull {
+  0%,4%    { width: 0%; }
+  92%,96%  { width: 39.3%; }
+  97%,100% { width: 0%; }
+}
+/* TEAL · same 140 MB scale, kinked at every join. The three slopes are exactly
+   1 : 2 : 5 (7.1, 14.3, 71.5 width-% over 16, 16, 32 timeline-%) and it goes
+   flat at 68% — zero viewers is zero egress, while amber above climbs on. */
+@keyframes io-serve {
+  0%,4%    { width: 0%; }
+  20%      { width: 7.1%; }
+  36%      { width: 21.4%; }
+  68%,96%  { width: 92.9%; }
+  97%,100% { width: 0%; }
+}
+/* GREEN · fills to the rolling window, then holds dead flat through the grace
+   with nobody watching, and only then is freed. */
+@keyframes io-hold {
+  0%,4%    { width: 0%; }
+  42%,92%  { width: 96%; }
+  93%,100% { width: 0%; }
+}
+/* the teal card's rim ticks at each join, so the kink has a visible cause */
+@keyframes io-join {
+  0%,19%   { border-color: var(--accent-line); }
+  20%,22%  { border-color: var(--accent); }
+  25%,35%  { border-color: var(--accent-line); }
+  36%,38%  { border-color: var(--accent); }
+  41%,67%  { border-color: var(--accent-line); }
+  68%,92%  { border-color: var(--hairline-strong); }
+  93%,100% { border-color: var(--accent-line); }
+}
+
+/* shared checkpoint reels — step0 must return before 100% (it is the 0 MB frame
+   both gauges rewind to); the rest are dark at both ends of the loop. */
+@keyframes io-step0  { 0%,19%{opacity:1} 20%,96%{opacity:0} 98%,100%{opacity:1} }
+@keyframes io-step1  { 0%,19%{opacity:0} 20%,35%{opacity:1} 36%,100%{opacity:0} }
+@keyframes io-step2  { 0%,35%{opacity:0} 36%,51%{opacity:1} 52%,100%{opacity:0} }
+@keyframes io-step3  { 0%,51%{opacity:0} 52%,67%{opacity:1} 68%,100%{opacity:0} }
+@keyframes io-step4  { 0%,67%{opacity:0} 68%,91%{opacity:1} 92%,100%{opacity:0} }
+@keyframes io-step5  { 0%,91%{opacity:0} 92%,96%{opacity:1} 97%,100%{opacity:0} }
+@keyframes io-step45 { 0%,67%{opacity:0} 68%,96%{opacity:1} 97%,100%{opacity:0} }
+
+/* ×N chips: ghost ⇄ lit. ×0 lights NEUTRAL, not teal — nothing is being
+   delivered, so it must not read as a teal (serving) event. */
+@keyframes io-lit0 {
+  0%,19%   { opacity: 1; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-hi); }
+  20%,97%  { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+  99%,100% { opacity: 1; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-hi); }
+}
+@keyframes io-lit1 {
+  0%,19%   { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+  20%,35%  { opacity: 1; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-hi); }
+  36%,100% { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+}
+@keyframes io-lit23 {
+  0%,35%   { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+  36%,67%  { opacity: 1; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-hi); }
+  68%,100% { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+}
+@keyframes io-lit45 {
+  0%,67%   { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+  68%,97%  { opacity: 1; border-color: var(--hairline-strong); background: var(--bg-2); color: var(--text-2); }
+  99%,100% { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+}
+
+/* ring value: one 0 MB frame serves both the cold start and the single trailing
+   zero after teardown, which is also what makes the loop seam invisible. */
+@keyframes io-ring0 { 0%,22%{opacity:1} 23%,92%{opacity:0} 93%,100%{opacity:1} }
+@keyframes io-ring1 { 0%,22%{opacity:0} 23%,41%{opacity:1} 42%,100%{opacity:0} }
+@keyframes io-ring2 { 0%,41%{opacity:0} 42%,92%{opacity:1} 93%,100%{opacity:0} }
+
+@keyframes io-gracein { 0%,67%{opacity:0; transform:translateY(3px)} 69%,96%{opacity:1; transform:none} 97%,100%{opacity:0; transform:translateY(3px)} }
+/* the countdown chip itself goes neutral at 0 s — the grace is spent, the
+   ingest is torn down and the ring is freed, all in one element */
+@keyframes io-holdin {
+  0%,67%   { opacity: 0; transform: translateY(3px); border-color: var(--ts-line); background: var(--ts-soft); color: var(--ts-hi); }
+  69%,91%  { opacity: 1; transform: none;            border-color: var(--ts-line); background: var(--ts-soft); color: var(--ts-hi); }
+  92%,96%  { opacity: 1; transform: none;            border-color: var(--hairline); background: transparent;   color: var(--text-3); }
+  97%,100% { opacity: 0; transform: translateY(3px); border-color: var(--ts-line); background: var(--ts-soft); color: var(--ts-hi); }
+}
+/* 30 → 5 in steps of five, because IDLE_TICK is 5 s — the cadence IS the count */
+@keyframes io-tick0 { 0%,67%{opacity:0} 68%,71%{opacity:1} 72%,100%{opacity:0} }
+@keyframes io-tick1 { 0%,71%{opacity:0} 72%,75%{opacity:1} 76%,100%{opacity:0} }
+@keyframes io-tick2 { 0%,75%{opacity:0} 76%,79%{opacity:1} 80%,100%{opacity:0} }
+@keyframes io-tick3 { 0%,79%{opacity:0} 80%,83%{opacity:1} 84%,100%{opacity:0} }
+@keyframes io-tick4 { 0%,83%{opacity:0} 84%,87%{opacity:1} 88%,100%{opacity:0} }
+@keyframes io-tick5 { 0%,87%{opacity:0} 88%,91%{opacity:1} 92%,100%{opacity:0} }
+@keyframes io-tick6 { 0%,91%{opacity:0} 92%,96%{opacity:1} 97%,100%{opacity:0} }
+
+@media (max-width: 900px) { .io-g-val { font-size: 17px; } }
+@media (max-width: 720px) {
+  /* stacked, the two tracks are still the same pixels wide — comparability
+     survives the breakpoint, which is the only thing that must not break. */
+  .io-gauges { grid-template-columns: 1fr; }
+  .io-tally { margin-left: 0; }
+  /* order:1 + a 100% basis drops the label onto its own centred line, so the
+     wire stays a single IOP ─────▶ OOP instead of splitting over three rows.
+     A full-basis pill would stretch edge to edge and its drawn strike with it,
+     so at this width the strike becomes a text-decoration and hugs the words. */
+  .io-forbid { justify-content: center; }
+  .io-fb-tag {
+    order: 1; flex: 1 1 100%; text-align: center;
+    background: transparent; border-color: transparent; padding: 2px 0 0;
+    text-decoration: line-through; text-decoration-thickness: 2px;
+  }
+  .io-fb-tag::after { display: none; }
+}
+@media (max-width: 560px) { .io-chip { white-space: normal; } }
+
+/* ── reduced motion — .ioop freezes on the MAXIMUM-DIVERGENCE beat ─────────
+   the last instant of the five-viewer phase: five seats filled, count 5, the
+   teal scale on ×5, amber stopped at 40 MB / 28.6% against teal's 130 MB /
+   92.9% on the same 140 MB track, and the ring holding 24 MB. The grace chips
+   stay dark on purpose — a frame showing five viewers AND a countdown to
+   teardown would be incoherent; the static IDLE_GRACE 30 s chip and the caption
+   under the ring carry that half of the mechanism in prose instead. */
+@media (prefers-reduced-motion: reduce) {
+  .ioop *, .ioop *::before, .ioop *::after { animation: none !important; }
+  .io-vc { opacity: 1; transform: none; background: var(--accent-soft); border-color: var(--accent-line); color: var(--accent-hi); }
+  .io-n1, .io-n2, .io-n0 { opacity: 0; }
+  .io-n5 { opacity: 1; }
+  .io-k0, .io-k1, .io-k2, .io-k3, .io-k5 { opacity: 0; }
+  .io-k4, .io-k45 { opacity: 1; }
+  .io-rv0, .io-rv1 { opacity: 0; }
+  .io-rv2 { opacity: 1; }
+  .io-fill-in { width: 28.6%; }
+  .io-fill-out { width: 92.9%; }
+  .io-fill-ring { width: 96%; }
+  .io-sl1, .io-sl2, .io-sl0 { opacity: .45; border-color: var(--hairline); background: transparent; color: var(--text-3); }
+  .io-sl5 { opacity: 1; border-color: var(--accent-line); background: var(--accent-soft); color: var(--accent-hi); }
+  .io-out { border-color: var(--accent-line); }
+  .io-chip-hold, .io-chip-rows { opacity: 0; }
+  .io-gd { opacity: 0; }
+}
+
+
+
+/* ── the new origin diagrams lean on their .lane-meta intro sentence ────────
+   masq-docs.css hides `.lane-meta .desc` below 640px, which was right when the
+   sentence merely garnished a lane. Here it carries the framing each component
+   is built to prove ("watch the two cadences", "watch the deque hit a hard
+   stop"), so on these four it stays. */
+@media (max-width: 640px) {
+  .omap .lane-meta .desc, .ringcap .lane-meta .desc,
+  .ioop .lane-meta .desc, .genbump .lane-meta .desc { display: block; }
+}

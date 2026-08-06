@@ -112,7 +112,7 @@
                 <div class="tx-branch-head"><span class="name">Synthetic · proxy-only</span><span class="chip">synthetic: true</span><span class="meta">no catalog · no shell row · manifest omits</span></div>
                 <div class="tx-leaves">
                   <div class="tx-leaf"><div class="id">direct</div><div class="nm">Imported</div><div class="d">Passthrough for user-imported M3U URLs; identity resolve, any https allowed. Channels carry <code>origin:'direct'</code>.</div></div>
-                  <div class="tx-leaf"><div class="id">hdhomerun</div><div class="nm">HDHomeRun</div><div class="d">Local OTA/cable tuner; catalog import is live, playback dormant (needs TS→HLS remux).</div></div>
+                  <div class="tx-leaf"><div class="id">hdhomerun</div><div class="nm">HDHomeRun</div><div class="d">Local OTA/cable tuner; catalog import is live. Playback needs no remux any more — its bare TS socket is segmented in-engine under <a href="local-origin.html">local origin</a>.</div></div>
                   <div class="tx-leaf"><div class="id">local</div><div class="nm">Local Now</div><div class="d"><code>localnow://id?slug</code> sentinel → rotating CDN master; dynamic SSRF allow.</div></div>
                 </div>
               </div>
@@ -180,7 +180,7 @@
             </thead>
             <tbody>
               <tr><td>direct</td><td>—</td><td>Identity (passthrough)</td><td>—</td><td>—</td></tr>
-              <tr><td>hdhomerun</td><td>—</td><td>Catalog import (playback dormant)</td><td>—</td><td>—</td></tr>
+              <tr><td>hdhomerun</td><td>—</td><td>Catalog import (playback via <a href="local-origin.html">local origin</a>)</td><td>—</td><td>—</td></tr>
               <tr><td>local</td><td>—</td><td>Sentinel → rotating CDN</td><td>—</td><td>—</td></tr>
               <tr><td>dulo</td><td><span class="em-accent">session</span></td><td><code>dulo://</code> → playbackUrl</td><td>—</td><td>yes</td></tr>
               <tr><td>dlhd</td><td>—</td><td><code>watch.php</code> → 3-hop scrape</td><td>yes</td><td>yes</td></tr>
@@ -213,7 +213,7 @@
           <div class="tile"><div class="ic">● clone</div><h3>Curate from any source</h3><p>Hand-pick channels from any synced source into a curated playlist. The channels are independent copies (edits don't disturb the originals) but streams still route through the real adapter.</p></div>
           <div class="tile"><div class="ic">● url import</div><h3>A remote M3U</h3><p>Pull in any remote <code>.m3u</code> / <code>.m3u8</code> URL. Re-syncable via the stored <code>remoteUrl</code>.</p></div>
           <div class="tile"><div class="ic">● file upload</div><h3>A static M3U file</h3><p>Upload a static <code>.m3u</code>; parsed once from the uploaded file (no sync).</p></div>
-          <div class="tile"><div class="ic">● hdhomerun</div><h3>A LAN tuner</h3><p>Point at a LAN HDHomeRun tuner (<code>deviceUrl</code>); its channel lineup is imported. Playback (TS→HLS remux) is dormant pending the video engine.</p></div>
+          <div class="tile"><div class="ic">● hdhomerun</div><h3>A LAN tuner</h3><p>Point at a LAN HDHomeRun tuner (<code>deviceUrl</code>); its channel lineup is imported. Playback no longer waits on a remux: with <a href="local-origin.html"><code>originEnabled</code></a> the tuner's bare MPEG-TS socket is cut into segments in-engine and republished as ordinary HLS.</p></div>
         </div>
       </section>
 

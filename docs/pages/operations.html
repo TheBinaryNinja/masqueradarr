@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>operations</b> · 09 <span class="rule"></span> observe &amp; maintain</div>
+        <div class="eyebrow"><b>operations</b> · 10 <span class="rule"></span> observe &amp; maintain</div>
         <h1>Watch it, schedule it, <span class="em">back it up</span></h1>
         <p class="lede">Everything you need to run masqueradarr day-to-day: live streaming telemetry, historical QoE analytics, system stats, categorized logs, the automatic scheduler, and full-system backup / restore.</p>
       </header>
@@ -75,6 +75,10 @@
         <div class="aha">
           <div class="lbl">reading health</div>
           <p>A <strong>healthy</strong> session shows a steady bitrate and climbing uptime. A session flagged <strong>failing</strong> is one the server couldn't keep fed — worth investigating, and it drives the live pulse dot next to Active Streams in the sidebar. An <strong>empty screen is normal</strong> when nobody is watching. To investigate: note the channel + source, open <strong>View logs</strong> filtered to that source, and cross-check the channel on its Playlist detail.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">a session served from a ring</div>
+          <p>A stream running under <a href="local-origin.html">local origin</a> grows three extra rows in its detail card, next to the existing <strong>Delivery</strong> row: <strong>Ingest</strong> (<code>&lt;status&gt; · N viewer(s) sharing</code>, tinted amber when the status isn't <code>ok</code>), <strong>Ring</strong> (<code>N seg · N.N MiB</code>, plus <code>· N evicted</code> once eviction starts) and <strong>Upstream pulled</strong> (<code>N seg · N.N MiB</code>). Their <em>absence</em> is itself the signal that a stream is on the ordinary rewriting path. Do not read <strong>Upstream pulled</strong> against the bitrate chart above it — one is a single shared ingest, the other is egress across every viewer, so with N viewers they diverge by roughly N×. <strong>That divergence is the feature working.</strong></p>
         </div>
         <div class="aha">
           <div class="lbl">a session carried by a backup</div>
@@ -102,7 +106,24 @@
       <section id="system">
         <div class="sec-tag"><span class="n">03</span> System stats</div>
         <h2>Live CPU &amp; memory on the Dashboard</h2>
-        <p class="col">The admin Dashboard pushes live <strong>system-performance</strong> stats (CPU / memory) over a WebSocket, alongside the stat cards (Playlists, Channels, Channels live/down, EPG sources, Unmatched) and the Activity panel (live Active Sessions + recent History). Glance at <strong>Channels live vs down</strong> to spot a source problem, and <strong>Unmatched</strong> to know when to head to Channel Mapping.</p>
+        <p class="col">The admin Dashboard pushes live <strong>system-performance</strong> stats over a WebSocket, alongside the stat cards (Playlists, Channels, Channels live/down, EPG sources, Unmatched) and the Activity panel (live Active Sessions + recent History). Glance at <strong>Channels live vs down</strong> to spot a source problem, and <strong>Unmatched</strong> to know when to head to Channel Mapping.</p>
+        <h3>Memory pressure — the one tile whose colour is the reading</h3>
+        <p class="col">The performance strip carries six tiles: CPU, Memory, <strong>Memory pressure</strong>, Disk I/O, Network, DB connections. Memory pressure is the only visibility you have into the <em>Rust sidecar's</em> RAM — Node's own memory figure is the Node process and can never see the <a href="local-origin.html#ring">origin rings</a>. Its big number is the total ring bytes across every channel, and the <strong>colour is the verdict</strong>: green below 15% of the box's total memory, amber at 15%, red at 30%. That 30% mark is sized against a real case — roughly 50 origins at the 25&nbsp;MiB default is about 1.2&nbsp;GiB, which is where a 4&nbsp;GB Pi starts to hurt.</p>
+        <div class="panel scroll" style="margin-top:14px;">
+          <table>
+            <thead><tr><th>The tile reads</th><th class="h-accent">Means</th><th>What to do</th></tr></thead>
+            <tbody>
+              <tr><td><span class="em-ts">0 B</span> · no active origins</td><td>The sidecar is alive and no channel is currently ringing.</td><td>Nothing. This is the resting state once the last ingest closes.</td></tr>
+              <tr><td style="color:var(--text-3)">— · not available</td><td>Nothing has ever reported, or a frame that <em>did</em> report live origins has been silent for 15&nbsp;s (six missed reports).</td><td>On a default install this is normal — origin mode is off. Mid-stream, it means the sidecar went quiet: check the <code>proxy</code> logs.</td></tr>
+              <tr><td><span class="em-ts">green</span> · N origins · &lt;15%</td><td>Rings are held and comfortably inside the box.</td><td>Nothing.</td></tr>
+              <tr><td><span style="color:var(--cfg)">amber</span> ≥ 15% · <span style="color:var(--risk)">red</span> ≥ 30%</td><td>The sum of every channel's ring is a real share of the machine. There is <strong>no global ceiling</strong> — <code>originRingMb</code> bounds one channel only.</td><td>Lower <code>originRingMb</code>, or run fewer channels as origins. Note an ingest holds its RAM for <strong>30&nbsp;s after its last viewer leaves</strong>, so pressure can be high with an empty Active Streams screen.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">grey is not green</div>
+          <p><strong>“Not available” and “no active origins” look similar and mean opposite things.</strong> The tile is deliberately grey when it has no reading, so <em>unknown</em> can never be mistaken for <em>healthy</em>. A green <code>0 B</code> means the engine answered and is quiet; a grey <code>—</code> means nobody answered.</p>
+        </div>
       </section>
 
       <!-- LOGS ─────────────────────────────────────────────────────────── -->
@@ -129,6 +150,10 @@
         <div class="aha">
           <div class="lbl">the two cross-boundary categories</div>
           <p><code>proxy</code> holds the Rust data-plane's full resolve→fetch→rewrite→serve lineage, ingested over the log seam (<code>POST /api/internal/log</code>) — persisted without a console re-print, since the sidecar already printed to its inherited stdout. <code>failover</code> is the newest, and the other one written from <em>both</em> planes: Node records group saves, EPG cascades, auto-disbands and exhausted chains (naming the parent and its playlist); Rust records the walk itself (carrying the session id). See <a href="failover.html">Playlist Failover</a>. The single <code>logLevel</code> (1|2|3) knob on Settings gates verbosity for every subsystem, Node and Rust alike, live with no restart.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">iop and oop are tags, not categories</div>
+          <p>There are still <strong>14 categories</strong>. <a href="local-origin.html#observe"><code>iop</code></a> (input operation — resolve, poll, fetch, decrypt, ring push/evict) and <code>oop</code> (output operation — manifest render, segment serve, TS concat) are <em>tags</em> that both resolve to <code>proxy</code>. The split is attribution <em>within</em> the engine, not a new bucket: once one ingest feeds many viewers, “the channel is stuttering” has two possible causes, and the tag says which side to look at. Filter to <code>proxy</code> as before, then read the tag.</p>
         </div>
       </section>
 

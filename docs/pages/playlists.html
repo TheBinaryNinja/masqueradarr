@@ -150,7 +150,7 @@
               <tr><td>Clone</td><td><code>clone</code></td><td>Add Playlist → <strong>Clone</strong></td><td>Independent <strong>copies</strong> in <code>playlistchannels</code>; <code>origin</code> = the provider source for routing</td></tr>
               <tr><td>URL import</td><td><code>url</code></td><td>Add Playlist → <strong>URL</strong></td><td>Parsed from the upstream; re-syncable via the stored <code>remoteUrl</code></td></tr>
               <tr><td>File upload</td><td><code>file</code></td><td>Add Playlist → <strong>File</strong></td><td>Parsed once from the uploaded <code>.m3u</code></td></tr>
-              <tr><td>HDHomeRun</td><td><code>hdhomerun</code></td><td>Add Playlist → <strong>HDHomeRun</strong></td><td>Discovered from a LAN tuner; <span style="color:var(--text-3)">playback (TS→HLS remux) dormant, pending the video engine</span></td></tr>
+              <tr><td>HDHomeRun</td><td><code>hdhomerun</code></td><td>Add Playlist → <strong>HDHomeRun</strong></td><td>Discovered from a LAN tuner; <span style="color:var(--text-3)">playback via <a href="local-origin.html">local origin</a> — the bare TS socket is segmented in-engine, no remux</span></td></tr>
             </tbody>
           </table>
         </div>

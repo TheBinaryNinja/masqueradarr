@@ -38,6 +38,7 @@
 
   /* Amber — control-plane / "warn". */
   --cfg: oklch(0.54 0.15 62);
+  --cfg-hi: oklch(0.44 0.15 62);
   --cfg-soft: oklch(0.54 0.15 62 / 0.12);
   --cfg-line: oklch(0.54 0.15 62 / 0.30);
   /* Red — risk / critical only. */
@@ -90,6 +91,7 @@
     --ts-line: oklch(0.80 0.15 150 / 0.34);
 
     --cfg: oklch(0.83 0.14 82);
+    --cfg-hi: oklch(0.90 0.13 82);
     --cfg-soft: oklch(0.83 0.14 82 / 0.16);
     --cfg-line: oklch(0.83 0.14 82 / 0.34);
     --risk: oklch(0.70 0.17 28);
@@ -107,7 +109,7 @@
   --text-0: oklch(0.18 0.01 240); --text-1: oklch(0.33 0.012 240); --text-2: oklch(0.50 0.012 240); --text-3: oklch(0.62 0.012 240);
   --accent: oklch(0.52 0.13 230); --accent-hi: oklch(0.44 0.14 230); --accent-soft: oklch(0.52 0.13 230 / 0.10); --accent-line: oklch(0.52 0.13 230 / 0.30);
   --ts: oklch(0.46 0.16 150); --ts-hi: oklch(0.39 0.16 150); --ts-soft: oklch(0.46 0.16 150 / 0.10); --ts-line: oklch(0.46 0.16 150 / 0.30);
-  --cfg: oklch(0.54 0.15 62); --cfg-soft: oklch(0.54 0.15 62 / 0.12); --cfg-line: oklch(0.54 0.15 62 / 0.30);
+  --cfg: oklch(0.54 0.15 62); --cfg-hi: oklch(0.44 0.15 62); --cfg-soft: oklch(0.54 0.15 62 / 0.12); --cfg-line: oklch(0.54 0.15 62 / 0.30);
   --risk: oklch(0.52 0.20 25); --risk-soft: oklch(0.52 0.20 25 / 0.10); --risk-line: oklch(0.52 0.20 25 / 0.30);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.06), 0 12px 34px oklch(0 0 0 / 0.07);
 }
@@ -117,7 +119,7 @@
   --text-0: oklch(0.98 0 0); --text-1: oklch(0.78 0.01 240); --text-2: oklch(0.60 0.012 240); --text-3: oklch(0.45 0.012 240);
   --accent: oklch(0.81 0.11 230); --accent-hi: oklch(0.88 0.11 230); --accent-soft: oklch(0.81 0.11 230 / 0.15); --accent-line: oklch(0.81 0.11 230 / 0.34);
   --ts: oklch(0.80 0.15 150); --ts-hi: oklch(0.87 0.15 150); --ts-soft: oklch(0.80 0.15 150 / 0.15); --ts-line: oklch(0.80 0.15 150 / 0.34);
-  --cfg: oklch(0.83 0.14 82); --cfg-soft: oklch(0.83 0.14 82 / 0.16); --cfg-line: oklch(0.83 0.14 82 / 0.34);
+  --cfg: oklch(0.83 0.14 82); --cfg-hi: oklch(0.90 0.13 82); --cfg-soft: oklch(0.83 0.14 82 / 0.16); --cfg-line: oklch(0.83 0.14 82 / 0.34);
   --risk: oklch(0.70 0.17 28); --risk-soft: oklch(0.70 0.17 28 / 0.15); --risk-line: oklch(0.70 0.17 28 / 0.34);
   --shadow: 0 1px 2px oklch(0 0 0 / 0.4), 0 18px 44px oklch(0 0 0 / 0.5);
 }
@@ -320,6 +322,8 @@ ol li::before { content: counter(li); position: absolute; left: 0; top: 0.05em; 
 .tile { padding: 18px 20px; border-radius: var(--radius-m); border: 1px solid var(--hairline); background: var(--bg-1); }
 .tile .ic { font-family: var(--mono); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; margin-bottom: 10px; color: var(--accent-hi); }
 .tile.ts .ic { color: var(--ts-hi); }
+.tile.warn .ic { color: var(--cfg); }
+.tile.risk .ic { color: var(--risk); }
 .tile h3 { margin: 0 0 6px; }
 .tile p { font-size: 14.5px; color: var(--text-2); margin: 0; }
 .tile p + p { margin-top: 9px; }

@@ -435,8 +435,8 @@
           </div>
           <div class="tile">
             <div class="ic">● HDHomeRun</div>
-            <h3>Not a usable backup</h3>
-            <p>HDHomeRun channels still can't be served (TS→HLS remux is pending), so an HDHomeRun child will always be walked past.</p>
+            <h3>Usable only under local origin</h3>
+            <p>An HDHomeRun channel is a bare MPEG-TS socket. On the ordinary rewriting path it still can't be served, so such a child is walked past. With <a href="local-origin.html"><code>originEnabled</code></a> on for that playlist it <em>is</em> servable — the socket is segmented in-engine — so check which path the playlist runs on before ranking one as a backup.</p>
           </div>
           <div class="tile">
             <div class="ic">● clone-hosted children</div>

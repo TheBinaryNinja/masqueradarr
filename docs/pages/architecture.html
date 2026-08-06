@@ -59,7 +59,7 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>architecture</b> · 10 <span class="rule"></span> under the hood</div>
+        <div class="eyebrow"><b>architecture</b> · 11 <span class="rule"></span> under the hood</div>
         <h1>Two packages, <span class="em">one image</span></h1>
         <p class="lede">A reference for how masqueradarr is built: the two-package layout, the container topology, the load-bearing boot order, the REST + WebSocket surface, the two Docker images, and what's still on the roadmap.</p>
       </header>
@@ -125,6 +125,7 @@
             <li><strong>Channel model</strong> — a pristine <code>sourcechannels</code> reference projected into an editable <code>playlistchannels</code>; edits survive re-syncs. Channels can be grouped into <a href="failover.html">failover groups</a> — one parent, ordered backups. See <a href="playlists.html">Playlists</a>.</li>
             <li><strong>EPG + scheduler</strong> — multiple ingesters behind one sync path, driven by a <code>croner</code> scheduler over <code>cronjobs</code>. See <a href="epg.html">EPG</a>.</li>
             <li><strong>Video proxy engine</strong> — the remux-free Rust data plane. See <a href="proxy-engine.html">Video proxy engine</a>.</li>
+            <li><strong>Local origin</strong> — an opt-in inversion of the data plane: one shared ingest per channel fills an in-memory ring and masqueradarr publishes a playlist it authored itself. See <a href="local-origin.html">Local origin</a>.</li>
           </ul>
         </div>
       </section>
@@ -197,7 +198,7 @@
       <section id="roadmap">
         <div class="sec-tag"><span class="n">07</span> Roadmap</div>
         <h2>What's live, and what's next</h2>
-        <p class="col">The rename and re-architecture are effectively complete — codebase, brand, runtime and images are all masqueradarr, and playback is live over the Rust engine (HLS + raw-TS). What's still pending is remux-shaped:</p>
+        <p class="col">The rename and re-architecture are effectively complete — codebase, brand, runtime and images are all masqueradarr, and playback is live over the Rust engine (HLS + raw-TS). The data plane has since grown an opt-in <a href="local-origin.html">local origin</a> that decrypts AES-128 and segments bare MPEG-TS in-engine, which retired most of what used to sit behind “needs a remux”. What genuinely remains:</p>
         <div class="pair">
           <div class="fcard ts">
             <span class="badge">● live today</span>
@@ -214,7 +215,7 @@
             <span class="badge">● on the roadmap</span>
             <h3>Designed / pending</h3>
             <ul>
-              <li>Remux / transcode (HDHomeRun TS→HLS) — no <code>ffmpeg</code> yet</li>
+              <li>Remux / transcode — still no <code>ffmpeg</code>. <span style="color:var(--text-3)">(HDHomeRun TS→HLS no longer needs one: see <a href="local-origin.html">local origin</a>.)</span></li>
               <li>Seamless mid-stream failover splice (today: establish-time)</li>
               <li>HDHomeRun-tuner &amp; Xtream-panel emulation</li>
               <li><code>?fmt=ts</code> per-request override; <code>segmentCacheTtlSec</code></li>
