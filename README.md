@@ -663,8 +663,13 @@ Per composed surface:
 
 > **Scope:** how masqueradarr actually serves video — a **remux-free Rust data-plane sidecar** (replacing an
 > older transcode engine) that resolves each stream on demand and pipes it durably to the player. This
-> section covers the two-plane split, the internal seams, the request path, the durability features, the
-> tunable config, and the opt-in public-edge topology.
+> section covers the two-plane split, the internal seams, the request path, the durability features,
+> [local origin mode](#local-origin-republishing-the-stream), the tunable config, and the opt-in public-edge
+> topology.
+>
+> **Remux-free is still true; "passthrough" no longer is.** Nothing is ever re-encoded — but with
+> [local origin](#local-origin-republishing-the-stream) enabled the engine stops forwarding the provider's
+> playlist and publishes one it wrote itself, from segments it ingested, decrypted and cached in RAM.
 
 ## Two planes: Node control plane · Rust data plane
 
@@ -737,8 +742,63 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
   chunked / no-Content-Length byte undercount that used to fake client-side buffering.
 - **Batched telemetry** — events are coalesced and posted off the hot path, so reporting never blocks bytes.
 - **Raw MPEG-TS** — with `outputFormat: 'ts'`, an external-mount stream is served as **one continuous
-  `video/mp2t`** stream (segments concatenated, no remux) for players that prefer a flat TS pipe; fMP4 / AES
-  sources auto-fall back to HLS.
+  `video/mp2t`** stream (segments concatenated, no remux) for players that prefer a flat TS pipe. On the
+  passthrough path fMP4 / AES sources auto-fall back to HLS; with
+  [local origin](#local-origin-republishing-the-stream) enabled AES-128 is decrypted at ingest instead, so
+  only fMP4 and `SAMPLE-AES` still decline.
+
+## Local origin — republishing the stream
+
+Everything above describes a **rewriting proxy**: the upstream playlist is fetched, its URIs are rewritten to
+point back through masqueradarr, and the rest is passed through. That hides hostnames, but the client is still
+looking at the *provider's* timeline — their media sequence, their `#EXT-X-KEY`, even their vendor tags.
+
+With **`originEnabled`**, masqueradarr becomes the **origin** instead. One **ingest per channel** (not per
+viewer) follows the upstream, decrypts each segment, and pushes it into an in-memory **ring**; both output
+shapes are then rendered from that ring:
+
+<img src="docs/diagrams/local-origin.svg" alt="Local origin: Side-1 ingests once per channel (follow, fetch, decrypt) and pushes into a RAM ring; Side-2 reads the same ring to render either an authored HLS manifest or a continuous raw-TS socket for N viewers.">
+
+
+| | `originEnabled: false` | `originEnabled: true` |
+|---|---|---|
+| `outputFormat: 'hls'` | the upstream playlist, URI-rewritten | a playlist **we authored** + our own segment paths |
+| `outputFormat: 'ts'` | upstream segments concatenated per viewer | the same ring concatenated (decrypts) |
+
+What a player receives in origin mode contains **no provider host, path, session id or query; no
+`#EXT-X-KEY`; no vendor tags; no proxy hop URLs** — only our own `#EXT-X-MEDIA-SEQUENCE`, `#EXTINF`, and
+`/api/…/o/<entry>/<generation>-<seq>.ts` segment paths (still token-gated, since those paths are guessable by
+construction).
+
+Three consequences worth knowing:
+
+- **A second viewer of a channel costs no extra upstream bandwidth.** The passthrough path fetches per
+  viewer; the ring is shared.
+- **Encrypted sources become fully supported rather than degraded.** AES-128 is decrypted at ingest, so
+  `outputFormat: 'ts'` works on sources that previously fell back to HLS. `SAMPLE-AES` / FairPlay and fMP4
+  remain out of scope and decline cleanly, with a WARN naming the reason.
+- **Ad-stitched sources still show `#EXT-X-DISCONTINUITY`** at real splices. That is in-spec output, not a
+  leak — it says nothing about the origin — and every player handles it. The engine emits it only where the
+  upstream tags one, or where a media-sequence gap proves segments were missed; it deliberately does *not*
+  guess splices from URL shape (that was tried, and produced false positives on two different CDNs).
+
+**RAM, not disk.** The ring holds *decrypted* media and is never written to disk. It is bounded per channel
+by `originRingMb` (default 25 MiB ≈ a minute at 3.3 Mbps), oldest segment evicted first, with a hard floor of
+3 segments so the window stays playable — when a source's bitrate makes the floor beat the cap, that is
+logged so the cap can be raised rather than leaving unexplained stalls. There is **no global ceiling across
+channels yet**, so a many-channel box wants a conservative per-channel value.
+
+**Bare-TS sources.** A `direct` / `hdhomerun` upstream arrives as one endless socket with no playlist, so the
+engine finds the boundaries itself: it reads the PSI tables (PAT → PMT) for the video PID and cuts at packets
+flagged as random-access points, deriving each segment's duration from the stream's own PCR clock. Those
+segments join the same ring, so such a source republishes as ordinary HLS.
+
+**Observability — `iop` vs `oop`.** Once one ingest feeds N viewers, ingress and egress are independent
+quantities, so a stuttering channel has two possible causes. The engine tags every ingest line **`iop`**
+(input operation — resolve, poll, fetch, decrypt, ring push/evict) and every serving line **`oop`** (output
+operation — manifest render, segment serve, TS concat), both under the `proxy` log category. Active Streams
+shows both sides per channel: `Delivery` is what viewers receive, `Ingest` / `Ring` / `Upstream pulled` is
+what the single shared ingest is doing.
 
 ## Tuning knobs — the `proxyconfigs` subsystem
 
@@ -755,6 +815,8 @@ resolved by Node into each grant (**Rust never reads MongoDB**). Two tiers, doc-
 | `connectTimeoutMs`, `maxRedirects` | live | per-config upstream HTTP client (cached in Rust) |
 | `readTimeoutMs`, `bufferSizeKb` | live | per-stream stall timeout + read-ahead buffer size |
 | `outputFormat` (`hls` \| `ts`) | live | distribution shape (`ts` = continuous MPEG-TS, external mount only) |
+| `originEnabled` | live | [local origin](#local-origin-republishing-the-stream): republish from our own ring instead of proxying the upstream playlist (default **off** = today's output byte-for-byte) |
+| `originRingMb` | live | per-channel ring cap in MiB (default **25**); a 3-segment floor still wins over it |
 | `failoverEnabled` | live | walk a channel's ordered failover children on an establish failure (default **on**) |
 | `failoverOnDefiniteError` | live | also treat a definitive upstream `4xx`/`5xx` as a failover trigger (default **off**) |
 | `segmentCacheTtlSec` | reserved | shipped in the grant, not yet enforced |

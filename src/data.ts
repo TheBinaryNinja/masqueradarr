@@ -324,6 +324,15 @@ export interface SystemStats {
   scope: 'cgroup-v2' | 'cgroup-v1' | 'host';
   cpu: { usagePct: number | null; cores: number; loadAvg: [number, number, number] };
   memory: { totalBytes: number; usedBytes: number; usedPct: number; rssBytes: number };
+  // S3/ORIGIN segment rings, process-wide — the Rust sidecar's RAM, which memory.rssBytes (the Node process)
+  // does not see. null = the sidecar never reported or went silent (origin disabled, or no sidecar).
+  ring: {
+    bytes: number;
+    capBytes: number;
+    origins: number;
+    subscribed: number;
+    pressurePct: number;
+  } | null;
   diskIo: { readMbPerSec: number; writeMbPerSec: number } | null;
   network: { rxMbitPerSec: number; txMbitPerSec: number } | null;
   mongo: {

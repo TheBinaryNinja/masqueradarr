@@ -2,7 +2,8 @@
 // SPA keeps its own copy in src/data.ts). This lives in the logs subsystem — NOT in the source-agnostic core
 // — so the core never couples to product categories. Existing logger.* calls pass a TAG ('mongo',
 // 'dulo:stream', …); the category is DERIVED here, so the overwhelming majority of call sites need zero
-// change. See .claude/skills/logs/SKILL.md §2.
+// change. (This previously pointed at `.claude/skills/logs/SKILL.md`, which is not in the repo — the map
+// below IS the reference; add a tag here and its category resolves everywhere.)
 
 import type { LogCategory } from '../models/Log.js';
 

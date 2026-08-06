@@ -14,6 +14,7 @@ import { readFile } from 'node:fs/promises';
 import mongoose from 'mongoose';
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
+import { getRingFootprint } from '../sources/core/streamTelemetry.js';
 
 const TICK_MS = 2500; // matches statsHub BROADCAST_MS + LivelineChart SAMPLE_MS (60 samples × 2.5s window)
 const CG = '/sys/fs/cgroup';
@@ -27,6 +28,17 @@ export interface SystemStats {
   scope: Scope; // drives the card caption ("container" for cgroup, "host" otherwise)
   cpu: { usagePct: number | null; cores: number; loadAvg: [number, number, number] };
   memory: { totalBytes: number; usedBytes: number; usedPct: number; rssBytes: number };
+  // S3/ORIGIN: what the Rust sidecar's segment rings are holding, process-wide. Distinct from `memory.rssBytes`
+  // above, which is the NODE process — the rings live in the sidecar and never show up there. `originRingMb`
+  // bounds one channel; nothing bounds the box (the postponed LRU item), so this is measured against host RAM.
+  // null = the sidecar never reported or went silent (origin disabled, or no sidecar) — non-fatal, like diskIo.
+  ring: {
+    bytes: number;
+    capBytes: number; // Σ of the live origins' per-channel caps — headroom before eviction, not a ceiling
+    origins: number;
+    subscribed: number; // origins with ≥1 viewer; the rest are in their idle grace, still costing RAM
+    pressurePct: number; // bytes as a share of totalBytes — what the Dashboard tile's threshold colour keys off
+  } | null;
   diskIo: { readMbPerSec: number; writeMbPerSec: number } | null; // null on non-Linux dev (no /proc/self/io)
   network: { rxMbitPerSec: number; txMbitPerSec: number } | null; // null on non-Linux dev (no /proc/net/dev)
   mongo: {
@@ -349,6 +361,23 @@ async function computeMongo(): Promise<SystemStats['mongo']> {
   }
 }
 
+/**
+ * S3/ORIGIN ring footprint as a share of the box. Not part of the Promise.all below because it is not a
+ * sample of anything — it is the last frame the sidecar pushed, and it needs `totalBytes` from the memory
+ * sample to express a percentage, so it is folded in after.
+ */
+function computeRing(totalBytes: number): SystemStats['ring'] {
+  const f = getRingFootprint();
+  if (!f) return null;
+  return {
+    bytes: f.bytes,
+    capBytes: f.capBytes,
+    origins: f.origins,
+    subscribed: f.subscribed,
+    pressurePct: totalBytes > 0 ? clampPct((f.bytes / totalBytes) * 100) : 0,
+  };
+}
+
 // ── the tick ──────────────────────────────────────────────────────────────────────────────────────────
 async function tick(): Promise<void> {
   mongoTick++;
@@ -360,7 +389,7 @@ async function tick(): Promise<void> {
       computeNetwork(),
       computeMongo(),
     ]);
-    latest = { ts: Date.now(), scope, cpu, memory, diskIo, network, mongo };
+    latest = { ts: Date.now(), scope, cpu, memory, ring: computeRing(memory.totalBytes), diskIo, network, mongo };
     if (sockets.size) broadcast({ type: 'system-stats', stats: latest });
   } catch (err) {
     logger.error('stats', `system-stats tick failed: ${(err as Error).message}`);

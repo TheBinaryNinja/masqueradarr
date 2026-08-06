@@ -127,6 +127,18 @@ function fmtBytes(n: number | null | undefined) {
 }
 function fmtRate(n: number | null | undefined, unit: string) { return n == null ? 'n/a' : `${n.toFixed(1)} ${unit}`; }
 
+// MEMORY PRESSURE — the S3/ORIGIN rings as a share of the box. `originRingMb` bounds ONE channel and nothing
+// bounds the host yet (the postponed LRU ceiling), so host RAM is the only honest denominator: the failure
+// mode this warns about is the sum of rings outgrowing the machine, not any one ring filling up.
+//
+// Colour IS the reading here: this is the one tile whose big number is tinted, because the byte total alone
+// says nothing — 142 MB is fine on a workstation and fatal on a Pi. The tone carries that judgement on both
+// the value and the sub-line; null (no sidecar) stays grey so "unknown" never reads as "healthy".
+const ring = computed(() => SYSTEM_STATS.value?.ring ?? null);
+// 30% is the plan's own alarm case made concrete: ~50 origins at the 25 MiB default is ≈1.2 GiB, which is
+// where a 4 GB Pi starts hurting. 15% is the "look at this before it bites" mark.
+const ringTone = computed(() => (ring.value == null ? null : ring.value.pressurePct >= 30 ? 'bad' : ring.value.pressurePct >= 15 ? 'warn' : 'good'));
+
 
 // DB Health card — live MongoDB metrics from the same WS frame (mongo.health is null until the second
 // serverStatus sample lets the server take a delta, so the rate values show '—' for the first ~5s).
@@ -276,7 +288,7 @@ onBeforeUnmount(() => {
            blends into the page (.sys-flush on the outer card). -->
       <div class="card flush">
       <div style="display: flex; align-items: stretch;">
-      <div class="stats" style="grid-template-columns: repeat(5, 1fr); margin: 0; flex: 1; min-width: 0;">
+      <div class="stats" style="grid-template-columns: repeat(6, 1fr); margin: 0; flex: 1; min-width: 0;">
         <div class="stat">
           <div class="lbl">CPU</div>
           <div class="val">{{ fmtPct(SYSTEM_STATS?.cpu.usagePct) }}</div>
@@ -289,6 +301,22 @@ onBeforeUnmount(() => {
           <div class="val">{{ fmtPct(SYSTEM_STATS?.memory.usedPct) }}</div>
           <div class="delta">
             {{ fmtBytes(SYSTEM_STATS?.memory.usedBytes) }} / {{ fmtBytes(SYSTEM_STATS?.memory.totalBytes) }} · rss {{ fmtBytes(SYSTEM_STATS?.memory.rssBytes) }}
+          </div>
+        </div>
+        <!-- S3/ORIGIN ring RAM. Sits beside Memory on purpose: that tile is the whole box, this one is the
+             slice the video rings hold — which memory.rssBytes cannot show, since the rings live in the Rust
+             sidecar. The value is the byte total and the THRESHOLD COLOUR is the verdict on it — the sub-line
+             then gives the percentage that colour was judged against, so the tint is never unexplained. -->
+        <div class="stat">
+          <div class="lbl">Memory pressure</div>
+          <div class="val" :class="ringTone ? ringTone : 'val-muted'">{{ ring ? fmtBytes(ring.bytes) : '—' }}</div>
+          <div class="delta" :class="{ warn: ringTone === 'warn', bad: ringTone === 'bad' }">
+            <template v-if="!ring">not available</template>
+            <template v-else-if="ring.origins === 0">no active origins</template>
+            <template v-else>
+              {{ ring.origins }} origin{{ ring.origins === 1 ? '' : 's' }} · {{ fmtPct(ring.pressurePct) }} of
+              {{ fmtBytes(SYSTEM_STATS?.memory.totalBytes) }}
+            </template>
           </div>
         </div>
         <div class="stat">

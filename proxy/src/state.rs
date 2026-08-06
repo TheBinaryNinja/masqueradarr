@@ -22,6 +22,10 @@ const TELEMETRY_QUEUE: usize = 4096;
 const TELEMETRY_MAX_BATCH: usize = 256;
 const TELEMETRY_FLUSH_MS: u64 = 250;
 
+/// S3/ORIGIN: how often the aggregate ring footprint is reported. Matches Node's systemStatsHub TICK_MS, so
+/// the Dashboard's MEMORY PRESSURE tile gets one fresh frame per tick rather than sampling a stale one.
+const RING_REPORT_MS: u64 = 2500;
+
 /// How long a resolved ENTRY target is reused before re-resolving. This collapses per-poll resolves for a
 /// media-playlist entry (so a few-second player poll doesn't re-mint a dulo playbackUrl / re-scrape dlhd
 /// every time), while staying well inside typical multi-minute token expiries. A master entry is fetched
@@ -331,6 +335,10 @@ impl AppState {
             format!("{node_url}/api/internal/telemetry"),
             secret.clone(),
         ));
+        // S3/ORIGIN: the live-ingest registry, built HERE rather than inline in `Self` so the ring reporter
+        // can hold its own handle — it needs the map, not the whole AppState.
+        let origins: Arc<Mutex<HashMap<String, Arc<crate::origin::Origin>>>> = Arc::new(Mutex::new(HashMap::new()));
+        tokio::spawn(ring_reporter(origins.clone(), telemetry_tx.clone()));
         // LOG: install the global structured-logging sink + its own batched flusher (seeds the level from
         // MASQ_LOG_LEVEL, ships to /api/internal/log, learns live level changes from the flush echo). A
         // cross-cutting global (like Node's `logger`) so every module logs without threading state.
@@ -346,7 +354,7 @@ impl AppState {
             telemetry_tx,
             stream_seq: Arc::new(AtomicU64::new(0)),
             auth_cache: Arc::new(Mutex::new(HashMap::new())),
-            origins: Arc::new(Mutex::new(HashMap::new())),
+            origins,
         }
     }
 
@@ -726,6 +734,36 @@ impl AppState {
                 .to_string();
             Some((false, status, message, None))
         }
+    }
+}
+
+/// S3/ORIGIN: the aggregate ring reporter. Every `iop` event describes ONE channel and only fires while that
+/// channel polls, so nothing on the wire says what the process as a whole is holding — which is the number the
+/// Dashboard's MEMORY PRESSURE tile needs and the one the postponed `LRU` budget must be sized against.
+///
+/// Stays SILENT while no ingest exists — an idle sidecar should not POST forever — but emits ONE trailing zero
+/// on the transition to empty, without which the tile would freeze on the last non-zero figure after the final
+/// channel closed. If that trailing frame is dropped by a full queue, Node's staleness rule is the backstop.
+async fn ring_reporter(
+    origins: Arc<Mutex<HashMap<String, Arc<crate::origin::Origin>>>>,
+    tx: mpsc::Sender<serde_json::Value>,
+) {
+    let mut had_origins = false;
+    loop {
+        tokio::time::sleep(Duration::from_millis(RING_REPORT_MS)).await;
+        let f = crate::origin::ring_footprint(&origins);
+        if f.origins == 0 && !had_origins {
+            continue;
+        }
+        had_origins = f.origins > 0;
+        // Best-effort, exactly like AppState::report: a full queue drops the frame rather than stalling.
+        let _ = tx.try_send(serde_json::json!({
+            "kind": "ring",
+            "origins": f.origins,
+            "subscribed": f.subscribed,
+            "ringBytes": f.bytes,
+            "ringCapBytes": f.cap_bytes,
+        }));
     }
 }
 

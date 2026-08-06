@@ -7,6 +7,7 @@ import {
   noteSocketViewerClose,
   nextSocketConnId,
   noteIngest,
+  noteRingFootprint,
   type PlayerType,
 } from '../sources/core/streamTelemetry.js';
 import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core/streamState.js';
@@ -18,7 +19,8 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 // edge-measured data. Best-effort + fire-and-forget from Rust's side — a telemetry hiccup must never affect
 // streaming.
 //
-// Event kinds (all carry { source, entryUrl } so the channel's phase-machine key = streamKey(source, entryUrl)):
+// Event kinds. All but `ring` carry { source, entryUrl } so the channel's phase-machine key =
+// streamKey(source, entryUrl); `ring` is the one PROCESS-WIDE kind and belongs to no channel:
 //  · viewer   — one per manifest poll Rust serves (the heartbeat that keeps a viewer "active"; 30s TTL). Also
 //    a 2xx success → noteSuccess (→ live). Fields: { source, entryUrl, ip, ua, username?, playerType, bytes? }.
 //  · bytes    — one per segment/other 2xx send. P3.1/RSL: emitted at END-of-body with the ACCURATE delivered
@@ -39,6 +41,12 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //    quantities, so this drives its own map (noteIngest) and never noteBytes. Fields: { source, entryUrl,
 //    status ('ok'|'stalled'|'resolve_failed'|'closed'), subscribers, ringSegments, ringBytes, headSeq,
 //    generation, ingestedSegments, ingestedBytes, evictedSegments, targetDuration }.
+//  · ring     — S3/ORIGIN, PROCESS-WIDE: the sidecar's whole origin registry summed into one frame →
+//    noteRingFootprint. Carries no channel, so it never reaches streamKey/the phase machine. Exists because
+//    `iop` describes one channel and only while that channel polls, which cannot answer how much RAM the
+//    rings hold in total — an origin in its idle grace still owns its bytes. Rust stays silent while no
+//    ingest exists and sends one trailing zero when the last closes. Fields: { origins, subscribed,
+//    ringBytes, ringCapBytes }.
 // A body may be a single event or { events: [...] } (Rust batches, P3.1); both are accepted.
 
 interface TelemetryEvent {
@@ -68,6 +76,11 @@ interface TelemetryEvent {
   ingestedBytes?: unknown;
   evictedSegments?: unknown;
   targetDuration?: unknown;
+  // S3/ORIGIN `ring` (process-wide). `ringBytes` is shared with `iop` but means something different here —
+  // there it is one channel's window, here it is every window summed.
+  origins?: unknown;
+  subscribed?: unknown;
+  ringCapBytes?: unknown;
 }
 
 // DST: Rust continuous-TS streamId → the socket-viewer connId minted on `open`. A tiny bounded map (one entry
@@ -146,6 +159,17 @@ function applyEvent(e: TelemetryEvent): void {
         at: Date.now(),
       });
     }
+  } else if (e.kind === 'ring') {
+    // S3/ORIGIN process-wide. Deliberately OUTSIDE the `if (source && entryUrl)` guard every other kind sits
+    // behind: this frame belongs to the sidecar, not to a channel, and gating it on a channel it will never
+    // carry would silently drop every one.
+    noteRingFootprint({
+      origins: num(e.origins),
+      subscribed: num(e.subscribed),
+      bytes: num(e.ringBytes),
+      capBytes: num(e.ringCapBytes),
+      at: Date.now(),
+    });
   } else if (e.kind === 'open') {
     // DST continuous-TS: a new socket-style session. Mint a connId, map the Rust streamId to it, register the
     // viewer. Overwrite any stale mapping for this streamId (a sidecar restart resets its counter) by closing

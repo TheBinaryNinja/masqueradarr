@@ -27,7 +27,7 @@
 //! process.
 
 use bytes::Bytes;
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
@@ -1138,6 +1138,38 @@ fn report_iop(ctx: &IngestCtx, status: &str) {
     }));
 }
 
+/// A process-wide view of what every live ring is holding.
+///
+/// `originRingMb` bounds ONE channel; nothing bounds the box (the postponed `LRU` item). `report_iop` above
+/// carries a single channel and only while that channel polls, so neither it nor the active-stream list can
+/// answer "how much RAM is the ring costing us" — an origin inside its `IDLE_GRACE` window still holds its
+/// bytes with no viewer to hang them off. This is that answer, and it is the measured number the later `LRU`
+/// budget should be sized against rather than guessed at.
+pub(crate) struct RingFootprint {
+    pub origins: usize,
+    /// Origins with at least one viewer; the remainder are in their idle grace, still costing RAM.
+    pub subscribed: usize,
+    pub bytes: u64,
+    /// Σ of those origins' per-channel caps — headroom before eviction, NOT a global ceiling.
+    pub cap_bytes: u64,
+}
+
+/// Sum the registry. Reads ONLY atomics and never touches `Origin.ring`: staying off that `RwLock` means this
+/// introduces no lock-order pairing with the registry `Mutex` to reason about. Adding segment depth later
+/// would mean cloning the `Arc`s out and DROPPING the registry guard before any `ring.read_ok()`.
+pub(crate) fn ring_footprint(origins: &Mutex<HashMap<String, Arc<Origin>>>) -> RingFootprint {
+    let map = origins.lock_ok();
+    let mut f = RingFootprint { origins: map.len(), subscribed: 0, bytes: 0, cap_bytes: 0 };
+    for o in map.values() {
+        if o.subscribers.load(Ordering::Relaxed) > 0 {
+            f.subscribed += 1;
+        }
+        f.bytes = f.bytes.saturating_add(o.ring_bytes.load(Ordering::Relaxed));
+        f.cap_bytes = f.cap_bytes.saturating_add(o.ring_cap_bytes.load(Ordering::Relaxed));
+    }
+    f
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1200,6 +1232,35 @@ mod tests {
         }
         assert!(o.ring_depth() > MIN_SEGMENTS);
         assert!(!o.floor_beat_cap(), "a fitting bitrate must not warn");
+    }
+
+    #[test]
+    fn ring_footprint_sums_the_registry_and_counts_only_subscribed_origins() {
+        let watched = Arc::new(Origin::new(10_000));
+        let idle = Arc::new(Origin::new(4_000));
+        for i in 0..3 {
+            watched.push(seg(i, 500)); // 1500 bytes, under its cap
+            idle.push(seg(i, 200)); // 600 bytes, under its cap
+        }
+        watched.subscribers.store(2, Ordering::Relaxed);
+        // `idle` keeps zero subscribers: it is inside its IDLE_GRACE window, still holding RAM. Counting it in
+        // `bytes` but not in `subscribed` is the whole point — a footprint that only saw watched channels
+        // would under-report exactly when a burst of just-closed channels is what filled memory.
+        let map: HashMap<String, Arc<Origin>> =
+            [("a".to_string(), watched), ("b".to_string(), idle)].into_iter().collect();
+        let f = ring_footprint(&Mutex::new(map));
+
+        assert_eq!(f.origins, 2);
+        assert_eq!(f.subscribed, 1, "the idle origin still costs RAM but has no viewer");
+        assert_eq!(f.bytes, 2_100, "1500 + 600 — every ring, watched or not");
+        assert_eq!(f.cap_bytes, 14_000, "Σ per-channel caps: headroom, not a global ceiling");
+    }
+
+    #[test]
+    fn ring_footprint_of_an_empty_registry_is_all_zero() {
+        // The reporter's trailing frame after the last ingest closes: zeros, not a stale carry-over.
+        let f = ring_footprint(&Mutex::new(HashMap::new()));
+        assert_eq!((f.origins, f.subscribed, f.bytes, f.cap_bytes), (0, 0, 0, 0));
     }
 
     #[test]

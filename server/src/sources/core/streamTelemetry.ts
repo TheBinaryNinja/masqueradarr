@@ -351,6 +351,45 @@ export function pruneIngest(activeKeys: Set<string>): void {
   for (const key of ingestByChannel.keys()) if (!activeKeys.has(key)) ingestByChannel.delete(key);
 }
 
+// ── S3/ORIGIN aggregate ring footprint (process-wide) ──────────────────────────────────────────────────
+// The map above is PER-CHANNEL and is pruned against the active-stream set, so it cannot answer "how much RAM
+// are the rings holding" — an origin inside its 30s idle grace still owns its bytes with no active row to hang
+// them off, which is exactly the case a memory-pressure reading must not miss. The sidecar therefore sums its
+// own registry and reports one `ring` event; this holds the latest. Feeds systemStatsHub → the Dashboard's
+// MEMORY PRESSURE tile.
+
+export interface RingFootprint {
+  origins: number;
+  subscribed: number; // origins with ≥1 viewer; the rest are in their idle grace, still costing RAM
+  bytes: number;
+  capBytes: number; // Σ of those origins' per-channel caps — headroom before eviction, NOT a global ceiling
+  at: number; // Date.now() of the frame
+}
+
+let ringFootprint: RingFootprint | null = null;
+
+/** How long a footprint reporting LIVE origins stays trustworthy before we call the sidecar gone. */
+const RING_STALE_MS = 15_000; // 6 missed 2.5s reports
+
+/** Record the data plane's latest process-wide `ring` snapshot. */
+export function noteRingFootprint(f: RingFootprint): void {
+  ringFootprint = f;
+}
+
+/**
+ * The latest ring footprint, or null when there is nothing trustworthy to show.
+ *
+ * Staleness applies ONLY to a frame that reported live origins: the sidecar goes deliberately quiet once the
+ * last ingest closes, so a trailing `origins: 0` is a standing fact, not a stale reading, and must keep being
+ * served. A frame with origins still running that then went silent means the sidecar died — report null and
+ * let the tile degrade rather than freeze on a number that is no longer true.
+ */
+export function getRingFootprint(): RingFootprint | null {
+  if (!ringFootprint) return null;
+  if (ringFootprint.origins > 0 && Date.now() - ringFootprint.at > RING_STALE_MS) return null;
+  return ringFootprint;
+}
+
 // ── Socket-liveness hooks (the raw-TS fork) ───────────────────────────────────────────────────────────
 // Raw-TS external clients (externalTsEngine.ts) hold ONE long-lived HTTP socket and never poll, so the
 // poll-recency model above is blind to them. These three hooks give them a parallel accounting that feeds the

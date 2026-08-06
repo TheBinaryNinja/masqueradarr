@@ -578,3 +578,46 @@ topology({
   b += legend(32, 1252, [[C.ash, 'SPA / player'], [C.teal, 'Node — control plane'], [C.amber, 'Rust — data plane'], [C.green, 'Group state · recovery'], [C.risk, 'Failure path']]);
   write('failover-groups.svg', svg(W, H, b));
 }
+
+/* ── 10 · local origin (S3): one ingest, two renderers ──────────────────── */
+{
+  const W = 940, H = 700;
+  let b = header(W, 'Local origin — one ingest, two renderers', 'originEnabled · Side-1 iop / Side-2 oop');
+
+  // Laid out left→right with the RING in its own middle column: that is the whole claim of the design —
+  // everything on the left happens ONCE per channel, everything on the right reads the same cached bytes.
+  b += lane({ x: 24, y: 110, w: 296, h: 400, label: 'SIDE-1 · ingest · iop', color: C.amber });
+  b += lane({ x: 620, y: 110, w: 296, h: 400, label: 'SIDE-2 · serve · oop', color: C.teal });
+
+  const HH = 82;
+  const up = card({ x: 40, y: 150, w: 264, minH: HH, rail: C.dim, title: 'Upstream', sub: ['HLS playlist, or a', 'bare TS socket'] });
+  const poll = card({ x: 40, y: 252, w: 264, minH: HH, rail: C.amber, title: 'follow + fetch', sub: ['poll · retry · failover', 'bare TS → PAT/PMT → cut at RAI'] });
+  const dec = card({ x: 40, y: 354, w: 264, minH: HH, rail: C.amber, title: 'decrypt AES-128', sub: ['key cached per rotation', 'ciphertext never enters the ring'] });
+
+  const ring = card({
+    x: 348, y: 300, w: 244, minH: 92, rail: C.green, fill: C.carbon,
+    title: 'RING · RAM only', sub: ['our own seq · originRingMb', 'oldest evicted · 3-seg floor'],
+  });
+
+  const hls = card({ x: 636, y: 150, w: 264, minH: HH, rail: C.teal, title: 'authored manifest', sub: ['our MEDIA-SEQUENCE / EXTINF', 'no keys · no vendor tags · no hops'] });
+  const ts = card({ x: 636, y: 262, w: 264, minH: HH, rail: C.teal, title: 'raw TS concat', sub: ['one continuous video/mp2t', 'segment boundary = keyframe'] });
+  const cl = card({ x: 636, y: 400, w: 264, minH: HH, rail: C.ash, title: 'N viewers', sub: ['a 2nd viewer costs', 'NO extra upstream'] });
+
+  b += edge([[172, 232], [172, 251]], { color: 'amber' });
+  b += edge([[172, 334], [172, 353]], { color: 'amber' });
+  b += edge([[172, 436], [172, 470], [470, 470], [470, 393]], { color: 'amber' });
+  b += edge([[592, 325], [604, 325], [604, 191], [634, 191]], { color: 'green' });
+  b += edge([[592, 365], [620, 365], [620, 303], [634, 303]], { color: 'green' });
+  b += edge([[766, 344], [766, 398]], { color: 'teal' });
+  b += edge([[900, 191], [916, 191], [916, 441], [902, 441]], { color: 'teal' });
+
+  b += up.svg + poll.svg + dec.svg + ring.svg + hls.svg + ts.svg + cl.svg;
+  b += pill(470, 470, 'push', { color: C.green });
+  b += pill(604, 247, 'read', { color: C.green });
+
+  b += text(32, 545, 'Ingress and egress are now INDEPENDENT: one ingest feeds N viewers, so ingest bytes are reported separately (kind:"iop") and never folded into egress counts.', { fill: C.dim, size: 9.6 });
+  b += text(32, 569, 'Off by default — with originEnabled false the engine proxies the upstream playlist exactly as before and this whole path is skipped.', { fill: C.dim, size: 9.6 });
+  b += text(32, 593, 'Discontinuity is emitted only where the upstream tags one, or a media-sequence gap proves segments were missed — never guessed from URL shape.', { fill: C.dim, size: 9.6 });
+  b += legend(32, 625, [[C.dim, 'Upstream'], [C.amber, 'Side-1 · ingest (iop)'], [C.green, 'Ring · RAM'], [C.teal, 'Side-2 · serve (oop)'], [C.ash, 'Clients']]);
+  write('local-origin.svg', svg(W, H, b));
+}
