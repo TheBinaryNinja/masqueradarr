@@ -285,8 +285,21 @@ export interface SourceManifestEntry {
   sourceUrl: string;
   proxyPrefix: string;
   statusUrl: string | null;
+  // This source exposes several interchangeable upstream "players" per channel (DaddyLive), so the player
+  // picker is rendered for its channels. Read it instead of hardcoding source ids — see playerSelectable().
+  playerSelectable?: boolean;
   // The Add Playlist "Built-In" summary (server fills DEFAULT_BUILTIN_META when an adapter omits it).
   builtinMeta: BuiltinPlaylistMeta;
+}
+
+/**
+ * Does this channel's real provider expose selectable players? Route on the PROXY source (`origin ?? source`)
+ * — the same key the stream URL is built from — so a clone copy is judged by its real provider, and read the
+ * capability off the source manifest so a future player-selectable adapter lights the picker up for free.
+ */
+export function playerSelectable(ch: Pick<Channel, 'source' | 'origin'>): boolean {
+  const id = ch.origin ?? ch.source;
+  return SOURCES.value.some((s) => s.id === id && s.playerSelectable === true);
 }
 // Structured frequency-builder state (mirrors server CronFrequency) — lets the Edit drawer re-render the
 // builder without reverse-parsing the cron string. `mode` selects which other fields apply.

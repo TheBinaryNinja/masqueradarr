@@ -40,8 +40,10 @@ const TARGET_TTL: Duration = Duration::from_secs(60);
 const FAILOVER_CURSOR_IDLE: Duration = Duration::from_secs(300);
 
 /// FOG: hard cap on resolve attempts per failover walk (a runaway backstop over any real group size — the
-/// walk normally ends on Node's distinct `failover_exhausted` reply).
-pub const MAX_FAILOVER_ATTEMPTS: u32 = 8;
+/// walk normally ends on Node's distinct `failover_exhausted` reply). Sized above any real chain: Node may
+/// spend the first attempt(s) on the SOURCE's own alternate upstreams (dlhd's independent player providers)
+/// before the channel's configured backups start, so the cap has to clear both stages plus a wrap.
+pub const MAX_FAILOVER_ATTEMPTS: u32 = 12;
 
 // EDGE-3 gate cache. When Rust is the public edge, the stream-token gate lives in Node (POST
 // /api/internal/authorize) but Rust must gate EVERY request — including warm hops that never re-hit the
@@ -466,6 +468,66 @@ impl AppState {
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let attempt = self.cursor_attempt(source, entry);
         self.resolve_at(source, entry, pl, attempt).await
+    }
+
+    /// Like `resolve_fresh`, but ADVANCES the stream's failover cursor first — "the candidate you last gave
+    /// me is not producing media, give me the next one". The ORIGIN ingest loop needs this because it never
+    /// passes through the handler's `failover_walk`: it owns its own retry loop, so without an escalation
+    /// path an origin-mode channel would re-resolve the same dead candidate every couple of seconds forever
+    /// (and the source's own alternate upstreams — dlhd's independent player providers — would never be
+    /// reached). The cursor is bumped even when the resolve then FAILS, so successive passes keep walking
+    /// instead of retrying one dead candidate; Node's `failover_exhausted` (or the attempt cap) folds the
+    /// cursor back to the channel itself so a stale pin can never strand the ingest.
+    pub async fn resolve_advance(
+        &self,
+        source: &str,
+        entry: &str,
+        pl: Option<&str>,
+    ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
+        let next = self.bump_cursor(source, entry);
+        if next >= MAX_FAILOVER_ATTEMPTS {
+            self.reset_cursor(source, entry);
+            return self.resolve_at(source, entry, pl, 0).await;
+        }
+        match self.resolve_at(source, entry, pl, next).await {
+            Err(ResolveErr::Exhausted) => {
+                self.reset_cursor(source, entry);
+                self.resolve_at(source, entry, pl, 0).await
+            }
+            other => other,
+        }
+    }
+
+    /// Advance a stream's failover cursor by one and return the new value, PERSISTING it even though no
+    /// target has resolved at it yet (`resolve_at` only records the cursor on success, which would make a
+    /// failing candidate repeat forever for a caller that drives its own retry loop). A record created here
+    /// carries an already-stale target, and `expires > now` is strict, so it can never be served.
+    pub fn bump_cursor(&self, source: &str, entry: &str) -> u32 {
+        let now = Instant::now();
+        let mut m = self.targets.lock_ok();
+        match m.get_mut(&target_key(source, entry)) {
+            Some(e) => {
+                if now.duration_since(e.last_access) > FAILOVER_CURSOR_IDLE {
+                    e.attempt = 0;
+                }
+                e.attempt = e.attempt.saturating_add(1);
+                e.last_access = now;
+                e.attempt
+            }
+            None => {
+                m.insert(
+                    target_key(source, entry),
+                    TargetEntry {
+                        target: String::new(),
+                        expires: now, // stale on arrival — a cursor record, not a cached target
+                        policy_key: source.to_string(),
+                        attempt: 1,
+                        last_access: now,
+                    },
+                );
+                1
+            }
+        }
     }
 
     /// Expire a cached resolved target so the next ENTRY request re-resolves (RSL: a dead target that failed

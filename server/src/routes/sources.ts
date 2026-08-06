@@ -46,6 +46,11 @@ sourcesRouter.get('/api/sources', (_req, res) => {
       sourceUrl: `/api/channels?source=${s.id}`, // normalized catalog over Mongo
       proxyPrefix: `/api/v1/${s.id}/`, // in-app stream mount path (the byte-serving route is removed pending rebuild)
       statusUrl: s.status ? `/api/sources/${s.id}/status` : null,
+      // Capability flag: this source exposes several interchangeable upstream "players" per channel, so the
+      // SPA renders the player picker (source default in Settings, per-channel override in the drawer).
+      // Published here so the SPA stops hardcoding a source-id list and a future playerSelectable adapter
+      // lights up the UI for free.
+      playerSelectable: s.playerSelectable === true,
       // The Add Playlist "Built-In" summary (inherent, declarative; rendered before provisioning). Falls
       // back to the common-posture default when an adapter omits it.
       builtinMeta: s.builtinMeta ?? DEFAULT_BUILTIN_META,

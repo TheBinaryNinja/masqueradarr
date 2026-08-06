@@ -12,7 +12,7 @@ import GroupPicker from './GroupPicker.vue';
 import GroupManager from './GroupManager.vue';
 import TagPicker from './TagPicker.vue';
 import { useStreamStats } from '../composables/useStreamStats';
-import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, tagNames, type Channel, type StreamProbe } from '../data';
+import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, playerSelectable, tagNames, type Channel, type StreamProbe } from '../data';
 import { bus } from '../composables/bus';
 
 const props = defineProps<{ ch: Channel }>();
@@ -39,9 +39,9 @@ const tags = ref<string[]>([...(props.ch.tags ?? [])]);
 // A failover CHILD mirrors its parent's EPG identity (the server rejects direct EPG edits on it with
 // 409 failover_child_epg_locked), so the TVG-ID field is locked with an "inherited" hint.
 const isFailoverChild = computed(() => props.ch.failoverRole === 'child');
-// Only DaddyLive-family channels carry selectable players — route on the proxy source (origin ?? source),
-// the same key the stream URL is built from, so a clone copy is judged by its real provider.
-const supportsPlayer = computed(() => ['dlhd'].includes(props.ch.origin ?? props.ch.source));
+// Only sources that declare several interchangeable upstream players carry this picker — read the
+// capability off the /api/sources manifest rather than hardcoding a source-id list.
+const supportsPlayer = computed(() => playerSelectable(props.ch));
 
 // Persist an edit to this channel via PUT /api/playlists/<source>/channels/<id>, then reflect it locally
 // so the open lists update. (Channels are keyed by deterministic id; source === the (Default) playlist id.)
@@ -362,8 +362,12 @@ onBeforeUnmount(() => {
             </select>
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            Which DaddyLive player to prefer for this channel; it falls back to the others if that one is down.
-            “Auto” follows the source default (Settings → DaddyLive Player Source).
+            Which DaddyLive player to prefer for this channel. Each player is an independent provider, so
+            they don’t all carry every channel — whichever one you pick, the rest are tried if it fails, and
+            the winner is remembered. “Auto” follows the source default (Settings → DaddyLive Player Source).
+            <template v-if="liveStream?.failover">
+              <br /><span style="color: var(--text-1);">Now streaming via {{ liveStream.failover.candidateName }}.</span>
+            </template>
           </div>
         </div>
 

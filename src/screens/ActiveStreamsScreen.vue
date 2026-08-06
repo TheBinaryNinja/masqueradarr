@@ -96,6 +96,16 @@ function deliveryLabel(d: ActiveStream['delivery']): string {
   return d === 'ts' ? 'Raw TS' : d === 'mixed' ? 'Mixed (HLS + TS)' : 'HLS';
 }
 
+// Why something other than this channel's own default upstream is carrying it. attempt >= 1 means the data
+// plane actually walked to it after a failed establish; attempt 0 means the very first resolve already
+// landed elsewhere — for DaddyLive that is the player walk settling on a provider that still carries the
+// channel, which is normal and worth seeing rather than an incident.
+function failoverTitle(f: NonNullable<ActiveStream['failover']>): string {
+  return f.attempt >= 1
+    ? `This channel's upstream failed — ${f.candidateName} took over on attempt #${f.attempt}`
+    : `This channel resolved through ${f.candidateName} rather than its default upstream`;
+}
+
 // Real rolling bitrate series from the WS ticks — finite samples only, never a fabricated flat/zero
 // series (a zero value-range freezes the liveline chart). LivelineChart shows a placeholder until ≥2
 // real samples arrive, so an empty/short series here is fine.
@@ -319,9 +329,10 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   :title="`Wire format served now: ${deliveryLabel(sel.delivery)} — distinct from the Container decode label`">
                   {{ deliveryLabel(sel.delivery) }}
                 </Pill>
-                <!-- Failover attribution: this (parent) channel's own upstream is down — a backup carries it. -->
-                <Pill v-if="sel.failover" tone="parent"
-                  :title="`This channel's upstream failed — failover backup #${sel.failover.attempt} is serving`">
+                <!-- Failover attribution: this channel is NOT being carried by its own default upstream —
+                     either a configured backup channel, or (for sources with several interchangeable
+                     providers per channel, e.g. DaddyLive's players) a different one of those. -->
+                <Pill v-if="sel.failover" tone="parent" :title="failoverTitle(sel.failover)">
                   <Icon name="refresh" :size="11" />failover → {{ sel.failover.candidateName }}
                 </Pill>
               </div>
@@ -388,7 +399,9 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <div class="k">Phase</div><div class="v mono">{{ sel.phase }}</div>
                 <template v-if="sel.failover">
                   <div class="k">Failover</div>
-                  <div class="v mono">backup #{{ sel.failover.attempt }} · {{ sel.failover.candidateName }}</div>
+                  <div class="v mono">
+                    {{ sel.failover.attempt >= 1 ? `attempt #${sel.failover.attempt} · ` : '' }}{{ sel.failover.candidateName }}
+                  </div>
                 </template>
               </div>
               <div class="asd-label-ft" aria-hidden="true"><span class="asd-cap-dim">DECODE SPEC</span><span class="asd-mk">MK-07.10</span></div>

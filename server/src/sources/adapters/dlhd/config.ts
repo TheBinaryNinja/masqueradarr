@@ -55,13 +55,20 @@ export const UA =
   'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 ' +
     '(KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36';
 
-// The "PLAYER 1..N" buttons on a channel's watch.php page are the SAME channel id served under several path
-// prefixes on the active mirror — observed live (dlhd): watch.php?id=N renders one <button data-url> per
-// player, in this DOM order: /stream/, /cast/, /watch/, /plus/, /casting/, /player/ (Player 1..6). Each such
-// page then embeds the usual single /premiumtv/daddy<n>.php player, so selecting a player is just swapping
-// the hop-1 path prefix. This is the LAST-KNOWN order used as a fallback; resolveStream.ts prefers the live
-// data-url list parsed from watch.php (self-healing if the site reorders/renames), and Player 1 (/stream/) is
-// byte-identical to the pre-feature single path. Index i (0-based) here == "Player i+1" in the UI.
+// The "PLAYER 1..N" buttons on a channel's watch.php page: watch.php?id=N renders one <button data-url> per
+// player, in this DOM order on the active mirror: /stream/, /cast/, /watch/, /plus/, /casting/, /player/
+// (Player 1..6).
+//
+// They are NOT redundant embeds of one feed. That was the original model and it was wrong — each button's
+// page embeds a DIFFERENT third-party provider, and they do not all carry the same channels. Observed live
+// on ch 648: P1 → hamis.romponalis.st/premiumtv/daddy4.php (its CDN 404s the channel), P2 →
+// dollardescent.net, P3 → liveon5.zip, P4 → logic.icelanders.st (the ONLY one carrying it), P5/P6 →
+// www.ksohls.ru. So picking a player picks a PROVIDER, and which provider works varies per channel and over
+// time — see ./resolveStream.ts (provider-agnostic hop 2) and ./playerMemory.ts (learn the winner).
+//
+// This list is the LAST-KNOWN order used as a fallback and to build a hop-1 URL without an extra fetch;
+// resolveStream.ts prefers the live data-url list parsed from watch.php (self-healing if the site reorders
+// or renames). Index i (0-based) here == "Player i+1" in the UI.
 export const PLAYER_PREFIXES = ['stream', 'cast', 'watch', 'plus', 'casting', 'player'] as const;
 
 // The source-wide DEFAULT player (0 = Auto/first; 1..N = a specific player) for every dlhd/dami channel that
