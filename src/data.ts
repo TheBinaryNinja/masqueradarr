@@ -960,17 +960,9 @@ export async function reloadUserMetrics(): Promise<void> {
   USER_METRICS.value = await getJson<UserMetric[]>('/api/view-sessions/user-metrics');
 }
 
-// appPlayer proxy path for a source-playlist channel: /api/v1/<source>/<enc streamEntryUrl>. This is the
-// IN-APP player's stream URL (prefixed `appPlayer*` to distinguish it from the externalPlayer /api/ext
-// mount the M3U composer writes for third-party IPTV clients). Derived here (not stored) so a proxy-mount /
-// dlhd mirror change needs no data rewrite. Null for legacy channels.
-export function appPlayerProxyPath(ch: Channel): string | null {
-  // A clone copy's proxy source is its provider (`origin`, e.g. 'dulo') — its `source` is the clone id; a
-  // source-playlist channel's is its `source` (origin null). Mirrors serialize.ts (channelToExtinf).
-  const src = ch.origin || ch.source;
-  if (!ch.streamEntryUrl || !src) return null;
-  return `/api/v1/${src}/${encodeURIComponent(ch.streamEntryUrl)}`;
-}
+// appPlayerProxyPath now lives in streamPath.ts (dependency-free, so the standalone player.html entry can
+// import it without pulling in this whole module). Re-exported here so every existing caller is unchanged.
+export { appPlayerProxyPath } from './streamPath';
 
 // ISO-3166-1 alpha-2 → flag emoji (regional-indicator pair). Empty string for missing/invalid codes, so a
 // row with no resolved country just shows its location label (or an em-dash). Shared by the Active Streams +

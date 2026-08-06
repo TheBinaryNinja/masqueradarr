@@ -8,9 +8,9 @@ change anything.
 
 Settings is split into three tabs. **General** holds the everyday knobs — your public **Domain**,
 display name, time zone, DNS nameservers, and appearance — plus **backups** and **maintenance**.
-**Video Config** gathers everything about playback: the **channel probe scheduler**, the in-app
-**video player** (standard or **Debug**), and the default **video / proxy engine** every playlist
-inherits. **Advanced** holds **geolocation**, source sign-in, the **DaddyLive Player Source** default,
+**Video Config** gathers everything about playback: the **channel probe scheduler**, the
+**video player** (standard, **Ultimate**, or **Debug**), and the default **video / proxy engine** every
+playlist inherits. **Advanced** holds **geolocation**, source sign-in, the **DaddyLive Player Source** default,
 and the **Custom Tags** manager. Changes save to the single application settings record.
 
 ## Key controls and where their effects ripple
@@ -23,10 +23,17 @@ and the **Custom Tags** manager. Changes save to the single application settings
   app, including the scheduler that runs your automatic syncs.
 - **DNS nameservers** — the resolvers the server uses for its own outbound requests to providers. Leave
   the defaults unless a provider is only reachable through a specific resolver.
-- **Video player** (on the **Video Config** tab) — which player the channel slide-out preview uses: the
-  standard **In-app** player, or a **Debug** player that adds a live hls.js status readout and event log.
-  Reach for Debug only when a channel won't play in the app; it shows exactly where the stream stalls. This
-  only affects the in-app preview, never what your users' own players do.
+- **Video player** (on the **Video Config** tab) — which player the channel slide-out preview uses:
+  - **In-app video player** — the standard player embedded in the slide-out.
+  - **Ultimate video player** — the slide-out's player and bitrate chart are replaced by a single **Launch
+    Ultimate Video Player** button that opens a dedicated player window: full-size video, the channel list
+    and guide for the playlist you launched from, a channel switcher you can pull out from the right edge,
+    and a **what's on now / next** strip under the picture. Best when you actually want to *watch* a
+    channel rather than glance at it. Allow pop-ups for this site or the window can't open.
+  - **Debug video player** — adds a live hls.js status readout and event log. Reach for it only when a
+    channel won't play; it shows exactly where the stream stalls.
+
+  This only affects the preview inside this app, never what your users' own players do.
 - **Video / proxy engine** (on the **Video Config** tab) — the default streaming knobs (buffering, retries,
   output handling) applied to playback across the app. Individual playlists can **override** these from their
   own drawer, so this is the fallback every playlist inherits until it sets its own.

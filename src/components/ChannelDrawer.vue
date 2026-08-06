@@ -12,6 +12,8 @@ import GroupPicker from './GroupPicker.vue';
 import GroupManager from './GroupManager.vue';
 import TagPicker from './TagPicker.vue';
 import { useStreamStats } from '../composables/useStreamStats';
+import { videoPlayer } from '../composables/useSettings';
+import { pushToast } from '../composables/useToast';
 import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, playerSelectable, tagNames, type Channel, type StreamProbe } from '../data';
 import { bus } from '../composables/bus';
 
@@ -126,6 +128,31 @@ function onResolution(res: string) {
   if (res !== props.ch.stream.res) putChannel({ stream: { res } });
 }
 
+// Ultimate Player launch (videoPlayer === 'ultimate'): open the standalone player.html window on this
+// channel. `ch.source` IS the owning playlist id for both playlist kinds (a custom playlist's channels are
+// keyed by its id; a (Default) playlist is provisioned with id === source), which is what lets the popup
+// load the right channel list + guide — the same lookup `playlist` above relies on.
+//
+// window.open MUST be called synchronously from the click handler: await anything first and pop-up blockers
+// treat it as unsolicited. One fixed window name means relaunching re-navigates and focuses the existing
+// window rather than stacking new ones; since only the hash differs, no reload fires and the player picks
+// the change up via its `hashchange` listener.
+function launchUpl() {
+  const { source, id } = props.ch;
+  if (!source || !id) return;
+  const url = `/player.html#pl=${encodeURIComponent(source)}&ch=${encodeURIComponent(id)}`;
+  const w = window.open(url, 'masq-upl', 'popup=yes,width=1440,height=900');
+  if (w) {
+    w.focus();
+  } else {
+    pushToast({
+      tone: 'warn',
+      title: 'Pop-up blocked',
+      text: 'Allow pop-ups for this site to open the Ultimate Video Player.',
+    });
+  }
+}
+
 // Persisted per-channel technical snapshot. The deep decode-metadata probe + its live poll (the removed
 // GET /api/sources/:id/{channel-status,stream-details}) were removed with the old transcode engine; the scheduled
 // channel probe (Settings → Advanced) now refreshes stream.status/stream.res on the doc, and the live decode
@@ -228,31 +255,50 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="drawer-body chd-body">
-        <!-- Media + details stack vertically: player → liveline → tech details → status chips. -->
-        <!-- Source-playlist channels stream live through the proxy; legacy mock channels keep the
-             non-functional placeholder. -->
-        <div class="player chd-player" v-if="ch.streamEntryUrl" style="overflow: hidden;">
-          <ChannelPlayer :src="appPlayerProxyPath(ch)" @resolution="onResolution" />
-        </div>
-        <div class="player chd-player" v-else>
-          <div class="stripes" />
-          <div class="label mono">STREAM TEST<template v-if="ch.stream.res"> · {{ ch.stream.res }}</template></div>
-          <div class="play"><div class="play-btn"><Icon name="play" :size="26" /></div></div>
-          <div class="controls">
-            <Icon name="pause" :size="14" />
-            <span class="mono" style="font-size: 11px;">00:14</span>
-            <div class="track" />
-            <span class="mono" style="font-size: 11px;">LIVE</span>
+        <!-- Media + details stack vertically: player → liveline → tech details → status chips.
+             With the Ultimate Player selected (Settings → Video Config → Video player), the whole media
+             block above Technical Details collapses to one launch button — playback and its telemetry move
+             to the standalone player window. Everything from Technical Details down is identical in all
+             three modes, and `subscribe()`/`liveStream` stay wired either way so the Stream Live pill and
+             status chip keep working. -->
+        <template v-if="videoPlayer === 'ultimate'">
+          <div class="chd-upl">
+            <Btn v-if="ch.streamEntryUrl" variant="cyan" icon="play" @click="launchUpl">
+              Launch Ultimate Video Player
+            </Btn>
+            <template v-else>
+              <Btn variant="cyan" icon="play" disabled>Launch Ultimate Video Player</Btn>
+              <div class="mono muted chd-upl-hint">This channel has no stream url to play.</div>
+            </template>
           </div>
-        </div>
+        </template>
 
-        <!-- Live "liveline" bitrate for this channel — self-contained 250px chart, same as Active Streams. -->
-        <div class="chd-bitrate">
-          <div class="field-lbl">Bitrate · live</div>
-          <LivelineChart :series="bitrateSamples" :target="bitrateTarget" />
-        </div>
+        <template v-else>
+          <!-- Source-playlist channels stream live through the proxy; legacy mock channels keep the
+               non-functional placeholder. -->
+          <div class="player chd-player" v-if="ch.streamEntryUrl" style="overflow: hidden;">
+            <ChannelPlayer :src="appPlayerProxyPath(ch)" @resolution="onResolution" />
+          </div>
+          <div class="player chd-player" v-else>
+            <div class="stripes" />
+            <div class="label mono">STREAM TEST<template v-if="ch.stream.res"> · {{ ch.stream.res }}</template></div>
+            <div class="play"><div class="play-btn"><Icon name="play" :size="26" /></div></div>
+            <div class="controls">
+              <Icon name="pause" :size="14" />
+              <span class="mono" style="font-size: 11px;">00:14</span>
+              <div class="track" />
+              <span class="mono" style="font-size: 11px;">LIVE</span>
+            </div>
+          </div>
 
-        <!-- Blank spacer between the liveline graph and Technical Details. -->
+          <!-- Live "liveline" bitrate for this channel — self-contained 250px chart, same as Active Streams. -->
+          <div class="chd-bitrate">
+            <div class="field-lbl">Bitrate · live</div>
+            <LivelineChart :series="bitrateSamples" :target="bitrateTarget" />
+          </div>
+        </template>
+
+        <!-- Blank spacer between the media block and Technical Details. -->
         <div style="height: 15px" />
 
         <!-- Technical detail (labeled kv rows). Decode-metadata rows appear once the channel has been probed. -->

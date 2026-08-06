@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark" data-density="regular">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ultimate Player · masqueradarr</title>
+  <!-- Kept deliberately in step with index.html: the data-theme / data-density attributes above and the two
+       font families below are where the --mq-font-* stack actually comes from, and this entry does not mount
+       the SPA shell that would otherwise supply them. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet" />
+  <style>
+    /* This window is chrome-free: no sidebar, no topbar, no .screen padding. The player owns the viewport,
+       so lock scrolling here rather than fighting the SPA's global layout rules. */
+    html, body { height: 100%; overflow: hidden; }
+    #upl { height: 100%; }
+  </style>
+</head>
+<body>
+  <div id="upl"></div>
+  <script type="module" src="/src/upl/main.ts"></script>
+</body>
+</html>

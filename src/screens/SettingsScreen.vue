@@ -458,12 +458,12 @@ async function fireReset() {
     </div>
 
     <div class="card" v-if="activeTab === 'video'">
-      <h3 class="section-title">In-app Video Player</h3>
+      <h3 class="section-title">Video Player</h3>
       <SettingsRow label="Player"
-        hint="Which player the channel slide-out uses. “Debug” swaps in a diagnostic player with a live hls.js status readout + event log for troubleshooting playback.">
+        hint="Which player the channel slide-out uses. “Ultimate” replaces the slide-out's player and bitrate chart with a launch button that opens a dedicated player window — full-size video plus the launching playlist's channel list and guide. “Debug” swaps in a diagnostic player with a live hls.js status readout + event log for troubleshooting playback.">
         <template #right>
           <Segmented :value="videoPlayer" @change="(v) => videoPlayer = v as any"
-            :options="[{ value: 'inapp', label: 'In-app video player' }, { value: 'debug', label: 'Debug video player' }]" />
+            :options="[{ value: 'inapp', label: 'In-app video player' }, { value: 'ultimate', label: 'Ultimate video player' }, { value: 'debug', label: 'Debug video player' }]" />
         </template>
       </SettingsRow>
     </div>
