@@ -16,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth } from '../sources/core/streamTelemetry.js';
 import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -86,6 +86,11 @@ export interface DisplayStream {
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's
   // identity — the parent's own upstream is dead and the named backup is carrying the stream.
   failover: FailoverServing | null;
+  // S3/ORIGIN Side-1 health. Non-null only for an origin-backed channel — the counterpart to `delivery`
+  // (Side-2). `ingestedBytes` is UPSTREAM traffic for ONE ingest and is deliberately NOT comparable to
+  // `bandwidth` (egress across all viewers): with N viewers, egress ≈ N × ingest. That divergence IS the
+  // signal — it says the ring is doing its job.
+  ingest: IngestHealth | null;
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -165,11 +170,13 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       fps: decode.fps,
       probe: null, // the deep technical snapshot is not rebuilt (video-engine teardown)
       failover: failoverFor(r.channelKey),
+      ingest: ingestFor(r.channelKey),
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
   for (const key of bufferDebounce.keys()) if (!activeKeys.has(key)) bufferDebounce.delete(key);
   pruneFailoverServing(activeKeys);
+  pruneIngest(activeKeys);
   return out;
 }
 

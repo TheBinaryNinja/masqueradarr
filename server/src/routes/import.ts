@@ -71,7 +71,7 @@ function toImportChannel(e: ParsedM3uEntry, importId: string): PlaylistChannelDo
     failoverGroupId: null,
     failoverRole: null,
     failoverOrder: null,
-    stream: { initials: initialsFor(e.name), isPlayable: true, res: null, status: null, probe: null },
+    stream: { initials: initialsFor(e.name), isPlayable: true, res: null, status: null, container: null, probe: null },
   };
 }
 

@@ -47,7 +47,7 @@ function removeHeader(i: number) {
 //   · @blur   commits into [min, max] once typing stops (nullable knobs keep blank → null). The ranges
 //             mirror the server gate in server/src/proxyconfig/translate.ts, so the UI never persists a
 //             value the API would 400.
-function setNum(field: 'connectTimeoutMs' | 'maxRedirects', raw: string) {
+function setNum(field: 'connectTimeoutMs' | 'maxRedirects' | 'originRingMb', raw: string) {
   const n = Math.round(Number(raw));
   if (Number.isFinite(n)) state[field] = n;
 }
@@ -60,7 +60,7 @@ function setNullableNum(field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheT
   const n = Math.round(Number(t));
   if (Number.isFinite(n)) state[field] = n;
 }
-function commitNum(field: 'connectTimeoutMs' | 'maxRedirects', min: number, max: number) {
+function commitNum(field: 'connectTimeoutMs' | 'maxRedirects' | 'originRingMb', min: number, max: number) {
   const v = state[field];
   state[field] = Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : min;
 }
@@ -89,7 +89,7 @@ watch(
 </script>
 
 <template>
-  <div :class="flat ? 'col' : 'card'" style="gap: 0;">
+  <div :class="['pcp', flat ? 'col' : 'card']" style="gap: 0;">
     <div class="row" style="align-items: center; gap: 10px;">
       <Icon v-if="!flat" name="tv" :size="16" />
       <h3 v-if="!flat" class="section-title" style="margin: 0;">{{ title ?? 'Video proxy engine' }}</h3>
@@ -105,7 +105,7 @@ watch(
       automatically and apply to new streams.
     </div>
 
-    <div :style="loading ? 'opacity: 0.5; pointer-events: none;' : ''">
+    <div class="pcp-body" :style="loading ? 'opacity: 0.5; pointer-events: none;' : ''">
       <!-- ── Active now ─────────────────────────────────────────────────────────────── -->
       <div class="form-grid-2">
         <div class="form-row">
@@ -156,8 +156,42 @@ watch(
         </div>
       </div>
 
+      <!-- S3/ORIGIN. Sits directly above Output format because it changes what that setting MEANS: with
+           origin on, both shapes are rendered from the same local ring instead of proxying upstream. -->
+      <div class="form-grid-2" style="margin-top: 17px;">
+        <div class="form-row">
+          <div class="field-lbl">Local origin</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle :on="state.originEnabled" @change="(v) => (state.originEnabled = v)" />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.originEnabled ? 'On' : 'Off' }}</span>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Re-publish streams from masqueradarr instead of passing the provider's playlist through. One
+            ingest per channel decrypts and caches segments in memory, and players receive a stream we
+            authored — our own numbering, no encryption keys, no provider URLs. Extra viewers of the same
+            channel then cost <b>no additional upstream bandwidth</b>. Off is exactly today's behaviour.
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field-lbl">
+            Ring size <span class="mono muted" style="font-weight: 400;">· MiB per channel</span>
+          </div>
+          <div class="input">
+            <input type="number" min="1" max="4096" :value="state.originRingMb"
+                   :disabled="!state.originEnabled"
+                   @input="setNum('originRingMb', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNum('originRingMb', 1, 4096)" />
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            How much memory one channel's live window may hold — bigger means a longer buffer against
+            upstream hiccups. 25&nbsp;MiB is roughly a minute at 3.3&nbsp;Mbps. A minimum of 3 segments is
+            always kept even if that exceeds the cap, and the engine logs a warning when it has to.
+          </div>
+        </div>
+      </div>
+
       <!-- Output format shares a 2-col row with STREAM-INF Redux (it shrinks to the left half). -->
-      <div class="form-grid-2" style="margin-top: 14px;">
+      <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
           <div class="field-lbl">Output format</div>
           <Segmented
@@ -186,7 +220,7 @@ watch(
       </div>
 
       <!-- Failover knobs share a 2-col row (both are plain toggles like STREAM-INF Redux above). -->
-      <div class="form-grid-2" style="margin-top: 14px;">
+      <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
           <div class="field-lbl">Failover groups</div>
           <div class="row" style="align-items: center; gap: 10px;">
@@ -230,14 +264,14 @@ watch(
         </div>
       </div>
 
-      <div class="divider" style="margin: 16px 0 12px;" />
+      <div class="divider" style="margin: 20px 0 12px;" />
 
       <!-- ── Reserved (persisted now, applied in a later phase) ─────────────────────────── -->
       <div class="row" style="align-items: center; gap: 8px; margin-bottom: 4px;">
         <div class="field-lbl" style="margin: 0;">Reserved</div>
         <span class="muted" style="font-size: var(--fs-xs);">— saved now, applied as the engine gains each capability</span>
       </div>
-      <div class="form-grid-2" style="margin-top: 8px;">
+      <div class="form-grid-2" style="margin-top: 12px;">
         <div class="form-row">
           <div class="field-lbl">Segment cache TTL <span class="mono muted" style="font-weight: 400;">· s</span></div>
           <div class="input">
@@ -253,3 +287,26 @@ watch(
     </div>
   </div>
 </template>
+
+<style scoped>
+/* Roughly a third more compact than the comfortable pass, done with SPACING only.
+   An earlier attempt used `zoom: 0.67` on this body — reverted deliberately: zoom scales the entire
+   subtree including the Segmented/Toggle controls, and any pointer mis-mapping there is indistinguishable
+   from "the setting didn't save". Not worth that risk for a cosmetic density change, and keeping text at
+   full size is better for the help paragraphs anyway.
+   Applies to BOTH mount points — Settings → Video Config and the playlist drawer share this component. */
+/* Row gap stays larger than column gap: each cell is label + control + a multi-line help paragraph, so
+   vertically adjacent cells run together long before the columns do. */
+.pcp .form-grid-2 {
+  gap: 20px 24px;
+}
+/* The help paragraphs are the bulk of the panel's text; a looser line-height is what actually makes it
+   scan, and capping the measure keeps them readable now that Settings is twice as wide. */
+.pcp .form-row .muted {
+  line-height: 1.45;
+  max-width: 62ch;
+}
+.pcp .field-lbl {
+  margin-bottom: 5px;
+}
+</style>

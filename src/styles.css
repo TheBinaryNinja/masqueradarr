@@ -1174,7 +1174,16 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .stat .lbl { font-size: var(--fs-xs); color: var(--text-2); text-transform: uppercase; letter-spacing: 0.06em; }
 .stat .val { font-size: 28px; font-weight: 600; letter-spacing: -0.02em; margin-top: 8px; font-variant-numeric: tabular-nums; }
 .stat .delta { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); margin-top: 6px; color: var(--good); }
+.stat .delta.warn { color: var(--warn); }
 .stat .delta.bad { color: var(--bad); }
+/* Tinted .val — for a tile where the number alone carries no verdict (Memory pressure: 142 MB is fine on a
+   workstation and fatal on a Pi), so the threshold colour has to ride on the value itself. Most tiles are
+   deliberately NOT tinted; a row of coloured big numbers would flatten the signal these are meant to raise.
+   .val-muted is the unknown state — grey, so "no reading" never reads as "healthy". */
+.stat .val.good { color: var(--good); }
+.stat .val.warn { color: var(--warn); }
+.stat .val.bad { color: var(--bad); }
+.stat .val.val-muted { color: var(--text-2); }
 
 /* DB Health mini-card — sits at the right end of the System Performance card's tile strip (Dashboard). */
 .db-health {

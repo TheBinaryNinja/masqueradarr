@@ -101,9 +101,21 @@ type ChannelDoc = { id: string; source: string; origin: string | null; streamEnt
 
 /** Persist a probe outcome to the source channel AND every clone copy of the same upstream in one write. On a
  *  "down" result write only stream.status — leave the last-known res rather than blanking it. */
-async function writeResult(ch: ChannelDoc, eff: string, status: 'live' | 'failed', res: string | null): Promise<void> {
+async function writeResult(
+  ch: ChannelDoc,
+  eff: string,
+  status: 'live' | 'failed',
+  res: string | null,
+  container: string | null = null,
+): Promise<void> {
   const set: Record<string, unknown> = { 'stream.status': status };
-  if (status === 'live') set['stream.res'] = res;
+  if (status === 'live') {
+    set['stream.res'] = res;
+    // Only write a container we actually learned. The sidecar reports it from the manifest (#EXT-X-MAP ⇒
+    // fmp4, else #EXTINF ⇒ ts), so a probe that resolved but couldn't classify leaves the last-known value
+    // rather than blanking it — same rule as `res` on a "down" result.
+    if (container) set['stream.container'] = container;
+  }
   await PlaylistChannel.updateMany(
     { streamEntryUrl: ch.streamEntryUrl, $or: [{ origin: eff }, { origin: null, source: eff }] },
     { $set: set },
@@ -190,7 +202,13 @@ export async function probeAllChannels(): Promise<void> {
         const r = resolved[i];
         const p = byId.get(String(i));
         const status: 'live' | 'failed' = p?.live ? 'live' : 'failed';
-        await writeResult(r.ch, r.eff, status, status === 'live' ? humanResolution(p?.resolution ?? null) : null);
+        await writeResult(
+          r.ch,
+          r.eff,
+          status,
+          status === 'live' ? humanResolution(p?.resolution ?? null) : null,
+          status === 'live' ? (p?.container ?? null) : null,
+        );
         probed++;
         if (status === 'live') live++;
         else down++;

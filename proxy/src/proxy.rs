@@ -24,6 +24,7 @@ use crate::log;
 use crate::manifest::{enc, rewrite_manifest, RewriteResult};
 use crate::state::{AppState, ResolveErr, SourcePolicy, MAX_FAILOVER_ATTEMPTS};
 use crate::stream::{segment_body, TelemetryCtx};
+use crate::sync::RwExt;
 
 // RSL-3 upstream retry. A transient failure (transport error, or a 502/503/504 gateway status) is retried with
 // bounded backoff before the request is failed; a definitive response (2xx, 4xx, or a non-gateway 5xx) is used
@@ -101,6 +102,22 @@ pub async fn serve_stream(
     };
     if source.is_empty() {
         return text(400, "bad request: missing source");
+    }
+    // S3/ORIGIN segment: `<source>/o/<enc-entry>/<generation>-<seq>.ts`. Handled BEFORE everything below
+    // because it is answered entirely from the ring — no resolve, no upstream fetch, no Node round-trip.
+    // (That also means it must never reach buildGrant's stored-entry gate, which would reject it as an
+    // `unrecognized_entry` — a ring segment is not a channel's streamEntryUrl.)
+    if let Some(("o", tail)) = rest.split_once('/') {
+        let (enc_entry, file) = match tail.rsplit_once('/') {
+            Some(p) => p,
+            None => return text(400, "bad request: malformed origin segment path"),
+        };
+        let entry = match dec(enc_entry) {
+            Some(s) => s,
+            None => return text(400, "bad request: malformed encoded url"),
+        };
+        let rid = log::rid(source, &entry);
+        return crate::origin::serve_segment(&state, source, &entry, file, &id, &rid).await;
     }
     // HOP if the segment after the source is the `h/` marker; else ENTRY.
     let (is_hop, encoded) = match rest.split_once('/') {
@@ -234,9 +251,54 @@ pub async fn serve_stream(
         }
     };
 
-    // SSRF gate on direct hops only (the entry's target is trusted resolve output).
-    if is_hop && !ssrf_ok(&policy, &fetch_url) {
-        log::warn("proxy", &rid, || format!("SSRF reject: {} not in the source allowlist", host_of(&fetch_url)));
+    // S3/ORIGIN — the ENTRY is answered from OUR ring, not by proxying the upstream manifest. Dispatched here,
+    // AFTER the resolve (which the ingest needs anyway and which is target-cached) but BEFORE the upstream
+    // fetch below: an origin entry must not fetch upstream at all, or every client poll would re-hit the
+    // provider and defeat the whole point of ingesting once.
+    //
+    // BOTH output shapes are rendered from the SAME ring — that is what makes `outputFormat` a rendering
+    // choice rather than a second pipeline. Raw TS stays external-mount-only (an in-app player is always HLS),
+    // exactly as on the passthrough path.
+    if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
+        let want_ts = policy.output_format.read_ok().as_str() == "ts" && mount_path == "/api/ext/v1";
+        let ident = Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() };
+        if want_ts {
+            log::info("proxy", &rid, || "originEnabled + outputFormat=ts — serving raw TS from the ring".to_string());
+            return crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await;
+        }
+        log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
+        return crate::origin::serve_entry(
+            &state,
+            &policy,
+            mount_path,
+            source,
+            &stream_entry,
+            token.as_deref(),
+            pl.as_deref(),
+            &ident,
+            &rid,
+        )
+        .await;
+    }
+
+    // SSRF gate. A HOP is a client-supplied child URL, so it must be IN the observational allowlist. An ENTRY
+    // target is resolve output that seeds that allowlist, so membership is meaningless there — but it still
+    // gets the scheme + private-host half, because an identity-resolve adapter passes the request URL through
+    // verbatim and Node's `unrecognized_entry` gate is a stored-channel check, not an address check. Defense in
+    // depth: a channel stored (or drifted) with a loopback/metadata/LAN target must not be fetched.
+    let allowed = if is_hop {
+        ssrf_ok(&policy, &fetch_url)
+    } else {
+        ssrf_public_ok(&policy, &fetch_url)
+    };
+    if !allowed {
+        log::warn("proxy", &rid, || {
+            format!(
+                "SSRF reject ({}): {} not permitted",
+                if is_hop { "hop/allowlist" } else { "entry/private" },
+                host_of(&fetch_url)
+            )
+        });
         return text(400, "bad request: upstream host not allowed");
     }
 
@@ -411,12 +473,14 @@ pub async fn serve_stream(
             return raw(200, "application/octet-stream", raw_body.to_vec());
         }
         let text_body = String::from_utf8_lossy(&raw_body).into_owned();
+        // (S3 Phase 3 retired the ingest-warming hook that used to sit here: BOTH origin shapes now return
+        // from the ring above, so nothing below this point ever runs with origin enabled.)
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
         // the HLS rewrite below (text_body + final_url are cloned so the fallback still owns them).
         log::trace("proxy", &rid, || format!("manifest received ({} bytes) from {}", text_body.len(), host_of(final_url.as_str())));
-        if !is_hop && mount_path == "/api/ext/v1" && policy.output_format.read().unwrap().as_str() == "ts" {
+        if !is_hop && mount_path == "/api/ext/v1" && policy.output_format.read_ok().as_str() == "ts" {
             log::info("proxy", &rid, || "outputFormat=ts — handing off to the raw-TS producer".to_string());
             let ts_ctx = crate::tsmux::TsContext {
                 state: state.clone(),
@@ -460,7 +524,7 @@ pub async fn serve_stream(
         // Grow the source's SSRF allowlist with every host referenced in the manifest (dynamic-allow).
         let grown = hosts.len();
         if !hosts.is_empty() {
-            let mut set = policy.hosts.write().unwrap();
+            let mut set = policy.hosts.write_ok();
             for h in hosts {
                 set.insert(h);
             }
@@ -782,7 +846,16 @@ pub(crate) fn is_private_host(host: &str) -> bool {
     false
 }
 
-fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
+/// The SCHEME + PRIVATE-HOST half of the SSRF gate, WITHOUT the allowlist-membership check.
+///
+/// This is the right gate for the ENTRY target, which is resolve output rather than a client-supplied child:
+/// the entry's host is what *seeds* `policy.hosts` (state.rs, on every resolve), so testing it for membership
+/// would either be vacuously true or reject the first request of every stream. What it must still not be is a
+/// loopback/link-local/RFC1918 address — an adapter whose `resolveStream` is identity (direct, and any source
+/// whose `isEntryUrl` returns false) passes the request URL through verbatim, so without this a stored entry
+/// pointing at 169.254.169.254 or a LAN host would be fetched. `allowPrivate` (grant-carried, per adapter)
+/// deliberately re-opens that for genuine LAN sources.
+fn ssrf_public_ok(policy: &SourcePolicy, url: &str) -> bool {
     let u = match Url::parse(url) {
         Ok(u) => u,
         Err(_) => return false,
@@ -794,16 +867,24 @@ fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
         Some(h) => h.to_lowercase(),
         None => return false,
     };
-    if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(&host) {
+    policy.allow_private.load(Ordering::Relaxed) || !is_private_host(&host)
+}
+
+fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
+    if !ssrf_public_ok(policy, url) {
         return false;
     }
-    policy.hosts.read().unwrap().contains(&host)
+    let host = match Url::parse(url).ok().and_then(|u| u.host_str().map(|h| h.to_lowercase())) {
+        Some(h) => h,
+        None => return false,
+    };
+    policy.hosts.read_ok().contains(&host)
 }
 
 pub(crate) fn build_headers(policy: &SourcePolicy) -> reqwest::header::HeaderMap {
     use reqwest::header::{HeaderMap as RHeaderMap, HeaderName, HeaderValue};
     let mut hm = RHeaderMap::new();
-    let snapshot: Vec<(String, String)> = policy.headers.read().unwrap().clone();
+    let snapshot: Vec<(String, String)> = policy.headers.read_ok().clone();
     for (k, v) in snapshot {
         if let (Ok(name), Ok(val)) = (
             HeaderName::from_bytes(k.as_bytes()),
@@ -891,7 +972,7 @@ pub(crate) fn text(code: u16, msg: &str) -> Response {
         .unwrap()
 }
 
-fn raw(code: u16, ct: &str, bytes: Vec<u8>) -> Response {
+pub(crate) fn raw(code: u16, ct: &str, bytes: Vec<u8>) -> Response {
     Response::builder()
         .status(StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY))
         .header("content-type", ct)

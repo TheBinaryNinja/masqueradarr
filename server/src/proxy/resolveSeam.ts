@@ -116,6 +116,21 @@ export async function buildGrant(
   // probe sweep keeps probing the actual channel (failover can never mask a dead parent as healthy).
   if (attempt !== undefined && attempt >= 1) return buildFailoverGrant(source, url, pl, attempt);
 
+  // SSRF guard: `url` is the entry taken VERBATIM from the request path, and Rust does NOT run ssrf_ok on the
+  // trusted-entry hop (proxy.rs gates hops only) — so an arbitrary URL here would make the data plane fetch it
+  // (internal SSRF / open proxy: cloud-metadata, LAN hosts, response exfiltration). Every LEGITIMATE entry is a
+  // stored channel's streamEntryUrl — the exported m3u/lineup reference exactly those, and the index
+  // {streamEntryUrl, source} makes this exists() cheap. Reject anything else before resolving or fetching it.
+  // This closes the identity-passthrough (direct/hdhomerun) AND non-sentinel (dulo/dlhd isEntryUrl→false)
+  // open-proxy paths uniformly; the failover path (attempt>=1, above) is already DB-sourced, not request-driven.
+  if (!(await PlaylistChannel.exists({ streamEntryUrl: url }))) {
+    // Logged at warn because the ONE false-positive shape — a stored channel whose streamEntryUrl drifted out
+    // of sync with an already-exported m3u — is otherwise indistinguishable from an attack: the operator just
+    // sees a channel stop playing. A re-sync re-stamps the entry and fixes it.
+    logger.warn('proxy', `rejected unrecognized entry for ${source}: ${url.slice(0, 120)}`);
+    return { ok: false, status: 403, error: 'unrecognized_entry' };
+  }
+
   let target = url;
   let isEntry = false;
   try {

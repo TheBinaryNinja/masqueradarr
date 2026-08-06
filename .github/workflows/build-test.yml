@@ -56,8 +56,13 @@ jobs:
   # Rust proxy gate — the npm matrix above never touches proxy/, and there's no local Rust toolchain,
   # so without this a broken crate isn't caught until a manual multi-arch publish. Debug `cargo build`
   # (not --release) keeps it fast: it only needs to compile + lint, mirroring "the build IS the test".
+  #
+  # `cargo test` runs here too. The crate carries inline #[cfg(test)] suites (manifest rewriting, TS
+  # playlist parsing, buffer sizing, edge routing) that previously ran only on a maintainer's machine —
+  # i.e. in practice, never. Unlike the two npm packages, the data plane has real logic that compiling
+  # does NOT check: byte-level parsing where a wrong answer is silent, not a type error.
   rust:
-    name: Rust proxy (build + clippy)
+    name: Rust proxy (build + clippy + test)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -77,3 +82,7 @@ jobs:
       - name: Clippy (lint, warnings = errors)
         working-directory: proxy
         run: cargo clippy --locked -- -D warnings
+
+      - name: Test (unit)
+        working-directory: proxy
+        run: cargo test --locked

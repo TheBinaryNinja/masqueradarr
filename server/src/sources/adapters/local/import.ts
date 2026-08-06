@@ -64,7 +64,7 @@ function toLocalChannel(ch: LocalRawChannel, id: string, playlistId: string): Pl
     failoverGroupId: null,
     failoverRole: null,
     failoverOrder: null,
-    stream: { initials: initialsFor(name), isPlayable: true, res: null, status: null, probe: null },
+    stream: { initials: initialsFor(name), isPlayable: true, res: null, status: null, container: null, probe: null },
   };
 }
 

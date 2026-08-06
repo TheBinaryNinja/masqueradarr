@@ -54,6 +54,10 @@ export function envDefaults(): ProxyConfigData {
     failoverEnabled: true, // group config is the real opt-in; ungrouped channels are unaffected either way
     failoverOnDefiniteError: false, // changes forward-verbatim 4xx/5xx semantics — explicit opt-in
     segmentCacheTtlSec: null,
+    // S3/ORIGIN: off by default — enabling it changes what the data plane DOES with a stream, so it is an
+    // explicit per-playlist opt-in. 25 MiB ≈ a 60 s window at 3.3 Mbps for one channel.
+    originEnabled: false,
+    originRingMb: 25,
   };
 }
 
@@ -72,6 +76,8 @@ export function toRuntimeProxyConfig(doc: ProxyConfigDoc): RuntimeProxyConfig {
     failoverEnabled: typeof doc.failoverEnabled === 'boolean' ? doc.failoverEnabled : true,
     failoverOnDefiniteError: typeof doc.failoverOnDefiniteError === 'boolean' ? doc.failoverOnDefiniteError : false,
     segmentCacheTtlSec: typeof doc.segmentCacheTtlSec === 'number' ? doc.segmentCacheTtlSec : null,
+    originEnabled: typeof doc.originEnabled === 'boolean' ? doc.originEnabled : d.originEnabled,
+    originRingMb: typeof doc.originRingMb === 'number' ? doc.originRingMb : d.originRingMb,
   };
 }
 
@@ -116,7 +122,7 @@ function patchNullableInt(
 function patchInt(
   $set: Partial<ProxyConfigData>,
   b: Record<string, unknown>,
-  key: 'connectTimeoutMs' | 'maxRedirects',
+  key: 'connectTimeoutMs' | 'maxRedirects' | 'originRingMb',
   min: number,
   max: number,
 ): string | null {
@@ -141,6 +147,10 @@ export function toExternalPatch(body: unknown): PatchResult {
     patchNullableInt($set, b, 'readTimeoutMs', 0, 600000),
     patchNullableInt($set, b, 'bufferSizeKb', 16, 1048576),
     patchNullableInt($set, b, 'segmentCacheTtlSec', 0, 86400),
+    // S3/ORIGIN ring cap. The 1 MiB floor is real, not cosmetic: a 0 would make every push evict itself, so
+    // the 3-segment floor would become the only thing holding a window open. 4096 MiB is a sanity ceiling —
+    // this bounds ONE channel, and there is no global ceiling yet (the plan's postponed `LRU` item).
+    patchInt($set, b, 'originRingMb', 1, 4096),
   ]) {
     if (err) return { ok: false, error: err };
   }
@@ -153,8 +163,8 @@ export function toExternalPatch(body: unknown): PatchResult {
     $set.outputFormat = v;
   }
 
-  // streamInfRedux / failoverEnabled / failoverOnDefiniteError: plain boolean knobs (same gate).
-  for (const key of ['streamInfRedux', 'failoverEnabled', 'failoverOnDefiniteError'] as const) {
+  // streamInfRedux / failoverEnabled / failoverOnDefiniteError / originEnabled: plain boolean knobs (same gate).
+  for (const key of ['streamInfRedux', 'failoverEnabled', 'failoverOnDefiniteError', 'originEnabled'] as const) {
     if (b[key] !== undefined) {
       if (typeof b[key] !== 'boolean') {
         return { ok: false, error: `${key} (boolean) required` };

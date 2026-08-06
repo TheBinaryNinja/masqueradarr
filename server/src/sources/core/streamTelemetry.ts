@@ -313,6 +313,83 @@ export function pruneFailoverServing(activeKeys: Set<string>): void {
   for (const key of failoverByChannel.keys()) if (!activeKeys.has(key)) failoverByChannel.delete(key);
 }
 
+// ── S3/ORIGIN ingest health (the `iop` side) ───────────────────────────────────────────────────────────
+// Everything else in this file measures EGRESS — bytes we sent to a viewer. Origin mode adds a second,
+// independent quantity: what ONE ingest pulled from upstream on behalf of N viewers. Conflating them would
+// over-count upstream bandwidth by a factor of N and make a Side-1 problem indistinguishable from a Side-2
+// one, so ingest lands here in its own map and NEVER touches noteBytes. Same in-memory idiom as
+// mediaByChannel/failoverByChannel; statsHub prunes cold channels.
+
+export interface IngestHealth {
+  status: string; // 'ok' | 'stalled' | 'resolve_failed' | 'closed' — the ingest's last reported state
+  subscribers: number; // live leases (viewers sharing this one ingest)
+  ringSegments: number;
+  ringBytes: number;
+  headSeq: number; // our next sequence — monotonic for the life of the ingest
+  generation: number; // bumped on a failover ring reset
+  ingestedSegments: number;
+  ingestedBytes: number; // UPSTREAM bytes — distinct from egress; one of these can serve N viewers
+  evictedSegments: number;
+  targetDuration: number;
+  at: number; // Date.now() of the last iop event — staleness tells you an ingest stopped reporting
+}
+
+const ingestByChannel = new Map<string, IngestHealth>(); // channelKey → last ingest snapshot
+
+/** Record the data plane's latest `iop` snapshot for a channel. */
+export function noteIngest(source: string, entryUrl: string, h: IngestHealth): void {
+  ingestByChannel.set(streamKey(source, entryUrl), h);
+}
+
+/** The ingest health for a channel (null = not origin-backed, or nothing reported yet). */
+export function ingestFor(channelKey: string): IngestHealth | null {
+  return ingestByChannel.get(channelKey) ?? null;
+}
+
+/** Drop ingest health for channels no longer active (statsHub calls this with the live key set). */
+export function pruneIngest(activeKeys: Set<string>): void {
+  for (const key of ingestByChannel.keys()) if (!activeKeys.has(key)) ingestByChannel.delete(key);
+}
+
+// ── S3/ORIGIN aggregate ring footprint (process-wide) ──────────────────────────────────────────────────
+// The map above is PER-CHANNEL and is pruned against the active-stream set, so it cannot answer "how much RAM
+// are the rings holding" — an origin inside its 30s idle grace still owns its bytes with no active row to hang
+// them off, which is exactly the case a memory-pressure reading must not miss. The sidecar therefore sums its
+// own registry and reports one `ring` event; this holds the latest. Feeds systemStatsHub → the Dashboard's
+// MEMORY PRESSURE tile.
+
+export interface RingFootprint {
+  origins: number;
+  subscribed: number; // origins with ≥1 viewer; the rest are in their idle grace, still costing RAM
+  bytes: number;
+  capBytes: number; // Σ of those origins' per-channel caps — headroom before eviction, NOT a global ceiling
+  at: number; // Date.now() of the frame
+}
+
+let ringFootprint: RingFootprint | null = null;
+
+/** How long a footprint reporting LIVE origins stays trustworthy before we call the sidecar gone. */
+const RING_STALE_MS = 15_000; // 6 missed 2.5s reports
+
+/** Record the data plane's latest process-wide `ring` snapshot. */
+export function noteRingFootprint(f: RingFootprint): void {
+  ringFootprint = f;
+}
+
+/**
+ * The latest ring footprint, or null when there is nothing trustworthy to show.
+ *
+ * Staleness applies ONLY to a frame that reported live origins: the sidecar goes deliberately quiet once the
+ * last ingest closes, so a trailing `origins: 0` is a standing fact, not a stale reading, and must keep being
+ * served. A frame with origins still running that then went silent means the sidecar died — report null and
+ * let the tile degrade rather than freeze on a number that is no longer true.
+ */
+export function getRingFootprint(): RingFootprint | null {
+  if (!ringFootprint) return null;
+  if (ringFootprint.origins > 0 && Date.now() - ringFootprint.at > RING_STALE_MS) return null;
+  return ringFootprint;
+}
+
 // ── Socket-liveness hooks (the raw-TS fork) ───────────────────────────────────────────────────────────
 // Raw-TS external clients (externalTsEngine.ts) hold ONE long-lived HTTP socket and never poll, so the
 // poll-recency model above is blind to them. These three hooks give them a parallel accounting that feeds the

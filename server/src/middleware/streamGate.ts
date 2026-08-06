@@ -25,7 +25,7 @@ export interface GateDecision {
  *    cache calls once Rust is the public edge (EDGE-3), where no Express middleware sits in front of streams.
  * The token gate ALWAYS lives in Node, where `req.user`/`allowedPlaylists` live, in every topology.
  */
-export function gateStreamAccess(user: AuthRequest['user'], source: string): GateDecision {
+export function gateStreamAccess(user: AuthRequest['user'], source: string, pl?: string): GateDecision {
   if (!user) {
     return { ok: false, status: 401, message: 'Unauthorized: stream token required' };
   }
@@ -35,13 +35,29 @@ export function gateStreamAccess(user: AuthRequest['user'], source: string): Gat
   if (user.role === 'user' && !(user.allowedPlaylists ?? []).includes(source)) {
     return { ok: false, status: 403, message: 'Forbidden: you do not have access to this source' };
   }
+  // `?pl` is the OWNING playlist id, taken verbatim from the client's query. It is not decorative: buildGrant
+  // threads it into resolveProxyConfig(pl) — which selects that playlist's headerOverrides, timeouts and
+  // outputFormat — and into the failover-parent lookup. Unvalidated, a `user` could borrow another playlist's
+  // data-plane config by editing one query param. Absent `pl` stays allowed (the in-app player never sends one
+  // and correctly falls back to the Default config).
+  //
+  // Unlike the `source` rung above, this checks the UNION of both lists: `pl` is a PLAYLIST id, and a clone /
+  // imported playlist's id legitimately lives in allowedCustomPlaylists. (`source` is a provider adapter id,
+  // which is why that rung is deliberately allowedPlaylists-only — see users.md §5.)
+  if (pl && user.role === 'user' && pl !== source) {
+    const allowed = [...(user.allowedPlaylists ?? []), ...(user.allowedCustomPlaylists ?? [])];
+    if (!allowed.includes(pl)) {
+      return { ok: false, status: 403, message: 'Forbidden: you do not have access to this playlist' };
+    }
+  }
   return { ok: true };
 }
 
 export function streamGate(req: AuthRequest, res: Response, next: NextFunction): void {
   // req.path is the remainder AFTER the matched mount (/api/v1 or /api/ext/v1) → "/<source>/<rest>".
   const source = req.path.split('/').filter(Boolean)[0] ?? '';
-  const decision = gateStreamAccess(req.user, source);
+  const pl = typeof req.query.pl === 'string' ? req.query.pl : undefined;
+  const decision = gateStreamAccess(req.user, source, pl);
   if (!decision.ok) {
     res.status(decision.status!).type('text/plain').send(decision.message!);
     return;

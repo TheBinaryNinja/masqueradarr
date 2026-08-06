@@ -18,11 +18,14 @@
 mod edge;
 mod log;
 mod manifest;
+mod origin;
 mod probe;
 mod proxy;
 mod state;
 mod stream;
+mod sync;
 mod tsmux;
+mod tsseg;
 
 use axum::{
     routing::{get, post},
