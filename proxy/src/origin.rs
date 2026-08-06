@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio::sync::Notify;
+use tokio_stream::StreamExt;
 use url::Url;
 
 use crate::log;
@@ -76,47 +77,40 @@ pub struct Segment {
     pub seq: u64,
     pub duration: f64,
     pub bytes: Bytes,
-    /// Emit `#EXT-X-DISCONTINUITY` BEFORE this segment. Set from any of the three upstream signals — see
-    /// `boundary_before`.
+    /// Emit `#EXT-X-DISCONTINUITY` BEFORE this segment — see `boundary_before`.
     pub discontinuity: bool,
     /// Ingest wall-clock → the renderer's `#EXT-X-PROGRAM-DATE-TIME`.
     pub pdt: SystemTime,
 }
 
-/// Why a segment is a splice point. Kept as a named enum rather than a bare bool so the `iop` log can say
-/// WHICH signal fired — with pluto the answer is almost always `ClipChange`, and knowing that distinguishes
-/// "ads rolling normally" from "upstream is renumbering under us".
+/// Why a segment is a splice point. Named rather than a bare bool so the `iop` log says WHICH signal fired.
+///
+/// Only the two signals the HLS spec actually defines a discontinuity by. A third — "the segment URL's
+/// directory changed" — was tried and REMOVED after two independent false positives on live pluto:
+///   · the keyfile rotates *within* a clip (`…keyfile_5 → _6 → _7`, same directory), and
+///   · some CDN paths carry a PER-SEGMENT opaque token (`…/v1/UWJ5Mz0j0e…=/`), so the "directory" is never
+///     stable even mid-clip.
+/// It produced ~9 spurious splices per window and never a true positive the upstream tag missed — RFC 8216
+/// requires the source to emit `#EXT-X-DISCONTINUITY` itself, and pluto does. Guessing from URL shape cannot
+/// be made reliable across CDNs, and each false positive forces a needless client decoder reset.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Boundary {
     /// The upstream playlist carried an explicit `#EXT-X-DISCONTINUITY`.
     Tag,
     /// The media sequence skipped — we missed segments (a slow poll, or the window slid past us).
     SequenceGap,
-    /// The segment's DIRECTORY changed: a new clip/creative, i.e. a different encode with its own PTS base.
-    /// The reliable pluto signal, since its stitcher swaps the clip path at every ad/content boundary but
-    /// does not always tag it.
-    ///
-    /// Deliberately does NOT consider the `#EXT-X-KEY` URI. That was tried and was WRONG: pluto rotates the
-    /// keyfile periodically WITHIN one clip (…keyfile_5 → _6 → _7 under an unchanged directory), which is a
-    /// re-key of a continuous encode, not a splice. Treating it as one emitted ~2.5× too many
-    /// `#EXT-X-DISCONTINUITY` tags and forced needless mid-content decoder resets. A genuine clip change
-    /// always brings a new directory anyway, so the key added false positives and no true ones.
-    ClipChange,
 }
 
 /// What the previous ingested segment looked like, for boundary detection against the next one.
 #[derive(Clone, Debug, Default)]
 struct PrevSeg {
     upstream_seq: Option<i64>,
-    dir: Option<String>,
-    key_uri: Option<String>,
 }
 
 /// Decide whether `seg` (at upstream sequence `upstream_seq`) starts a new continuity region.
 ///
-/// Pure so it can be tested without a network: the three triggers are exactly the ones that show up in real
-/// playlists, and each is independently sufficient.
-fn boundary_before(prev: &PrevSeg, seg: &SegRef, upstream_seq: i64, seg_url: Option<&Url>) -> Option<Boundary> {
+/// Pure so it can be tested without a network. Each trigger is independently sufficient.
+fn boundary_before(prev: &PrevSeg, seg: &SegRef, upstream_seq: i64) -> Option<Boundary> {
     if seg.discontinuity {
         return Some(Boundary::Tag);
     }
@@ -127,36 +121,7 @@ fn boundary_before(prev: &PrevSeg, seg: &SegRef, upstream_seq: i64, seg_url: Opt
             return Some(Boundary::SequenceGap);
         }
     }
-    let dir = seg_url.map(dir_of);
-    // First segment ever (prev.dir None) is not a boundary — the ring simply starts there.
-    if let (Some(pd), Some(d)) = (prev.dir.as_deref(), dir.as_deref()) {
-        if pd != d {
-            return Some(Boundary::ClipChange);
-        }
-    }
-    // NOTE: the key URI is deliberately NOT a boundary signal — see Boundary::ClipChange. It is still tracked
-    // on PrevSeg purely so the splice log can show what changed alongside the directory.
     None
-}
-
-/// Last two path components of a dir/key, for readable splice logs (the full pluto paths are ~150 chars and
-/// only the clip/creative id at the tail actually differs).
-fn short_tail(s: Option<&str>) -> String {
-    let s = match s {
-        Some(s) => s,
-        None => return "-".to_string(),
-    };
-    let parts: Vec<&str> = s.rsplit('/').take(2).collect();
-    parts.into_iter().rev().collect::<Vec<_>>().join("/")
-}
-
-/// The directory portion of a segment URL — everything up to the last '/'. Pluto swaps this per clip.
-fn dir_of(u: &Url) -> String {
-    let s = u.path();
-    match s.rfind('/') {
-        Some(i) => format!("{}{}", u.host_str().unwrap_or(""), &s[..i]),
-        None => u.host_str().unwrap_or("").to_string(),
-    }
 }
 
 /// A channel's live ring plus its ingest bookkeeping. Shared as `Arc<Origin>`: the ingest task holds one and
@@ -393,26 +358,34 @@ async fn ingest(ctx: IngestCtx) {
         // (Re)resolve whenever we have no media playlist to follow — first pass, or after a persistent failure.
         let (media_url, media_body) = match media.take() {
             Some(m) => m,
-            None => match resolve_media(&ctx, &rid).await {
-                Some(m) => {
-                    // A fresh resolve may point at a different upstream; the previous window's bytes are from a
-                    // different timeline, so drop them rather than splice silently.
-                    if ctx.origin.ring_depth() > 0 {
-                        ctx.origin.reset_ring();
-                        prev = PrevSeg::default();
+            None => {
+                let resolved = resolve_media(&ctx, &rid).await;
+                // A fresh resolve may point at a different upstream; the previous window's bytes are from a
+                // different timeline, so drop them rather than splice silently.
+                if resolved.is_some() && ctx.origin.ring_depth() > 0 {
+                    ctx.origin.reset_ring();
+                    prev = PrevSeg::default();
+                    next_upstream_seq = -1;
+                    log::info("iop", &rid, || {
+                        format!("ring reset on re-resolve (generation={})", ctx.origin.generation())
+                    });
+                }
+                match resolved {
+                    Some(MediaSource::Hls(u, b)) => (u, b),
+                    // A bare TS socket has nothing to poll: hand off to the local segmenter for the whole
+                    // session, then fall back into this loop (which re-checks stop/idle and re-resolves).
+                    Some(MediaSource::RawTs(stream, first)) => {
+                        ingest_raw_ts(&ctx, &rid, stream, first).await;
                         next_upstream_seq = -1;
-                        log::info("iop", &rid, || {
-                            format!("ring reset on re-resolve (generation={})", ctx.origin.generation())
-                        });
+                        continue;
                     }
-                    m
+                    None => {
+                        report_iop(&ctx, "resolve_failed");
+                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        continue;
+                    }
                 }
-                None => {
-                    report_iop(&ctx, "resolve_failed");
-                    tokio::time::sleep(Duration::from_secs(2)).await;
-                    continue;
-                }
-            },
+            }
         };
 
         let mp = parse_media_playlist(&media_body);
@@ -461,21 +434,18 @@ async fn ingest(ctx: IngestCtx) {
                 policy.hosts.write_ok().insert(h.to_lowercase());
             }
 
-            let boundary = boundary_before(&prev, seg, upstream_seq, Some(&seg_url));
+            let boundary = boundary_before(&prev, seg, upstream_seq);
 
             let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
                 Some(b) => b,
                 None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
             };
 
-            // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log that
-            // says only "ClipChange" cannot distinguish real ad-pod churn from a detector bug.
+            // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log
+            // naming only the trigger cannot distinguish real churn from a detector bug (that is how the two
+            // removed URL heuristics were caught).
             let was = prev.clone();
-            prev = PrevSeg {
-                upstream_seq: Some(upstream_seq),
-                dir: Some(dir_of(&seg_url)),
-                key_uri: seg.key.as_ref().map(|k| k.uri.clone()),
-            };
+            prev = PrevSeg { upstream_seq: Some(upstream_seq) };
 
             let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
             let evicted = ctx.origin.push(Segment {
@@ -492,13 +462,6 @@ async fn ingest(ctx: IngestCtx) {
                         Boundary::SequenceGap => format!(
                             "upstream seq {} → {upstream_seq}",
                             was.upstream_seq.map(|s| s.to_string()).unwrap_or_else(|| "-".into())
-                        ),
-                        Boundary::ClipChange => format!(
-                            "dir {} → {} | key {} → {}",
-                            short_tail(was.dir.as_deref()),
-                            short_tail(prev.dir.as_deref()),
-                            short_tail(was.key_uri.as_deref()),
-                            short_tail(prev.key_uri.as_deref()),
                         ),
                         Boundary::Tag => "upstream #EXT-X-DISCONTINUITY".to_string(),
                     };
@@ -588,7 +551,7 @@ async fn ingest(ctx: IngestCtx) {
 
 /// Resolve the entry and walk to the MEDIA playlist to follow (peeking the top variant when the entry is a
 /// master). `None` when nothing usable is reachable — the caller backs off and retries.
-async fn resolve_media(ctx: &IngestCtx, rid: &str) -> Option<(Url, String)> {
+async fn resolve_media(ctx: &IngestCtx, rid: &str) -> Option<MediaSource> {
     let (policy, target) = ctx
         .state
         .resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref())
@@ -610,7 +573,29 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str) -> Option<(Url, String)> {
         return None;
     }
     let url = resp.url().clone();
-    let body = resp.text().await.ok()?;
+
+    // PEEK before buffering. `resp.text()` would read to EOF, which is fine for a manifest and fatal for a
+    // bare TS socket — that never ends. So take the first chunk and decide from it: a playlist starts with
+    // `#EXTM3U`, a transport stream with the 0x47 sync byte.
+    let mut stream = resp.bytes_stream();
+    let first = match stream.next().await {
+        Some(Ok(b)) => b,
+        _ => {
+            log::warn("iop", rid, || "entry produced no bytes".to_string());
+            return None;
+        }
+    };
+    if !looks_like_manifest(&first) {
+        log::info("iop", rid, || {
+            format!("{}: upstream is a bare TS socket — segmenting locally", ctx.source)
+        });
+        return Some(MediaSource::RawTs(Box::pin(stream), first));
+    }
+    // A manifest: drain the (small) remainder into text.
+    let mut body = String::from_utf8_lossy(&first).into_owned();
+    while let Some(Ok(b)) = stream.next().await {
+        body.push_str(&String::from_utf8_lossy(&b));
+    }
 
     let (media_url, media_body) = if is_master(&body) {
         let vurl = pick_variant(&body, &url)?;
@@ -635,7 +620,85 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str) -> Option<(Url, String)> {
         log::warn("iop", rid, || format!("{}: unsupported encryption METHOD={method} — origin ingest not eligible", ctx.source));
         return None;
     }
-    Some((media_url, media_body))
+    Some(MediaSource::Hls(media_url, media_body))
+}
+
+/// What an upstream turned out to BE. Both shapes feed the same ring; only the way boundaries are discovered
+/// differs — an HLS playlist states them, a bare socket has to be segmented locally (tsseg.rs).
+enum MediaSource {
+    Hls(Url, String),
+    /// The live byte stream plus the chunk already consumed to identify it.
+    RawTs(std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>>, Bytes),
+}
+
+/// A playlist starts `#EXTM3U`; anything else from these sources is transport-stream bytes.
+fn looks_like_manifest(b: &[u8]) -> bool {
+    let s = b.iter().take(16).copied().collect::<Vec<u8>>();
+    let t = String::from_utf8_lossy(&s);
+    t.trim_start_matches('\u{feff}').trim_start().starts_with("#EXTM3U")
+}
+
+/// Ingest a BARE TS socket: cut it into segments locally and push them into the same ring the HLS path fills.
+///
+/// Runs until the socket ends or the ingest is stopping — unlike the HLS path there is nothing to poll, so
+/// this is one long read rather than a loop over playlist refreshes.
+async fn ingest_raw_ts(
+    ctx: &IngestCtx,
+    rid: &str,
+    mut stream: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>>,
+    first: Bytes,
+) {
+    // Segment length: reuse whatever target the channel already reported, else a 5 s default that matches
+    // typical HLS practice. This also seeds the renderer's #EXT-X-TARGETDURATION.
+    let target = {
+        let t = ctx.origin.target_duration();
+        if t > 0.0 { t } else { 5.0 }
+    };
+    ctx.origin.target_duration_ms.fetch_max((target * 1000.0) as u64, Ordering::Relaxed);
+    let mut seg = crate::tsseg::TsSegmenter::new(target);
+    let mut produced = 0u64;
+
+    for cut in seg.push(&first) {
+        push_cut(ctx, cut);
+        produced += 1;
+    }
+    while let Some(item) = stream.next().await {
+        if ctx.origin.stopping.load(Ordering::Relaxed) {
+            break;
+        }
+        match item {
+            Ok(b) => {
+                for cut in seg.push(&b) {
+                    push_cut(ctx, cut);
+                    produced += 1;
+                }
+            }
+            Err(e) => {
+                log::warn("iop", rid, || format!("raw-TS read failed after {produced} segment(s): {e}"));
+                break;
+            }
+        }
+    }
+    // Flush the tail so the last partial segment is not silently lost on a clean end.
+    if let Some(tail) = seg.finish() {
+        push_cut(ctx, tail);
+        produced += 1;
+    }
+    log::info("iop", rid, || format!("raw-TS session ended — {produced} segment(s) cut"));
+    report_iop(ctx, "closed");
+}
+
+/// Push a locally-cut segment into the ring. `discontinuity` is always false: a bare TS socket is one
+/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate.
+fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment) {
+    let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
+    ctx.origin.push(Segment {
+        seq: our_seq,
+        duration: cut.duration,
+        bytes: Bytes::from(cut.bytes),
+        discontinuity: false,
+        pdt: SystemTime::now(),
+    });
 }
 
 /// Fetch ONE segment and return its plaintext bytes, decrypting AES-128 when keyed.
@@ -1159,105 +1222,72 @@ mod tests {
 
     #[test]
     fn boundary_detects_explicit_tag() {
-        let prev = PrevSeg {
-            upstream_seq: Some(9),
-            dir: Some("h/a".to_string()),
-            key_uri: None,
-        };
-        let u = Url::parse("https://h/a/s10.ts").unwrap();
-        assert_eq!(
-            boundary_before(&prev, &segref("s10.ts", None, true), 10, Some(&u)),
-            Some(Boundary::Tag)
-        );
+        let prev = PrevSeg { upstream_seq: Some(9) };
+        assert_eq!(boundary_before(&prev, &segref("s10.ts", None, true), 10), Some(Boundary::Tag));
     }
 
     #[test]
     fn boundary_detects_sequence_gap() {
-        let prev = PrevSeg {
-            upstream_seq: Some(9),
-            dir: Some("h/a".to_string()),
-            key_uri: None,
-        };
-        let u = Url::parse("https://h/a/s12.ts").unwrap();
+        let prev = PrevSeg { upstream_seq: Some(9) };
         // 9 → 12 means we never ingested 10 and 11, so the bytes are not contiguous.
         assert_eq!(
-            boundary_before(&prev, &segref("s12.ts", None, false), 12, Some(&u)),
+            boundary_before(&prev, &segref("s12.ts", None, false), 12),
             Some(Boundary::SequenceGap)
         );
     }
 
-    #[test]
-    fn boundary_detects_clip_change_by_directory() {
-        let prev = PrevSeg {
-            upstream_seq: Some(9),
-            dir: Some("h/clipA".to_string()),
-            key_uri: Some("https://k/a.key".to_string()),
-        };
-        // Directory changed (pluto swaps the clip path at every ad boundary) — contiguous sequence, still a splice.
-        let u = Url::parse("https://h/clipB/s10.ts").unwrap();
-        assert_eq!(
-            boundary_before(&prev, &segref("s10.ts", Some("https://k/a.key"), false), 10, Some(&u)),
-            Some(Boundary::ClipChange)
-        );
-    }
-
-    /// REGRESSION (observed live 2026-08-05): pluto rotates the AES keyfile periodically WITHIN one clip
-    /// (`…keyfile_5.key` → `_6` → `_7` under an unchanged directory). That is a re-key of a continuous
-    /// encode, NOT a splice. Treating it as one emitted ~2.5× too many `#EXT-X-DISCONTINUITY` tags and forced
-    /// needless mid-content decoder resets. Values below are the exact ones from the ingest log.
+    /// REGRESSION 1 (observed live 2026-08-05): pluto rotates the AES keyfile periodically WITHIN one clip
+    /// (`…keyfile_5` → `_6` → `_7`, directory unchanged). That is a re-key of a continuous encode, not a
+    /// splice — treating it as one emitted ~2.5× too many `#EXT-X-DISCONTINUITY` tags.
     #[test]
     fn key_rotation_within_a_clip_is_not_a_boundary() {
-        let prev = PrevSeg {
-            upstream_seq: Some(1),
-            dir: Some("siloh/24776-596347/hls".to_string()),
-            key_uri: Some("https://siloh/24776-596347/hls_2400_keyfile_5.key".to_string()),
-        };
-        let u = Url::parse("https://siloh/24776-596347/hls/seg2.ts").unwrap();
+        let prev = PrevSeg { upstream_seq: Some(1) };
         assert_eq!(
             boundary_before(
                 &prev,
                 &segref("seg2.ts", Some("https://siloh/24776-596347/hls_2400_keyfile_6.key"), false),
-                2,
-                Some(&u)
+                2
             ),
             None,
             "a re-key inside one clip must not splice the timeline"
         );
     }
 
-    /// The corollary that keeps the simplification honest: a REAL clip change brings a new directory anyway,
-    /// so dropping the key signal loses no true positives.
+    /// REGRESSION 2 (observed live 2026-08-05): some CDN paths carry a PER-SEGMENT opaque token, so the
+    /// segment "directory" changes on every single segment mid-clip. A URL-shape heuristic fires on all of
+    /// them; the upstream tag does not. This is why boundary detection no longer looks at the URL at all.
     #[test]
-    fn a_real_clip_change_brings_both_a_new_dir_and_a_new_key() {
-        let prev = PrevSeg {
-            upstream_seq: Some(9),
-            dir: Some("h/4_ad/creative/aaa".to_string()),
-            key_uri: Some("https://k/aaa.key".to_string()),
-        };
-        let u = Url::parse("https://h/2_ad/creative/bbb/s10.ts").unwrap();
+    fn per_segment_tokenized_paths_are_not_boundaries() {
+        let prev = PrevSeg { upstream_seq: Some(2) };
+        // Real path shape from the ingest log: /v1/<base64-ish token>/seg.ts, a new token each segment.
         assert_eq!(
-            boundary_before(&prev, &segref("s10.ts", Some("https://k/bbb.key"), false), 10, Some(&u)),
-            Some(Boundary::ClipChange)
+            boundary_before(&prev, &segref("/v1/dVTv3Ar0rx6v2y392Yb0SwWZvdmz4CwffW1GGajNk50=/s.ts", None, false), 3),
+            None,
+            "an opaque per-segment path token is not a splice"
+        );
+    }
+
+    /// The corollary that keeps the simplification honest: the upstream's own tag still splices, so removing
+    /// the URL heuristics costs no true positives.
+    #[test]
+    fn upstream_tag_still_splices_a_contiguous_sequence() {
+        let prev = PrevSeg { upstream_seq: Some(9) };
+        assert_eq!(
+            boundary_before(&prev, &segref("s10.ts", None, true), 10),
+            Some(Boundary::Tag),
+            "a tagged splice on a contiguous sequence must still fire"
         );
     }
 
     #[test]
     fn contiguous_same_clip_is_not_a_boundary() {
-        let prev = PrevSeg {
-            upstream_seq: Some(9),
-            dir: Some("h/clipA".to_string()),
-            key_uri: Some("https://k/a.key".to_string()),
-        };
-        let u = Url::parse("https://h/clipA/s10.ts").unwrap();
-        assert_eq!(
-            boundary_before(&prev, &segref("s10.ts", Some("https://k/a.key"), false), 10, Some(&u)),
-            None
-        );
+        let prev = PrevSeg { upstream_seq: Some(9) };
+        assert_eq!(boundary_before(&prev, &segref("s10.ts", Some("https://k/a.key"), false), 10), None);
     }
 
     // ── SIDE-2 renderer ──────────────────────────────────────────────────────────────────────────────────
-    // The upstream shape these are checked against is the REAL pluto media playlist observed live: an
-    // AES-128 key line per segment, clip paths under siloh-ns1.plutotv.net, and #PLUTO-* trailer tags.
+    // Checked against the REAL upstream shape observed live: an AES-128 key line per segment, clip paths
+    // under siloh-ns1.plutotv.net, and #PLUTO-* trailer tags.
 
     fn window(n: usize, disc_at: &[usize]) -> Vec<Arc<Segment>> {
         (0..n)
@@ -1306,7 +1336,6 @@ mod tests {
         assert!(m.contains("#EXT-X-TARGETDURATION:5"));
         assert!(m.contains("#EXT-X-PROGRAM-DATE-TIME:2026-08-05T"));
         assert_eq!(m.matches("#EXTINF:5.000,").count(), 3);
-        // Our segment path shape: /<mount>/<source>/o/<enc-entry>/<generation>-<seq>.ts
         assert!(m.contains("/api/ext/v1/pluto/o/"));
         assert!(m.contains("/0-100.ts?token=tok123&pl=testplaylist"));
         assert!(m.contains("/0-102.ts?token=tok123&pl=testplaylist"));
@@ -1328,7 +1357,6 @@ mod tests {
         assert_eq!(m.matches("#EXT-X-DISCONTINUITY").count(), 1);
         let lines: Vec<&str> = m.lines().collect();
         let i = lines.iter().position(|l| *l == "#EXT-X-DISCONTINUITY").unwrap();
-        // The tag must sit immediately before the flagged segment's #EXTINF, not anywhere else.
         assert!(lines[i + 1].starts_with("#EXTINF:"));
         assert!(lines[i + 2].contains("/0-101.ts"));
     }
@@ -1350,11 +1378,11 @@ mod tests {
 
     #[test]
     fn rfc3339_formats_a_known_instant() {
-        // 1785931853.433 → 2026-08-05T12:10:53.433Z (verified against `date -u -r 1785931853`).
+        // Expected values cross-checked against `date -u` AND python — not just against this implementation.
         let t = SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433);
         assert_eq!(fmt_rfc3339(t), "2026-08-05T12:10:53.433Z");
         assert_eq!(fmt_rfc3339(SystemTime::UNIX_EPOCH), "1970-01-01T00:00:00.000Z");
-        // A leap day — the case a naive day/month calculation gets wrong.
+        // A leap day — the case naive day/month arithmetic gets wrong.
         let leap = SystemTime::UNIX_EPOCH + Duration::from_secs(1_709_164_800);
         assert_eq!(fmt_rfc3339(leap), "2024-02-29T00:00:00.000Z");
     }
@@ -1362,10 +1390,6 @@ mod tests {
     #[test]
     fn first_segment_ever_is_not_a_boundary() {
         // A cold ring has no previous segment — starting is not a splice.
-        let u = Url::parse("https://h/clipA/s0.ts").unwrap();
-        assert_eq!(
-            boundary_before(&PrevSeg::default(), &segref("s0.ts", None, false), 0, Some(&u)),
-            None
-        );
+        assert_eq!(boundary_before(&PrevSeg::default(), &segref("s0.ts", None, false), 0), None);
     }
 }

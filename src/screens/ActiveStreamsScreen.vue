@@ -361,6 +361,25 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                 <div class="k">Audio</div><div class="v mono">{{ selTech?.audio }}</div>
                 <div class="k">Container</div><div class="v mono">{{ selTech?.container }}</div>
                 <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(sel.delivery) }}</div>
+                <!-- S3/ORIGIN: the two-sided view. `Delivery` above is Side-2 (what viewers receive); these
+                     rows are Side-1 (what the single shared ingest pulls). Shown only for an origin-backed
+                     channel — for a passthrough stream the two sides are the same bytes and there is no
+                     separate ingest to report. -->
+                <template v-if="sel.ingest">
+                  <div class="k">Ingest</div>
+                  <div class="v mono" :style="sel.ingest.status === 'ok' ? '' : 'color: var(--warn);'">
+                    {{ sel.ingest.status }} · {{ sel.ingest.subscribers }} viewer(s) sharing
+                  </div>
+                  <div class="k">Ring</div>
+                  <div class="v mono">
+                    {{ sel.ingest.ringSegments }} seg · {{ (sel.ingest.ringBytes / 1048576).toFixed(1) }} MiB
+                    <template v-if="sel.ingest.evictedSegments"> · {{ sel.ingest.evictedSegments }} evicted</template>
+                  </div>
+                  <div class="k">Upstream pulled</div>
+                  <div class="v mono">
+                    {{ sel.ingest.ingestedSegments }} seg · {{ (sel.ingest.ingestedBytes / 1048576).toFixed(1) }} MiB
+                  </div>
+                </template>
                 <div class="k">Resolution</div><div class="v mono">{{ selTech?.resolution }}<template v-if="selTech?.fps"> @ {{ selTech?.fps }}fps</template></div>
                 <template v-if="selTech?.probed">
                   <div class="k">Pixel format</div><div class="v mono">{{ selTech.pixFmt ?? '—' }}</div>

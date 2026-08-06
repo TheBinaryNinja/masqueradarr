@@ -313,6 +313,44 @@ export function pruneFailoverServing(activeKeys: Set<string>): void {
   for (const key of failoverByChannel.keys()) if (!activeKeys.has(key)) failoverByChannel.delete(key);
 }
 
+// ── S3/ORIGIN ingest health (the `iop` side) ───────────────────────────────────────────────────────────
+// Everything else in this file measures EGRESS — bytes we sent to a viewer. Origin mode adds a second,
+// independent quantity: what ONE ingest pulled from upstream on behalf of N viewers. Conflating them would
+// over-count upstream bandwidth by a factor of N and make a Side-1 problem indistinguishable from a Side-2
+// one, so ingest lands here in its own map and NEVER touches noteBytes. Same in-memory idiom as
+// mediaByChannel/failoverByChannel; statsHub prunes cold channels.
+
+export interface IngestHealth {
+  status: string; // 'ok' | 'stalled' | 'resolve_failed' | 'closed' — the ingest's last reported state
+  subscribers: number; // live leases (viewers sharing this one ingest)
+  ringSegments: number;
+  ringBytes: number;
+  headSeq: number; // our next sequence — monotonic for the life of the ingest
+  generation: number; // bumped on a failover ring reset
+  ingestedSegments: number;
+  ingestedBytes: number; // UPSTREAM bytes — distinct from egress; one of these can serve N viewers
+  evictedSegments: number;
+  targetDuration: number;
+  at: number; // Date.now() of the last iop event — staleness tells you an ingest stopped reporting
+}
+
+const ingestByChannel = new Map<string, IngestHealth>(); // channelKey → last ingest snapshot
+
+/** Record the data plane's latest `iop` snapshot for a channel. */
+export function noteIngest(source: string, entryUrl: string, h: IngestHealth): void {
+  ingestByChannel.set(streamKey(source, entryUrl), h);
+}
+
+/** The ingest health for a channel (null = not origin-backed, or nothing reported yet). */
+export function ingestFor(channelKey: string): IngestHealth | null {
+  return ingestByChannel.get(channelKey) ?? null;
+}
+
+/** Drop ingest health for channels no longer active (statsHub calls this with the live key set). */
+export function pruneIngest(activeKeys: Set<string>): void {
+  for (const key of ingestByChannel.keys()) if (!activeKeys.has(key)) ingestByChannel.delete(key);
+}
+
 // ── Socket-liveness hooks (the raw-TS fork) ───────────────────────────────────────────────────────────
 // Raw-TS external clients (externalTsEngine.ts) hold ONE long-lived HTTP socket and never poll, so the
 // poll-recency model above is blind to them. These three hooks give them a parallel accounting that feeds the

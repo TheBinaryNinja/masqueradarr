@@ -183,6 +183,17 @@ export interface ActiveStream {
   codec: string | null; audio: string | null; container: string | null;
   resolution: string | null; fps: number | null;
   probe: StreamProbe | null;
+  // S3/ORIGIN Side-1 (ingest) health — non-null only for an origin-backed channel. The counterpart to
+  // `delivery` (Side-2). `ingestedBytes` is UPSTREAM traffic for the ONE shared ingest and is deliberately
+  // not comparable to `bandwidth` (egress across all viewers): with N viewers, egress ≈ N × ingest, and that
+  // divergence is the signal that the ring is doing its job.
+  ingest: {
+    status: string; subscribers: number;
+    ringSegments: number; ringBytes: number;
+    headSeq: number; generation: number;
+    ingestedSegments: number; ingestedBytes: number; evictedSegments: number;
+    targetDuration: number; at: number;
+  } | null;
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's identity.
   failover: { attempt: number; candidateId: string; candidateName: string } | null;
 }

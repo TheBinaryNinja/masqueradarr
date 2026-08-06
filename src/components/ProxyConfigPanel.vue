@@ -47,7 +47,7 @@ function removeHeader(i: number) {
 //   · @blur   commits into [min, max] once typing stops (nullable knobs keep blank → null). The ranges
 //             mirror the server gate in server/src/proxyconfig/translate.ts, so the UI never persists a
 //             value the API would 400.
-function setNum(field: 'connectTimeoutMs' | 'maxRedirects', raw: string) {
+function setNum(field: 'connectTimeoutMs' | 'maxRedirects' | 'originRingMb', raw: string) {
   const n = Math.round(Number(raw));
   if (Number.isFinite(n)) state[field] = n;
 }
@@ -60,7 +60,7 @@ function setNullableNum(field: 'readTimeoutMs' | 'bufferSizeKb' | 'segmentCacheT
   const n = Math.round(Number(t));
   if (Number.isFinite(n)) state[field] = n;
 }
-function commitNum(field: 'connectTimeoutMs' | 'maxRedirects', min: number, max: number) {
+function commitNum(field: 'connectTimeoutMs' | 'maxRedirects' | 'originRingMb', min: number, max: number) {
   const v = state[field];
   state[field] = Number.isFinite(v) ? Math.min(max, Math.max(min, v)) : min;
 }
@@ -152,6 +152,40 @@ watch(
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             Read-ahead buffer that absorbs brief upstream jitter. Allocated in ~64 KiB chunks — under ~128 KiB
             behaves minimal; ≈512 KiB+ (8+ chunks) is where it meaningfully helps. Blank = minimal pipeline.
+          </div>
+        </div>
+      </div>
+
+      <!-- S3/ORIGIN. Sits directly above Output format because it changes what that setting MEANS: with
+           origin on, both shapes are rendered from the same local ring instead of proxying upstream. -->
+      <div class="form-grid-2" style="margin-top: 14px;">
+        <div class="form-row">
+          <div class="field-lbl">Local origin</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle :on="state.originEnabled" @change="(v) => (state.originEnabled = v)" />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.originEnabled ? 'On' : 'Off' }}</span>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Re-publish streams from masqueradarr instead of passing the provider's playlist through. One
+            ingest per channel decrypts and caches segments in memory, and players receive a stream we
+            authored — our own numbering, no encryption keys, no provider URLs. Extra viewers of the same
+            channel then cost <b>no additional upstream bandwidth</b>. Off is exactly today's behaviour.
+          </div>
+        </div>
+        <div class="form-row">
+          <div class="field-lbl">
+            Ring size <span class="mono muted" style="font-weight: 400;">· MiB per channel</span>
+          </div>
+          <div class="input">
+            <input type="number" min="1" max="4096" :value="state.originRingMb"
+                   :disabled="!state.originEnabled"
+                   @input="setNum('originRingMb', ($event.target as HTMLInputElement).value)"
+                   @blur="commitNum('originRingMb', 1, 4096)" />
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            How much memory one channel's live window may hold — bigger means a longer buffer against
+            upstream hiccups. 25&nbsp;MiB is roughly a minute at 3.3&nbsp;Mbps. A minimum of 3 segments is
+            always kept even if that exceeds the cap, and the engine logs a warning when it has to.
           </div>
         </div>
       </div>

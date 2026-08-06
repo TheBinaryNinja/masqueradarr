@@ -6,6 +6,7 @@ import {
   noteSocketBytes,
   noteSocketViewerClose,
   nextSocketConnId,
+  noteIngest,
   type PlayerType,
 } from '../sources/core/streamTelemetry.js';
 import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core/streamState.js';
@@ -33,6 +34,11 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //    polling). `open` mints a socket connId (noteSocketViewerOpen) mapped from the Rust streamId; `sbytes`
 //    (periodic) → noteSocketBytes(connId); `close` → noteSocketViewerClose(connId). Fields: open = { streamId,
 //    source, entryUrl, ip, ua, username?, playerType }, sbytes = { streamId, bytes }, close = { streamId }.
+//  · iop      — S3/ORIGIN Side-1 (the per-channel INGEST). The only INGRESS-side kind: every other event
+//    above measures what we sent to a viewer. Once one ingest feeds N viewers those are independent
+//    quantities, so this drives its own map (noteIngest) and never noteBytes. Fields: { source, entryUrl,
+//    status ('ok'|'stalled'|'resolve_failed'|'closed'), subscribers, ringSegments, ringBytes, headSeq,
+//    generation, ingestedSegments, ingestedBytes, evictedSegments, targetDuration }.
 // A body may be a single event or { events: [...] } (Rust batches, P3.1); both are accepted.
 
 interface TelemetryEvent {
@@ -51,6 +57,17 @@ interface TelemetryEvent {
   container?: unknown;
   bandwidth?: unknown;
   streamId?: unknown; // DST: the continuous-TS session id (open/sbytes/close), mapped to a socket connId
+  // S3/ORIGIN `iop` (Side-1 ingest) counters. `status` is a STRING here ('ok'|'stalled'|…), unlike the
+  // `upstream` kind where it is an HTTP status number — the two kinds never share a branch.
+  subscribers?: unknown;
+  ringSegments?: unknown;
+  ringBytes?: unknown;
+  headSeq?: unknown;
+  generation?: unknown;
+  ingestedSegments?: unknown;
+  ingestedBytes?: unknown;
+  evictedSegments?: unknown;
+  targetDuration?: unknown;
 }
 
 // DST: Rust continuous-TS streamId → the socket-viewer connId minted on `open`. A tiny bounded map (one entry
@@ -63,6 +80,11 @@ function str(v: unknown): string {
 }
 function optStr(v: unknown): string | undefined {
   return typeof v === 'string' && v ? v : undefined;
+}
+// Non-negative number or 0. The iop counters are all monotonic totals/gauges, so a missing or bogus field
+// degrading to 0 is safe — it reads as "nothing reported", never as a negative that would skew a delta.
+function num(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
 function applyEvent(e: TelemetryEvent): void {
@@ -102,6 +124,26 @@ function applyEvent(e: TelemetryEvent): void {
         frameRate: optStr(e.frameRate) ?? null,
         container: optStr(e.container) ?? null,
         bandwidth: typeof e.bandwidth === 'number' && e.bandwidth > 0 ? e.bandwidth : null,
+      });
+    }
+  } else if (e.kind === 'iop') {
+    // S3/ORIGIN Side-1. Deliberately does NOT call noteBytes: `ingestedBytes` is what the single ingest pulled
+    // from UPSTREAM, while noteBytes measures what we sent to viewers. With one ingest feeding N viewers those
+    // are different numbers, and folding them together would both over-count egress and destroy the
+    // attribution the iop/oop split exists to provide.
+    if (source && entryUrl) {
+      noteIngest(source, entryUrl, {
+        status: str(e.status) || 'ok',
+        subscribers: num(e.subscribers),
+        ringSegments: num(e.ringSegments),
+        ringBytes: num(e.ringBytes),
+        headSeq: num(e.headSeq),
+        generation: num(e.generation),
+        ingestedSegments: num(e.ingestedSegments),
+        ingestedBytes: num(e.ingestedBytes),
+        evictedSegments: num(e.evictedSegments),
+        targetDuration: num(e.targetDuration),
+        at: Date.now(),
       });
     }
   } else if (e.kind === 'open') {

@@ -26,6 +26,14 @@ export const TAG_CATEGORY: Record<string, LogCategory> = {
   // from `active` (the viewer/telemetry cores above) so the engine's full-lineage trace is filterable on its
   // own. The Rust log seam (POST /api/internal/log → logStore.ingestExternalLog) tags every line one of these.
   proxy: 'proxy', stream: 'proxy', tsmux: 'proxy', edge: 'proxy', probe: 'proxy', resolve: 'proxy',
+  // S3/ORIGIN two-sided split. `iop` = INPUT operations (Side-1: the per-channel ingest — resolve, playlist
+  // poll, segment fetch, decrypt, ring push/evict, stall, failover). `oop` = OUTPUT operations (Side-2: the
+  // manifest/TS renderers serving clients from the ring). They live in the same `proxy` category as the rest
+  // of the data plane — the point of the split is attribution WITHIN the engine, not a separate UI bucket:
+  // once one ingest feeds N viewers, ingress and egress are independent, so "the channel is stuttering" has
+  // two possible causes and the tag says which. The resolver's namespace-prefix fallback (below) means any
+  // future `iop:*` / `oop:*` sub-tag resolves through these entries without another edit here.
+  iop: 'proxy', oop: 'proxy',
   // Failover groups (parent + ordered child backups): the admin group routes + reconcile/cascade service +
   // the Node resolve seam AND the Rust data-plane failover walk all log under `failover` — a cross-boundary
   // tag (Node and Rust both emit it) with its own UI category, so the whole fail-over story is filterable on
