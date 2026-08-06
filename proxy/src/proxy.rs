@@ -256,9 +256,16 @@ pub async fn serve_stream(
     // fetch below: an origin entry must not fetch upstream at all, or every client poll would re-hit the
     // provider and defeat the whole point of ingesting once.
     //
-    // `outputFormat: 'ts'` deliberately still falls through to the passthrough concatenator — the ring-backed
-    // TS renderer is Phase 3. So origin currently changes the HLS shape only.
-    if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) && policy.output_format.read_ok().as_str() == "hls" {
+    // BOTH output shapes are rendered from the SAME ring — that is what makes `outputFormat` a rendering
+    // choice rather than a second pipeline. Raw TS stays external-mount-only (an in-app player is always HLS),
+    // exactly as on the passthrough path.
+    if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
+        let want_ts = policy.output_format.read_ok().as_str() == "ts" && mount_path == "/api/ext/v1";
+        let ident = Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() };
+        if want_ts {
+            log::info("proxy", &rid, || "originEnabled + outputFormat=ts — serving raw TS from the ring".to_string());
+            return crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await;
+        }
         log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
         return crate::origin::serve_entry(
             &state,
@@ -268,7 +275,7 @@ pub async fn serve_stream(
             &stream_entry,
             token.as_deref(),
             pl.as_deref(),
-            &Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() },
+            &ident,
             &rid,
         )
         .await;
@@ -466,19 +473,8 @@ pub async fn serve_stream(
             return raw(200, "application/octet-stream", raw_body.to_vec());
         }
         let text_body = String::from_utf8_lossy(&raw_body).into_owned();
-        // S3/ORIGIN with `outputFormat: 'ts'` — INGEST ONLY until Phase 3. The HLS shape already returned
-        // above (served from the ring); raw TS still comes from the passthrough concatenator below, so all
-        // this does is keep the channel's ingest warm and its ring filling. When Phase 3 lands the ring-backed
-        // TS renderer, this block goes away with it.
-        //
-        // The lease is held only for THIS request; the ingest then survives on its idle grace window, which a
-        // polling client keeps refreshing on every entry poll. That is deliberate: it means an abandoned
-        // channel winds itself down without any explicit teardown from the request path.
-        let _origin_lease = if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
-            Some(crate::origin::subscribe(&state, source, &stream_entry, pl.as_deref(), &policy))
-        } else {
-            None
-        };
+        // (S3 Phase 3 retired the ingest-warming hook that used to sit here: BOTH origin shapes now return
+        // from the ring above, so nothing below this point ever runs with origin enabled.)
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to

@@ -92,8 +92,15 @@ pub enum Boundary {
     Tag,
     /// The media sequence skipped — we missed segments (a slow poll, or the window slid past us).
     SequenceGap,
-    /// The segment's directory or its key changed: an ad/clip splice. The reliable pluto signal, since its
-    /// stitcher swaps both the clip path and the keyfile at every boundary but does not always tag it.
+    /// The segment's DIRECTORY changed: a new clip/creative, i.e. a different encode with its own PTS base.
+    /// The reliable pluto signal, since its stitcher swaps the clip path at every ad/content boundary but
+    /// does not always tag it.
+    ///
+    /// Deliberately does NOT consider the `#EXT-X-KEY` URI. That was tried and was WRONG: pluto rotates the
+    /// keyfile periodically WITHIN one clip (…keyfile_5 → _6 → _7 under an unchanged directory), which is a
+    /// re-key of a continuous encode, not a splice. Treating it as one emitted ~2.5× too many
+    /// `#EXT-X-DISCONTINUITY` tags and forced needless mid-content decoder resets. A genuine clip change
+    /// always brings a new directory anyway, so the key added false positives and no true ones.
     ClipChange,
 }
 
@@ -127,11 +134,20 @@ fn boundary_before(prev: &PrevSeg, seg: &SegRef, upstream_seq: i64, seg_url: Opt
             return Some(Boundary::ClipChange);
         }
     }
-    let key_uri = seg.key.as_ref().map(|k| k.uri.as_str());
-    if prev.key_uri.as_deref() != key_uri && prev.key_uri.is_some() {
-        return Some(Boundary::ClipChange);
-    }
+    // NOTE: the key URI is deliberately NOT a boundary signal — see Boundary::ClipChange. It is still tracked
+    // on PrevSeg purely so the splice log can show what changed alongside the directory.
     None
+}
+
+/// Last two path components of a dir/key, for readable splice logs (the full pluto paths are ~150 chars and
+/// only the clip/creative id at the tail actually differs).
+fn short_tail(s: Option<&str>) -> String {
+    let s = match s {
+        Some(s) => s,
+        None => return "-".to_string(),
+    };
+    let parts: Vec<&str> = s.rsplit('/').take(2).collect();
+    parts.into_iter().rev().collect::<Vec<_>>().join("/")
 }
 
 /// The directory portion of a segment URL — everything up to the last '/'. Pluto swaps this per clip.
@@ -367,7 +383,9 @@ async fn ingest(ctx: IngestCtx) {
             if ctx.origin.subscribers.load(Ordering::Relaxed) == 0
                 && ctx.origin.last_access.lock_ok().elapsed() >= IDLE_GRACE
             {
-                log::info("iop", &rid, || format!("ingest idle {}/{} — stopping", ctx.source, ctx.source));
+                log::info("iop", &rid, || {
+                    format!("ingest idle {}/{} — stopping", ctx.source, crate::proxy::host_of(&ctx.entry))
+                });
                 break;
             }
         }
@@ -450,6 +468,9 @@ async fn ingest(ctx: IngestCtx) {
                 None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
             };
 
+            // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log that
+            // says only "ClipChange" cannot distinguish real ad-pod churn from a detector bug.
+            let was = prev.clone();
             prev = PrevSeg {
                 upstream_seq: Some(upstream_seq),
                 dir: Some(dir_of(&seg_url)),
@@ -466,7 +487,23 @@ async fn ingest(ctx: IngestCtx) {
             });
             ingested_this_poll += 1;
             if let Some(b) = boundary {
-                log::info("iop", &rid, || format!("discontinuity ({b:?}) at our seq={our_seq}"));
+                log::info("iop", &rid, || {
+                    let detail = match b {
+                        Boundary::SequenceGap => format!(
+                            "upstream seq {} → {upstream_seq}",
+                            was.upstream_seq.map(|s| s.to_string()).unwrap_or_else(|| "-".into())
+                        ),
+                        Boundary::ClipChange => format!(
+                            "dir {} → {} | key {} → {}",
+                            short_tail(was.dir.as_deref()),
+                            short_tail(prev.dir.as_deref()),
+                            short_tail(was.key_uri.as_deref()),
+                            short_tail(prev.key_uri.as_deref()),
+                        ),
+                        Boundary::Tag => "upstream #EXT-X-DISCONTINUITY".to_string(),
+                    };
+                    format!("discontinuity ({b:?}) at our seq={our_seq} — {detail}")
+                });
             }
             if evicted > 0 {
                 log::trace("iop", &rid, || {
@@ -532,6 +569,10 @@ async fn ingest(ctx: IngestCtx) {
         }
     }
 
+    // Mark the ingest dead BEFORE dropping the registry entry, and wake every reader. Without this a raw-TS
+    // producer parked on `wait_for_segment` would keep re-waiting forever against a ring nothing refills.
+    ctx.origin.stopping.store(true, Ordering::Relaxed);
+    ctx.origin.notify.notify_waiters();
     ctx.state.origins().lock_ok().remove(&ctx.key);
     report_iop(&ctx, "closed");
     log::info("iop", &rid, || {
@@ -889,6 +930,130 @@ pub async fn serve_segment(
     crate::proxy::raw(200, "video/mp2t", seg.bytes.to_vec())
 }
 
+/// SIDE-2 RAW TS: one continuous `video/mp2t` socket concatenated from the ring.
+///
+/// Same cache, second shape — this is what makes `outputFormat` a rendering choice rather than a second
+/// pipeline. Where the passthrough concatenator (tsmux.rs) fetches upstream per viewer, this reads segments
+/// N viewers already share, so a second viewer costs zero upstream bandwidth.
+///
+/// KEYFRAME ALIGNMENT comes free: every HLS segment begins at a random-access point, so starting on a segment
+/// boundary IS starting on a keyframe. No TS parsing is needed to splice in.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_ts(
+    state: &AppState,
+    policy: &Arc<SourcePolicy>,
+    source: &str,
+    entry: &str,
+    pl: Option<&str>,
+    id: &crate::proxy::Identity,
+    rid: &str,
+) -> axum::response::Response {
+    let lease = subscribe(state, source, entry, pl, policy);
+    if !wait_ready(lease.origin(), rid).await {
+        return crate::proxy::text(503, "stream warming up: no playable window yet");
+    }
+    let buffer_size_kb = policy.buffer_size_kb.load(Ordering::Relaxed);
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(crate::stream::channel_capacity(buffer_size_kb));
+    let ctx = TsRingCtx {
+        state: state.clone(),
+        source: source.to_string(),
+        entry: entry.to_string(),
+        rid: rid.to_string(),
+        ip: id.ip.clone(),
+        ua: id.ua.clone(),
+        username: id.username.clone(),
+    };
+    // The LEASE moves into the producer: a continuous stream has no polling to renew it, so the ingest must be
+    // held open for the whole session and released exactly when the socket ends.
+    tokio::spawn(ts_ring_producer(lease, ctx, tx));
+    axum::response::Response::builder()
+        .status(axum::http::StatusCode::OK)
+        .header("content-type", "video/mp2t")
+        .header("cache-control", "no-store")
+        .body(axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
+        .unwrap()
+}
+
+struct TsRingCtx {
+    state: AppState,
+    source: String,
+    entry: String,
+    rid: String,
+    ip: String,
+    ua: String,
+    username: Option<String>,
+}
+
+/// Follow the ring, writing each new segment into the client socket until it disconnects.
+async fn ts_ring_producer(
+    lease: OriginLease,
+    ctx: TsRingCtx,
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) {
+    let origin = lease.origin().clone();
+    let stream_id = ctx.state.next_stream_id();
+    log::info("oop", &ctx.rid, || format!("origin raw-TS session open ({stream_id})"));
+    ctx.state.report(serde_json::json!({
+        "kind": "open", "streamId": stream_id, "source": ctx.source, "entryUrl": ctx.entry,
+        "ip": ctx.ip, "ua": ctx.ua, "username": ctx.username, "playerType": "externalPlayer",
+    }));
+
+    // Start at the OLDEST segment held: the ring doubles as the client's initial buffer, so a new viewer gets
+    // the whole window up front rather than waiting on the live edge.
+    let mut next_seq = origin.window().first().map(|s| s.seq).unwrap_or(0);
+    let mut pending_bytes: u64 = 0;
+    let mut last_flush = Instant::now();
+
+    loop {
+        let window = origin.window();
+        // Fell off the back of the ring — the client reads slower than the ingest writes, or the ring is too
+        // small for this bitrate. Skipping forward drops video, so say so plainly rather than silently gapping.
+        if let Some(front) = window.first() {
+            if next_seq < front.seq {
+                log::warn("oop", &ctx.rid, || {
+                    format!("client fell behind the ring (wanted seq={next_seq}, oldest held={}) — skipping ahead; raise originRingMb if this repeats", front.seq)
+                });
+                next_seq = front.seq;
+            }
+        }
+        let mut sent_any = false;
+        let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
+        for seg in window.iter().filter(|s| s.seq >= from) {
+            next_seq = seg.seq + 1;
+            pending_bytes += seg.bytes.len() as u64;
+            sent_any = true;
+            if tx.send(Ok(seg.bytes.clone())).await.is_err() {
+                // Client disconnected — the receiver dropped. Close out and release the lease.
+                log::info("oop", &ctx.rid, || format!("origin raw-TS client disconnected ({stream_id})"));
+                if pending_bytes > 0 {
+                    ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+                }
+                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+                return;
+            }
+        }
+        if pending_bytes > 0 && last_flush.elapsed() >= Duration::from_secs(1) {
+            ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+            pending_bytes = 0;
+            last_flush = Instant::now();
+        }
+        if !sent_any {
+            // Nothing new yet — wait for the ingest to push rather than spinning on the ring.
+            let _ = tokio::time::timeout(Duration::from_secs(30), origin.wait_for_segment()).await;
+            // The ingest died (idle-stopped or the upstream ended) and drained: end the socket cleanly.
+            if origin.stopping.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    }
+
+    if pending_bytes > 0 {
+        ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+    }
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id})"));
+}
+
 /// Emit the Side-1 telemetry event. Distinct `kind` from every egress event so Node can attribute ingest
 /// health separately — ingest bytes must NEVER be folded into the egress byte counters, or one upstream byte
 /// serving N viewers would be counted N+1 times.
@@ -1022,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn boundary_detects_clip_change_by_path_or_key() {
+    fn boundary_detects_clip_change_by_directory() {
         let prev = PrevSeg {
             upstream_seq: Some(9),
             dir: Some("h/clipA".to_string()),
@@ -1034,10 +1199,44 @@ mod tests {
             boundary_before(&prev, &segref("s10.ts", Some("https://k/a.key"), false), 10, Some(&u)),
             Some(Boundary::ClipChange)
         );
-        // Same directory but a rotated keyfile is also a splice.
-        let u2 = Url::parse("https://h/clipA/s10.ts").unwrap();
+    }
+
+    /// REGRESSION (observed live 2026-08-05): pluto rotates the AES keyfile periodically WITHIN one clip
+    /// (`…keyfile_5.key` → `_6` → `_7` under an unchanged directory). That is a re-key of a continuous
+    /// encode, NOT a splice. Treating it as one emitted ~2.5× too many `#EXT-X-DISCONTINUITY` tags and forced
+    /// needless mid-content decoder resets. Values below are the exact ones from the ingest log.
+    #[test]
+    fn key_rotation_within_a_clip_is_not_a_boundary() {
+        let prev = PrevSeg {
+            upstream_seq: Some(1),
+            dir: Some("siloh/24776-596347/hls".to_string()),
+            key_uri: Some("https://siloh/24776-596347/hls_2400_keyfile_5.key".to_string()),
+        };
+        let u = Url::parse("https://siloh/24776-596347/hls/seg2.ts").unwrap();
         assert_eq!(
-            boundary_before(&prev, &segref("s10.ts", Some("https://k/b.key"), false), 10, Some(&u2)),
+            boundary_before(
+                &prev,
+                &segref("seg2.ts", Some("https://siloh/24776-596347/hls_2400_keyfile_6.key"), false),
+                2,
+                Some(&u)
+            ),
+            None,
+            "a re-key inside one clip must not splice the timeline"
+        );
+    }
+
+    /// The corollary that keeps the simplification honest: a REAL clip change brings a new directory anyway,
+    /// so dropping the key signal loses no true positives.
+    #[test]
+    fn a_real_clip_change_brings_both_a_new_dir_and_a_new_key() {
+        let prev = PrevSeg {
+            upstream_seq: Some(9),
+            dir: Some("h/4_ad/creative/aaa".to_string()),
+            key_uri: Some("https://k/aaa.key".to_string()),
+        };
+        let u = Url::parse("https://h/2_ad/creative/bbb/s10.ts").unwrap();
+        assert_eq!(
+            boundary_before(&prev, &segref("s10.ts", Some("https://k/bbb.key"), false), 10, Some(&u)),
             Some(Boundary::ClipChange)
         );
     }
