@@ -143,6 +143,12 @@ defineProps<{ name: string; size?: number }>();
       <path d="M9 3v3"/><path d="M15 3v3"/><path d="M9 18v3"/><path d="M15 18v3"/>
       <path d="M3 9h3"/><path d="M3 15h3"/><path d="M18 9h3"/><path d="M18 15h3"/>
     </template>
+    <template v-else-if="name === 'expand'">
+      <path d="M9 3H3v6"/><path d="m3 3 7 7"/><path d="M15 21h6v-6"/><path d="m21 21-7-7"/>
+    </template>
+    <template v-else-if="name === 'collapse'">
+      <path d="M3 9h6V3"/><path d="m10 10-7-7"/><path d="M21 15h-6v6"/><path d="m14 14 7 7"/>
+    </template>
     <template v-else-if="name === 'mute'">
       <path d="M11 5 6 9H3v6h3l5 4z"/><path d="m17 9 4 6"/><path d="m21 9-4 6"/>
     </template>

@@ -32,7 +32,9 @@ and the **Custom Tags** manager. Changes save to the single application settings
     channel rather than glance at it. Allow pop-ups for this site or the window can't open.
     Sound is on by default and your volume / mute choice is remembered between channels and windows. If the
     browser blocks audio on load — most do, until you've interacted with the page — the picture says so and
-    one click on that banner (or the **M** key) turns sound on.
+    one click on that banner (or the **M** key) turns sound on. The window opens without a tab strip,
+    toolbar or bookmarks bar; the thin strip showing the site address is forced on by the browser itself and
+    can't be turned off from the app, so use **Full screen** (or the **F** key) for a completely bare window.
   - **Debug video player** — adds a live hls.js status readout and event log. Reach for it only when a
     channel won't play; it shows exactly where the stream stalls.
 

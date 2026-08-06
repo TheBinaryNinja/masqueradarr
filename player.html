@@ -3,7 +3,10 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Ultimate Player · masqueradarr</title>
+  <!-- This is the window title, and in a pop-up (and in full screen) it is the ONLY branding the browser
+       shows — the pop-up's chrome has no tab strip to fall back on. UplApp re-writes it per channel; keep
+       this exact string as the idle/base form so both agree. -->
+  <title>Ultimate Video Player : masqueradarr</title>
   <!-- Kept deliberately in step with index.html: the data-theme / data-density attributes above and the two
        font families below are where the --mq-font-* stack actually comes from, and this entry does not mount
        the SPA shell that would otherwise supply them. -->
