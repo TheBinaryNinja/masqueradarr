@@ -143,5 +143,11 @@ defineProps<{ name: string; size?: number }>();
       <path d="M9 3v3"/><path d="M15 3v3"/><path d="M9 18v3"/><path d="M15 18v3"/>
       <path d="M3 9h3"/><path d="M3 15h3"/><path d="M18 9h3"/><path d="M18 15h3"/>
     </template>
+    <template v-else-if="name === 'mute'">
+      <path d="M11 5 6 9H3v6h3l5 4z"/><path d="m17 9 4 6"/><path d="m21 9-4 6"/>
+    </template>
+    <template v-else-if="name === 'sound'">
+      <path d="M11 5 6 9H3v6h3l5 4z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/>
+    </template>
   </svg>
 </template>

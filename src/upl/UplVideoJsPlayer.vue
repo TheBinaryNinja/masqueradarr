@@ -18,9 +18,20 @@
 // Token handling is delegated to useAppStreamSource — do NOT re-implement it. It appends ?token= to the
 // MANIFEST url; the Rust proxy re-embeds that same query onto every segment and EXT-X-KEY URI it rewrites,
 // so segment + AES key fetches authenticate themselves whichever engine is doing the fetching.
+//
+// AUDIO — why autoplay is hand-rolled instead of `autoplay: 'muted'` (this WAS a silent-player bug):
+// Video.js re-runs manualAutoplay_() on every `loadstart`, i.e. on every player.src() — so once per channel
+// change. With autoplay:'muted' that path calls muted(true) and pushes a restoreMuted callback onto
+// playTerminatedQueue_ … a queue runPlayCallbacks_() CLEARS when the play SUCCEEDS. Net effect: tuning a
+// channel re-muted the player permanently and the unmute the viewer had just performed was thrown away.
+// Video.js persists text-track settings but never volume, so nothing put it back either.
+// So: autoplay is off, applySrc() drives play() itself, and the viewer's mute/volume choice is the authority
+// — persisted to localStorage, restored on open, and overridden only when the browser's autoplay policy
+// actually refuses sound (which raises a visible "click to unmute" affordance rather than silent silence).
 import { ref, toRef, onMounted, onBeforeUnmount, watch } from 'vue';
 import videojs from 'video.js';
 import 'video.js/dist/video-js.css';
+import Icon from '../components/Icon.vue';
 import { useAppStreamSource } from '../composables/useAppStreamSource';
 
 const props = defineProps<{ src: string | null }>();
@@ -42,19 +53,85 @@ let sampler: number | undefined;
 const playbackError = ref<string | null>(null);
 const engine = ref<'vhs' | 'native'>('native');
 
+// Audio state, mirrored out of the player so the template can react to it. `policyMuted` distinguishes "the
+// browser refused sound" from "the viewer chose silence" — only the latter is worth persisting.
+const isMuted = ref(false);
+const policyMuted = ref(false);
+
 const { gatedSrc, reload } = useAppStreamSource(toRef(props, 'src'));
+
+// Volume/mute survives both a channel change and the window being reopened. Default is sound ON: let the
+// autoplay policy demote us if it must, rather than starting silent and hoping the viewer finds the control.
+const AUDIO_PREF_KEY = 'upl:audio';
+
+function loadAudioPref(): { muted: boolean; volume: number } {
+  try {
+    const raw = localStorage.getItem(AUDIO_PREF_KEY);
+    if (raw) {
+      const p = JSON.parse(raw) as { muted?: unknown; volume?: unknown };
+      const v = typeof p.volume === 'number' && p.volume >= 0 && p.volume <= 1 ? p.volume : 1;
+      return { muted: p.muted === true, volume: v };
+    }
+  } catch { /* unparseable or storage blocked — fall through to the default */ }
+  return { muted: false, volume: 1 };
+}
+
+function saveAudioPref(): void {
+  if (!player) return;
+  try {
+    localStorage.setItem(AUDIO_PREF_KEY, JSON.stringify({ muted: !!player.muted(), volume: player.volume() }));
+  } catch { /* private mode / quota — a lost preference is not worth failing playback over */ }
+}
 
 // Capped recovery, mirroring VidstackPlayer.vue's policy so both players fail the same way: retry a network
 // failure up to 3× by re-sourcing, then surface it. Reset once playback is demonstrably healthy again.
 const MAX_NET_RETRIES = 3;
 let netAttempts = 0;
 
+// Bumped per source so a play() rejection can be attributed correctly: "the browser refused sound" and "a
+// newer load request interrupted this one" arrive as the same rejected promise, and only the first should
+// cost the viewer their audio.
+let playGen = 0;
+
 function applySrc(): void {
   if (!player || !gatedSrc.value) return;
   playbackError.value = null;
   player.src({ src: gatedSrc.value, type: 'application/x-mpegURL' });
+  void attemptPlay();
+}
+
+async function attemptPlay(): Promise<void> {
+  if (!player) return;
+  const gen = ++playGen;
+  try {
+    await player.play();
+  } catch {
+    // Superseded by a newer channel — not a verdict on audio.
+    if (gen !== playGen || !player || player.muted()) return;
+    // The autoplay policy refused UNMUTED playback (a popup does not always inherit user activation).
+    // Demote to muted rather than showing a dead frame, and raise the unmute affordance to say so.
+    policyMuted.value = true;
+    player.muted(true);
+    try { await player.play(); } catch { /* still refused — Video.js's big play button remains */ }
+  }
+}
+
+// Viewer-driven unmute: a real click/keypress carries the activation the autoplay policy wanted, so this is
+// the one path that can reliably turn sound on. Also lifts volume off zero, which would otherwise unmute to
+// the same silence, and re-plays in case the policy paused us on the way down.
+function unmute(): void {
+  if (!player) return;
+  policyMuted.value = false;
+  player.muted(false);
+  if (player.volume() === 0) player.volume(1);
   const p = player.play();
-  if (p && typeof p.catch === 'function') p.catch(() => { /* autoplay interrupted; controls remain */ });
+  if (p && typeof p.catch === 'function') p.catch(() => { /* controls remain */ });
+}
+
+function toggleMute(): void {
+  if (!player) return;
+  if (player.muted() || player.volume() === 0) unmute();
+  else player.muted(true);
 }
 
 function retry(): void {
@@ -117,7 +194,7 @@ function selectLevel(index: number): void {
   for (let i = 0; i < ql.length; i++) ql[i].enabled = index < 0 || i === index;
   refreshLevels();
 }
-defineExpose({ selectLevel });
+defineExpose({ selectLevel, toggleMute });
 
 // 500ms health sampler, modelled on DebugHlsPlayer.vue's. VHS exposes measured bandwidth; native HLS does
 // not, so bitrate reports null there and the UI shows an em-dash rather than a fabricated number.
@@ -152,10 +229,15 @@ onMounted(() => {
   el.setAttribute('playsinline', '');
   host.value?.appendChild(el);
 
+  const pref = loadAudioPref();
+
   player = videojs(el, {
     controls: true,
-    autoplay: 'muted',
-    muted: true,
+    // NOT `autoplay: 'muted'` — see the AUDIO note at the top of this file. Any string value here hands the
+    // mute flag back to manualAutoplay_(), which re-mutes on every source change and never restores it.
+    // applySrc() → attemptPlay() owns the first play instead, so `muted` below stays the viewer's to set.
+    autoplay: false,
+    muted: pref.muted,
     playsinline: true,
     preload: 'auto',
     fill: true,          // fill the flex area the shell gives us, not a fixed aspect box
@@ -171,6 +253,19 @@ onMounted(() => {
         limitRenditionByPlayerDimensions: false, // never cap quality to a small popup
       },
     },
+  });
+
+  player.volume(pref.volume); // no `volume` player option exists; set it once the player is up
+  isMuted.value = !!player.muted();
+
+  // Track every mute/volume change, whoever caused it. A change while policyMuted means the viewer overrode
+  // the browser's refusal, so drop that flag; a change we made ourselves to satisfy the policy is NOT a
+  // preference and must not be written back, or the demotion would follow them into every future window.
+  player.on('volumechange', () => {
+    isMuted.value = !!player.muted();
+    if (policyMuted.value && isMuted.value) return;
+    policyMuted.value = false;
+    saveAudioPref();
   });
 
   player.on('error', onError);
@@ -210,6 +305,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="upl-video" ref="host">
+    <!-- Silence is indistinguishable from a broken stream, so say which it is and make it one click to fix.
+         Shown for a deliberate mute too — in a dedicated player window that doubles as the audio readout. -->
+    <button v-if="isMuted" type="button" class="upl-video-unmute mono" @click="unmute">
+      <Icon name="mute" :size="14" />
+      <span>{{ policyMuted ? 'Sound blocked by the browser — click to unmute' : 'Muted — click for sound' }}</span>
+    </button>
+
     <div v-if="playbackError" class="upl-video-error mono">
       <span>{{ playbackError }}</span>
       <button type="button" class="upl-video-retry mono" @click="retry">Retry</button>
@@ -247,6 +349,27 @@ onBeforeUnmount(() => {
 }
 .upl-video :deep(.vjs-slider) { background: oklch(1 0 0 / 0.2); }
 .upl-video :deep(.vjs-menu-content) { background: oklch(0.16 0.006 240 / 0.94); }
+
+/* Top-left, clear of both the control bar (bottom) and the centred big-play button. */
+.upl-video-unmute {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 11px;
+  font-size: 11px;
+  color: #fff;
+  background: oklch(0.16 0.006 240 / 0.86);
+  backdrop-filter: blur(10px) saturate(140%);
+  -webkit-backdrop-filter: blur(10px) saturate(140%);
+  border: 1px solid var(--accent);
+  border-radius: var(--radius-s);
+  cursor: pointer;
+}
+.upl-video-unmute:hover { color: var(--accent-hi); border-color: var(--accent-hi); }
 
 .upl-video-error {
   position: absolute;

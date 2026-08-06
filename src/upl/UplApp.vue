@@ -134,6 +134,9 @@ function onKey(e: KeyboardEvent): void {
     case '[': step(-1); break;
     case ']': step(1); break;
     case 'c': case 'C': railOpen.value = !railOpen.value; break;
+    // A keypress carries the user activation the autoplay policy wants, so this is a reliable way to get
+    // sound back even when the browser refused it on load.
+    case 'm': case 'M': playerRef.value?.toggleMute(); break;
     case 'Escape': railOpen.value = false; break;
     default: break;
   }
@@ -254,7 +257,7 @@ onBeforeUnmount(() => {
             <option>Auto (native)</option>
           </select>
         </label>
-        <span class="upl-foot-keys muted">↑↓ browse · ⏎ tune · [ ] prev/next · C channels</span>
+        <span class="upl-foot-keys muted">↑↓ browse · ⏎ tune · [ ] prev/next · C channels · M mute</span>
       </footer>
 
       <UplChannelRail
