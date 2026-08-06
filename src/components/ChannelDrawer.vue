@@ -137,6 +137,11 @@ function onResolution(res: string) {
 // treat it as unsolicited. One fixed window name means relaunching re-navigates and focuses the existing
 // window rather than stacking new ones; since only the hash differs, no reload fires and the player picks
 // the change up via its `hashchange` listener.
+//
+// `popup=yes` is already the most chrome a script can remove — it drops the tab strip, bookmarks bar,
+// toolbar and menu. Do NOT add `location=no,toolbar=no,menubar=no`: every current browser IGNORES them and
+// force-shows a read-only origin chip on any pop-up, as anti-spoofing rather than as a preference. The
+// player window's F key / Full screen button is the supported way to get rid of that last strip.
 function launchUpl() {
   const { source, id } = props.ch;
   if (!source || !id) return;

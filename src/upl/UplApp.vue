@@ -108,6 +108,28 @@ function step(delta: number): void {
   if (next) tune(next);
 }
 
+// --- full screen ---------------------------------------------------------------------------------------
+// The one way to actually get rid of the browser's address bar. `window.open('…','popup=yes')` already
+// strips the tab strip, bookmarks bar, toolbar and menu, but every current browser FORCES a read-only origin
+// chip onto a pop-up and ignores the legacy `location=no` feature — it is anti-spoofing, not a setting. So
+// full screen is the real answer, and because the Fullscreen API needs a user gesture it hangs off this
+// button and the F key rather than firing on load (a pop-up does not reliably inherit the opener's gesture).
+//
+// documentElement, NOT the video element: Video.js's own fullscreen button expands the picture alone, which
+// throws away the header, guide strip, channel rail and footer. This keeps the whole player usable.
+const isFullscreen = ref(false);
+
+function syncFullscreen(): void {
+  isFullscreen.value = !!document.fullscreenElement;
+}
+
+function toggleFullscreen(): void {
+  try {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => { /* noop */ });
+    else void document.documentElement.requestFullscreen().catch(() => { /* denied by the browser */ });
+  } catch { /* API absent — the button simply does nothing */ }
+}
+
 // --- keyboard: ONE keymap for the window ---------------------------------------------------------------
 // Video.js's own hotkeys are disabled (userActions.hotkeys: false), so there is no second handler to fight.
 // Typing in the rail's filter box must never be swallowed, hence the input-target bail-out.
@@ -137,6 +159,7 @@ function onKey(e: KeyboardEvent): void {
     // A keypress carries the user activation the autoplay policy wants, so this is a reliable way to get
     // sound back even when the browser refused it on load.
     case 'm': case 'M': playerRef.value?.toggleMute(); break;
+    case 'f': case 'F': toggleFullscreen(); break;
     case 'Escape': railOpen.value = false; break;
     default: break;
   }
@@ -166,21 +189,28 @@ function onHashChange(): void {
 
 // Guide data for the channel being watched — the rich lane (descriptions, episode info).
 watch(currentKey, (k) => { void loadStripPrograms(params.value.pl, k); }, { immediate: true });
-// Keep the document title useful when several player windows are open.
+// The window title is the pop-up's only branding (no tab strip, and the origin chip the browser forces on is
+// not ours to write). Keep player.html's exact string as the suffix so the identity survives tuning, and keep
+// the channel prefix so several player windows — or a taskbar full of them — stay tellable apart.
 watch(current, (c) => {
-  document.title = c ? `${c.tvg_name} · Ultimate Player` : 'Ultimate Player · masqueradarr';
+  document.title = c
+    ? `${c.tvg_name} — Ultimate Video Player : masqueradarr`
+    : 'Ultimate Video Player : masqueradarr';
 });
 
 onMounted(() => {
   startClock();
   window.addEventListener('hashchange', onHashChange);
   window.addEventListener('keydown', onKey);
+  // Esc and the browser's own controls leave full screen without going through toggleFullscreen().
+  document.addEventListener('fullscreenchange', syncFullscreen);
   if (signedIn) void boot();
 });
 onBeforeUnmount(() => {
   stopClock();
   window.removeEventListener('hashchange', onHashChange);
   window.removeEventListener('keydown', onKey);
+  document.removeEventListener('fullscreenchange', syncFullscreen);
 });
 </script>
 
@@ -217,6 +247,17 @@ onBeforeUnmount(() => {
             <template v-if="resolution || current?.stream.res"> · {{ resolution ?? current?.stream.res }}</template>
           </div>
         </div>
+        <button
+          type="button"
+          class="upl-hd-btn"
+          :title="isFullscreen
+            ? 'Leave full screen (F)'
+            : 'Full screen (F) — the only way to hide the browser\'s address bar'"
+          @click="toggleFullscreen"
+        >
+          <Icon :name="isFullscreen ? 'collapse' : 'expand'" :size="14" />
+          {{ isFullscreen ? 'Exit' : 'Full screen' }}
+        </button>
         <button type="button" class="upl-hd-btn" title="Channels (C)" @click="railOpen = !railOpen">
           <Icon name="list" :size="14" /> Channels
         </button>
@@ -257,7 +298,9 @@ onBeforeUnmount(() => {
             <option>Auto (native)</option>
           </select>
         </label>
-        <span class="upl-foot-keys muted">↑↓ browse · ⏎ tune · [ ] prev/next · C channels · M mute</span>
+        <span class="upl-foot-keys muted">
+          ↑↓ browse · ⏎ tune · [ ] prev/next · C channels · M mute · F full screen
+        </span>
       </footer>
 
       <UplChannelRail
