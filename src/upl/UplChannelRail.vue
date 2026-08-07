@@ -1,6 +1,8 @@
 <script setup lang="ts">
 // UplChannelRail — the non-obtrusive channel switcher: an overlay rail on the right edge, hidden until you
-// want it (hover the edge, press C, or click the tab), auto-hiding again once you stop interacting.
+// want it (hover the edge, press C, or use the shell's Channels button), auto-hiding again once you stop
+// interacting. It deliberately renders NO handle of its own: an absolutely-positioned tab against .upl-root
+// lands inside the header band and collides with that Channels button.
 //
 // Virtualized with useVirtualList, which requires a FIXED row height — hence ROW_H here and the matching
 // locked height in CSS. A playlist can hold thousands of channels, and only the rows actually on screen are
@@ -106,17 +108,6 @@ defineExpose({ move, tuneCursor });
   <!-- Edge hover target: a thin invisible strip that reveals the rail without any visible furniture. -->
   <div class="upl-rail-edge" @mouseenter="emit('update:open', true)" />
 
-  <button
-    v-if="!open"
-    type="button"
-    class="upl-rail-tab"
-    title="Channels (C)"
-    aria-label="Show channels"
-    @click="emit('update:open', true)"
-  >
-    <Icon name="list" :size="15" />
-  </button>
-
   <aside class="glass upl-rail" :class="{ open }" @mouseleave="emit('update:open', false)">
     <div class="upl-rail-hd">
       <Icon name="tv" :size="14" />
@@ -175,25 +166,6 @@ defineExpose({ move, tuneCursor });
   width: 14px;
   z-index: 4;
 }
-.upl-rail-tab {
-  position: absolute;
-  top: 12px;
-  right: 12px;
-  z-index: 6;
-  display: grid;
-  place-items: center;
-  width: 30px;
-  height: 30px;
-  border-radius: var(--radius-s);
-  border: 1px solid var(--hairline-strong);
-  background: oklch(0.16 0.006 240 / 0.72);
-  color: var(--text-1);
-  cursor: pointer;
-  opacity: 0.55;
-  transition: opacity 0.15s ease;
-}
-.upl-rail-tab:hover { opacity: 1; color: var(--accent-hi); border-color: var(--accent); }
-
 .upl-rail {
   position: absolute;
   inset: 0 0 0 auto;

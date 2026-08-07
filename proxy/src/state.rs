@@ -182,6 +182,16 @@ pub struct SourcePolicy {
     /// operator is told to raise the dial rather than chasing stalls. NOT a global ceiling — see the plan's
     /// postponed `LRU` item.
     pub origin_ring_mb: AtomicU64,
+    /// S3/CUE: the adapter-declared ad-segment URI signature (percent-DECODED, lowercased substrings). Empty
+    /// for every source that emits real cue tags — or none at all — which is what makes URI-based ad
+    /// detection FAIL CLOSED. Never inferred here; Node's adapter is the only author (see origin::ad_state
+    /// and the `Boundary` doc comment on why a URI *diff* is not an acceptable substitute).
+    pub ad_uri_contains: RwLock<Vec<String>>,
+    /// S3/CUE: what the origin does with a DETECTED ad break — "passthrough" (republish the ad segments, the
+    /// shipped default and byte-identical to Phase 1) or "replace" (keep them out of the ring and substitute
+    /// looped program from the ring's own tail). RwLock<String> so a re-resolve can flip it, mirroring
+    /// `output_format`. Meaningless unless `origin_enabled`.
+    pub ad_policy: RwLock<String>,
 }
 
 impl SourcePolicy {
@@ -201,6 +211,8 @@ impl SourcePolicy {
             failover_on_definite_error: AtomicBool::new(false),
             origin_enabled: AtomicBool::new(false),
             origin_ring_mb: AtomicU64::new(crate::origin::DEFAULT_RING_MB),
+            ad_policy: RwLock::new("passthrough".to_string()),
+            ad_uri_contains: RwLock::new(Vec::new()),
         }
     }
 }
@@ -225,12 +237,24 @@ pub struct Grant {
     /// mount source for attempt 0 / ungrouped; the child's provider for a failover candidate). resolve()
     /// keys the SourcePolicy by this, never the URL mount source. `default` → None → an older Node degrades
     /// to mount-source keying (today's behavior).
+    /// S3/CUE: the serving adapter's ad-segment URI signature, when it declared one (pluto). `default` → None
+    /// → no URI-based ad detection, which is the correct posture for every source that didn't opt in and for
+    /// a pre-CUE Node that omits the key entirely.
+    #[serde(rename = "adSignature", default)]
+    pub ad_signature: Option<AdSignatureWire>,
     #[serde(rename = "policySource", default)]
     pub policy_source: Option<String>,
     /// FOG: failover context when this grant serves a candidate (attempt >= 1) — used for log attribution.
     #[serde(rename = "failover", default)]
     pub failover: Option<FailoverWire>,
     // (Node's grant also carries `isEntry`; the sidecar decides entry/hop from the path, so serde ignores it.)
+}
+
+/// S3/CUE: the adapter's ad-segment URI signature (mirrors resolveSeam.ts `adSignature`).
+#[derive(Deserialize, Clone)]
+pub struct AdSignatureWire {
+    #[serde(rename = "uriContains", default)]
+    pub uri_contains: Vec<String>,
 }
 
 /// FOG: the grant's failover block (attempt >= 1 grants only). Node also records the serving candidate for
@@ -277,6 +301,9 @@ pub struct ProxyConfigWire {
     pub origin_enabled: bool,
     #[serde(rename = "originRingMb", default = "default_origin_ring_mb")]
     pub origin_ring_mb: u64,
+    /// Absent (a pre-CUE Node) degrades to "passthrough", which is exactly Phase 1's behaviour.
+    #[serde(rename = "adPolicy", default = "default_ad_policy")]
+    pub ad_policy: String,
 }
 
 fn default_connect_ms() -> u64 {
@@ -291,6 +318,10 @@ fn default_output_format() -> String {
 fn default_true() -> bool {
     true
 }
+fn default_ad_policy() -> String {
+    "passthrough".to_string()
+}
+
 fn default_origin_ring_mb() -> u64 {
     crate::origin::DEFAULT_RING_MB
 }
@@ -308,6 +339,7 @@ impl Default for ProxyConfigWire {
             failover_on_definite_error: false,
             origin_enabled: false,
             origin_ring_mb: default_origin_ring_mb(),
+            ad_policy: default_ad_policy(),
         }
     }
 }
@@ -676,6 +708,20 @@ impl AppState {
         policy
             .origin_ring_mb
             .store(grant.proxy_config.origin_ring_mb.max(1), Ordering::Relaxed);
+        *policy.ad_policy.write_ok() = grant.proxy_config.ad_policy.clone();
+        // S3/CUE: the adapter's ad-URI signature. Normalized ONCE here (lowercased, blanks dropped) so the
+        // ingest hot path is a plain `contains` — and REPLACED wholesale, never merged, so a re-resolve onto a
+        // provider that declares none correctly clears the previous one.
+        *policy.ad_uri_contains.write_ok() = grant
+            .ad_signature
+            .map(|s| {
+                s.uri_contains
+                    .into_iter()
+                    .map(|p| p.trim().to_lowercase())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write_ok().insert(h.to_lowercase());
@@ -861,5 +907,42 @@ async fn telemetry_flusher(
         if let Ok(resp) = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await {
             crate::log::apply_level_response(resp).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The grant wire contract for S3/CUE. Node's `ResolveGrant.adSignature` is `{uriContains}|null`; this
+    /// pins BOTH directions of the seam Rust owns — the field name and the null/absent degradation.
+    #[test]
+    fn grant_carries_the_adapter_ad_signature() {
+        let json = r#"{
+            "target": "https://cdn.example.com/master.m3u8",
+            "upstreamHeaders": {},
+            "relabelSegment": null,
+            "allowPrivate": false,
+            "isEntry": true,
+            "proxyConfig": {},
+            "adSignature": { "uriContains": ["0_ad/creative/"] },
+            "policySource": "pluto",
+            "failover": null
+        }"#;
+        let g: Grant = serde_json::from_str(json).expect("a pluto grant deserializes");
+        let sig = g.ad_signature.expect("adSignature rides the grant");
+        assert_eq!(sig.uri_contains, vec!["0_ad/creative/".to_string()]);
+    }
+
+    /// A source that declares none, and a PRE-CUE Node that omits the key entirely, must both degrade to "no
+    /// URI ad detection" rather than to a parse error — the same posture every other knob takes.
+    #[test]
+    fn a_null_or_absent_ad_signature_degrades_to_none() {
+        let base = r#"{"target":"https://x/","upstreamHeaders":{},"relabelSegment":null,
+                       "allowPrivate":false,"isEntry":true,"proxyConfig":{}"#;
+        let explicit_null: Grant = serde_json::from_str(&format!("{base},\"adSignature\":null}}")).unwrap();
+        assert!(explicit_null.ad_signature.is_none(), "every non-pluto source sends null");
+        let absent: Grant = serde_json::from_str(&format!("{base}}}")).unwrap();
+        assert!(absent.ad_signature.is_none(), "a pre-CUE Node omits the key");
     }
 }

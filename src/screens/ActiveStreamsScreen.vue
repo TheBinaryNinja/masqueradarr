@@ -391,6 +391,28 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                     {{ sel.ingest.ingestedSegments }} seg · {{ (sel.ingest.ingestedBytes / 1048576).toFixed(1) }} MiB
                   </div>
                 </template>
+                <!-- S3/CUE: ad breaks the ingest detected. Only appears once a break has actually been seen,
+                     so a source with no cue tags and no declared ad-URI signature never shows this row. -->
+                <template v-if="sel.adBreak">
+                  <div class="k">Ad break</div>
+                  <div class="v mono" :style="sel.adBreak.inBreak ? 'color: var(--warn);' : ''">
+                    <template v-if="sel.adBreak.inBreak">
+                      in break · {{ sel.adBreak.durationSec.toFixed(0) }}s<template
+                        v-if="sel.adBreak.announcedSec > 0"> / ~{{ sel.adBreak.announcedSec.toFixed(0) }}s</template>
+                      · {{ sel.adBreak.segments }} seg
+                    </template>
+                    <template v-else>programming</template>
+                    · via {{ sel.adBreak.signal }}
+                  </div>
+                  <div class="k">Breaks seen</div>
+                  <div class="v mono">
+                    {{ sel.adBreak.breaksSeen }}<template v-if="sel.adBreak.totalBreakSec > 0">
+                      · {{ (sel.adBreak.totalBreakSec / 60).toFixed(1) }} min total</template>
+                    <!-- The measurement that decides whether a splice can ever be hidden: a decoder that has
+                         to reconfigure cannot be fooled by rewriting timestamps. -->
+                    · {{ sel.adBreak.profileChanged ? 'profile changes' : 'profile stable' }}
+                  </div>
+                </template>
                 <div class="k">Resolution</div><div class="v mono">{{ selTech?.resolution }}<template v-if="selTech?.fps"> @ {{ selTech?.fps }}fps</template></div>
                 <template v-if="selTech?.probed">
                   <div class="k">Pixel format</div><div class="v mono">{{ selTech.pixFmt ?? '—' }}</div>

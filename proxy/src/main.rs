@@ -25,6 +25,7 @@ mod state;
 mod stream;
 mod sync;
 mod tsmux;
+mod tsnorm;
 mod tsseg;
 
 use axum::{

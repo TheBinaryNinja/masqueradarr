@@ -57,6 +57,10 @@ export interface ProxyConfigDoc {
   // paths, no keys, no vendor tags). Default OFF = today's behavior byte-for-byte.
   originEnabled: boolean; // S3 Phase 1: INGEST only (fills the ring; output still the proxy path). Phase 2 adds the renderers.
   originRingMb: number; // per-channel ring cap (MiB). A 3-segment floor still wins over it — the data plane logs an `iop` warn when it does.
+  // S3/CUE Phase 2: what the local origin does with a DETECTED ad break. 'passthrough' republishes the ad
+  // segments (today's behaviour); 'replace' keeps them out of the ring and substitutes looped program from
+  // the ring's own tail, rebased onto a continuous timeline. Origin-only — meaningless without originEnabled.
+  adPolicy: string;
 }
 
 export const PROXY_CONFIG_DEFAULT_ID = 'app'; // the (Default) singleton row id
@@ -77,6 +81,7 @@ const ProxyConfigSchema = new Schema<ProxyConfigDoc>(
     segmentCacheTtlSec: { type: Number, default: null },
     originEnabled: { type: Boolean, required: true, default: false },
     originRingMb: { type: Number, required: true, default: 25 }, // envDefaults() is the operative seed
+    adPolicy: { type: String, required: true, default: 'passthrough' },
   },
   { versionKey: false },
 );

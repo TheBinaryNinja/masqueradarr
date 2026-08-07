@@ -43,6 +43,12 @@ export interface ResolveGrant {
   /** The resolved (Default/Custom) data-plane config for this stream — Rust applies the LIVE knobs, carries the rest. */
   proxyConfig: RuntimeProxyConfig;
   /**
+   * Ad-segment URI signature for sources that emit no cue tags (pluto). Adapter-declared, never inferred —
+   * the local origin's ad classifier falls back to this only when the manifest carried no CUE-OUT/DATERANGE.
+   * null for every other source, which is what makes detection fail closed.
+   */
+  adSignature: { uriContains: string[] } | null;
+  /**
    * Which per-source policy this grant's headers/relabel/hosts belong to: the SERVING candidate's adapter
    * id — equal to the mount source for attempt 0 / ungrouped channels, the child's `origin ?? source` for a
    * failover candidate. Rust keys its shared SourcePolicy by THIS (not the URL mount source), so a
@@ -240,6 +246,7 @@ export async function buildGrant(
     allowPrivate: false,
     isEntry,
     proxyConfig,
+    adSignature: adapter.proxy.adSignature ?? null,
     policySource: source,
     failover,
   };
@@ -374,6 +381,9 @@ async function buildFailoverGrant(
     allowPrivate: false,
     isEntry,
     proxyConfig,
+    // The CHILD's own signature, like its headers/relabel — a cross-provider backup must not inherit the
+    // parent provider's ad shape (same reason policySource names candSource).
+    adSignature: candAdapter.proxy.adSignature ?? null,
     policySource: candSource,
     failover,
   };

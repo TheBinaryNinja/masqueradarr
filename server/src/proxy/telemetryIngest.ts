@@ -7,6 +7,7 @@ import {
   noteSocketViewerClose,
   nextSocketConnId,
   noteIngest,
+  noteAdBreak,
   noteRingFootprint,
   type PlayerType,
 } from '../sources/core/streamTelemetry.js';
@@ -41,6 +42,10 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //    quantities, so this drives its own map (noteIngest) and never noteBytes. Fields: { source, entryUrl,
 //    status ('ok'|'stalled'|'resolve_failed'|'closed'), subscribers, ringSegments, ringBytes, headSeq,
 //    generation, ingestedSegments, ingestedBytes, evictedSegments, targetDuration }.
+//  · cue      — S3/CUE, Side-1 EVENT (not a snapshot): exactly two frames per ad break → noteAdBreak. Like
+//    `iop` it is an INGEST observation and never touches noteBytes — a break says nothing about egress.
+//    Fields: { source, entryUrl, state ('open'|'close'), breakId, signal, segments, durationSec,
+//    announcedSec, profileChanged }.
 //  · ring     — S3/ORIGIN, PROCESS-WIDE: the sidecar's whole origin registry summed into one frame →
 //    noteRingFootprint. Carries no channel, so it never reaches streamKey/the phase machine. Exists because
 //    `iop` describes one channel and only while that channel polls, which cannot answer how much RAM the
@@ -81,6 +86,15 @@ interface TelemetryEvent {
   origins?: unknown;
   subscribed?: unknown;
   ringCapBytes?: unknown;
+  // S3/CUE `cue` (ad-break edges). `state` is 'open'|'close' — distinct from the `iop` kind's `status` and
+  // the `upstream` kind's numeric `status`; the three never share a branch.
+  state?: unknown;
+  breakId?: unknown;
+  signal?: unknown;
+  segments?: unknown;
+  durationSec?: unknown;
+  announcedSec?: unknown;
+  profileChanged?: unknown;
 }
 
 // DST: Rust continuous-TS streamId → the socket-viewer connId minted on `open`. A tiny bounded map (one entry
@@ -157,6 +171,19 @@ function applyEvent(e: TelemetryEvent): void {
         evictedSegments: num(e.evictedSegments),
         targetDuration: num(e.targetDuration),
         at: Date.now(),
+      });
+    }
+  } else if (e.kind === 'cue') {
+    // S3/CUE Side-1 ad-break edge. Like `iop` this is an INGEST observation and must never reach noteBytes —
+    // a break says nothing about what we sent anyone. Exactly two frames per break (open/close).
+    if (source && entryUrl) {
+      noteAdBreak(source, entryUrl, str(e.state), {
+        signal: str(e.signal) || 'unknown',
+        breakId: num(e.breakId),
+        segments: num(e.segments),
+        durationSec: num(e.durationSec),
+        announcedSec: num(e.announcedSec),
+        profileChanged: e.profileChanged === true,
       });
     }
   } else if (e.kind === 'ring') {

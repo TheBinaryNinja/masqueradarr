@@ -30,6 +30,8 @@ export type RuntimeProxyConfig = ProxyConfigData;
 // upstreams; the data plane falls back to HLS for fMP4/AES). 'mp4'/'dash' still need RMX (deferred), so the
 // input gate rejects them. 'ts' applies to the /api/ext/v1 mount; the in-app player (/api/v1) is always HLS.
 export const OUTPUT_FORMATS = ['hls', 'ts'] as const;
+/** S3/CUE: what the local origin does with a detected ad break. Mirrors OUTPUT_FORMATS' shape exactly. */
+export const AD_POLICIES = ['passthrough', 'replace'] as const;
 
 // Clamp an integer env var into [min, max], falling back to `def` for an unset/invalid value.
 function envInt(raw: string | undefined, def: number, min: number, max: number): number {
@@ -58,6 +60,7 @@ export function envDefaults(): ProxyConfigData {
     // explicit per-playlist opt-in. 25 MiB ≈ a 60 s window at 3.3 Mbps for one channel.
     originEnabled: false,
     originRingMb: 25,
+    adPolicy: 'passthrough',
   };
 }
 
@@ -78,6 +81,7 @@ export function toRuntimeProxyConfig(doc: ProxyConfigDoc): RuntimeProxyConfig {
     segmentCacheTtlSec: typeof doc.segmentCacheTtlSec === 'number' ? doc.segmentCacheTtlSec : null,
     originEnabled: typeof doc.originEnabled === 'boolean' ? doc.originEnabled : d.originEnabled,
     originRingMb: typeof doc.originRingMb === 'number' ? doc.originRingMb : d.originRingMb,
+    adPolicy: AD_POLICIES.includes(doc.adPolicy as (typeof AD_POLICIES)[number]) ? doc.adPolicy : 'passthrough',
   };
 }
 
@@ -161,6 +165,14 @@ export function toExternalPatch(body: unknown): PatchResult {
       return { ok: false, error: `outputFormat (one of: ${OUTPUT_FORMATS.join(', ')}) required` };
     }
     $set.outputFormat = v;
+  }
+
+  if (b.adPolicy !== undefined) {
+    const v = b.adPolicy;
+    if (typeof v !== 'string' || !AD_POLICIES.includes(v as (typeof AD_POLICIES)[number])) {
+      return { ok: false, error: `adPolicy (one of: ${AD_POLICIES.join(', ')}) required` };
+    }
+    $set.adPolicy = v;
   }
 
   // streamInfRedux / failoverEnabled / failoverOnDefiniteError / originEnabled: plain boolean knobs (same gate).

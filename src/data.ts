@@ -196,6 +196,15 @@ export interface ActiveStream {
   } | null;
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's identity.
   failover: { attempt: number; candidateId: string; candidateName: string } | null;
+  // S3/CUE Side-1 ad-break state — non-null only once the data plane has DETECTED a break on this channel,
+  // so it stays null for every source that emits no cue tags and declares no ad-URI signature.
+  // `profileChanged` is the one that matters: it says the decoder had to reconfigure across the splice,
+  // which is why the break cannot simply be smoothed over.
+  adBreak: {
+    inBreak: boolean; signal: string; breakId: number;
+    segments: number; durationSec: number; announcedSec: number;
+    profileChanged: boolean; breaksSeen: number; totalBreakSec: number; at: number;
+  } | null;
 }
 // One connected viewer of an active stream (GET /api/active-streams/:channelId/clients).
 export interface StreamClient {

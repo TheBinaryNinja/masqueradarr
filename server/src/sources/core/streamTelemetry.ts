@@ -351,6 +351,65 @@ export function pruneIngest(activeKeys: Set<string>): void {
   for (const key of ingestByChannel.keys()) if (!activeKeys.has(key)) ingestByChannel.delete(key);
 }
 
+// ── S3/CUE: ad-break state (per channel) ────────────────────────────────────────────────────────────────
+// An EVENT stream, not a health snapshot: the sidecar sends exactly two frames per break (open/close), so
+// this map holds "what is happening on this channel right now" plus a small rolling tally the operator can
+// read a duty cycle off. Kept beside ingest health (same key, same prune) because a break is an INGEST-side
+// observation — it is never allowed to touch an egress sink, same rule as `iop`.
+
+export interface AdBreakState {
+  /** True between an `open` and its `close` — the channel is serving ad content right now. */
+  inBreak: boolean;
+  /** Which signal detected it: 'CueTag' | 'DateRange' | 'UriSignature'. */
+  signal: string;
+  /** Sidecar-local label, for correlating the open/close pair in the logs. */
+  breakId: number;
+  /** Segments seen in the CURRENT (or most recent) break. */
+  segments: number;
+  /** Observed seconds so far in the current break, or the final total once closed. */
+  durationSec: number;
+  /** What the cue tag announced, when it announced anything (0 = unannounced, e.g. every pluto break). */
+  announcedSec: number;
+  /** Whether the decoder configuration actually changed at this edge — the Phase 2 gate. */
+  profileChanged: boolean;
+  /** Breaks completed since this ingest started, and their summed observed duration. */
+  breaksSeen: number;
+  totalBreakSec: number;
+  at: number; // Date.now() of the last cue event
+}
+
+const adBreakByChannel = new Map<string, AdBreakState>();
+
+/** Record an ad-break edge from the data plane. `state` is 'open' or 'close'. */
+export function noteAdBreak(
+  source: string,
+  entryUrl: string,
+  state: string,
+  b: Omit<AdBreakState, 'inBreak' | 'breaksSeen' | 'totalBreakSec' | 'at'>,
+): void {
+  const key = streamKey(source, entryUrl);
+  const prev = adBreakByChannel.get(key);
+  const closing = state === 'close';
+  adBreakByChannel.set(key, {
+    ...b,
+    inBreak: !closing,
+    // Tally only on close, so a break in progress is never double-counted when it finally ends.
+    breaksSeen: (prev?.breaksSeen ?? 0) + (closing ? 1 : 0),
+    totalBreakSec: (prev?.totalBreakSec ?? 0) + (closing ? b.durationSec : 0),
+    at: Date.now(),
+  });
+}
+
+/** Ad-break state for a channel (null = no break ever seen — the normal case for most sources). */
+export function adBreakFor(channelKey: string): AdBreakState | null {
+  return adBreakByChannel.get(channelKey) ?? null;
+}
+
+/** Drop ad-break state for channels no longer active (statsHub calls this with the live key set). */
+export function pruneAdBreaks(activeKeys: Set<string>): void {
+  for (const key of adBreakByChannel.keys()) if (!activeKeys.has(key)) adBreakByChannel.delete(key);
+}
+
 // ── S3/ORIGIN aggregate ring footprint (process-wide) ──────────────────────────────────────────────────
 // The map above is PER-CHANNEL and is pruned against the active-stream set, so it cannot answer "how much RAM
 // are the rings holding" — an origin inside its 30s idle grace still owns its bytes with no active row to hang
