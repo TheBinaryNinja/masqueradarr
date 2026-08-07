@@ -56,9 +56,26 @@ export const DEFAULT_BUILTIN_META: BuiltinPlaylistMeta = {
   epgSyncSchedules: false,
 };
 
+/**
+ * How to recognize an AD segment for a source whose manifest carries no cue tags at all (pluto emits no
+ * #EXT-X-CUE-OUT / SCTE-35 / DATERANGE — its only signal is the creative's URI shape).
+ *
+ * Deliberately a POSITIVE, DECLARED literal rather than a heuristic. The local origin previously carried a
+ * generic "the segment URL's directory changed" detector and it was removed for false positives (see
+ * proxy/src/origin.rs `Boundary`): pluto rotates keyfiles inside one clip and some CDNs mint a per-segment
+ * opaque path token, so no URI *diff* can be made reliable. A fixed substring an adapter opts into is a
+ * different shape entirely — it fails closed when absent and never compares two URIs to each other.
+ */
+export interface AdSignature {
+  /** Match if the percent-DECODED segment URI contains any of these (case-insensitive). */
+  uriContains: string[];
+}
+
 export interface SourceProxy {
   /** Headers to inject on every upstream hop (dulo: Origin; dlhd: Referer+UA). */
   upstreamHeaders(url: string): Record<string, string>;
+  /** Ad-segment URI signature for cue-tag-less sources (pluto). Omitted ⇒ no URI-based ad detection. */
+  adSignature?: AdSignature;
   /** SSRF gate for direct hops (dulo: *.dulo.tv; dlhd: dynamic Set; direct/import: any http(s), private IPs allowed for LAN sources). */
   isAllowedUpstream(url: string): boolean;
   /** Per-rewritten-child hook (dlhd: dynamic-allow each host; dulo/common: null). */
@@ -73,6 +90,21 @@ export interface SourceProxy {
 export interface ResolveStreamOptions {
   /** Preferred upstream player (1-based; 0/undefined = Auto). Resolved from the per-channel pref → source default. */
   player?: number;
+  /**
+   * Validate one level deeper before accepting an upstream — for dlhd, fetch the chosen variant and require
+   * real segments, so a player that mints a valid-looking master but never streams is rejected while the
+   * player walk can still act on it. Set by the LIVE resolve seam only; the scheduled probe sweep leaves it
+   * off so its per-channel cost is unchanged. Adapters that don't understand it ignore it.
+   */
+  deep?: boolean;
+  /**
+   * "The upstream you handed me last time just failed — give me a DIFFERENT one." Set by the resolve seam
+   * on a play-time failover attempt. A `playerSelectable` adapter honors it by excluding the player it last
+   * served (dlhd burns it for a short TTL, so the walk skips it); adapters without alternates ignore it and
+   * simply re-resolve, which is today's behavior. Throwing when no alternate remains is correct — the seam
+   * turns that into a 502 and the data plane moves on to the channel's failover-group children.
+   */
+  advance?: boolean;
 }
 
 export interface SourceAdapter {
@@ -122,8 +154,13 @@ export interface SourceAdapter {
   /**
    * Entry URL → { masterUrl }. dulo/common: identity; dlhd: 3-hop scrape. `opts.player` (1-based; 0/undefined
    * = Auto) is honored only by `playerSelectable` sources; others ignore it (a 1-arg impl still satisfies this).
+   * `playerIndex`/`playerCount` are OPTIONAL reporting fields — a `playerSelectable` source returns which
+   * player actually served so the seam can log and badge it; a plain `{ masterUrl }` still satisfies this.
    */
-  resolveStream(entryUrl: string, opts?: ResolveStreamOptions): Promise<{ masterUrl: string }>;
+  resolveStream(
+    entryUrl: string,
+    opts?: ResolveStreamOptions,
+  ): Promise<{ masterUrl: string; playerIndex?: number; playerCount?: number }>;
   proxy: SourceProxy;
   /**
    * Optional post-sync side-effect, called by syncLive AFTER both channel stores are upserted/pruned.

@@ -458,12 +458,12 @@ async function fireReset() {
     </div>
 
     <div class="card" v-if="activeTab === 'video'">
-      <h3 class="section-title">In-app Video Player</h3>
+      <h3 class="section-title">Video Player</h3>
       <SettingsRow label="Player"
-        hint="Which player the channel slide-out uses. “Debug” swaps in a diagnostic player with a live hls.js status readout + event log for troubleshooting playback.">
+        hint="Which player the channel slide-out uses. “Ultimate” replaces the slide-out's player and bitrate chart with a launch button that opens a dedicated player window — full-size video plus the launching playlist's channel list and guide. “Debug” swaps in a diagnostic player with a live hls.js status readout + event log for troubleshooting playback.">
         <template #right>
           <Segmented :value="videoPlayer" @change="(v) => videoPlayer = v as any"
-            :options="[{ value: 'inapp', label: 'In-app video player' }, { value: 'debug', label: 'Debug video player' }]" />
+            :options="[{ value: 'inapp', label: 'In-app video player' }, { value: 'ultimate', label: 'Ultimate video player' }, { value: 'debug', label: 'Debug video player' }]" />
         </template>
       </SettingsRow>
     </div>
@@ -510,7 +510,7 @@ async function fireReset() {
     <div class="card" v-if="activeTab === 'advanced'">
       <h3 class="section-title">DaddyLive Player Source (Default)</h3>
       <SettingsRow label="Default player"
-        hint="DaddyLive offers several interchangeable players per channel — redundant feeds of the same stream. This is the default for every such channel; “Auto” uses Player 1 and falls back to the others if it’s down. You can override it per channel in the channel editor.">
+        hint="DaddyLive offers several players per channel, and each is an INDEPENDENT provider — they don’t all carry every channel, so the one that works varies per channel and changes over time. This is the default lead for every such channel; whichever you pick, the rest are tried when it fails and the winner is remembered for a while. “Auto” leads with Player 1. You can override it per channel in the channel editor.">
         <template #right>
           <Segmented :value="String(dlhdPlayer)" @change="(v) => dlhdPlayer = Number(v)"
             :options="[

@@ -196,6 +196,15 @@ export interface ActiveStream {
   } | null;
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's identity.
   failover: { attempt: number; candidateId: string; candidateName: string } | null;
+  // S3/CUE Side-1 ad-break state — non-null only once the data plane has DETECTED a break on this channel,
+  // so it stays null for every source that emits no cue tags and declares no ad-URI signature.
+  // `profileChanged` is the one that matters: it says the decoder had to reconfigure across the splice,
+  // which is why the break cannot simply be smoothed over.
+  adBreak: {
+    inBreak: boolean; signal: string; breakId: number;
+    segments: number; durationSec: number; announcedSec: number;
+    profileChanged: boolean; breaksSeen: number; totalBreakSec: number; at: number;
+  } | null;
 }
 // One connected viewer of an active stream (GET /api/active-streams/:channelId/clients).
 export interface StreamClient {
@@ -285,8 +294,21 @@ export interface SourceManifestEntry {
   sourceUrl: string;
   proxyPrefix: string;
   statusUrl: string | null;
+  // This source exposes several interchangeable upstream "players" per channel (DaddyLive), so the player
+  // picker is rendered for its channels. Read it instead of hardcoding source ids — see playerSelectable().
+  playerSelectable?: boolean;
   // The Add Playlist "Built-In" summary (server fills DEFAULT_BUILTIN_META when an adapter omits it).
   builtinMeta: BuiltinPlaylistMeta;
+}
+
+/**
+ * Does this channel's real provider expose selectable players? Route on the PROXY source (`origin ?? source`)
+ * — the same key the stream URL is built from — so a clone copy is judged by its real provider, and read the
+ * capability off the source manifest so a future player-selectable adapter lights the picker up for free.
+ */
+export function playerSelectable(ch: Pick<Channel, 'source' | 'origin'>): boolean {
+  const id = ch.origin ?? ch.source;
+  return SOURCES.value.some((s) => s.id === id && s.playerSelectable === true);
 }
 // Structured frequency-builder state (mirrors server CronFrequency) — lets the Edit drawer re-render the
 // builder without reverse-parsing the cron string. `mode` selects which other fields apply.
@@ -947,17 +969,9 @@ export async function reloadUserMetrics(): Promise<void> {
   USER_METRICS.value = await getJson<UserMetric[]>('/api/view-sessions/user-metrics');
 }
 
-// appPlayer proxy path for a source-playlist channel: /api/v1/<source>/<enc streamEntryUrl>. This is the
-// IN-APP player's stream URL (prefixed `appPlayer*` to distinguish it from the externalPlayer /api/ext
-// mount the M3U composer writes for third-party IPTV clients). Derived here (not stored) so a proxy-mount /
-// dlhd mirror change needs no data rewrite. Null for legacy channels.
-export function appPlayerProxyPath(ch: Channel): string | null {
-  // A clone copy's proxy source is its provider (`origin`, e.g. 'dulo') — its `source` is the clone id; a
-  // source-playlist channel's is its `source` (origin null). Mirrors serialize.ts (channelToExtinf).
-  const src = ch.origin || ch.source;
-  if (!ch.streamEntryUrl || !src) return null;
-  return `/api/v1/${src}/${encodeURIComponent(ch.streamEntryUrl)}`;
-}
+// appPlayerProxyPath now lives in streamPath.ts (dependency-free, so the standalone player.html entry can
+// import it without pulling in this whole module). Re-exported here so every existing caller is unchanged.
+export { appPlayerProxyPath } from './streamPath';
 
 // ISO-3166-1 alpha-2 → flag emoji (regional-indicator pair). Empty string for missing/invalid codes, so a
 // row with no resolved country just shows its location label (or an em-dash). Shared by the Active Streams +

@@ -147,6 +147,15 @@ const plutoAdapter = makeFastSource({
   isEntryUrl,
   resolveStream,
 
+  // Pluto's stitcher emits NO cue tags — no #EXT-X-CUE-OUT, no SCTE-35, no #EXT-X-DATERANGE (verified over a
+  // full pod: 68 manifest samples, 0 hits). The only signal is the creative's path. A program segment is
+  //   …/865_pluto/clip/<asset>_<title>/1080pDRM/…/hls/<startMs>-<endMs>/hls_300-000NN.ts
+  // while every ad in a pod is JIT-transmuxed from an mp4 creative:
+  //   …/v1/mp4/c(ts)/…/p(0_ad%2Fcreative%2F<id>_ad%2F720p%2F…)/…/N.ts
+  // `0_ad/creative/` is the stable, semantic part (the origin matches percent-DECODED). It cannot collide
+  // with a program path, which is always under `/clip/`.
+  adSignature: { uriContains: ['0_ad/creative/'] },
+
   // ── post-sync: gracenote crosswalk (wired; no-ops until the addon lands) THEN pluto self-EPG (live-only) ──
   async afterSync({ sourceId, live, raw }) {
     await applyEpgCrosswalk(sourceId, PLUTO_EPG_ADDON_FILE).catch((err) =>

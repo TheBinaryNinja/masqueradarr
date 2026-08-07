@@ -1776,6 +1776,17 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   max-width: 100%;
   margin-inline: 0;  /* override .player's auto-centering in this context */
 }
+/* Ultimate Player mode: the launch button that stands in for the player + liveline block. Centred and given
+   real vertical room so the drawer doesn't read as if the media block simply failed to load. */
+.chd-upl {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  padding: 26px 0 10px;
+}
+.chd-upl-hint { font-size: var(--fs-xs); }
 
 /* Section header */
 .section-title {

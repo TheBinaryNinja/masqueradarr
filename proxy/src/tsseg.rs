@@ -24,8 +24,8 @@
 //! so the whole boundary/duration story is unit-testable against synthetic packets with no network.
 
 /// One TS packet. The format is fixed-size and self-framing, which is what makes this tractable.
-const PKT: usize = 188;
-const SYNC: u8 = 0x47;
+pub(crate) const PKT: usize = 188;
+pub(crate) const SYNC: u8 = 0x47;
 
 /// PCR base ticks per second (the 90 kHz clock the 33-bit base counts in).
 const PCR_HZ: f64 = 90_000.0;
@@ -36,7 +36,7 @@ const PCR_WRAP: u64 = 1 << 33;
 
 /// Stream types that carry video in a PMT. Anything else (audio, subtitles, data) is ignored for cutting —
 /// a segment boundary is only meaningful at a VIDEO random-access point.
-fn is_video_stream_type(t: u8) -> bool {
+pub(crate) fn is_video_stream_type(t: u8) -> bool {
     matches!(t, 0x01 | 0x02 | 0x10 | 0x1B | 0x24 | 0x42 | 0xD1 | 0xEA)
 }
 
@@ -258,7 +258,7 @@ fn psi_payload(pkt: &[u8]) -> Option<&[u8]> {
 }
 
 /// First `program_map_PID` in a PAT.
-fn parse_pat(pkt: &[u8]) -> Option<u16> {
+pub(crate) fn parse_pat(pkt: &[u8]) -> Option<u16> {
     let s = psi_payload(pkt)?;
     if s.len() < 8 || s[0] != 0x00 {
         return None; // table_id 0x00 = PAT
@@ -283,6 +283,26 @@ fn parse_pat(pkt: &[u8]) -> Option<u16> {
 
 /// First VIDEO `elementary_PID` in a PMT.
 fn parse_pmt_video_pid(pkt: &[u8]) -> Option<u16> {
+    parse_pmt(pkt).and_then(|m| m.video_pid())
+}
+
+/// Everything a PMT declares that a splice check cares about: the PCR clock's PID and the full elementary
+/// stream list. `parse_pmt_video_pid` is the cutting path's narrow view of this.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct PmtInfo {
+    pub pcr_pid: u16,
+    /// `(elementary_PID, stream_type)` in PMT order — order is part of the fingerprint, since a reordered
+    /// PMT means a different mux even when the set matches.
+    pub streams: Vec<(u16, u8)>,
+}
+
+impl PmtInfo {
+    pub(crate) fn video_pid(&self) -> Option<u16> {
+        self.streams.iter().find(|(_, t)| is_video_stream_type(*t)).map(|(p, _)| *p)
+    }
+}
+
+pub(crate) fn parse_pmt(pkt: &[u8]) -> Option<PmtInfo> {
     let s = psi_payload(pkt)?;
     if s.len() < 12 || s[0] != 0x02 {
         return None; // table_id 0x02 = PMT
@@ -292,18 +312,170 @@ fn parse_pmt_video_pid(pkt: &[u8]) -> Option<u16> {
     if end > s.len() || section_len < 13 {
         return None;
     }
+    let pcr_pid = (((s[8] & 0x1F) as u16) << 8) | s[9] as u16;
     let program_info_len = (((s[10] & 0x0F) as usize) << 8) | s[11] as usize;
+    let mut streams = Vec::new();
     let mut i = 12 + program_info_len;
     while i + 5 <= end - 4 {
         let stream_type = s[i];
         let pid = (((s[i + 1] & 0x1F) as u16) << 8) | s[i + 2] as u16;
         let es_info_len = (((s[i + 3] & 0x0F) as usize) << 8) | s[i + 4] as usize;
-        if is_video_stream_type(stream_type) {
-            return Some(pid);
-        }
+        streams.push((pid, stream_type));
         i += 5 + es_info_len;
     }
-    None
+    Some(PmtInfo { pcr_pid, streams })
+}
+
+// ── S3/CUE: splice-boundary stream fingerprint ───────────────────────────────────────────────────────────
+//
+// Answers ONE question about a splice: can the decoder keep its configuration across this join, or must it
+// reconfigure? That is what decides whether an `#EXT-X-DISCONTINUITY` is load-bearing or merely cosmetic —
+// and, later, whether substituted filler can be codec-matched to the program around it.
+//
+// Parameter sets are HASHED, never parsed. Identical SPS bytes imply identical resolution, profile, level,
+// frame rate and VUI *by construction*, and a spurious "changed" (same resolution, re-emitted SPS with a
+// different VUI) only makes us MORE conservative. Parsing an H.264 SPS instead would mean un-escaping
+// emulation-prevention bytes and Exp-Golomb-decoding through frame cropping — the most error-prone code we
+// could add, for a strictly weaker guarantee. This scan is read-only and allocates one bounded buffer.
+
+/// How much video elementary stream to accumulate while hunting for the parameter sets. They sit at the head
+/// of the first access unit, so this only has to cover a keyframe's leading NALs — not the whole segment.
+const PARAM_SCAN_CAP: usize = 96 * 1024;
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+
+fn fnv1a(bytes: &[u8]) -> u64 {
+    let mut h = FNV_OFFSET;
+    for b in bytes {
+        h ^= *b as u64;
+        h = h.wrapping_mul(FNV_PRIME);
+    }
+    h
+}
+
+/// A segment's decoder-configuration fingerprint.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StreamProfile {
+    pub pcr_pid: u16,
+    pub streams: Vec<(u16, u8)>,
+    /// FNV-1a over the concatenated video parameter-set NALs (H.264 SPS+PPS, HEVC VPS+SPS+PPS). `None` when
+    /// none were found — which is itself a reason to stay conservative, not a reason to assume a match.
+    pub video_params: Option<u64>,
+}
+
+impl StreamProfile {
+    /// Whether a decoder configured for `self` can continue into `next` untouched. Deliberately strict:
+    /// anything we could not positively verify counts as a change.
+    pub fn compatible_with(&self, next: &StreamProfile) -> bool {
+        self.pcr_pid == next.pcr_pid
+            && self.streams == next.streams
+            && self.video_params.is_some()
+            && self.video_params == next.video_params
+    }
+}
+
+/// Fingerprint one decrypted TS segment. `None` when the bytes carry no PMT — parameters are then
+/// unverifiable, which callers must treat as "changed".
+pub(crate) fn scan_profile(bytes: &[u8]) -> Option<StreamProfile> {
+    let mut pmt_pid: Option<u16> = None;
+    let mut pmt: Option<PmtInfo> = None;
+    let mut video_pid: Option<u16> = None;
+    let mut es: Vec<u8> = Vec::new();
+
+    let mut i = 0usize;
+    while i + PKT <= bytes.len() {
+        if bytes[i] != SYNC {
+            // Resync exactly like the segmenter does rather than trusting alignment.
+            i += 1;
+            continue;
+        }
+        let pkt = &bytes[i..i + PKT];
+        i += PKT;
+        let pid = (((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16;
+        if pid == 0x1FFF || pkt[1] & 0x80 != 0 {
+            continue; // null padding, or transport_error_indicator set — never parse corrupt packets
+        }
+        if pid == 0 {
+            pmt_pid = pmt_pid.or_else(|| parse_pat(pkt));
+        } else if Some(pid) == pmt_pid && pmt.is_none() {
+            pmt = parse_pmt(pkt);
+            video_pid = pmt.as_ref().and_then(|m| m.video_pid());
+        } else if Some(pid) == video_pid && es.len() < PARAM_SCAN_CAP {
+            if let Some(p) = es_payload(pkt) {
+                es.extend_from_slice(p);
+            }
+        }
+    }
+
+    let pmt = pmt?;
+    let video_params = video_pid.and_then(|_| {
+        let types: Vec<u8> = pmt.streams.iter().filter(|(_, t)| is_video_stream_type(*t)).map(|(_, t)| *t).collect();
+        parameter_sets(&es, types.first().copied().unwrap_or(0x1B))
+    });
+    Some(StreamProfile { pcr_pid: pmt.pcr_pid, streams: pmt.streams, video_params })
+}
+
+/// A packet's elementary-stream bytes, with any PES header stripped so the NAL scan never sees one.
+fn es_payload(pkt: &[u8]) -> Option<&[u8]> {
+    let afc = (pkt[3] >> 4) & 0b11;
+    let mut off = 4;
+    if afc == 0b10 || afc == 0b11 {
+        let len = pkt[4] as usize;
+        off = 5 + len;
+    }
+    if afc == 0b10 || off >= PKT {
+        return None; // adaptation only
+    }
+    let payload = &pkt[off..];
+    if pkt[1] & 0x40 == 0 {
+        return Some(payload); // continuation — already raw ES
+    }
+    // PUSI: this payload starts with a PES header. `00 00 01 <stream_id>`, then a 3-byte optional-header
+    // prelude whose third byte is the length of everything else before the ES data.
+    if payload.len() < 9 || payload[0..3] != [0x00, 0x00, 0x01] {
+        return Some(payload); // not a PES start we understand — hand it over unmodified
+    }
+    let hdr = 9 + payload[8] as usize;
+    payload.get(hdr..)
+}
+
+/// Hash the video parameter-set NALs at the head of an access unit. `stream_type` picks the NAL grammar:
+/// HEVC (0x24) puts the type in bits 6..1 of the first header byte, H.264 in the low 5 bits.
+fn parameter_sets(es: &[u8], stream_type: u8) -> Option<u64> {
+    let hevc = stream_type == 0x24;
+    let mut found: Vec<u8> = Vec::new();
+    let mut count = 0;
+    let mut i = 0usize;
+    while i + 4 < es.len() {
+        // Annex-B start code: 00 00 01 (a 4-byte 00 00 00 01 is just this preceded by a zero).
+        if es[i] != 0 || es[i + 1] != 0 || es[i + 2] != 1 {
+            i += 1;
+            continue;
+        }
+        let head = i + 3;
+        let nal_type = if hevc { (es[head] >> 1) & 0x3F } else { es[head] & 0x1F };
+        // H.264: SPS 7, PPS 8. HEVC: VPS 32, SPS 33, PPS 34.
+        let wanted = if hevc { matches!(nal_type, 32..=34) } else { matches!(nal_type, 7 | 8) };
+        if wanted {
+            // Run to the next start code — that delimits this NAL.
+            let mut j = head;
+            while j + 3 <= es.len() && !(es[j] == 0 && es[j + 1] == 0 && es[j + 2] == 1) {
+                j += 1;
+            }
+            found.extend_from_slice(&es[head..j.min(es.len())]);
+            count += 1;
+            // H.264 needs SPS+PPS, HEVC VPS+SPS+PPS. Stop once we plausibly have them so a stream that
+            // re-sends parameter sets per keyframe hashes the same bytes every time.
+            if count >= if hevc { 3 } else { 2 } {
+                break;
+            }
+            i = j;
+            continue;
+        }
+        i = head;
+    }
+    (!found.is_empty()).then(|| fnv1a(&found))
 }
 
 #[cfg(test)]
@@ -388,6 +560,67 @@ mod tests {
     fn parses_pat_and_pmt_to_the_video_pid() {
         assert_eq!(parse_pat(&pat(PMTPID)), Some(PMTPID));
         assert_eq!(parse_pmt_video_pid(&pmt(PMTPID, VPID)), Some(VPID));
+    }
+
+    // ── S3/CUE: the splice-boundary fingerprint ──────────────────────────────────────────────────────────
+
+    /// A video PES packet carrying Annex-B NALs: SPS (0x67) + PPS (0x68) + an IDR slice (0x65).
+    fn video_pes(sps_tail: u8) -> Vec<u8> {
+        let mut es = vec![0x00, 0x00, 0x01, 0x67, 0x64, 0x00, 0x28, sps_tail];
+        es.extend_from_slice(&[0x00, 0x00, 0x01, 0x68, 0xEE, 0x3C, 0xB0]);
+        es.extend_from_slice(&[0x00, 0x00, 0x01, 0x65, 0x88, 0x84, 0x00]);
+        // PES: start code + stream_id 0xE0 (video), unbounded length, no optional fields.
+        let mut payload = vec![0x00, 0x00, 0x01, 0xE0, 0x00, 0x00, 0x80, 0x00, 0x00];
+        payload.extend_from_slice(&es);
+        pkt(VPID, true, true, None, &payload)
+    }
+
+    fn segment_with(video_pid: u16, sps_tail: u8) -> Vec<u8> {
+        let mut s = Vec::new();
+        s.extend(pat(PMTPID));
+        s.extend(pmt(PMTPID, video_pid));
+        s.extend(video_pes(sps_tail));
+        s
+    }
+
+    #[test]
+    fn scan_profile_reads_the_pmt_and_hashes_the_parameter_sets() {
+        let p = scan_profile(&segment_with(VPID, 0x1F)).expect("a segment with a PMT fingerprints");
+        assert_eq!(p.pcr_pid, 0x64, "PCR_PID comes from PMT bytes 8-9");
+        assert_eq!(p.streams, vec![(VPID, 0x1Bu8)], "one H.264 elementary stream");
+        assert!(p.video_params.is_some(), "SPS+PPS were found behind the PES header");
+    }
+
+    #[test]
+    fn an_identical_encode_is_compatible_and_a_changed_sps_is_not() {
+        let a = scan_profile(&segment_with(VPID, 0x1F)).unwrap();
+        let same = scan_profile(&segment_with(VPID, 0x1F)).unwrap();
+        assert!(a.compatible_with(&same), "byte-identical parameter sets ⇒ no decoder reconfiguration");
+
+        // One SPS byte differing stands in for the real case: pluto's ads are 720p against 1080p program, and
+        // a resolution change lives entirely inside the SPS. No timestamp rewrite can hide this.
+        let changed = scan_profile(&segment_with(VPID, 0x20)).unwrap();
+        assert!(!a.compatible_with(&changed), "a different SPS must read as a parameter change");
+    }
+
+    #[test]
+    fn a_pid_remap_is_a_parameter_change_even_with_the_same_encode() {
+        let a = scan_profile(&segment_with(VPID, 0x1F)).unwrap();
+        let remapped = scan_profile(&segment_with(0x200, 0x1F)).unwrap();
+        assert!(!a.compatible_with(&remapped), "the demuxer's PID map changed under the decoder");
+    }
+
+    #[test]
+    fn unverifiable_segments_never_report_compatible() {
+        // No PMT at all ⇒ no fingerprint ⇒ callers must treat the splice as load-bearing.
+        assert_eq!(scan_profile(&video_pes(0x1F)), None);
+        // A PMT but no parameter sets ⇒ a fingerprint that can never match anything, including itself.
+        let mut no_params = Vec::new();
+        no_params.extend(pat(PMTPID));
+        no_params.extend(pmt(PMTPID, VPID));
+        let p = scan_profile(&no_params).unwrap();
+        assert_eq!(p.video_params, None);
+        assert!(!p.compatible_with(&p), "an unverified profile is never declared compatible");
     }
 
     #[test]

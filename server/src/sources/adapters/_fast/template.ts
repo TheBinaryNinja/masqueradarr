@@ -12,6 +12,7 @@
 
 import { createDynamicAllow } from './dynamicAllow.js';
 import type {
+  AdSignature,
   ArtifactType,
   BuiltinPlaylistMeta,
   RawListing,
@@ -42,6 +43,8 @@ export interface FastSourceOptions {
   resolveStream?(entryUrl: string): Promise<{ masterUrl: string }>; // default: identity
   isAllowedUpstream?(url: string): boolean; // default: scoped static suffix allowlist + private-IP block
   onPlaylistChildHost?: ((host: string) => void) | null; // default: null (static allowlist learns nothing)
+  /** Ad-segment URI signature for a cue-tag-less stitcher (pluto). Default: undefined ⇒ no URI ad detection. */
+  adSignature?: AdSignature;
   relabelSegmentContentType?(url: string, contentType: string, type?: ArtifactType): string;
   classifyArtifact?(url: string): ArtifactType;
 }
@@ -88,6 +91,7 @@ export function makeFastSource(opts: FastSourceOptions): SourceAdapter {
       upstreamHeaders: opts.upstreamHeaders ?? (() => ({})),
       isAllowedUpstream,
       onPlaylistChildHost: opts.onPlaylistChildHost ?? null,
+      adSignature: opts.adSignature,
       relabelSegmentContentType:
         opts.relabelSegmentContentType ??
         ((_url: string, contentType: string) => contentType || 'application/octet-stream'),

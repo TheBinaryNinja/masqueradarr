@@ -304,7 +304,7 @@ each package and by running the app.
 | LG Channels | `makeFastSource` · Public mirror via `schedulelist` (catalog + XMLTV guide in one call) · direct-HLS masters bearing `[DEVICE_ID]/[UA]/[NONCE]/…` VAST macros · per-play macro expansion via `resolveStream` |
 | (**Local Now**) | Sentinel-resolve adapter · `localnow://<id>?slug=<slug>` stored at sync · resolves to a fresh signed CDN master per play · market-scoped channel set imported via `local/import.ts` · US-only (geo-gated) |
 | Plex | _(planned)_ |
-| DaddyLive | HTML catalog scraped from a runtime-selected rotating mirror (`mirrorDirectory.ts`) · `watch.php?id=<N>` entry sentinel · 3-hop, Referer-gated scrape per play to a fresh signed master · dynamic SSRF allow-set · self-EPG via schedule scrape + Gracenote crosswalk |
+| DaddyLive | HTML catalog scraped from a runtime-selected rotating mirror (`mirrorDirectory.ts`) · `watch.php?id=<N>` entry sentinel · 3-hop, Referer-gated scrape per play to a fresh signed playlist · **six independent embed providers per channel** ("Player 1..6"), walked and learned per channel (`playerMemory.ts`) with a provider-agnostic hop-2 reader (`embedExtractors.ts`) · dynamic SSRF allow-set · self-EPG via schedule scrape + Gracenote crosswalk |
 | Pluto TV | `makeFastSource` · sentinel+resolve · `/v2/guide/channels` catalog yields channel IDs only · stateful per-region boot session (`boot.pluto.tv`) · per-play JWT-stitched HLS master from the stitcher CDN |
 | STIRR | `makeFastSource` · sentinel+resolve · `videos/list` catalog yields video IDs + provider-EPG pointers · per-play resolve via `POST /playable` · bundled provider guide |
 | Samsung TV+ | `makeFastSource` · Public mirror (`i.mjh.nz`) · no auth · jmp2.uk short-link redirect followed per play to a rotating CDN master · dynamic SSRF allow-set learned at play time |
@@ -469,7 +469,7 @@ All adapters implement the `SourceAdapter` contract (`server/src/sources/types.t
 | `hdhomerun` | HDHomeRun | — | Catalog import (playback dormant — needs remux) | — | — |
 | `local` | Local Now | — | Sentinel → rotating CDN | — | — |
 | `dulo` | dulo.tv | session | `dulo://` sentinel → playbackUrl | — | yes |
-| `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape | yes | yes |
+| `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape, 6 providers | yes | yes |
 | `tubi` | Tubi.TV | — | `tubi://` → Tubi API | yes (inline) | — |
 | `xumo` | Xumo Play | — | broadcast.json → 3-hop API | yes | — |
 | `stirr` | STIRR | — | `/playable` → 1-hop POST | yes | — |
@@ -559,6 +559,41 @@ Seamless mid-segment splicing is a future enhancement — a parent dying mid-pla
 next playlist refetch.
 
 <img src="docs/diagrams/failover-groups.svg" alt="Failover groups end to end: the group modal writes three fields on each channel doc and cascades the parent's EPG identity; compose exports only the parent; at play time a failed ENTRY establish sends the Rust data plane through failover_walk, resolving each ordered Active child through Node's seam (200 grant, 502 try-the-next, 410 exhausted) until one answers, after which the stream's cursor sticks to the winning candidate.">
+
+## DaddyLive players (alternate upstreams)
+
+DaddyLive's channel pages offer **PLAYER 1..6**. These are **not** redundant embeds of one feed — each
+button loads a **different third-party provider**, and they do **not** all carry the same channels. Ch 648
+(Boomerang USA), verified live: Player 1's own CDN `404`s it, Players 2/3/5/6 are Cloudflare-gated, dead or
+NXDOMAIN, and only Player 4 — an entirely separate operator — actually carries it.
+
+So picking a player picks a **provider**, and which provider works varies per channel and drifts over time.
+The resolver is built around that:
+
+- **Provider-agnostic hop 2.** Any `<iframe>` on the player page is a candidate (the `/premiumtv/` embed is
+  simply tried first), and the signed playlist URL is read by an ordered chain of extractors —
+  base64/`atob`, plaintext, an XOR-array `eval` blob, a p·a·c·k·e·d payload, hex escapes
+  (`sources/adapters/dlhd/embedExtractors.ts`). Each recovers whatever constants the page carries rather
+  than hardcoding them, so a key rotation self-heals; a genuinely new obfuscation is a ~10-line addition.
+- **Both playlist shapes are valid.** Providers return either a master (`#EXT-X-STREAM-INF`) or a media
+  playlist (`#EXTINF`) — an `#EXTM3U` with neither is now rejected instead of being served as an empty stream.
+- **Learned + sticky.** The winning player is remembered per channel (~30 min) and a failing one is burnt
+  (~5 min), so the common case stays a **single** hop-1 fetch even when the winner isn't Player 1
+  (`playerMemory.ts`). The operator's pick — Settings → *DaddyLive Player Source*, or the per-channel
+  override in the channel drawer — always leads; the rest are the fallback order.
+- **Bounded.** Every hop has a timeout (`DLHD_HOP_TIMEOUT_MS`, 8 s) and the whole walk has a deadline
+  (`DLHD_RESOLVE_BUDGET_MS`, 20 s) so a hanging provider can't outlast a player's manifest timeout.
+- **Play-time rotation.** The data plane's first failover attempt re-resolves the same channel through a
+  *different provider* (the seam burns the one that was serving); only then does it start walking the
+  channel's configured [failover-group children](#failover-groups-channel-backups). Active Streams badges
+  the result — `failover → Player 4`.
+
+Knobs: `DLHD_PLAYER_STICKY_MS`, `DLHD_PLAYER_BURN_MS`, `DLHD_HOP_TIMEOUT_MS`, `DLHD_RESOLVE_BUDGET_MS`,
+plus the existing `DLHD_PLAYER` (source-wide default, also settable in the UI) and `DLHD_BASE`.
+
+> These providers are third parties that rotate — this layer is the most churn-prone part of the adapter by
+> design. When DaddyLive itself stops carrying a channel on **every** player, failover groups are the
+> durable answer.
 
 ## Playlists + EPG Sources with Playlist Binding
 
@@ -732,6 +767,9 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
   the failover walk below).
 - **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd to re-probe and
   rotate to a live mirror mid-stream.
+- **Alternate upstreams** — where a source exposes several interchangeable providers per channel (dlhd's
+  Player 1..6), a failed establish first re-resolves the SAME channel through a **different provider**
+  before any configured backup is considered. See [DaddyLive players](#daddylive-players-alternate-upstreams).
 - **Failover groups** — when a channel has configured backups and its stream still won't establish, the
   engine walks the ordered children (`attempt=1,2,…` against the resolve seam) and serves the first live
   one under the parent's identity, then sticks to it for the session. See

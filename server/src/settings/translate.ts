@@ -29,6 +29,16 @@ export const DEFAULT_NAMESERVERS = '8.8.8.8,8.8.4.4';
 // The external-data shape minus the singleton _id — what seeds/patches/reads operate on.
 export type SettingsData = Omit<SettingsDoc, '_id'>;
 
+// The three player modes the SPA can render, and the one coercion used by ALL three directional maps below
+// (env seed, read projection, write validator) so they can never disagree about what a valid mode is.
+// Anything unrecognized — a legacy row, a bad env var, a hand-edited doc — collapses to the 'inapp' default.
+export const VIDEO_PLAYER_MODES = ['inapp', 'ultimate', 'debug'] as const;
+export type VideoPlayerMode = (typeof VIDEO_PLAYER_MODES)[number];
+
+function asVideoPlayerMode(v: unknown): VideoPlayerMode {
+  return VIDEO_PLAYER_MODES.includes(v as VideoPlayerMode) ? (v as VideoPlayerMode) : 'inapp';
+}
+
 // Internal runtime shape returned by the API. Diverges from SettingsData by REDACTING the secret MaxMind
 // license key (GET /api/settings is a public read): the raw key is never returned, only a boolean telling
 // the SPA whether one is configured. toRuntimeSettings() is the sole read-projection authority, so this is
@@ -49,7 +59,7 @@ export function envDefaults(): SettingsData {
     // for the EPG sync stamp; re-derived on every timezone save in toExternalPatch.
     offset: zoneOffsetString(timezone),
     darkMode: true,
-    videoPlayer: process.env.VIDEO_PLAYER === 'debug' ? 'debug' : 'inapp',
+    videoPlayer: asVideoPlayerMode(process.env.VIDEO_PLAYER),
     // Source-wide default DaddyLive player (0 = Auto). Seedable from DLHD_PLAYER; clamped to a non-negative int.
     dlhdPlayer: Math.max(0, Math.trunc(Number(process.env.DLHD_PLAYER)) || 0),
     // nameservers: hardcoded first-provision default (no longer env-derived — the NAMESERVER env was
@@ -80,7 +90,7 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     timezone: doc.timezone,
     offset: doc.offset ?? '+0000', // derived from timezone; surfaced read-only to the SPA
     darkMode: doc.darkMode,
-    videoPlayer: doc.videoPlayer === 'debug' ? 'debug' : 'inapp',
+    videoPlayer: asVideoPlayerMode(doc.videoPlayer),
     dlhdPlayer: typeof doc.dlhdPlayer === 'number' ? doc.dlhdPlayer : 0, // source-wide default DaddyLive player (0 = Auto)
     nameservers: doc.nameservers ?? null, // not secret — returned verbatim for the Settings UI
     logLevel: typeof doc.logLevel === 'number' ? doc.logLevel : 2,
@@ -126,12 +136,14 @@ export function toExternalPatch(body: unknown): PatchResult {
       $set[key] = v;
     }
   }
-  // videoPlayer: which in-app player the channel slide-out renders. Enum 'inapp' | 'debug' (default 'inapp').
+  // videoPlayer: which player the channel slide-out renders. Enum 'inapp' | 'ultimate' | 'debug'
+  // (default 'inapp'). Unlike the read/seed maps this does NOT coerce — an unknown mode is a client bug, so
+  // it 400s rather than silently downgrading the operator's choice to 'inapp'.
   if (b.videoPlayer !== undefined) {
-    if (b.videoPlayer !== 'inapp' && b.videoPlayer !== 'debug') {
-      return { ok: false, error: "videoPlayer ('inapp' or 'debug') required" };
+    if (!VIDEO_PLAYER_MODES.includes(b.videoPlayer as VideoPlayerMode)) {
+      return { ok: false, error: `videoPlayer (${VIDEO_PLAYER_MODES.map((m) => `'${m}'`).join(', ')}) required` };
     }
-    $set.videoPlayer = b.videoPlayer as 'inapp' | 'debug';
+    $set.videoPlayer = b.videoPlayer as VideoPlayerMode;
   }
   // dlhdPlayer: source-wide default DaddyLive player. 0 = Auto; 1..N selects a specific player. A generous
   // upper bound (out-of-range clamps to the lead player at resolve time, so the cap only bounds the dropdown).

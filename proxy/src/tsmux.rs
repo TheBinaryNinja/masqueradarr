@@ -83,6 +83,30 @@ pub(crate) struct SegRef {
     pub key: Option<SegKey>,
     pub duration: f64,       // #EXTINF for this segment (0.0 when absent/unparseable)
     pub discontinuity: bool, // an #EXT-X-DISCONTINUITY tag preceded this segment
+    /// Set while an upstream ad-break marker is open over this segment. `None` ⇒ either the segment is
+    /// program, or the source emits no cue tags at all (pluto — see `origin::ad_state`, which falls back to
+    /// an adapter-declared URI signature).
+    pub cue: Option<CueState>,
+}
+
+/// Which tag family opened the break. Named rather than a bare bool for the same reason `origin::Boundary`
+/// is: the `iop:cue` log has to say WHICH signal fired, or a detector bug is indistinguishable from real
+/// ad-pod churn (the lesson from the two removed URL heuristics — `origin.rs:96`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CueKind {
+    /// `#EXT-X-CUE-OUT` / `-CONT` — the de-facto ad-break tags most packagers emit.
+    CueOut,
+    /// `#EXT-X-DATERANGE:…SCTE35-OUT=…` — RFC 8216 §4.3.2.7's spelling of the same thing.
+    DateRange,
+}
+
+/// An OPEN ad break, carried positionally onto every segment it covers.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct CueState {
+    pub kind: CueKind,
+    /// The break's ANNOUNCED total, seconds; 0.0 when the tag carried none. Advisory only — the real duration
+    /// is what we actually observe, since packagers routinely close a break early with `#EXT-X-CUE-IN`.
+    pub duration: f64,
 }
 
 pub(crate) struct MediaPlaylist {
@@ -99,6 +123,8 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
     let mut endlist = false;
     let mut segments: Vec<SegRef> = Vec::new();
     let mut active_key: Option<SegKey> = None;
+    // Sticky like #EXT-X-KEY (NOT pending): a cue-out covers every following segment until a cue-in closes it.
+    let mut active_cue: Option<CueState> = None;
     // Both are PENDING state consumed by the next segment line: an #EXTINF and an #EXT-X-DISCONTINUITY apply
     // to the segment that FOLLOWS them, so they are cleared on use (unlike #EXT-X-KEY, which is sticky).
     let mut pending_duration = 0f64;
@@ -121,12 +147,38 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
             pending_duration = v.split(',').next().unwrap_or("").trim().parse().unwrap_or(0.0);
         } else if let Some(attrs) = line.strip_prefix("#EXT-X-KEY:") {
             active_key = parse_key(attrs); // METHOD=NONE / unparseable ⇒ None ⇒ following segments are cleartext
+        } else if line.starts_with("#EXT-X-CUE-IN") {
+            active_cue = None;
+        } else if line.starts_with("#EXT-X-CUE-OUT") {
+            // The PREFIX guard matters here too: `-CONT` merely re-states an already-open break, and its
+            // value is "elapsed/total" rather than a total — so it must not overwrite the duration the
+            // opening tag announced. It DOES open one when we joined mid-break and never saw the CUE-OUT.
+            let cont = line.starts_with("#EXT-X-CUE-OUT-CONT");
+            active_cue = Some(match (cont, active_cue) {
+                (true, Some(open)) => open,
+                _ => CueState { kind: CueKind::CueOut, duration: cue_duration(line) },
+            });
+        } else if let Some(attrs) = line.strip_prefix("#EXT-X-DATERANGE:") {
+            // SCTE35-IN wins when a range carries both: closing is the safer read of an ambiguous marker.
+            let pairs = split_attrs(attrs);
+            let has = |n: &str| pairs.iter().any(|(k, _)| k.eq_ignore_ascii_case(n));
+            if has("SCTE35-IN") {
+                active_cue = None;
+            } else if has("SCTE35-OUT") {
+                let duration = pairs
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case("DURATION") || k.eq_ignore_ascii_case("PLANNED-DURATION"))
+                    .and_then(|(_, v)| v.trim_matches('"').parse().ok())
+                    .unwrap_or(0.0);
+                active_cue = Some(CueState { kind: CueKind::DateRange, duration });
+            }
         } else if !line.starts_with('#') {
             segments.push(SegRef {
                 uri: line.to_string(),
                 key: active_key.clone(),
                 duration: pending_duration,
                 discontinuity: pending_discontinuity,
+                cue: active_cue,
             });
             pending_duration = 0f64;
             pending_discontinuity = false;
@@ -200,6 +252,29 @@ fn parse_iv(v: &str) -> Option<[u8; 16]> {
     let mut iv = [0u8; 16];
     iv.copy_from_slice(&bytes);
     Some(iv)
+}
+
+/// The announced total, seconds, from a `#EXT-X-CUE-OUT` family tag. There is no standard spelling — this
+/// accepts the four shapes seen in the wild and returns 0.0 for anything else (an unannounced break is
+/// normal, not an error):
+///   `…CUE-OUT:30.000` · `…CUE-OUT:DURATION=30` · `…CUE-OUT-CONT:8.0/30.0` · `…CUE-OUT-CONT:…,Duration=30`
+fn cue_duration(line: &str) -> f64 {
+    let Some((_, v)) = line.split_once(':') else {
+        return 0.0; // a bare `#EXT-X-CUE-OUT` announces nothing
+    };
+    let v = v.trim();
+    // "elapsed/total" — the total is what we want, and it is never the first field.
+    if let Some((_, total)) = v.rsplit_once('/') {
+        return total.trim().parse().unwrap_or(0.0);
+    }
+    if v.contains('=') {
+        return split_attrs(v)
+            .iter()
+            .find(|(k, _)| k.eq_ignore_ascii_case("DURATION"))
+            .and_then(|(_, d)| d.trim_matches('"').parse().ok())
+            .unwrap_or(0.0);
+    }
+    v.parse().unwrap_or(0.0)
 }
 
 /// A MASTER playlist (variant selection needed) vs. a MEDIA playlist (segments directly).
@@ -694,6 +769,58 @@ mod tests {
         assert_eq!(mp.segments[0].duration, 5.005);
         assert_eq!(mp.segments[1].duration, 4.0); // "#EXTINF:4.0,title here" — the title is dropped
         assert_eq!(mp.segments[2].duration, 3.5);
+    }
+
+    #[test]
+    fn cue_out_is_sticky_until_cue_in() {
+        // Unlike #EXTINF/#EXT-X-DISCONTINUITY (pending, one segment), a cue-out covers EVERY following
+        // segment until it is closed — the #EXT-X-KEY posture.
+        let m = "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n\
+                 #EXTINF:6,\npgm1.ts\n\
+                 #EXT-X-CUE-OUT:30.000\n#EXTINF:6,\nad1.ts\n\
+                 #EXTINF:6,\nad2.ts\n\
+                 #EXT-X-CUE-IN\n#EXTINF:6,\npgm2.ts\n";
+        let mp = parse_media_playlist(m);
+        assert_eq!(mp.segments.len(), 4);
+        assert_eq!(mp.segments[0].cue, None, "program before the break");
+        assert_eq!(mp.segments[1].cue.unwrap().kind, CueKind::CueOut);
+        assert_eq!(mp.segments[1].cue.unwrap().duration, 30.0);
+        assert!(mp.segments[2].cue.is_some(), "the break stays open across segments");
+        assert_eq!(mp.segments[3].cue, None, "CUE-IN closes it");
+    }
+
+    #[test]
+    fn cue_out_cont_keeps_the_announced_total() {
+        // `-CONT` re-states an open break and carries elapsed/total, so it must not clobber the opening
+        // tag's total — and it must not be swallowed by the `#EXT-X-CUE-OUT` prefix arm.
+        let m = "#EXTM3U\n#EXT-X-CUE-OUT:30.000\n#EXTINF:6,\na.ts\n\
+                 #EXT-X-CUE-OUT-CONT:6.000/30.000\n#EXTINF:6,\nb.ts\n";
+        let mp = parse_media_playlist(m);
+        assert_eq!(mp.segments[1].cue.unwrap().duration, 30.0);
+        // …but joining mid-break (a -CONT with nothing open) still opens one, using its total.
+        let joined = parse_media_playlist("#EXTM3U\n#EXT-X-CUE-OUT-CONT:12.0/30.0\n#EXTINF:6,\nx.ts\n");
+        assert_eq!(joined.segments[0].cue.unwrap().duration, 30.0);
+    }
+
+    #[test]
+    fn daterange_scte35_opens_and_closes() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-DATERANGE:ID=\"1\",START-DATE=\"2026-01-01T00:00:00Z\",PLANNED-DURATION=120.0,SCTE35-OUT=0xFC30\n\
+                 #EXTINF:6,\nad.ts\n\
+                 #EXT-X-DATERANGE:ID=\"1\",SCTE35-IN=0xFC30\n#EXTINF:6,\npgm.ts\n";
+        let mp = parse_media_playlist(m);
+        assert_eq!(mp.segments[0].cue.unwrap().kind, CueKind::DateRange);
+        assert_eq!(mp.segments[0].cue.unwrap().duration, 120.0);
+        assert_eq!(mp.segments[1].cue, None);
+    }
+
+    #[test]
+    fn cue_duration_accepts_the_wild_spellings() {
+        assert_eq!(cue_duration("#EXT-X-CUE-OUT:30.000"), 30.0);
+        assert_eq!(cue_duration("#EXT-X-CUE-OUT:DURATION=30"), 30.0);
+        assert_eq!(cue_duration("#EXT-X-CUE-OUT-CONT:8.0/30.0"), 30.0);
+        assert_eq!(cue_duration("#EXT-X-CUE-OUT-CONT:ElapsedTime=8.0,Duration=30.0"), 30.0);
+        assert_eq!(cue_duration("#EXT-X-CUE-OUT"), 0.0, "an unannounced break is normal, not an error");
     }
 
     #[test]

@@ -16,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, adBreakFor, pruneAdBreaks, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState } from '../sources/core/streamTelemetry.js';
 import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -91,6 +91,9 @@ export interface DisplayStream {
   // `bandwidth` (egress across all viewers): with N viewers, egress ≈ N × ingest. That divergence IS the
   // signal — it says the ring is doing its job.
   ingest: IngestHealth | null;
+  // S3/CUE Side-1 ad-break state. Null until the data plane has actually detected a break on this channel,
+  // so it stays null for every source that emits no cue tags AND declares no ad-URI signature.
+  adBreak: AdBreakState | null;
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -171,12 +174,16 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       probe: null, // the deep technical snapshot is not rebuilt (video-engine teardown)
       failover: failoverFor(r.channelKey),
       ingest: ingestFor(r.channelKey),
+      // S3/CUE: null for every source that never signals a break (most of them) — the row only grows an
+      // ad-break readout once the data plane has actually seen one.
+      adBreak: adBreakFor(r.channelKey),
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
   for (const key of bufferDebounce.keys()) if (!activeKeys.has(key)) bufferDebounce.delete(key);
   pruneFailoverServing(activeKeys);
   pruneIngest(activeKeys);
+  pruneAdBreaks(activeKeys);
   return out;
 }
 

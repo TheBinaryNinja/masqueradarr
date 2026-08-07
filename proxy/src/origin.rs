@@ -27,6 +27,7 @@
 //! process.
 
 use bytes::Bytes;
+use percent_encoding::percent_decode_str;
 use std::collections::{HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
@@ -41,7 +42,7 @@ use crate::state::{AppState, SourcePolicy};
 use crate::sync::{LockExt, RwExt};
 use crate::tsmux::{
     decrypt_aes128_cbc, has_map, is_master, parse_media_playlist, pick_variant, poll_interval, unsupported_encryption,
-    SegRef,
+    CueKind, SegRef,
 };
 
 /// Per-channel ring cap, MiB. Shipped default; the operator raises it per playlist via `originRingMb`.
@@ -64,6 +65,28 @@ const IDLE_TICK: Duration = Duration::from_secs(5);
 /// re-resolves (Node re-runs `resolveStream`, driving mirror rotation) rather than spinning on a dead target.
 const MAX_EMPTY_POLLS: u32 = 5;
 
+/// …but re-resolving the SAME candidate only recovers an expired token or a rotated mirror. After this many
+/// consecutive failures to produce a playable window, the ingest advances the stream's failover cursor
+/// instead (`AppState::resolve_advance`) so it reaches the source's alternate upstreams — dlhd's six player
+/// providers are independent, and a channel dropped by one of them is carried by another — and then the
+/// channel's configured backups. Without this an origin-mode stream can never fail over at all: it owns its
+/// own retry loop and never passes through the handler's `failover_walk`.
+const MEDIA_FAIL_ESCALATE: u32 = 2;
+
+/// How many recently-ingested upstream segment URIs the ingest remembers, for recognising the window a
+/// RENEWED provider session re-offers (see `dedupe_by_uri`). About one live window plus slack — small enough
+/// that a source recycling segment names would have to wrap within it to cause a false skip.
+const RECENT_URI_MEMORY: usize = 64;
+
+/// How many trailing PROGRAM segments an ad break loops as filler — an upper bound, not a requirement:
+/// `program_tail` returns whatever the ring actually holds, and `MIN_SEGMENTS` guarantees at least 3.
+///
+/// Sized for the LOOP, not the ring. A pluto pod runs ~2 min against 5 s segments, so a 3-segment pool would
+/// repeat ~8 times where six repeats ~4 — the same material either way, but half as obviously a loop. Six is
+/// ~30 s, still comfortably inside a default 25 MiB window (measured ~16 segments), and the pool is held by
+/// `Arc` for the length of the break, so this is also its memory cost.
+const FILLER_SEGMENTS: usize = 6;
+
 /// One ingested segment, ready to serve verbatim. `bytes` is DECRYPTED — ciphertext never enters the ring, so
 /// a renderer never has to know whether the upstream was encrypted.
 // Phase 1 WRITES every field; Phase 2's renderers READ them (seq → #EXT-X-MEDIA-SEQUENCE, duration → #EXTINF,
@@ -81,6 +104,11 @@ pub struct Segment {
     pub discontinuity: bool,
     /// Ingest wall-clock → the renderer's `#EXT-X-PROGRAM-DATE-TIME`.
     pub pdt: SystemTime,
+    /// This segment is ad-break content (`ad_signal` fired). Phase 1 only WRITES this — nothing is served
+    /// differently — so the operator can see breaks in `iop:cue` before anything acts on them.
+    pub ad: bool,
+    /// Which break, for grouping a pod's segments in logs/telemetry. 0 ⇒ not in a break.
+    pub break_id: u64,
 }
 
 /// Why a segment is a splice point. Named rather than a bare bool so the `iop` log says WHICH signal fired.
@@ -99,6 +127,17 @@ pub enum Boundary {
     Tag,
     /// The media sequence skipped — we missed segments (a slow poll, or the window slid past us).
     SequenceGap,
+    /// Program resumed after an ad break we REPLACED with filler. The filler was rebased onto our timeline,
+    /// so the returning upstream media does not continue it — that jump is real and is signalled. It is the
+    /// one seam replacement cannot remove without normalising every segment forever, and unlike the ad
+    /// boundary it replaces (720p ⇄ 1080p on pluto) both sides are the same encode, so a player resyncs its
+    /// clock rather than reconfiguring its decoder.
+    AdReturn,
+    /// The provider ended OUR playlist (`#EXT-X-ENDLIST`) and we re-resolved onto a new session on the same
+    /// channel. Whether the bytes either side are contiguous is unknowable from here — a new session may
+    /// resume where the old one stopped or jump — so the join is SIGNALLED rather than assumed. This is the
+    /// one boundary we introduce ourselves; the other two are read off the upstream.
+    SessionRenewal,
 }
 
 /// What the previous ingested segment looked like, for boundary detection against the next one.
@@ -122,6 +161,93 @@ fn boundary_before(prev: &PrevSeg, seg: &SegRef, upstream_seq: i64) -> Option<Bo
         }
     }
     None
+}
+
+/// Does an `#EXT-X-ENDLIST` mean the CHANNEL is finished, or only that the provider ended THIS session's
+/// playlist?
+///
+/// The tag says "this playlist will not grow again" — which is not the same claim. A provider that expires
+/// its stitcher session ends the playlist too: pluto does it roughly every 25 s (a freshly booted session's
+/// playlist carries no ENDLIST at all, so the tag appears purely as a session-lifetime artifact), and
+/// treating it as terminal tore the ingest down over and over on a channel that was still live.
+///
+/// So the ingest re-resolves instead, and the terminal condition is EVIDENCE rather than the tag: a genuinely
+/// finished asset re-resolves to the very same segment list, while a renewed session hands back a different
+/// one. Comparing the URI list (not a byte-compare of the body — session ids and tokens churn in the header
+/// lines without meaning anything) is what separates them.
+///
+/// An EMPTY list is the case that has to be excluded by name. It looks "unchanged" against the previous empty
+/// one, but it is not evidence of completion — it is evidence of NOTHING, and it is exactly what pluto serves
+/// once it has ended our session. A finished asset always still lists its segments. Treating empty-equals-
+/// empty as terminal reintroduced the original teardown at a slower cadence, which is how it was caught.
+///
+/// Deliberately has no attempt cap. A live channel behind a session-expiring provider renews indefinitely and
+/// legitimately; capping it would kill a working stream after N sessions, which is the bug this replaces.
+/// A source that only ever returns an empty playlist is caught by MAX_EMPTY_POLLS instead, which escalates
+/// through failover rather than declaring success.
+fn endlist_is_terminal(prev: Option<&Vec<String>>, cur: &[String]) -> bool {
+    !cur.is_empty() && prev.is_some_and(|p| p.as_slice() == cur)
+}
+
+/// Which signal said a segment is ad-break content. Named for the same reason `Boundary` is: the `iop:cue`
+/// log has to name the trigger, or a detector bug reads exactly like real ad-pod churn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AdSignal {
+    /// An `#EXT-X-CUE-OUT` was open over this segment.
+    CueTag,
+    /// …or an `#EXT-X-DATERANGE:…SCTE35-OUT=…`.
+    DateRange,
+    /// The manifest carried NO cue tag and the segment URI matched the adapter's declared ad signature.
+    UriSignature,
+}
+
+/// Classify one segment as ad-break content.
+///
+/// Cue tags WIN when present — they are the source's own statement about its own timeline. The URI signature
+/// is a strict fallback for sources that emit none (pluto), never a cross-check: a source that tags its
+/// breaks is believed even when its segment URIs happen to look unusual.
+///
+/// The URI arm is why this is safe where the removed `ClipChange` heuristic was not. That one DIFFED
+/// consecutive segment URIs and asked "did the directory change?", which pluto's in-clip keyfile rotation and
+/// some CDNs' per-segment opaque path tokens both answer "yes" spuriously (~9 false splices per window). This
+/// one tests a segment against a FIXED literal the adapter opted into, so an adapter that declares nothing
+/// detects nothing, and no amount of upstream URL churn can manufacture a match.
+fn ad_signal(seg: &SegRef, seg_url: &Url, ad_uri_contains: &[String]) -> Option<AdSignal> {
+    if let Some(cue) = seg.cue {
+        return Some(match cue.kind {
+            CueKind::CueOut => AdSignal::CueTag,
+            CueKind::DateRange => AdSignal::DateRange,
+        });
+    }
+    if ad_uri_contains.is_empty() {
+        return None; // fail closed — no adapter opted in
+    }
+    // The patterns are already lowercased by state.rs; percent-decode so a declared `0_ad/creative/` matches
+    // the wire form `0_ad%2Fcreative%2F`.
+    let decoded = percent_decode_str(seg_url.as_str()).decode_utf8_lossy().to_lowercase();
+    ad_uri_contains
+        .iter()
+        .any(|p| decoded.contains(p))
+        .then_some(AdSignal::UriSignature)
+}
+
+/// An ad break currently open on the ingest. Accumulates what the `iop:cue` close line + telemetry report.
+#[derive(Clone, Debug)]
+struct AdBreak {
+    id: u64,
+    signal: AdSignal,
+    segments: u32,
+    /// Observed duration — the sum of the `#EXTINF`s we actually ingested, NOT the announced total. Packagers
+    /// routinely close a break early, and pluto announces nothing at all.
+    seconds: f64,
+    /// What the opening cue tag announced, when it announced anything (0.0 otherwise).
+    announced: f64,
+    /// Whether the decoder configuration actually changed at this edge. THE measurement Phase 2 is gated on:
+    /// if breaks reliably change it, no timestamp rewrite can ever hide the seam and only substitution can.
+    profile_changed: bool,
+    /// How many of this break's segments were SUBSTITUTED rather than served. Less than `segments` means the
+    /// rewriter declined some — filler is best-effort by design, and the gap between the two is what says so.
+    replaced: u32,
 }
 
 /// A channel's live ring plus its ingest bookkeeping. Shared as `Arc<Origin>`: the ingest task holds one and
@@ -152,6 +278,8 @@ pub struct Origin {
     ingested_segments: AtomicU64,
     ingested_bytes: AtomicU64,
     evicted_segments: AtomicU64,
+    /// RFC 8216 `EXT-X-DISCONTINUITY-SEQUENCE` — see `disc_seq()`.
+    disc_seq: AtomicU64,
 }
 
 impl Origin {
@@ -170,6 +298,7 @@ impl Origin {
             ingested_segments: AtomicU64::new(0),
             ingested_bytes: AtomicU64::new(0),
             evicted_segments: AtomicU64::new(0),
+            disc_seq: AtomicU64::new(0),
         }
     }
 
@@ -178,7 +307,12 @@ impl Origin {
     /// Returns how many segments were evicted. The `MIN_SEGMENTS` floor is enforced HERE rather than by the
     /// caller because it is a property of the window, not of any one push: dropping below it produces a
     /// manifest no player will start, which is worse than briefly exceeding the RAM cap.
-    fn push(&self, seg: Segment) -> usize {
+    ///
+    /// `from_upstream` says whether these bytes were actually PULLED. Substituted filler is built from the
+    /// ring itself and costs no upstream traffic, so counting it would overstate the very number an operator
+    /// reads to size `originRingMb` and to see the ring earning its keep (`ingest` vs `bandwidth` on the
+    /// Active Streams row). The ring's own byte accounting still includes it — it really is occupying RAM.
+    fn push(&self, seg: Segment, from_upstream: bool) -> usize {
         let bytes = seg.bytes.len() as u64;
         let cap = self.ring_cap_bytes.load(Ordering::Relaxed);
         let mut evicted = 0usize;
@@ -190,6 +324,13 @@ impl Origin {
                 match ring.pop_front() {
                     Some(old) => {
                         total -= old.bytes.len() as u64;
+                        // THE INVARIANT: `disc_seq` counts discontinuity tags that have LEFT the published
+                        // playlist. A tag rides on the segment it precedes, so evicting that segment is
+                        // exactly when its tag stops being visible — and every segment still held is by
+                        // definition after it.
+                        if old.discontinuity {
+                            self.disc_seq.fetch_add(1, Ordering::Relaxed);
+                        }
                         evicted += 1;
                     }
                     None => break,
@@ -200,8 +341,10 @@ impl Origin {
         if evicted > 0 {
             self.evicted_segments.fetch_add(evicted as u64, Ordering::Relaxed);
         }
-        self.ingested_segments.fetch_add(1, Ordering::Relaxed);
-        self.ingested_bytes.fetch_add(bytes, Ordering::Relaxed);
+        if from_upstream {
+            self.ingested_segments.fetch_add(1, Ordering::Relaxed);
+            self.ingested_bytes.fetch_add(bytes, Ordering::Relaxed);
+        }
         self.notify.notify_waiters();
         evicted
     }
@@ -217,9 +360,21 @@ impl Origin {
     /// timeline. `next_seq` is deliberately NOT reset — see its doc comment.
     fn reset_ring(&self) {
         let mut ring = self.ring.write_ok();
+        // Same invariant as eviction: every tag in the discarded window leaves the playlist at once. Counting
+        // them here (rather than resetting to 0) is what keeps `#EXT-X-DISCONTINUITY-SEQUENCE` monotonic
+        // across a failover, which RFC 8216 requires of it just as it does of the media sequence.
+        let leaving = ring.iter().filter(|s| s.discontinuity).count() as u64;
+        self.disc_seq.fetch_add(leaving, Ordering::Relaxed);
         ring.clear();
         self.ring_bytes.store(0, Ordering::Relaxed);
         self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Discontinuity tags that have left the published window — RFC 8216's `EXT-X-DISCONTINUITY-SEQUENCE`,
+    /// i.e. the discontinuity sequence number of the window's FIRST segment. Monotonic by construction: it
+    /// only ever counts tags on their way out.
+    fn disc_seq(&self) -> u64 {
+        self.disc_seq.load(Ordering::Relaxed)
     }
 
     /// A snapshot of the live window, oldest first. Phase 2's renderers build both output shapes from this.
@@ -227,6 +382,21 @@ impl Origin {
     pub fn window(&self) -> Vec<Arc<Segment>> {
         *self.last_access.lock_ok() = Instant::now();
         self.ring.read_ok().iter().cloned().collect()
+    }
+
+    /// The last `n` PROGRAM segments in the ring, oldest first.
+    ///
+    /// Replacement material for an ad break. Returned as `Arc` clones so eviction cannot pull the bytes out
+    /// from under a break that is still running — a 2-minute pod outlives the window it was drawn from.
+    /// Filtering on `!ad` matters once a previous break's filler is still in the window: filler is itself
+    /// marked as break content, and looping a loop would compound the repetition.
+    ///
+    /// Deliberately does NOT touch `last_access`: this is the ingest reading its own ring, not a viewer.
+    pub fn program_tail(&self, n: usize) -> Vec<Arc<Segment>> {
+        let ring = self.ring.read_ok();
+        let mut out: Vec<Arc<Segment>> = ring.iter().rev().filter(|s| !s.ad).take(n).cloned().collect();
+        out.reverse();
+        out
     }
 
     /// The current generation — part of a renderer's segment paths.
@@ -335,6 +505,48 @@ async fn ingest(ctx: IngestCtx) {
     let mut key_cache: Option<(String, [u8; 16])> = None;
     let mut warned_floor = false;
     let mut media: Option<(Url, String)> = None;
+    // S3/CUE: the ad break open right now (None = program), and the label counter for the next one. Per-ingest
+    // like `prev` — a break id is a session-local grouping label, not a stable identity.
+    let mut ad_break: Option<AdBreak> = None;
+    let mut next_break_id: u64 = 0;
+    // The decoder-configuration fingerprint as of the last EDGE we looked at. Only sampled at splices and
+    // ad-state changes — that is where the answer matters, and it keeps the packet walk off the steady path.
+    let mut last_profile: Option<crate::tsseg::StreamProfile> = None;
+    // Segment URIs of the last playlist that carried #EXT-X-ENDLIST — the baseline `endlist_is_terminal`
+    // judges the next one against. See there for why the tag alone cannot end the ingest.
+    let mut last_endlist: Option<Vec<String>> = None;
+    // Set while the pending re-resolve is a SESSION RENEWAL rather than a failure, so the resolve branch
+    // knows to keep the ring; `force_boundary` then carries the splice onto the first segment of the new
+    // session (consumed by the push, so a failed fetch cannot lose it).
+    let mut renewing_session = false;
+    // A splice WE introduce, pending until a segment lands to carry it (a failed fetch must not lose it).
+    let mut forced: Option<Boundary> = None;
+    // Upstream URIs of the most recently ingested segments, for ONE job: a renewed session re-offers the
+    // same live window it already gave us (pluto ends its playlist after every ~5-segment window, so ~4 of
+    // those 5 are content we hold). Within a session `next_upstream_seq` dedupes; across one it is
+    // meaningless, because the new session renumbers. Consulted ONLY on the first poll after a renewal —
+    // a source that RECYCLES segment names would otherwise have real content skipped — and bounded to about
+    // one window's worth so a recycling source would have to wrap inside 64 segments to collide.
+    let mut recent_uris: VecDeque<String> = VecDeque::new();
+    let mut dedupe_by_uri = false;
+    // S3/CUE Phase 2. LATCHED once rather than re-read per poll: `SourcePolicy` is shared and an unrelated
+    // playlist's resolve can mutate it, and flipping mid-break would either strand a rebased timeline or
+    // splice filler into a stream that never asked for it.
+    //
+    // Latched on FIRST USE, not here. The ingest task is spawned by `subscribe()` and does its own resolve
+    // inside the loop below, so at this point no grant has landed and the policy is still at its shipped
+    // defaults — reading it here pins every channel to `passthrough` no matter what the operator set.
+    let mut replace_ads: Option<bool> = None;
+    let mut splicer = crate::tsnorm::Splicer::new();
+    let mut warned_splice = false;
+    // Program captured at the OPENING edge of the current break, looped for its duration.
+    let mut filler: Vec<Arc<Segment>> = Vec::new();
+    let mut filler_idx: usize = 0;
+    // One decline message per break, re-armed on each opening edge — the reason is a property of the stream,
+    // so repeating it every 5 s would bury the rest of the ingest log (the `warned_floor` posture).
+    let mut warned_filler = false;
+    // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
+    let mut media_failures: u32 = 0;
     let mut last_idle_check = Instant::now();
 
     loop {
@@ -359,16 +571,72 @@ async fn ingest(ctx: IngestCtx) {
         let (media_url, media_body) = match media.take() {
             Some(m) => m,
             None => {
-                let resolved = resolve_media(&ctx, &rid).await;
-                // A fresh resolve may point at a different upstream; the previous window's bytes are from a
-                // different timeline, so drop them rather than splice silently.
-                if resolved.is_some() && ctx.origin.ring_depth() > 0 {
-                    ctx.origin.reset_ring();
-                    prev = PrevSeg::default();
-                    next_upstream_seq = -1;
-                    log::info("iop", &rid, || {
-                        format!("ring reset on re-resolve (generation={})", ctx.origin.generation())
+                // Escalate once the pinned candidate has failed to produce a playable window MEDIA_FAIL_ESCALATE
+                // times running (~a few seconds at the 2 s retry cadence). Below that we re-resolve the same
+                // candidate, which is what recovers an expired token or a rotated dlhd mirror.
+                let escalate = media_failures >= MEDIA_FAIL_ESCALATE;
+                if escalate {
+                    log::warn("iop", &rid, || {
+                        format!("{media_failures} consecutive resolve/ingest failures — advancing to the next candidate")
                     });
+                    // The counter means "failures since the LAST escalation", not "failures ever": without
+                    // this reset a channel that is dead everywhere would advance on every single pass,
+                    // turning the 2 s retry loop into a hot walk over every candidate (and, for dlhd, a full
+                    // provider re-walk per step). Each candidate now gets its own MEDIA_FAIL_ESCALATE tries.
+                    media_failures = 0;
+                }
+                // A renewal that had to ESCALATE is no longer a renewal: the failover walk may hand back a
+                // different provider, or a different channel, so the ring must not survive it.
+                if escalate {
+                    renewing_session = false;
+                }
+                let resolved = resolve_media(&ctx, &rid, escalate).await;
+                // A fresh resolve may point at a different upstream, so the previous window's bytes cannot be
+                // ASSUMED contiguous with the next ones. There are two honest ways to say that, and which one
+                // is right depends on why we re-resolved:
+                //
+                //  · A SESSION RENEWAL — the provider ended our playlist but the channel is still live —
+                //    KEEPS the ring. Dropping it would blank the published window (and bump `generation`,
+                //    invalidating every segment URL the client already holds) on every renewal, and pluto
+                //    renews every ~25 s: the cure would be worse than the disease. The join is marked as a
+                //    splice instead, which is exactly what `#EXT-X-DISCONTINUITY` exists to say.
+                //  · Anything ELSE (a stalled candidate, a failover) still DROPS the window. That resolve may
+                //    land on a different provider or a different channel entirely, and a discontinuity tag
+                //    would not make serving the old bytes honest.
+                if resolved.is_some() {
+                    if ctx.origin.ring_depth() > 0 {
+                        if renewing_session {
+                            forced = Some(Boundary::SessionRenewal);
+                            dedupe_by_uri = true;
+                            log::info("iop", &rid, || {
+                                format!(
+                                    "session renewed — ring kept ({} seg), join marked as a splice",
+                                    ctx.origin.ring_depth()
+                                )
+                            });
+                        } else {
+                            ctx.origin.reset_ring();
+                            log::info("iop", &rid, || {
+                                format!("ring reset on re-resolve (generation={})", ctx.origin.generation())
+                            });
+                            // ONLY on a real reset. A renewal is the same channel continuing, so an ad pod
+                            // spans it: clearing here fragmented one 2-minute break into a fresh break per
+                            // renewal (a new id every ~2.5 s), which reset the filler pool each time and left
+                            // "no program held to loop" as the visible symptom. A reset is different — that
+                            // upstream may be another channel entirely, so its break, its rebased timeline
+                            // and the program captured from its ring are all meaningless now.
+                            ad_break = None;
+                            splicer.reset();
+                            filler.clear();
+                        }
+                        // The new session renumbers regardless, so sequence-gap detection must re-anchor.
+                        prev = PrevSeg::default();
+                        next_upstream_seq = -1;
+                    }
+                    // Consumed only on a SUCCESSFUL resolve. A transient resolve failure mid-renewal keeps
+                    // the flag armed, so the retry that succeeds still keeps the ring instead of paying for
+                    // a blip with a rebuffer.
+                    renewing_session = false;
                 }
                 match resolved {
                     Some(MediaSource::Hls(u, b)) => (u, b),
@@ -380,6 +648,7 @@ async fn ingest(ctx: IngestCtx) {
                         continue;
                     }
                     None => {
+                        media_failures = media_failures.saturating_add(1);
                         report_iop(&ctx, "resolve_failed");
                         tokio::time::sleep(Duration::from_secs(2)).await;
                         continue;
@@ -411,7 +680,21 @@ async fn ingest(ctx: IngestCtx) {
         );
         let read_timeout_ms = policy.read_timeout_ms.load(Ordering::Relaxed);
 
+        // First poll after a grant has landed: latch the ad policy and say so once, so an operator who turned
+        // replacement on can confirm the data plane actually received it.
+        let replace_ads = *replace_ads.get_or_insert_with(|| {
+            let on = policy.ad_policy.read_ok().as_str() == "replace";
+            log::info("iop:cue", &rid, || {
+                format!("ad policy: {}", if on { "replace breaks with looped program" } else { "passthrough" })
+            });
+            on
+        });
+
         let mut ingested_this_poll = 0u32;
+        // Segments the renewal check recognised as already-held. Tracked separately from `ingested_this_poll`
+        // because a poll that ingests nothing NEW but recognised a whole window is healthy, not stalled —
+        // counting it as an empty poll would walk the failover cursor off a perfectly good channel.
+        let mut duplicates_this_poll = 0u32;
         for (i, seg) in mp.segments.iter().enumerate() {
             if ctx.origin.stopping.load(Ordering::Relaxed) {
                 break;
@@ -421,6 +704,13 @@ async fn ingest(ctx: IngestCtx) {
                 continue; // already ingested
             }
             next_upstream_seq = upstream_seq + 1;
+
+            // The renewed session re-offers the window we were already holding. Skipping by URI keeps the
+            // ring's timeline moving forward instead of replaying ~4 of every 5 segments to the viewer.
+            if dedupe_by_uri && recent_uris.iter().any(|u| u == &seg.uri) {
+                duplicates_this_poll += 1;
+                continue;
+            }
 
             let seg_url = match media_url.join(&seg.uri) {
                 Ok(u) => u,
@@ -434,12 +724,97 @@ async fn ingest(ctx: IngestCtx) {
                 policy.hosts.write_ok().insert(h.to_lowercase());
             }
 
-            let boundary = boundary_before(&prev, seg, upstream_seq);
+            // S3/CUE: classify BEFORE the fetch. Phase 1 only needed this before the PUSH, but a replaced ad
+            // must never be pulled from upstream at all — not fetching it is most of the point.
+            let signal = ad_signal(seg, &seg_url, &policy.ad_uri_contains.read_ok());
 
-            let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
-                Some(b) => b,
-                None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
+            // THIS segment is the first program after a break we filled, so the return seam belongs to it,
+            // not to the next one. Knowable before the fetch: it depends only on the signal and the open
+            // break, never on the bytes. A break we merely passed through needs nothing here — the upstream's
+            // own `#EXT-X-DISCONTINUITY` already landed on this segment.
+            let ad_return = (signal.is_none() && ad_break.as_ref().is_some_and(|b| b.replaced > 0))
+                .then_some(Boundary::AdReturn);
+
+            // An upstream signal wins the naming when several apply — it says something more specific than
+            // "we reconnected" or "we substituted". `forced` survives a failed fetch (it is cleared only
+            // after a push) so a join whose first segment 404s still splices the one that does land.
+            //
+            // The SessionRenewal arm has an extra out. Recognising part of the new session's window as
+            // content we already hold PROVES the two are contiguous — the overlap IS the join — so the
+            // segment after it continues the timeline and needs no splice. Overlapping segments sort first,
+            // so by the time the first genuinely new one is reached the count already says which case this
+            // is. Only a renewal that landed on a DISJOINT window is a real jump.
+            let pending = match forced {
+                Some(Boundary::SessionRenewal) if duplicates_this_poll > 0 => None,
+                other => other,
             };
+            let upstream_boundary = boundary_before(&prev, seg, upstream_seq);
+            let candidate = upstream_boundary.or(ad_return).or(pending);
+
+            // On the OPENING edge of a break, capture replacement material while the ring tail is still
+            // program, and tell the normalizer where that program's clock ends so the first filler lands
+            // after it rather than on top of it.
+            if replace_ads && signal.is_some() && ad_break.is_none() {
+                filler = ctx.origin.program_tail(FILLER_SEGMENTS);
+                filler_idx = 0;
+                warned_filler = false;
+            }
+
+            // Substitute, or fetch. Substitution declines rather than guesses: with no filler held, or a
+            // segment the rewriter will not touch, the ad is served as before — a visible ad beats a
+            // corrupted stream.
+            let mut substituted: Option<f64> = None; // Some(the filler's own duration) once one is built
+            let mut replacement: Option<Bytes> = None;
+            if replace_ads && signal.is_some() {
+                match filler.get(filler_idx % filler.len().max(1)) {
+                    // REPEAT contract: these bytes are already in the ring, so the copy has to clear the
+                    // original's presentation rather than merely its decode end.
+                    Some(src) => match splicer.normalize_repeat(&src.bytes) {
+                        Some(bytes) => {
+                            substituted = Some(src.duration);
+                            filler_idx += 1;
+                            replacement = Some(Bytes::from(bytes));
+                        }
+                        // Declining is a designed outcome, not a failure — but a silent one would look
+                        // identical to "the operator never turned it on", so say it once per break.
+                        None => {
+                            if !warned_filler {
+                                warned_filler = true;
+                                log::warn("iop:cue", &rid, || {
+                                    "ad replacement declined: the rewriter would not touch this stream (no PSI, \
+                                     no video timestamps, or an encoding it cannot safely rebase) — serving the \
+                                     break as-is"
+                                        .to_string()
+                                });
+                            }
+                        }
+                    },
+                    None => {
+                        if !warned_filler {
+                            warned_filler = true;
+                            log::warn("iop:cue", &rid, || {
+                                "ad replacement declined: no program held to loop (the break began before the \
+                                 ring had any) — serving the break as-is"
+                                    .to_string()
+                            });
+                        }
+                    }
+                }
+            }
+            let plain = match replacement {
+                Some(b) => b,
+                None => match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
+                    Some(b) => b,
+                    None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
+                },
+            };
+
+            // A SUBSTITUTED segment is contiguous with the program before it BY CONSTRUCTION — the rewriter
+            // placed it there. Any upstream splice that fired here describes the AD we did not serve (pluto
+            // tags every pod edge), so propagating it would announce a break in a timeline that does not have
+            // one, and would undo most of what replacement buys. A pending splice is NOT consumed here: it
+            // still belongs on the next piece of real media.
+            let boundary = if substituted.is_some() { None } else { candidate };
 
             // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log
             // naming only the trigger cannot distinguish real churn from a detector bug (that is how the two
@@ -447,15 +822,152 @@ async fn ingest(ctx: IngestCtx) {
             let was = prev.clone();
             prev = PrevSeg { upstream_seq: Some(upstream_seq) };
 
+            // A substituted segment publishes the FILLER's real length, not the ad's: the ring's timeline is
+            // ours, so `#EXTINF` has to describe the bytes we actually serve.
+            let duration = match substituted {
+                Some(d) if d > 0.0 => d,
+                _ if seg.duration > 0.0 => seg.duration,
+                _ => mp.target_duration,
+            };
             let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
-            let evicted = ctx.origin.push(Segment {
-                seq: our_seq,
-                duration: if seg.duration > 0.0 { seg.duration } else { mp.target_duration },
-                bytes: plain,
-                discontinuity: boundary.is_some(),
-                pdt: SystemTime::now(),
-            });
+
+            // Fingerprint the stream at edges only. `profile_changed` is what says whether the splice is
+            // load-bearing (the decoder MUST reconfigure) or merely cosmetic — the measurement that decides
+            // whether filler could ever be codec-matched here. Unverifiable reads as CHANGED, never as a match.
+            //
+            // Note what it measures once `adPolicy=replace` is on: OUR OUTPUT, not the upstream. A substituted
+            // segment is filler, so the comparison is program-vs-program and correctly reports no change —
+            // the ad whose profile differed was never fetched, so nothing here can see it. Reading a source's
+            // true break behaviour therefore means reading it in passthrough, which is why Phase 1 shipped
+            // first and why this stays honest about what it is describing.
+            let ad_edge = signal.is_some() != ad_break.is_some();
+            let scan_now = boundary.is_some() || ad_edge || last_profile.is_none();
+            let profile = if scan_now { crate::tsseg::scan_profile(&plain) } else { None };
+            let profile_changed = match (&last_profile, &profile) {
+                (None, _) => false, // seeding the first sample — nothing to compare against yet
+                (Some(prev), Some(cur)) => !prev.compatible_with(cur),
+                (Some(_), None) => scan_now, // we looked and could not verify ⇒ conservatively changed
+            };
+            if profile.is_some() {
+                last_profile = profile;
+            }
+
+            match (signal, &mut ad_break) {
+                (Some(sig), None) => {
+                    next_break_id += 1;
+                    let announced = seg.cue.map(|c| c.duration).unwrap_or(0.0);
+                    let open = AdBreak {
+                        id: next_break_id,
+                        signal: sig,
+                        segments: 1,
+                        seconds: duration,
+                        announced,
+                        profile_changed,
+                        replaced: u32::from(substituted.is_some()),
+                    };
+                    log::info("iop:cue", &rid, || {
+                        let ann = if open.announced > 0.0 {
+                            format!(", announced {:.0}s", open.announced)
+                        } else {
+                            String::new()
+                        };
+                        let prof = if profile_changed { "profile CHANGED" } else { "profile same" };
+                        format!("ad break #{} OPEN via {:?} at seq {our_seq}{ann} — {prof}", open.id, open.signal)
+                    });
+                    report_cue(&ctx, "open", &open);
+                    ad_break = Some(open);
+                }
+                (Some(_), Some(b)) => {
+                    b.segments += 1;
+                    b.seconds += duration;
+                    b.replaced += u32::from(substituted.is_some());
+                }
+                (None, Some(b)) => {
+                    // The RETURN to program is its own parameter change — report the one measured here, not
+                    // the one measured when the break opened.
+                    let done = AdBreak { profile_changed, ..b.clone() };
+                    ad_break = None;
+                    // The pool was captured for THIS break; the next one re-captures against whatever
+                    // program is current then. (`ad_return` above already carried the resume seam.)
+                    filler.clear();
+                    log::info("iop:cue", &rid, || {
+                        let prof = if profile_changed { "profile CHANGED" } else { "profile same" };
+                        format!(
+                            "ad break #{} CLOSE at seq {our_seq} after {} segments / {:.1}s (via {:?}) — {prof}, {} replaced",
+                            done.id, done.segments, done.seconds, done.signal, done.replaced
+                        )
+                    });
+                    report_cue(&ctx, "close", &done);
+                }
+                (None, None) => {}
+            }
+
+            // ── SPLICE ABSORPTION ────────────────────────────────────────────────────────────────────────
+            // Republish onto ONE timeline with STABLE pids. Upstream moves the video pid between ads — pluto
+            // ran 258 → 256 → 258 across a single pod — and a demuxer does not follow an elementary stream to
+            // a new pid: it keeps rendering the one it latched and registers the new one as a stream nothing
+            // is displaying. Measured against a real client, video froze exactly when the pid moved away and
+            // came back exactly when it returned. `#EXT-X-DISCONTINUITY` cannot express that. The tag
+            // describes a TIMELINE break; this is a stream-IDENTITY break, and the only fix is to stop the
+            // identity from changing. (The same client handled every sps-only change on a stable pid
+            // unaided, which is why this never re-encodes.)
+            //
+            // Runs at INGEST, once per segment, so one rewrite serves every viewer and both renderers — and
+            // so `program_tail` hands the filler path material already on this timeline.
+            //
+            // A substituted segment came from that same filler path and is already normalised; re-running it
+            // would space it against itself.
+            let joined = splicer.has_timeline();
+            let (plain, absorbed) = if substituted.is_some() {
+                (plain, true)
+            } else {
+                match splicer.normalize(&plain) {
+                    Some(b) => (Bytes::from(b), true),
+                    None => {
+                        // Declining is designed, not a failure: publish the bytes untouched and drop the
+                        // timeline so the next segment re-anchors on its own clock rather than being spaced
+                        // against one whose media nobody received. Upstream's splice is then signalled the
+                        // old way — a visible decoder reset beats a stream we mis-rewrote.
+                        if !warned_splice {
+                            warned_splice = true;
+                            log::warn("iop", &rid, || {
+                                "splice normalisation declined (no PSI, or a program shape the published \
+                                 layout cannot carry) — publishing verbatim and signalling the splice"
+                                    .to_string()
+                            });
+                        }
+                        splicer.reset();
+                        (plain, false)
+                    }
+                }
+            };
+            // Drop the tag ONLY when the splice was genuinely absorbed — the segment was moved onto a clock
+            // that already existed. A FRESH anchor leaves the timestamps exactly where upstream put them, so
+            // upstream's own signal still governs and must still be published.
+            let discontinuity = if absorbed && joined { false } else { boundary.is_some() };
+
+            let evicted = ctx.origin.push(
+                Segment {
+                    seq: our_seq,
+                    duration,
+                    bytes: plain,
+                    discontinuity,
+                    pdt: SystemTime::now(),
+                    ad: signal.is_some(),
+                    break_id: ad_break.as_ref().map(|b| b.id).unwrap_or(0),
+                },
+                // Filler is built from the ring, so it cost no upstream traffic — counting it would
+                // overstate "upstream pulled" by exactly the length of every ad break.
+                substituted.is_none(),
+            );
             ingested_this_poll += 1;
+            if pending.is_some() {
+                forced = None; // consumed — the splice is now recorded on a segment in the ring
+            }
+            recent_uris.push_back(seg.uri.clone());
+            if recent_uris.len() > RECENT_URI_MEMORY {
+                recent_uris.pop_front();
+            }
             if let Some(b) = boundary {
                 log::info("iop", &rid, || {
                     let detail = match b {
@@ -464,8 +976,17 @@ async fn ingest(ctx: IngestCtx) {
                             was.upstream_seq.map(|s| s.to_string()).unwrap_or_else(|| "-".into())
                         ),
                         Boundary::Tag => "upstream #EXT-X-DISCONTINUITY".to_string(),
+                        Boundary::SessionRenewal => "first segment of a renewed provider session".to_string(),
+                        Boundary::AdReturn => "program resumed after replaced ad break".to_string(),
                     };
-                    format!("discontinuity ({b:?}) at our seq={our_seq} — {detail}")
+                    // Say which of the two happened. An ABSORBED splice publishes no tag, so a log line that
+                    // read the same either way would make the normaliser silently un-diagnosable — exactly
+                    // the failure mode the `iop:cue` naming exists to prevent.
+                    if discontinuity {
+                        format!("discontinuity ({b:?}) at our seq={our_seq} — {detail}")
+                    } else {
+                        format!("splice ABSORBED ({b:?}) at our seq={our_seq} — {detail}; rebased onto one timeline, no tag published")
+                    }
                 });
             }
             if evicted > 0 {
@@ -493,8 +1014,24 @@ async fn ingest(ctx: IngestCtx) {
             }
         }
 
-        if ingested_this_poll > 0 {
+        // The URI memory is a RENEWAL tool only — leaving it armed would let it skip real content on a
+        // source that recycles segment names.
+        if dedupe_by_uri {
+            log::trace("iop", &rid, || {
+                format!("renewal poll: {ingested_this_poll} new, {duplicates_this_poll} already held")
+            });
+            dedupe_by_uri = false;
+            // Overlap proved the join is contiguous, so retire the pending splice even if this poll had no
+            // new segment to hang it on — otherwise it would fire spuriously on a LATER poll, once
+            // `duplicates_this_poll` has been reset and can no longer vouch for the join.
+            if duplicates_this_poll > 0 && forced == Some(Boundary::SessionRenewal) {
+                forced = None;
+            }
+        }
+
+        if ingested_this_poll > 0 || duplicates_this_poll > 0 {
             empty_polls = 0;
+            media_failures = 0; // this candidate is producing media — it has earned the cursor back
             report_iop(&ctx, "ok");
         } else {
             empty_polls += 1;
@@ -504,15 +1041,37 @@ async fn ingest(ctx: IngestCtx) {
                 });
                 report_iop(&ctx, "stalled");
                 empty_polls = 0;
+                media_failures = media_failures.saturating_add(1);
                 media = None;
                 continue;
             }
         }
 
         if mp.endlist {
-            log::info("iop", &rid, || "upstream #EXT-X-ENDLIST — ingest complete".to_string());
-            break;
+            let uris: Vec<String> = mp.segments.iter().map(|s| s.uri.clone()).collect();
+            if endlist_is_terminal(last_endlist.as_ref(), &uris) {
+                log::info("iop", &rid, || {
+                    "upstream #EXT-X-ENDLIST unchanged across a re-resolve — ingest complete".to_string()
+                });
+                break;
+            }
+            log::info("iop", &rid, || {
+                format!(
+                    "upstream #EXT-X-ENDLIST after {} segment(s) — re-resolving (provider ended the session, not the channel)",
+                    uris.len()
+                )
+            });
+            last_endlist = Some(uris);
+            // Sleep on the normal cadence FIRST: a source that ends every playlist immediately must not turn
+            // this into a hot resolve loop. The ring keeps serving from what it holds meanwhile.
+            tokio::time::sleep(poll_interval(mp.target_duration)).await;
+            renewing_session = true;
+            media = None; // re-resolve at the SAME candidate — this is not a failure, so no cursor escalation
+            continue;
         }
+        // A poll that did NOT end the playlist clears the comparison baseline: the next ENDLIST starts a
+        // fresh "is it really over?" question rather than being judged against an older session.
+        last_endlist = None;
 
         tokio::time::sleep(poll_interval(mp.target_duration)).await;
 
@@ -527,6 +1086,7 @@ async fn ingest(ctx: IngestCtx) {
             }
             _ => {
                 log::warn("iop", &rid, || "media playlist refresh failed — re-resolving".to_string());
+                media_failures = media_failures.saturating_add(1);
                 media = None;
             }
         }
@@ -551,11 +1111,17 @@ async fn ingest(ctx: IngestCtx) {
 
 /// Resolve the entry and walk to the MEDIA playlist to follow (peeking the top variant when the entry is a
 /// master). `None` when nothing usable is reachable — the caller backs off and retries.
-async fn resolve_media(ctx: &IngestCtx, rid: &str) -> Option<MediaSource> {
-    let (policy, target) = ctx
-        .state
-        .resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref())
-        .await
+async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<MediaSource> {
+    // `escalate` = the pinned candidate has failed us repeatedly, so advance the failover cursor instead of
+    // re-resolving the same one. The ingest loop drives its own retries and never enters the handler's
+    // failover_walk, so this is the ONLY way an origin-mode stream reaches the source's alternate upstreams
+    // (dlhd's other player providers) or the channel's configured backups.
+    let resolved = if escalate {
+        ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+    } else {
+        ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+    };
+    let (policy, target) = resolved
         .map_err(|e| {
             log::warn("iop", rid, || format!("resolve failed: {e}"));
         })
@@ -689,16 +1255,23 @@ async fn ingest_raw_ts(
 }
 
 /// Push a locally-cut segment into the ring. `discontinuity` is always false: a bare TS socket is one
-/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate.
+/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate. `ad` is false
+/// for the same reason — there is no manifest to carry a cue tag and no segment URI to match a signature
+/// against, so a raw socket is program by construction, not by assumption.
 fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment) {
     let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
-    ctx.origin.push(Segment {
-        seq: our_seq,
-        duration: cut.duration,
-        bytes: Bytes::from(cut.bytes),
-        discontinuity: false,
-        pdt: SystemTime::now(),
-    });
+    ctx.origin.push(
+        Segment {
+            seq: our_seq,
+            duration: cut.duration,
+            bytes: Bytes::from(cut.bytes),
+            discontinuity: false,
+            pdt: SystemTime::now(),
+            ad: false,
+            break_id: 0,
+        },
+        true, // every byte of a cut segment came off the upstream socket
+    );
 }
 
 /// Fetch ONE segment and return its plaintext bytes, decrypting AES-128 when keyed.
@@ -836,6 +1409,7 @@ fn render_media_playlist(
     generation: u64,
     token: Option<&str>,
     pl: Option<&str>,
+    disc_seq: u64,
 ) -> String {
     // TARGETDURATION must be an integer >= the longest #EXTINF, or players reject the playlist.
     let longest = window.iter().fold(target_duration, |m, s| if s.duration > m { s.duration } else { m });
@@ -846,15 +1420,24 @@ fn render_media_playlist(
     // OUR sequence — the ring base. Never the upstream's.
     let base = window.first().map(|s| s.seq).unwrap_or(0);
     out.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{base}\n"));
-    if let Some(first) = window.first() {
-        out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(first.pdt)));
-    }
+    // RFC 8216 §6.2.2: a server that removes a segment preceded by #EXT-X-DISCONTINUITY from a sliding
+    // window MUST increment this. Omitting the tag is not "0 by default" — it pins the value at 0 forever
+    // while the true count climbs, so a client tracking which timeline it is on loses its reference every
+    // time the window slides. `Origin` counts the tags that have LEFT the playlist; see `Origin::disc_seq`.
+    out.push_str(&format!("#EXT-X-DISCONTINUITY-SEQUENCE:{disc_seq}\n"));
     let enc_entry = crate::manifest::enc(entry);
-    for seg in window {
+    for (i, seg) in window.iter().enumerate() {
         // A splice inside the window is signalled, not hidden — that is L1 by decision: "clean" means no
         // visible origin/encryption/hops, not a single unbroken timeline. Players handle this tag correctly.
         if seg.discontinuity {
             out.push_str("#EXT-X-DISCONTINUITY\n");
+        }
+        // RFC 8216 §6.2.1: apply a PROGRAM-DATE-TIME to the first segment after EVERY discontinuity, not
+        // just to the head of the window. A date-time is only interpolatable along ONE continuous media
+        // timeline, so with a single anchor a client has no valid mapping for any range past the first
+        // splice — measured live at 5 discontinuities behind one anchor, with jumps up to 16 minutes.
+        if i == 0 || seg.discontinuity {
+            out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(seg.pdt)));
         }
         out.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
         out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{}.ts", seg.seq));
@@ -914,6 +1497,11 @@ pub async fn serve_entry(
     if !wait_ready(&origin, rid).await {
         return crate::proxy::text(503, "stream warming up: no playable window yet");
     }
+    // Read the counter BEFORE snapshotting the window. The two are separate atomics, so an eviction landing
+    // between them leaves a one-poll skew either way — but this order makes it an UNDER-count, where the tag
+    // is still in the window and the client counts it itself. The other order double-counts it. (Monotonicity
+    // holds regardless: the counter only ever rises.)
+    let disc_seq = origin.disc_seq();
     let window = origin.window();
     let body = render_media_playlist(
         &window,
@@ -924,6 +1512,7 @@ pub async fn serve_entry(
         origin.generation(),
         token,
         pl,
+        disc_seq,
     );
     log::info("oop", rid, || {
         format!("origin manifest served ({} segment(s), {} bytes)", window.len(), body.len())
@@ -1066,6 +1655,11 @@ async fn ts_ring_producer(
     let mut next_seq = origin.window().first().map(|s| s.seq).unwrap_or(0);
     let mut pending_bytes: u64 = 0;
     let mut last_flush = Instant::now();
+    // A bare TS socket has no `#EXT-X-DISCONTINUITY` to splice with, so the splice is removed instead: every
+    // segment is republished onto one published layout with one continuous clock. Per-SESSION, because each
+    // viewer joins the ring at a different point and therefore sits on its own timeline.
+    let mut splicer = crate::tsnorm::Splicer::new();
+    let mut warned_splice = false;
 
     loop {
         let window = origin.window();
@@ -1077,15 +1671,35 @@ async fn ts_ring_producer(
                     format!("client fell behind the ring (wanted seq={next_seq}, oldest held={}) — skipping ahead; raise originRingMb if this repeats", front.seq)
                 });
                 next_seq = front.seq;
+                // The skipped media is gone; anchoring the next segment against the clock it would have ended
+                // on would publish a gap. Re-anchor instead.
+                splicer.reset();
             }
         }
         let mut sent_any = false;
         let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
         for seg in window.iter().filter(|s| s.seq >= from) {
             next_seq = seg.seq + 1;
-            pending_bytes += seg.bytes.len() as u64;
+            // Declining is a designed outcome: a segment carrying no PSI, or a program shape the published
+            // layout cannot express, is served verbatim. That reinstates the upstream splice for that one
+            // segment — a visible glitch — which still beats emitting a stream we mis-rewrote.
+            let body = match splicer.normalize(&seg.bytes) {
+                Some(bytes) => Bytes::from(bytes),
+                None => {
+                    if !warned_splice {
+                        warned_splice = true;
+                        log::warn("oop", &ctx.rid, || {
+                            "splice normalisation declined (no PSI, or a program shape the published layout \
+                             cannot carry) — serving upstream timestamps as-is"
+                                .to_string()
+                        });
+                    }
+                    seg.bytes.clone()
+                }
+            };
+            pending_bytes += body.len() as u64;
             sent_any = true;
-            if tx.send(Ok(seg.bytes.clone())).await.is_err() {
+            if tx.send(Ok(body)).await.is_err() {
                 // Client disconnected — the receiver dropped. Close out and release the lease.
                 log::info("oop", &ctx.rid, || format!("origin raw-TS client disconnected ({stream_id})"));
                 if pending_bytes > 0 {
@@ -1138,6 +1752,30 @@ fn report_iop(ctx: &IngestCtx, status: &str) {
     }));
 }
 
+/// S3/CUE: an ad-break edge, for the Active Streams row and the operator's break history.
+///
+/// Separate from `report_iop` (which is a periodic HEALTH frame) because this is an EVENT — it fires exactly
+/// twice per break and must not be conflated with a poll tick. Carries no byte counts by construction: an
+/// ingest-side event can never feed an egress sink (`noteBytes`), which is the whole point of the iop/oop
+/// split.
+fn report_cue(ctx: &IngestCtx, state: &str, b: &AdBreak) {
+    ctx.state.report(serde_json::json!({
+        "kind": "cue",
+        "source": ctx.source,
+        "entryUrl": ctx.entry,
+        "state": state,
+        "breakId": b.id,
+        "signal": format!("{:?}", b.signal),
+        "segments": b.segments,
+        // Observed on close; on open this is just the first segment, which is the honest number to show while
+        // a break is still running.
+        "durationSec": b.seconds,
+        "announcedSec": b.announced,
+        "profileChanged": b.profile_changed,
+        "replaced": b.replaced,
+    }));
+}
+
 /// A process-wide view of what every live ring is holding.
 ///
 /// `originRingMb` bounds ONE channel; nothing bounds the box (the postponed `LRU` item). `report_iop` above
@@ -1182,6 +1820,8 @@ mod tests {
             bytes: Bytes::from(vec![0x47u8; bytes]),
             discontinuity: false,
             pdt: SystemTime::UNIX_EPOCH,
+            ad: false,
+            break_id: 0,
         }
     }
 
@@ -1195,6 +1835,7 @@ mod tests {
             }),
             duration: 5.0,
             discontinuity: disc,
+            cue: None,
         }
     }
 
@@ -1202,7 +1843,7 @@ mod tests {
     fn ring_evicts_oldest_to_stay_under_the_byte_cap() {
         let o = Origin::new(1000); // 1000-byte cap
         for i in 0..10 {
-            o.push(seg(i, 200));
+            o.push(seg(i, 200), true);
         }
         let ring = o.ring.read_ok();
         assert!(o.ring_bytes.load(Ordering::Relaxed) <= 1000, "ring must respect the cap");
@@ -1217,7 +1858,7 @@ mod tests {
         // Each segment alone blows the cap — without the floor the ring would hold 1 and be unplayable.
         let o = Origin::new(100);
         for i in 0..6 {
-            o.push(seg(i, 10_000));
+            o.push(seg(i, 10_000), true);
         }
         assert_eq!(o.ring_depth(), MIN_SEGMENTS, "floor holds a playable window");
         assert!(o.floor_beat_cap(), "and reports that the cap could not be honored");
@@ -1228,7 +1869,7 @@ mod tests {
     fn cap_is_honored_when_bitrate_fits_so_no_floor_warning() {
         let o = Origin::new(10_000);
         for i in 0..20 {
-            o.push(seg(i, 500));
+            o.push(seg(i, 500), true);
         }
         assert!(o.ring_depth() > MIN_SEGMENTS);
         assert!(!o.floor_beat_cap(), "a fitting bitrate must not warn");
@@ -1239,8 +1880,8 @@ mod tests {
         let watched = Arc::new(Origin::new(10_000));
         let idle = Arc::new(Origin::new(4_000));
         for i in 0..3 {
-            watched.push(seg(i, 500)); // 1500 bytes, under its cap
-            idle.push(seg(i, 200)); // 600 bytes, under its cap
+            watched.push(seg(i, 500), true); // 1500 bytes, under its cap
+            idle.push(seg(i, 200), true); // 600 bytes, under its cap
         }
         watched.subscribers.store(2, Ordering::Relaxed);
         // `idle` keeps zero subscribers: it is inside its IDLE_GRACE window, still holding RAM. Counting it in
@@ -1268,7 +1909,7 @@ mod tests {
         let o = Origin::new(10_000);
         for i in 0..4 {
             let s = o.next_seq.fetch_add(1, Ordering::Relaxed);
-            o.push(seg(s as usize, 100));
+            o.push(seg(s as usize, 100), true);
             assert_eq!(s, i);
         }
         let gen_before = o.generation();
@@ -1340,6 +1981,166 @@ mod tests {
         );
     }
 
+    // ── #EXT-X-ENDLIST: session expiry vs. a finished channel ────────────────────────────────────────────
+
+    fn uris(n: &[&str]) -> Vec<String> {
+        n.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn a_first_endlist_is_never_terminal() {
+        // Nothing to compare against yet, so the only honest move is to re-resolve and find out. This is the
+        // case that used to kill a live pluto ingest every ~25s.
+        assert!(!endlist_is_terminal(None, &uris(&["a.ts", "b.ts"])));
+    }
+
+    #[test]
+    fn an_unchanged_endlist_playlist_is_terminal() {
+        // The asset really is complete: a fresh resolve handed back the identical segment list.
+        let prev = uris(&["a.ts", "b.ts", "c.ts"]);
+        assert!(endlist_is_terminal(Some(&prev), &uris(&["a.ts", "b.ts", "c.ts"])));
+    }
+
+    #[test]
+    fn a_renewed_session_keeps_the_ingest_alive() {
+        // A provider that expired the session hands back a DIFFERENT window — the channel is still live.
+        let prev = uris(&["clip/1/00027.ts", "clip/1/00028.ts"]);
+        assert!(!endlist_is_terminal(Some(&prev), &uris(&["clip/1/00029.ts", "clip/1/00030.ts"])));
+        // Same URIs but a different count is still a change (the window shrank/grew, so it is not static).
+        assert!(!endlist_is_terminal(Some(&prev), &uris(&["clip/1/00027.ts"])));
+        // …and an empty playlist is not "the same" as a populated one.
+        assert!(!endlist_is_terminal(Some(&prev), &[]));
+    }
+
+    /// The regression that matters. An expired pluto session serves an EMPTY playlist + ENDLIST every time,
+    /// so "unchanged" alone declared the channel finished and reintroduced the teardown this fix exists to
+    /// remove — just at a slower cadence. Emptiness is the absence of evidence, not evidence of completion.
+    #[test]
+    fn repeated_empty_endlist_playlists_are_not_terminal() {
+        assert!(!endlist_is_terminal(Some(&Vec::new()), &[]));
+        assert!(!endlist_is_terminal(Some(&uris(&["a.ts"])), &[]));
+        // …and the runaway is bounded elsewhere: a source that only ever returns empty trips MAX_EMPTY_POLLS,
+        // which escalates through failover instead of quietly declaring the stream complete.
+    }
+
+    // ── S3/CUE Phase 2: the filler pool ──────────────────────────────────────────────────────────────────
+
+    fn ad_seg(n: usize) -> Segment {
+        Segment { ad: true, break_id: 1, ..seg(n, 100) }
+    }
+
+    #[test]
+    fn program_tail_takes_the_newest_program_segments_oldest_first() {
+        let o = Origin::new(1_000_000);
+        for i in 0..6 {
+            o.push(seg(i, 100), true);
+        }
+        let tail = o.program_tail(3);
+        assert_eq!(tail.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![3, 4, 5], "newest three, in play order");
+    }
+
+    /// The pool must skip a PREVIOUS break's filler, which is itself marked as break content. Looping a loop
+    /// would compound the repetition — the viewer would see the same few seconds twice over.
+    #[test]
+    fn program_tail_skips_break_content() {
+        let o = Origin::new(1_000_000);
+        for i in 0..3 {
+            o.push(seg(i, 100), true); // program
+        }
+        for i in 3..8 {
+            o.push(ad_seg(i), true); // a break (or the filler that replaced it)
+        }
+        let tail = o.program_tail(3);
+        assert_eq!(tail.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![0, 1, 2], "reaches past the break");
+        assert!(tail.iter().all(|s| !s.ad));
+    }
+
+    #[test]
+    fn program_tail_is_empty_when_the_ring_holds_no_program() {
+        // Nothing to loop ⇒ the caller must decline to substitute and serve the ad instead.
+        let o = Origin::new(1_000_000);
+        for i in 0..4 {
+            o.push(ad_seg(i), true);
+        }
+        assert!(o.program_tail(3).is_empty());
+    }
+
+    // ── S3/CUE: ad classification ────────────────────────────────────────────────────────────────────────
+    // All URIs below are VERBATIM from a live pluto capture (2026-08-06) that caught a full ~2 min pod of 5
+    // creatives. The signature list is what the pluto adapter declares, already lowercased by state.rs.
+
+    const PLUTO_SIG: &str = "0_ad/creative/";
+    const PGM_URI: &str = "https://siloh-ns1.plutotv.net/865_pluto/clip/616872f90b4e8f001a96043e_Titanic/1080pDRM/20250821_205403/hls/6281158-6741367/hls_300-00027.ts";
+    const AD_URI: &str = "https://siloh-ns1.plutotv.net/v1/mp4/c(ts)/h(default)/max(6)/rev(1)/p(0_ad%2Fcreative%2F6a6d6f417efe0af5316f0411_ad%2F720p%2F20260801_040001_248657053_x_a53f810a%2Fvideo_600.mp4)/id3(p=clik,id=6a6d6f417efe0af5316f0411)/head(0-984)/frag(984-382846)/sign/v1/1Z7FXa8QkGTviYcMUGdk2tAY3YaVaSOrvZVOw0MQACE=/0.ts";
+
+    fn ad_of(uri: &str, sigs: &[&str]) -> Option<AdSignal> {
+        let list: Vec<String> = sigs.iter().map(|s| s.to_string()).collect();
+        ad_signal(&segref(uri, None, false), &Url::parse(uri).unwrap(), &list)
+    }
+
+    #[test]
+    fn a_pluto_ad_creative_is_detected_and_a_program_clip_is_not() {
+        // The signature is declared percent-DECODED; the wire form is `0_ad%2Fcreative%2F`.
+        assert_eq!(ad_of(AD_URI, &[PLUTO_SIG]), Some(AdSignal::UriSignature));
+        assert_eq!(ad_of(PGM_URI, &[PLUTO_SIG]), None, "a /clip/ path can never contain the ad marker");
+    }
+
+    /// The load-bearing test. A generic "did the segment URL's directory change?" detector was tried on this
+    /// exact source and REMOVED (see `Boundary`) because these two shapes both answer yes ~9 times per window.
+    /// A declared literal must be immune to both — it never compares two URIs to each other.
+    #[test]
+    fn the_removed_url_heuristics_false_positives_are_not_ads() {
+        // 1. pluto rotates the keyfile WITHIN one clip — same media, different key directory.
+        for k in ["keyfile_5", "keyfile_6", "keyfile_7"] {
+            let u = format!("https://siloh-ns1.plutotv.net/865_pluto/clip/abc_Movie/1080pDRM/d/hls/1-2/{k}/s.ts");
+            assert_eq!(ad_of(&u, &[PLUTO_SIG]), None, "in-clip key rotation is not an ad break");
+        }
+        // 2. some CDN paths carry a PER-SEGMENT opaque token, so the "directory" is never stable mid-clip.
+        for t in ["UWJ5Mz0j0e=", "Xk91bQ2p7f=", "Zm9vYmFyYmF6="] {
+            let u = format!("https://cdn.example.com/v1/{t}/hls_300-00031.ts");
+            assert_eq!(ad_of(&u, &[PLUTO_SIG]), None, "an opaque per-segment token is not an ad break");
+        }
+    }
+
+    #[test]
+    fn a_source_that_declares_no_signature_detects_nothing() {
+        // Fail closed: URI detection is opt-in per adapter, so a real ad URI on a source that never declared
+        // one stays program. This is what keeps the mechanism safe to ship enabled for every source.
+        assert_eq!(ad_of(AD_URI, &[]), None);
+    }
+
+    #[test]
+    fn a_cue_tag_wins_over_the_uri_signature() {
+        // The source's own statement about its timeline beats our pattern match — including the case where a
+        // PROGRAM-looking URI sits inside a tagged break (SSAI that rewrites ad paths to look like content).
+        let cued = SegRef {
+            uri: PGM_URI.to_string(),
+            key: None,
+            duration: 5.0,
+            discontinuity: false,
+            cue: Some(crate::tsmux::CueState { kind: CueKind::CueOut, duration: 30.0 }),
+        };
+        let url = Url::parse(PGM_URI).unwrap();
+        assert_eq!(ad_signal(&cued, &url, &[]), Some(AdSignal::CueTag), "believed even with no signature");
+        assert_eq!(
+            ad_signal(&cued, &url, &[PLUTO_SIG.to_string()]),
+            Some(AdSignal::CueTag),
+            "the tag names the signal, not the fallback"
+        );
+    }
+
+    #[test]
+    fn a_daterange_break_reports_its_own_signal() {
+        let seg = SegRef {
+            uri: PGM_URI.to_string(),
+            key: None,
+            duration: 5.0,
+            discontinuity: false,
+            cue: Some(crate::tsmux::CueState { kind: CueKind::DateRange, duration: 120.0 }),
+        };
+        assert_eq!(ad_signal(&seg, &Url::parse(PGM_URI).unwrap(), &[]), Some(AdSignal::DateRange));
+    }
+
     #[test]
     fn contiguous_same_clip_is_not_a_boundary() {
         let prev = PrevSeg { upstream_seq: Some(9) };
@@ -1359,6 +2160,8 @@ mod tests {
                     bytes: Bytes::from(vec![0x47u8; 10]),
                     discontinuity: disc_at.contains(&i),
                     pdt: SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433),
+                    ad: false,
+                    break_id: 0,
                 })
             })
             .collect()
@@ -1374,6 +2177,7 @@ mod tests {
             0,
             Some("tok123"),
             Some("testplaylist"),
+            0,
         )
     }
 
@@ -1415,11 +2219,87 @@ mod tests {
     #[test]
     fn discontinuity_is_emitted_before_its_segment_only() {
         let m = render(&window(3, &[1]));
-        assert_eq!(m.matches("#EXT-X-DISCONTINUITY").count(), 1);
         let lines: Vec<&str> = m.lines().collect();
+        // EXACT match, not `contains`: `#EXT-X-DISCONTINUITY-SEQUENCE` shares the prefix.
+        assert_eq!(lines.iter().filter(|l| **l == "#EXT-X-DISCONTINUITY").count(), 1);
         let i = lines.iter().position(|l| *l == "#EXT-X-DISCONTINUITY").unwrap();
-        assert!(lines[i + 1].starts_with("#EXTINF:"));
-        assert!(lines[i + 2].contains("/0-101.ts"));
+        // RFC 8216 §6.2.1 — the splice re-anchors the clock before the segment it precedes.
+        assert!(lines[i + 1].starts_with("#EXT-X-PROGRAM-DATE-TIME:"));
+        assert!(lines[i + 2].starts_with("#EXTINF:"));
+        assert!(lines[i + 3].contains("/0-101.ts"));
+    }
+
+    /// A date-time is only interpolatable along ONE continuous media timeline, so every discontinuity needs
+    /// its own anchor. Measured live at 5 splices behind a single anchor, with jumps up to 16 minutes — the
+    /// deeper the ring, the worse a single anchor gets.
+    #[test]
+    fn every_timeline_in_the_window_gets_its_own_program_date_time() {
+        let m = render(&window(9, &[3, 6, 7]));
+        let pdts = m.lines().filter(|l| l.starts_with("#EXT-X-PROGRAM-DATE-TIME:")).count();
+        assert_eq!(pdts, 4, "the window head plus one per discontinuity");
+        // …and none of them is orphaned: each must be immediately followed by its segment's #EXTINF.
+        let lines: Vec<&str> = m.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("#EXT-X-PROGRAM-DATE-TIME:") {
+                assert!(lines[i + 1].starts_with("#EXTINF:"), "a PDT must anchor a segment");
+            }
+        }
+    }
+
+    /// The head anchor and a splice anchor can be the SAME segment, once the window has slid far enough to
+    /// open exactly on a discontinuity. Emitting for both reasons would put two consecutive PDT lines on one
+    /// segment; the `i == 0 ||` short-circuit collapses them. Observed live at `#EXT-X-MEDIA-SEQUENCE:69`.
+    #[test]
+    fn a_window_opening_on_a_discontinuity_gets_exactly_one_date_time() {
+        let m = render(&window(6, &[0, 3]));
+        let lines: Vec<&str> = m.lines().collect();
+        let pdts = lines.iter().filter(|l| l.starts_with("#EXT-X-PROGRAM-DATE-TIME:")).count();
+        assert_eq!(pdts, 2, "one per timeline RANGE, not one per reason to anchor");
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("#EXT-X-PROGRAM-DATE-TIME:") {
+                assert!(lines[i + 1].starts_with("#EXTINF:"), "no PDT may be orphaned by another PDT");
+            }
+        }
+    }
+
+    #[test]
+    fn discontinuity_sequence_counts_tags_that_left_the_window() {
+        // RFC 8216 §6.2.2. The cap forces eviction; only the evicted segments that CARRIED a tag count.
+        let o = Origin::new(2_000);
+        assert_eq!(o.disc_seq(), 0, "nothing has left yet");
+        for i in 0..12 {
+            let mut s = seg(i, 500);
+            s.discontinuity = i == 1 || i == 2; // two tags, both destined to be evicted
+            o.push(s, true);
+        }
+        assert!(o.ring_depth() < 12, "the cap must have evicted something for this to test anything");
+        assert_eq!(o.disc_seq(), 2, "both evicted tags counted, the surviving segments' tags not");
+    }
+
+    #[test]
+    fn discontinuity_sequence_never_decreases_across_a_ring_reset() {
+        // A reset discards the whole window at once; counting what leaves is what keeps the tag monotonic,
+        // which RFC 8216 requires of it exactly as it does of the media sequence.
+        let o = Origin::new(1_000_000); // large: nothing evicts, so the reset is the only thing that counts
+        for i in 0..5 {
+            let mut s = seg(i, 100);
+            s.discontinuity = i >= 3;
+            o.push(s, true);
+        }
+        assert_eq!(o.disc_seq(), 0, "nothing evicted while the ring had room");
+        let before = o.disc_seq();
+        o.reset_ring();
+        assert_eq!(o.disc_seq(), before + 2, "the two tags in the discarded window left the playlist");
+        o.reset_ring();
+        assert_eq!(o.disc_seq(), before + 2, "an empty reset adds nothing, and never goes backwards");
+    }
+
+    #[test]
+    fn the_discontinuity_sequence_tag_is_always_present() {
+        // Omitting it is not "0 by default": it pins the published value at 0 while the true count climbs.
+        assert!(render(&window(3, &[])).contains("#EXT-X-DISCONTINUITY-SEQUENCE:0"));
+        let m = render_media_playlist(&window(2, &[]), 5.0, "/api/ext/v1", "s", "e", 0, None, None, 42);
+        assert!(m.contains("#EXT-X-DISCONTINUITY-SEQUENCE:42"));
     }
 
     #[test]
@@ -1427,13 +2307,13 @@ mod tests {
         // A playlist whose TARGETDURATION is below any #EXTINF is rejected by players.
         let mut w = window(2, &[]);
         w[1] = Arc::new(Segment { duration: 5.005, ..(*w[1]).clone() });
-        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None);
+        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None, 0);
         assert!(m.contains("#EXT-X-TARGETDURATION:6"), "must ceil above the longest EXTINF");
     }
 
     #[test]
     fn generation_appears_in_segment_paths_so_stale_urls_can_404() {
-        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None);
+        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None, 0);
         assert!(m.contains("/7-100.ts"), "generation is part of the path");
     }
 

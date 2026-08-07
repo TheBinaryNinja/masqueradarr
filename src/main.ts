@@ -1,28 +1,11 @@
 import { createApp } from 'vue';
 import App from './App.vue';
 import { router } from './router';
+import { installAuthFetch } from './authFetch';
 import './styles.css';
 
-// Fetch Interceptor to automatically attach Bearer Auth Token to all requests
-const originalFetch = window.fetch;
-window.fetch = function (input, init) {
-    const token = localStorage.getItem('auth_token');
-    if (token) {
-        init = init || {};
-        init.headers = init.headers || {};
-        if (init.headers instanceof Headers) {
-            init.headers.set('Authorization', `Bearer ${token}`);
-        } else if (Array.isArray(init.headers)) {
-            const idx = init.headers.findIndex((h) => h[0].toLowerCase() === 'authorization');
-            if (idx !== -1) {
-                init.headers.splice(idx, 1);
-            }
-            init.headers.push(['Authorization', `Bearer ${token}`]);
-        } else {
-            (init.headers as Record<string, string>)['Authorization'] = `Bearer ${token}`;
-        }
-    }
-    return originalFetch(input, init);
-};
+// Attach the Bearer auth token to every fetch. Must run before the app mounts (and therefore before any
+// data helper fires). Shared with the standalone Ultimate Player entry — see authFetch.ts.
+installAuthFetch();
 
 createApp(App).use(router).mount('#app');

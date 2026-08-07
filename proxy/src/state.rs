@@ -40,8 +40,10 @@ const TARGET_TTL: Duration = Duration::from_secs(60);
 const FAILOVER_CURSOR_IDLE: Duration = Duration::from_secs(300);
 
 /// FOG: hard cap on resolve attempts per failover walk (a runaway backstop over any real group size — the
-/// walk normally ends on Node's distinct `failover_exhausted` reply).
-pub const MAX_FAILOVER_ATTEMPTS: u32 = 8;
+/// walk normally ends on Node's distinct `failover_exhausted` reply). Sized above any real chain: Node may
+/// spend the first attempt(s) on the SOURCE's own alternate upstreams (dlhd's independent player providers)
+/// before the channel's configured backups start, so the cap has to clear both stages plus a wrap.
+pub const MAX_FAILOVER_ATTEMPTS: u32 = 12;
 
 // EDGE-3 gate cache. When Rust is the public edge, the stream-token gate lives in Node (POST
 // /api/internal/authorize) but Rust must gate EVERY request — including warm hops that never re-hit the
@@ -180,6 +182,16 @@ pub struct SourcePolicy {
     /// operator is told to raise the dial rather than chasing stalls. NOT a global ceiling — see the plan's
     /// postponed `LRU` item.
     pub origin_ring_mb: AtomicU64,
+    /// S3/CUE: the adapter-declared ad-segment URI signature (percent-DECODED, lowercased substrings). Empty
+    /// for every source that emits real cue tags — or none at all — which is what makes URI-based ad
+    /// detection FAIL CLOSED. Never inferred here; Node's adapter is the only author (see origin::ad_state
+    /// and the `Boundary` doc comment on why a URI *diff* is not an acceptable substitute).
+    pub ad_uri_contains: RwLock<Vec<String>>,
+    /// S3/CUE: what the origin does with a DETECTED ad break — "passthrough" (republish the ad segments, the
+    /// shipped default and byte-identical to Phase 1) or "replace" (keep them out of the ring and substitute
+    /// looped program from the ring's own tail). RwLock<String> so a re-resolve can flip it, mirroring
+    /// `output_format`. Meaningless unless `origin_enabled`.
+    pub ad_policy: RwLock<String>,
 }
 
 impl SourcePolicy {
@@ -199,6 +211,8 @@ impl SourcePolicy {
             failover_on_definite_error: AtomicBool::new(false),
             origin_enabled: AtomicBool::new(false),
             origin_ring_mb: AtomicU64::new(crate::origin::DEFAULT_RING_MB),
+            ad_policy: RwLock::new("passthrough".to_string()),
+            ad_uri_contains: RwLock::new(Vec::new()),
         }
     }
 }
@@ -223,12 +237,24 @@ pub struct Grant {
     /// mount source for attempt 0 / ungrouped; the child's provider for a failover candidate). resolve()
     /// keys the SourcePolicy by this, never the URL mount source. `default` → None → an older Node degrades
     /// to mount-source keying (today's behavior).
+    /// S3/CUE: the serving adapter's ad-segment URI signature, when it declared one (pluto). `default` → None
+    /// → no URI-based ad detection, which is the correct posture for every source that didn't opt in and for
+    /// a pre-CUE Node that omits the key entirely.
+    #[serde(rename = "adSignature", default)]
+    pub ad_signature: Option<AdSignatureWire>,
     #[serde(rename = "policySource", default)]
     pub policy_source: Option<String>,
     /// FOG: failover context when this grant serves a candidate (attempt >= 1) — used for log attribution.
     #[serde(rename = "failover", default)]
     pub failover: Option<FailoverWire>,
     // (Node's grant also carries `isEntry`; the sidecar decides entry/hop from the path, so serde ignores it.)
+}
+
+/// S3/CUE: the adapter's ad-segment URI signature (mirrors resolveSeam.ts `adSignature`).
+#[derive(Deserialize, Clone)]
+pub struct AdSignatureWire {
+    #[serde(rename = "uriContains", default)]
+    pub uri_contains: Vec<String>,
 }
 
 /// FOG: the grant's failover block (attempt >= 1 grants only). Node also records the serving candidate for
@@ -275,6 +301,9 @@ pub struct ProxyConfigWire {
     pub origin_enabled: bool,
     #[serde(rename = "originRingMb", default = "default_origin_ring_mb")]
     pub origin_ring_mb: u64,
+    /// Absent (a pre-CUE Node) degrades to "passthrough", which is exactly Phase 1's behaviour.
+    #[serde(rename = "adPolicy", default = "default_ad_policy")]
+    pub ad_policy: String,
 }
 
 fn default_connect_ms() -> u64 {
@@ -289,6 +318,10 @@ fn default_output_format() -> String {
 fn default_true() -> bool {
     true
 }
+fn default_ad_policy() -> String {
+    "passthrough".to_string()
+}
+
 fn default_origin_ring_mb() -> u64 {
     crate::origin::DEFAULT_RING_MB
 }
@@ -306,6 +339,7 @@ impl Default for ProxyConfigWire {
             failover_on_definite_error: false,
             origin_enabled: false,
             origin_ring_mb: default_origin_ring_mb(),
+            ad_policy: default_ad_policy(),
         }
     }
 }
@@ -468,6 +502,66 @@ impl AppState {
         self.resolve_at(source, entry, pl, attempt).await
     }
 
+    /// Like `resolve_fresh`, but ADVANCES the stream's failover cursor first — "the candidate you last gave
+    /// me is not producing media, give me the next one". The ORIGIN ingest loop needs this because it never
+    /// passes through the handler's `failover_walk`: it owns its own retry loop, so without an escalation
+    /// path an origin-mode channel would re-resolve the same dead candidate every couple of seconds forever
+    /// (and the source's own alternate upstreams — dlhd's independent player providers — would never be
+    /// reached). The cursor is bumped even when the resolve then FAILS, so successive passes keep walking
+    /// instead of retrying one dead candidate; Node's `failover_exhausted` (or the attempt cap) folds the
+    /// cursor back to the channel itself so a stale pin can never strand the ingest.
+    pub async fn resolve_advance(
+        &self,
+        source: &str,
+        entry: &str,
+        pl: Option<&str>,
+    ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
+        let next = self.bump_cursor(source, entry);
+        if next >= MAX_FAILOVER_ATTEMPTS {
+            self.reset_cursor(source, entry);
+            return self.resolve_at(source, entry, pl, 0).await;
+        }
+        match self.resolve_at(source, entry, pl, next).await {
+            Err(ResolveErr::Exhausted) => {
+                self.reset_cursor(source, entry);
+                self.resolve_at(source, entry, pl, 0).await
+            }
+            other => other,
+        }
+    }
+
+    /// Advance a stream's failover cursor by one and return the new value, PERSISTING it even though no
+    /// target has resolved at it yet (`resolve_at` only records the cursor on success, which would make a
+    /// failing candidate repeat forever for a caller that drives its own retry loop). A record created here
+    /// carries an already-stale target, and `expires > now` is strict, so it can never be served.
+    pub fn bump_cursor(&self, source: &str, entry: &str) -> u32 {
+        let now = Instant::now();
+        let mut m = self.targets.lock_ok();
+        match m.get_mut(&target_key(source, entry)) {
+            Some(e) => {
+                if now.duration_since(e.last_access) > FAILOVER_CURSOR_IDLE {
+                    e.attempt = 0;
+                }
+                e.attempt = e.attempt.saturating_add(1);
+                e.last_access = now;
+                e.attempt
+            }
+            None => {
+                m.insert(
+                    target_key(source, entry),
+                    TargetEntry {
+                        target: String::new(),
+                        expires: now, // stale on arrival — a cursor record, not a cached target
+                        policy_key: source.to_string(),
+                        attempt: 1,
+                        last_access: now,
+                    },
+                );
+                1
+            }
+        }
+    }
+
     /// Expire a cached resolved target so the next ENTRY request re-resolves (RSL: a dead target that failed
     /// to fetch must not be re-served from cache for the rest of its TTL). FOG: expires the TARGET only —
     /// the entry (and its failover cursor) survives, so the re-resolve resumes at the pinned candidate.
@@ -614,6 +708,20 @@ impl AppState {
         policy
             .origin_ring_mb
             .store(grant.proxy_config.origin_ring_mb.max(1), Ordering::Relaxed);
+        *policy.ad_policy.write_ok() = grant.proxy_config.ad_policy.clone();
+        // S3/CUE: the adapter's ad-URI signature. Normalized ONCE here (lowercased, blanks dropped) so the
+        // ingest hot path is a plain `contains` — and REPLACED wholesale, never merged, so a re-resolve onto a
+        // provider that declares none correctly clears the previous one.
+        *policy.ad_uri_contains.write_ok() = grant
+            .ad_signature
+            .map(|s| {
+                s.uri_contains
+                    .into_iter()
+                    .map(|p| p.trim().to_lowercase())
+                    .filter(|p| !p.is_empty())
+                    .collect()
+            })
+            .unwrap_or_default();
         if let Ok(u) = Url::parse(&grant.target) {
             if let Some(h) = u.host_str() {
                 policy.hosts.write_ok().insert(h.to_lowercase());
@@ -799,5 +907,42 @@ async fn telemetry_flusher(
         if let Ok(resp) = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await {
             crate::log::apply_level_response(resp).await;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The grant wire contract for S3/CUE. Node's `ResolveGrant.adSignature` is `{uriContains}|null`; this
+    /// pins BOTH directions of the seam Rust owns — the field name and the null/absent degradation.
+    #[test]
+    fn grant_carries_the_adapter_ad_signature() {
+        let json = r#"{
+            "target": "https://cdn.example.com/master.m3u8",
+            "upstreamHeaders": {},
+            "relabelSegment": null,
+            "allowPrivate": false,
+            "isEntry": true,
+            "proxyConfig": {},
+            "adSignature": { "uriContains": ["0_ad/creative/"] },
+            "policySource": "pluto",
+            "failover": null
+        }"#;
+        let g: Grant = serde_json::from_str(json).expect("a pluto grant deserializes");
+        let sig = g.ad_signature.expect("adSignature rides the grant");
+        assert_eq!(sig.uri_contains, vec!["0_ad/creative/".to_string()]);
+    }
+
+    /// A source that declares none, and a PRE-CUE Node that omits the key entirely, must both degrade to "no
+    /// URI ad detection" rather than to a parse error — the same posture every other knob takes.
+    #[test]
+    fn a_null_or_absent_ad_signature_degrades_to_none() {
+        let base = r#"{"target":"https://x/","upstreamHeaders":{},"relabelSegment":null,
+                       "allowPrivate":false,"isEntry":true,"proxyConfig":{}"#;
+        let explicit_null: Grant = serde_json::from_str(&format!("{base},\"adSignature\":null}}")).unwrap();
+        assert!(explicit_null.ad_signature.is_none(), "every non-pluto source sends null");
+        let absent: Grant = serde_json::from_str(&format!("{base}}}")).unwrap();
+        assert!(absent.ad_signature.is_none(), "a pre-CUE Node omits the key");
     }
 }
