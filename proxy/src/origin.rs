@@ -278,6 +278,8 @@ pub struct Origin {
     ingested_segments: AtomicU64,
     ingested_bytes: AtomicU64,
     evicted_segments: AtomicU64,
+    /// RFC 8216 `EXT-X-DISCONTINUITY-SEQUENCE` — see `disc_seq()`.
+    disc_seq: AtomicU64,
 }
 
 impl Origin {
@@ -296,6 +298,7 @@ impl Origin {
             ingested_segments: AtomicU64::new(0),
             ingested_bytes: AtomicU64::new(0),
             evicted_segments: AtomicU64::new(0),
+            disc_seq: AtomicU64::new(0),
         }
     }
 
@@ -321,6 +324,13 @@ impl Origin {
                 match ring.pop_front() {
                     Some(old) => {
                         total -= old.bytes.len() as u64;
+                        // THE INVARIANT: `disc_seq` counts discontinuity tags that have LEFT the published
+                        // playlist. A tag rides on the segment it precedes, so evicting that segment is
+                        // exactly when its tag stops being visible — and every segment still held is by
+                        // definition after it.
+                        if old.discontinuity {
+                            self.disc_seq.fetch_add(1, Ordering::Relaxed);
+                        }
                         evicted += 1;
                     }
                     None => break,
@@ -350,9 +360,21 @@ impl Origin {
     /// timeline. `next_seq` is deliberately NOT reset — see its doc comment.
     fn reset_ring(&self) {
         let mut ring = self.ring.write_ok();
+        // Same invariant as eviction: every tag in the discarded window leaves the playlist at once. Counting
+        // them here (rather than resetting to 0) is what keeps `#EXT-X-DISCONTINUITY-SEQUENCE` monotonic
+        // across a failover, which RFC 8216 requires of it just as it does of the media sequence.
+        let leaving = ring.iter().filter(|s| s.discontinuity).count() as u64;
+        self.disc_seq.fetch_add(leaving, Ordering::Relaxed);
         ring.clear();
         self.ring_bytes.store(0, Ordering::Relaxed);
         self.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Discontinuity tags that have left the published window — RFC 8216's `EXT-X-DISCONTINUITY-SEQUENCE`,
+    /// i.e. the discontinuity sequence number of the window's FIRST segment. Monotonic by construction: it
+    /// only ever counts tags on their way out.
+    fn disc_seq(&self) -> u64 {
+        self.disc_seq.load(Ordering::Relaxed)
     }
 
     /// A snapshot of the live window, oldest first. Phase 2's renderers build both output shapes from this.
@@ -515,7 +537,8 @@ async fn ingest(ctx: IngestCtx) {
     // inside the loop below, so at this point no grant has landed and the policy is still at its shipped
     // defaults — reading it here pins every channel to `passthrough` no matter what the operator set.
     let mut replace_ads: Option<bool> = None;
-    let mut normalizer = crate::tsnorm::Normalizer::new();
+    let mut splicer = crate::tsnorm::Splicer::new();
+    let mut warned_splice = false;
     // Program captured at the OPENING edge of the current break, looped for its duration.
     let mut filler: Vec<Arc<Segment>> = Vec::new();
     let mut filler_idx: usize = 0;
@@ -603,7 +626,7 @@ async fn ingest(ctx: IngestCtx) {
                             // upstream may be another channel entirely, so its break, its rebased timeline
                             // and the program captured from its ring are all meaningless now.
                             ad_break = None;
-                            normalizer.reset();
+                            splicer.reset();
                             filler.clear();
                         }
                         // The new session renumbers regardless, so sequence-gap detection must re-anchor.
@@ -733,9 +756,6 @@ async fn ingest(ctx: IngestCtx) {
             // after it rather than on top of it.
             if replace_ads && signal.is_some() && ad_break.is_none() {
                 filler = ctx.origin.program_tail(FILLER_SEGMENTS);
-                if let Some(last) = filler.last() {
-                    normalizer.observe(&last.bytes);
-                }
                 filler_idx = 0;
                 warned_filler = false;
             }
@@ -747,7 +767,9 @@ async fn ingest(ctx: IngestCtx) {
             let mut replacement: Option<Bytes> = None;
             if replace_ads && signal.is_some() {
                 match filler.get(filler_idx % filler.len().max(1)) {
-                    Some(src) => match normalizer.rebase(&src.bytes) {
+                    // REPEAT contract: these bytes are already in the ring, so the copy has to clear the
+                    // original's presentation rather than merely its decode end.
+                    Some(src) => match splicer.normalize_repeat(&src.bytes) {
                         Some(bytes) => {
                             substituted = Some(src.duration);
                             filler_idx += 1;
@@ -880,12 +902,56 @@ async fn ingest(ctx: IngestCtx) {
                 (None, None) => {}
             }
 
+            // ── SPLICE ABSORPTION ────────────────────────────────────────────────────────────────────────
+            // Republish onto ONE timeline with STABLE pids. Upstream moves the video pid between ads — pluto
+            // ran 258 → 256 → 258 across a single pod — and a demuxer does not follow an elementary stream to
+            // a new pid: it keeps rendering the one it latched and registers the new one as a stream nothing
+            // is displaying. Measured against a real client, video froze exactly when the pid moved away and
+            // came back exactly when it returned. `#EXT-X-DISCONTINUITY` cannot express that. The tag
+            // describes a TIMELINE break; this is a stream-IDENTITY break, and the only fix is to stop the
+            // identity from changing. (The same client handled every sps-only change on a stable pid
+            // unaided, which is why this never re-encodes.)
+            //
+            // Runs at INGEST, once per segment, so one rewrite serves every viewer and both renderers — and
+            // so `program_tail` hands the filler path material already on this timeline.
+            //
+            // A substituted segment came from that same filler path and is already normalised; re-running it
+            // would space it against itself.
+            let joined = splicer.has_timeline();
+            let (plain, absorbed) = if substituted.is_some() {
+                (plain, true)
+            } else {
+                match splicer.normalize(&plain) {
+                    Some(b) => (Bytes::from(b), true),
+                    None => {
+                        // Declining is designed, not a failure: publish the bytes untouched and drop the
+                        // timeline so the next segment re-anchors on its own clock rather than being spaced
+                        // against one whose media nobody received. Upstream's splice is then signalled the
+                        // old way — a visible decoder reset beats a stream we mis-rewrote.
+                        if !warned_splice {
+                            warned_splice = true;
+                            log::warn("iop", &rid, || {
+                                "splice normalisation declined (no PSI, or a program shape the published \
+                                 layout cannot carry) — publishing verbatim and signalling the splice"
+                                    .to_string()
+                            });
+                        }
+                        splicer.reset();
+                        (plain, false)
+                    }
+                }
+            };
+            // Drop the tag ONLY when the splice was genuinely absorbed — the segment was moved onto a clock
+            // that already existed. A FRESH anchor leaves the timestamps exactly where upstream put them, so
+            // upstream's own signal still governs and must still be published.
+            let discontinuity = if absorbed && joined { false } else { boundary.is_some() };
+
             let evicted = ctx.origin.push(
                 Segment {
                     seq: our_seq,
                     duration,
                     bytes: plain,
-                    discontinuity: boundary.is_some(),
+                    discontinuity,
                     pdt: SystemTime::now(),
                     ad: signal.is_some(),
                     break_id: ad_break.as_ref().map(|b| b.id).unwrap_or(0),
@@ -913,7 +979,14 @@ async fn ingest(ctx: IngestCtx) {
                         Boundary::SessionRenewal => "first segment of a renewed provider session".to_string(),
                         Boundary::AdReturn => "program resumed after replaced ad break".to_string(),
                     };
-                    format!("discontinuity ({b:?}) at our seq={our_seq} — {detail}")
+                    // Say which of the two happened. An ABSORBED splice publishes no tag, so a log line that
+                    // read the same either way would make the normaliser silently un-diagnosable — exactly
+                    // the failure mode the `iop:cue` naming exists to prevent.
+                    if discontinuity {
+                        format!("discontinuity ({b:?}) at our seq={our_seq} — {detail}")
+                    } else {
+                        format!("splice ABSORBED ({b:?}) at our seq={our_seq} — {detail}; rebased onto one timeline, no tag published")
+                    }
                 });
             }
             if evicted > 0 {
@@ -1336,6 +1409,7 @@ fn render_media_playlist(
     generation: u64,
     token: Option<&str>,
     pl: Option<&str>,
+    disc_seq: u64,
 ) -> String {
     // TARGETDURATION must be an integer >= the longest #EXTINF, or players reject the playlist.
     let longest = window.iter().fold(target_duration, |m, s| if s.duration > m { s.duration } else { m });
@@ -1346,15 +1420,24 @@ fn render_media_playlist(
     // OUR sequence — the ring base. Never the upstream's.
     let base = window.first().map(|s| s.seq).unwrap_or(0);
     out.push_str(&format!("#EXT-X-MEDIA-SEQUENCE:{base}\n"));
-    if let Some(first) = window.first() {
-        out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(first.pdt)));
-    }
+    // RFC 8216 §6.2.2: a server that removes a segment preceded by #EXT-X-DISCONTINUITY from a sliding
+    // window MUST increment this. Omitting the tag is not "0 by default" — it pins the value at 0 forever
+    // while the true count climbs, so a client tracking which timeline it is on loses its reference every
+    // time the window slides. `Origin` counts the tags that have LEFT the playlist; see `Origin::disc_seq`.
+    out.push_str(&format!("#EXT-X-DISCONTINUITY-SEQUENCE:{disc_seq}\n"));
     let enc_entry = crate::manifest::enc(entry);
-    for seg in window {
+    for (i, seg) in window.iter().enumerate() {
         // A splice inside the window is signalled, not hidden — that is L1 by decision: "clean" means no
         // visible origin/encryption/hops, not a single unbroken timeline. Players handle this tag correctly.
         if seg.discontinuity {
             out.push_str("#EXT-X-DISCONTINUITY\n");
+        }
+        // RFC 8216 §6.2.1: apply a PROGRAM-DATE-TIME to the first segment after EVERY discontinuity, not
+        // just to the head of the window. A date-time is only interpolatable along ONE continuous media
+        // timeline, so with a single anchor a client has no valid mapping for any range past the first
+        // splice — measured live at 5 discontinuities behind one anchor, with jumps up to 16 minutes.
+        if i == 0 || seg.discontinuity {
+            out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(seg.pdt)));
         }
         out.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
         out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{}.ts", seg.seq));
@@ -1414,6 +1497,11 @@ pub async fn serve_entry(
     if !wait_ready(&origin, rid).await {
         return crate::proxy::text(503, "stream warming up: no playable window yet");
     }
+    // Read the counter BEFORE snapshotting the window. The two are separate atomics, so an eviction landing
+    // between them leaves a one-poll skew either way — but this order makes it an UNDER-count, where the tag
+    // is still in the window and the client counts it itself. The other order double-counts it. (Monotonicity
+    // holds regardless: the counter only ever rises.)
+    let disc_seq = origin.disc_seq();
     let window = origin.window();
     let body = render_media_playlist(
         &window,
@@ -1424,6 +1512,7 @@ pub async fn serve_entry(
         origin.generation(),
         token,
         pl,
+        disc_seq,
     );
     log::info("oop", rid, || {
         format!("origin manifest served ({} segment(s), {} bytes)", window.len(), body.len())
@@ -1566,6 +1655,11 @@ async fn ts_ring_producer(
     let mut next_seq = origin.window().first().map(|s| s.seq).unwrap_or(0);
     let mut pending_bytes: u64 = 0;
     let mut last_flush = Instant::now();
+    // A bare TS socket has no `#EXT-X-DISCONTINUITY` to splice with, so the splice is removed instead: every
+    // segment is republished onto one published layout with one continuous clock. Per-SESSION, because each
+    // viewer joins the ring at a different point and therefore sits on its own timeline.
+    let mut splicer = crate::tsnorm::Splicer::new();
+    let mut warned_splice = false;
 
     loop {
         let window = origin.window();
@@ -1577,15 +1671,35 @@ async fn ts_ring_producer(
                     format!("client fell behind the ring (wanted seq={next_seq}, oldest held={}) — skipping ahead; raise originRingMb if this repeats", front.seq)
                 });
                 next_seq = front.seq;
+                // The skipped media is gone; anchoring the next segment against the clock it would have ended
+                // on would publish a gap. Re-anchor instead.
+                splicer.reset();
             }
         }
         let mut sent_any = false;
         let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
         for seg in window.iter().filter(|s| s.seq >= from) {
             next_seq = seg.seq + 1;
-            pending_bytes += seg.bytes.len() as u64;
+            // Declining is a designed outcome: a segment carrying no PSI, or a program shape the published
+            // layout cannot express, is served verbatim. That reinstates the upstream splice for that one
+            // segment — a visible glitch — which still beats emitting a stream we mis-rewrote.
+            let body = match splicer.normalize(&seg.bytes) {
+                Some(bytes) => Bytes::from(bytes),
+                None => {
+                    if !warned_splice {
+                        warned_splice = true;
+                        log::warn("oop", &ctx.rid, || {
+                            "splice normalisation declined (no PSI, or a program shape the published layout \
+                             cannot carry) — serving upstream timestamps as-is"
+                                .to_string()
+                        });
+                    }
+                    seg.bytes.clone()
+                }
+            };
+            pending_bytes += body.len() as u64;
             sent_any = true;
-            if tx.send(Ok(seg.bytes.clone())).await.is_err() {
+            if tx.send(Ok(body)).await.is_err() {
                 // Client disconnected — the receiver dropped. Close out and release the lease.
                 log::info("oop", &ctx.rid, || format!("origin raw-TS client disconnected ({stream_id})"));
                 if pending_bytes > 0 {
@@ -2063,6 +2177,7 @@ mod tests {
             0,
             Some("tok123"),
             Some("testplaylist"),
+            0,
         )
     }
 
@@ -2104,11 +2219,87 @@ mod tests {
     #[test]
     fn discontinuity_is_emitted_before_its_segment_only() {
         let m = render(&window(3, &[1]));
-        assert_eq!(m.matches("#EXT-X-DISCONTINUITY").count(), 1);
         let lines: Vec<&str> = m.lines().collect();
+        // EXACT match, not `contains`: `#EXT-X-DISCONTINUITY-SEQUENCE` shares the prefix.
+        assert_eq!(lines.iter().filter(|l| **l == "#EXT-X-DISCONTINUITY").count(), 1);
         let i = lines.iter().position(|l| *l == "#EXT-X-DISCONTINUITY").unwrap();
-        assert!(lines[i + 1].starts_with("#EXTINF:"));
-        assert!(lines[i + 2].contains("/0-101.ts"));
+        // RFC 8216 §6.2.1 — the splice re-anchors the clock before the segment it precedes.
+        assert!(lines[i + 1].starts_with("#EXT-X-PROGRAM-DATE-TIME:"));
+        assert!(lines[i + 2].starts_with("#EXTINF:"));
+        assert!(lines[i + 3].contains("/0-101.ts"));
+    }
+
+    /// A date-time is only interpolatable along ONE continuous media timeline, so every discontinuity needs
+    /// its own anchor. Measured live at 5 splices behind a single anchor, with jumps up to 16 minutes — the
+    /// deeper the ring, the worse a single anchor gets.
+    #[test]
+    fn every_timeline_in_the_window_gets_its_own_program_date_time() {
+        let m = render(&window(9, &[3, 6, 7]));
+        let pdts = m.lines().filter(|l| l.starts_with("#EXT-X-PROGRAM-DATE-TIME:")).count();
+        assert_eq!(pdts, 4, "the window head plus one per discontinuity");
+        // …and none of them is orphaned: each must be immediately followed by its segment's #EXTINF.
+        let lines: Vec<&str> = m.lines().collect();
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("#EXT-X-PROGRAM-DATE-TIME:") {
+                assert!(lines[i + 1].starts_with("#EXTINF:"), "a PDT must anchor a segment");
+            }
+        }
+    }
+
+    /// The head anchor and a splice anchor can be the SAME segment, once the window has slid far enough to
+    /// open exactly on a discontinuity. Emitting for both reasons would put two consecutive PDT lines on one
+    /// segment; the `i == 0 ||` short-circuit collapses them. Observed live at `#EXT-X-MEDIA-SEQUENCE:69`.
+    #[test]
+    fn a_window_opening_on_a_discontinuity_gets_exactly_one_date_time() {
+        let m = render(&window(6, &[0, 3]));
+        let lines: Vec<&str> = m.lines().collect();
+        let pdts = lines.iter().filter(|l| l.starts_with("#EXT-X-PROGRAM-DATE-TIME:")).count();
+        assert_eq!(pdts, 2, "one per timeline RANGE, not one per reason to anchor");
+        for (i, l) in lines.iter().enumerate() {
+            if l.starts_with("#EXT-X-PROGRAM-DATE-TIME:") {
+                assert!(lines[i + 1].starts_with("#EXTINF:"), "no PDT may be orphaned by another PDT");
+            }
+        }
+    }
+
+    #[test]
+    fn discontinuity_sequence_counts_tags_that_left_the_window() {
+        // RFC 8216 §6.2.2. The cap forces eviction; only the evicted segments that CARRIED a tag count.
+        let o = Origin::new(2_000);
+        assert_eq!(o.disc_seq(), 0, "nothing has left yet");
+        for i in 0..12 {
+            let mut s = seg(i, 500);
+            s.discontinuity = i == 1 || i == 2; // two tags, both destined to be evicted
+            o.push(s, true);
+        }
+        assert!(o.ring_depth() < 12, "the cap must have evicted something for this to test anything");
+        assert_eq!(o.disc_seq(), 2, "both evicted tags counted, the surviving segments' tags not");
+    }
+
+    #[test]
+    fn discontinuity_sequence_never_decreases_across_a_ring_reset() {
+        // A reset discards the whole window at once; counting what leaves is what keeps the tag monotonic,
+        // which RFC 8216 requires of it exactly as it does of the media sequence.
+        let o = Origin::new(1_000_000); // large: nothing evicts, so the reset is the only thing that counts
+        for i in 0..5 {
+            let mut s = seg(i, 100);
+            s.discontinuity = i >= 3;
+            o.push(s, true);
+        }
+        assert_eq!(o.disc_seq(), 0, "nothing evicted while the ring had room");
+        let before = o.disc_seq();
+        o.reset_ring();
+        assert_eq!(o.disc_seq(), before + 2, "the two tags in the discarded window left the playlist");
+        o.reset_ring();
+        assert_eq!(o.disc_seq(), before + 2, "an empty reset adds nothing, and never goes backwards");
+    }
+
+    #[test]
+    fn the_discontinuity_sequence_tag_is_always_present() {
+        // Omitting it is not "0 by default": it pins the published value at 0 while the true count climbs.
+        assert!(render(&window(3, &[])).contains("#EXT-X-DISCONTINUITY-SEQUENCE:0"));
+        let m = render_media_playlist(&window(2, &[]), 5.0, "/api/ext/v1", "s", "e", 0, None, None, 42);
+        assert!(m.contains("#EXT-X-DISCONTINUITY-SEQUENCE:42"));
     }
 
     #[test]
@@ -2116,13 +2307,13 @@ mod tests {
         // A playlist whose TARGETDURATION is below any #EXTINF is rejected by players.
         let mut w = window(2, &[]);
         w[1] = Arc::new(Segment { duration: 5.005, ..(*w[1]).clone() });
-        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None);
+        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None, 0);
         assert!(m.contains("#EXT-X-TARGETDURATION:6"), "must ceil above the longest EXTINF");
     }
 
     #[test]
     fn generation_appears_in_segment_paths_so_stale_urls_can_404() {
-        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None);
+        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None, 0);
         assert!(m.contains("/7-100.ts"), "generation is part of the path");
     }
 
