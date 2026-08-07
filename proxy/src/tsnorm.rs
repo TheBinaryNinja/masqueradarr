@@ -526,6 +526,17 @@ impl Layout {
         if audios.len() > MAX_AUDIO {
             return None;
         }
+        // At least one. The published table is LOCKED and every later segment is mapped onto it, so locking a
+        // video-only program does not merely skip audio for one segment — it nullifies the audio pid of every
+        // segment for the rest of the session. Silent, total, and permanent. A segment whose PMT declares no
+        // audio (a slate, a bootstrap table, an ad with the audio pid not yet announced) must therefore be
+        // declined and served verbatim, never used as the template.
+        //
+        // Why this is reachable and not just theoretical: any decline calls `Splicer::reset`, which clears the
+        // layout — so the session re-locks on whatever segment happens to come next, mid-stream, forever.
+        if audios.is_empty() {
+            return None;
+        }
         let mut streams = vec![(videos[0], OUT_VIDEO_PID)];
         for (i, t) in audios.into_iter().enumerate() {
             streams.push((t, OUT_AUDIO_BASE + i as u16));
@@ -552,6 +563,16 @@ impl Layout {
             used.push(in_pid);
             out.insert(in_pid, out_pid);
         }
+        // Every audio track this segment carries must have found a home in the published table. The loop above
+        // only walks the LOCKED template, so a segment offering MORE audio than the layout has room for would
+        // leave the extras unmapped — and `apply` turns an unmapped pid into padding. That is exactly the
+        // silent loss `publishable` refuses to allow for a track we cannot classify, so a track we CAN
+        // classify must not be treated more cheaply. Decline and serve verbatim instead.
+        let carried = psi.streams.iter().filter(|(_, t)| is_self_describing_audio(*t)).count();
+        let published = self.streams.iter().filter(|(t, _)| is_self_describing_audio(*t)).count();
+        if carried > published {
+            return None;
+        }
         // The PCR must land on a pid we actually publish, or the output loses its clock reference entirely.
         // In practice pluto carries PCR on the video pid; anything else is declined rather than guessed at.
         if out.get(&psi.pcr_pid) != Some(&OUT_VIDEO_PID) {
@@ -570,11 +591,20 @@ struct Remap<'a> {
 
 /// Republishes a spliced upstream as one continuous program: stable pids, one clock, one PMT.
 ///
-/// Lives in the raw-TS PRODUCER (one per client socket), not in the ingest. The ring is shared by both
-/// renderers and by every viewer, so it must keep holding verbatim upstream bytes — the HLS renderer needs
-/// the real splice in order to signal it, and two viewers who joined at different points sit at different
-/// points on their own output timelines. Rewriting is a byte walk with no crypto and no decode; at a 5 s
-/// segment cadence it is a few hundred KiB/s per viewer.
+/// TWO instances exist, on opposite sides of the ring, and the difference matters when reading this module:
+///
+///   · The INGEST runs one per channel (`origin::ingest`) and stores the REWRITTEN bytes. One rewrite then
+///     serves every viewer and both renderers — which is why the HLS path needs no rewrite of its own and
+///     serves ring bytes verbatim.
+///   · The RAW-TS PRODUCER runs one per client socket (`origin::ts_ring_producer`), because a bare TS socket
+///     has no `#EXT-X-DISCONTINUITY` to splice with and two viewers who joined the ring at different points
+///     sit at different points on their own output timelines.
+///
+/// (Before the pid-remap fix this lived in the producer ALONE and the ring held verbatim upstream bytes. The
+/// note that used to say so was left behind by that move; it is corrected here because it sent readers
+/// looking for the rewrite on the wrong side of the ring.)
+///
+/// Rewriting is a byte walk with no crypto and no decode; at a 5 s segment cadence it is a few hundred KiB/s.
 pub(crate) struct Splicer {
     clock: Normalizer,
     layout: Option<Layout>,
@@ -978,6 +1008,70 @@ mod tests {
         s.extend(pmt_for(PMTPID, 0x100, &[(0x1B, 0x100), (0x81, 0x101)]));
         s.extend(pkt(0x100, true, Some(0), &pes(0xE0, f, Some(0))));
         assert!(Splicer::new().normalize(&s).is_none(), "declines rather than publishing without the audio");
+    }
+
+    /// A 3-frame segment declaring exactly `streams` (one of which must be the H.264 video).
+    fn seg_with(streams: &[(u8, u16)], base: u64) -> Vec<u8> {
+        let f = HZ / 25;
+        let vpid = streams.iter().find(|(t, _)| *t == 0x1B).map(|(_, p)| *p).expect("a video stream");
+        let mut s = Vec::new();
+        s.extend(pat_for(PMTPID));
+        s.extend(pmt_for(PMTPID, vpid, streams));
+        for i in 0..3u64 {
+            let dts = base + i * f;
+            s.extend(pkt(vpid, true, Some(dts), &pes(0xE0, dts + f, Some(dts))));
+            for (_, p) in streams.iter().filter(|(t, _)| *t != 0x1B) {
+                s.extend(pkt(*p, true, None, &pes(0xC0, dts, None)));
+            }
+        }
+        s
+    }
+
+    #[test]
+    fn a_video_only_program_is_never_locked_as_the_published_layout() {
+        // The layout is locked ONCE and every later segment is mapped onto it, so a video-only template does
+        // not cost one segment's audio — it nullifies the audio pid of every segment for the rest of the
+        // session. Permanent, total silence, with video playing perfectly over the top of it.
+        let s = seg_with(&[(0x1B, 0x100)], 0);
+        assert!(Splicer::new().normalize(&s).is_none(), "declines rather than locking audio out of the session");
+    }
+
+    #[test]
+    fn audio_survives_a_session_that_opened_on_a_video_only_segment() {
+        // The reachable path, not a hypothetical: a decline calls `reset`, which clears the layout, so the
+        // session re-locks on whatever arrives next — mid-stream, at any point. The video-only segment must
+        // pass through without poisoning the template the NEXT one establishes.
+        let mut sp = Splicer::new();
+        assert!(sp.normalize(&seg_with(&[(0x1B, 0x100)], 0)).is_none());
+
+        // Deliberately NOT the canonical pids, so this proves the audio was republished rather than merely
+        // surviving untouched.
+        let a = sp.normalize(&side(0x200, 0x201, None, 10_000_000)).expect("a normal segment still normalises");
+        assert!(!packets_on(&a, OUT_AUDIO_BASE).is_empty(), "audio is published on the canonical pid…");
+        assert!(packets_on(&a, 0x201).is_empty(), "…and no longer on the upstream one");
+    }
+
+    #[test]
+    fn a_segment_carrying_more_audio_than_the_layout_is_declined_not_stripped() {
+        // `map` walks the LOCKED template, so an extra track has nowhere to go and `apply` would pad it out.
+        // Losing a language silently is the exact failure `publishable` refuses to allow for a track we cannot
+        // classify — one we CAN classify must not be treated more cheaply.
+        let mut sp = Splicer::new();
+        sp.normalize(&seg_with(&[(0x1B, 0x100), (0x0F, 0x101)], 0)).expect("locks on one audio track");
+
+        let two = seg_with(&[(0x1B, 0x100), (0x0F, 0x101), (0x0F, 0x102)], 10_000_000);
+        assert!(sp.normalize(&two).is_none(), "declines rather than dropping the second track");
+    }
+
+    #[test]
+    fn a_multi_track_layout_still_publishes_every_track() {
+        // The guard above must not become "decline anything with more than one audio track".
+        let mut sp = Splicer::new();
+        let a = sp
+            .normalize(&seg_with(&[(0x1B, 0x200), (0x0F, 0x201), (0x0F, 0x202)], 0))
+            .expect("two audio tracks are publishable");
+        assert!(!packets_on(&a, OUT_AUDIO_BASE).is_empty(), "first track published");
+        assert!(!packets_on(&a, OUT_AUDIO_BASE + 1).is_empty(), "second track published");
     }
 
     #[test]

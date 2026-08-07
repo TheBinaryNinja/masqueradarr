@@ -28,6 +28,7 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
 use bytes::Bytes;
+use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -318,28 +319,89 @@ pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Op
         .ok()
 }
 
-/// The highest-BANDWIDTH variant's URI (the STREAM-INF URI is the next non-comment line), resolved absolute.
-pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<Url> {
-    let mut best_bw: i64 = -1;
-    let mut best_uri: Option<String> = None;
-    let mut pending_bw: Option<i64> = None;
+/// `GROUP-ID`s of `#EXT-X-MEDIA:TYPE=AUDIO` renditions that carry their OWN `URI=`, i.e. audio that lives in
+/// a separate playlist instead of inside the variant.
+///
+/// Per RFC 8216 §4.3.4.1 an `#EXT-X-MEDIA` WITHOUT a `URI` means that rendition is already present in the
+/// referencing variant's own playlist — so only the URI-bearing ones are actually demuxed, and a bare
+/// "does this master mention EXT-X-MEDIA" test would false-positive on every muxed stream that merely
+/// labels its audio track.
+fn demuxed_audio_groups(body: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for l in body.split('\n') {
+        let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
+        let attrs = split_attrs(attrs);
+        let val = |k: &str| {
+            attrs
+                .iter()
+                .find(|(a, _)| a.eq_ignore_ascii_case(k))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        };
+        if !val("TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
+            continue;
+        }
+        // No URI ⇒ muxed into the variant ⇒ following the variant alone still yields audio.
+        if val("URI").is_none_or(|u| u.is_empty()) {
+            continue;
+        }
+        if let Some(g) = val("GROUP-ID") {
+            out.insert(g);
+        }
+    }
+    out
+}
+
+/// The variant the byte-paths will follow.
+pub(crate) struct VariantPick {
+    pub url: Url,
+    /// True when this variant's audio lives in a separate `#EXT-X-MEDIA` rendition playlist — i.e. following
+    /// this playlist alone yields VIDEO ONLY.
+    pub external_audio: bool,
+}
+
+/// Pick the variant to follow (the STREAM-INF URI is the next non-comment line), resolved absolute.
+///
+/// PREFERS the highest-BANDWIDTH variant whose audio is muxed IN — no `AUDIO=` attribute, or an `AUDIO=`
+/// group whose renditions carry no URI of their own. Both raw-TS paths concatenate exactly ONE playlist and
+/// have no muxer that could interleave a second elementary stream (RMX stays deferred), so a video-only
+/// variant is served SILENT. Bandwidth is the wrong thing to maximise when the top rendition costs the
+/// audio track.
+///
+/// Only when EVERY variant defers its audio does this report `external_audio = true`; the caller then falls
+/// back to the HLS rewrite, which passes the rendition through and lets the player fetch it.
+pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
+    let demuxed = demuxed_audio_groups(body);
+    let mut best: Option<(i64, String)> = None; // audio-safe variants only
+    let mut best_any: Option<(i64, String)> = None; // any variant, whatever its audio
+    let mut pending: Option<(i64, bool)> = None; // (bandwidth, audio_is_external) awaiting its URI line
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
-            pending_bw = Some(parse_bandwidth(rest));
+            let group = split_attrs(rest)
+                .into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("AUDIO"))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string());
+            let external = group.is_some_and(|g| demuxed.contains(&g));
+            pending = Some((parse_bandwidth(rest), external));
         } else if !line.starts_with('#') {
-            if let Some(bw) = pending_bw.take() {
-                if bw >= best_bw {
-                    best_bw = bw;
-                    best_uri = Some(line.to_string());
+            if let Some((bw, external)) = pending.take() {
+                if !external && best.as_ref().is_none_or(|(b, _)| bw >= *b) {
+                    best = Some((bw, line.to_string()));
+                }
+                if best_any.as_ref().is_none_or(|(b, _)| bw >= *b) {
+                    best_any = Some((bw, line.to_string()));
                 }
             }
         }
     }
-    best_uri.and_then(|u| base.join(&u).ok())
+    let (uri, external_audio) = match best {
+        Some((_, u)) => (u, false),
+        None => (best_any?.1, true),
+    };
+    base.join(&uri).ok().map(|url| VariantPick { url, external_audio })
 }
 
 fn parse_bandwidth(attrs: &str) -> i64 {
@@ -369,8 +431,20 @@ pub async fn try_ts_response(
 ) -> Option<Response> {
     // Resolve to the MEDIA playlist to follow (peek the top variant for a master), then guard TS-only.
     let (media_url, media_body) = if is_master(&first_body) {
-        let vurl = pick_variant(&first_body, &first_url)?;
-        let resp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
+        let pick = pick_variant(&first_body, &first_url)?;
+        // Every variant defers its audio to a separate #EXT-X-MEDIA rendition, so following any one of them
+        // would concatenate VIDEO ONLY. There is no muxer here to interleave the second playlist, so bail to
+        // the HLS rewrite (which passes the rendition through) rather than serve a silent socket.
+        if pick.external_audio {
+            log::warn("tsmux", &ctx.rid, || {
+                format!(
+                    "raw-TS not eligible for {}/{}: audio is a separate #EXT-X-MEDIA rendition — falling back to HLS rewrite",
+                    ctx.source, ctx.entry
+                )
+            });
+            return None;
+        }
+        let resp = fetch_with_retry(&ctx.client, pick.url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !resp.status().is_success() {
@@ -454,8 +528,19 @@ async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
     let furl = resp.url().clone();
     let body = resp.text().await.ok()?;
     if is_master(&body) {
-        let vurl = pick_variant(&body, &furl)?;
-        let vresp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
+        let pick = pick_variant(&body, &furl)?;
+        // Mid-session the fallback door is already shut (the client holds a video/mp2t socket), so ending the
+        // session is the honest outcome — a silent one would look like working playback.
+        if pick.external_audio {
+            log::warn("tsmux", &ctx.rid, || {
+                format!(
+                    "{}/{}: re-resolved upstream defers audio to a separate #EXT-X-MEDIA rendition — cannot continue as raw TS",
+                    ctx.source, ctx.entry
+                )
+            });
+            return None;
+        }
+        let vresp = fetch_with_retry(&ctx.client, pick.url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
@@ -832,7 +917,77 @@ mod tests {
     fn master_detection_and_highest_bandwidth_variant() {
         let m = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlo.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS=\"avc1,mp4a\"\nhi.m3u8\n";
         assert!(is_master(m));
-        assert_eq!(pick_variant(m, &base()).unwrap().as_str(), "https://cdn.example.com/live/hi.m3u8");
+        let p = pick_variant(m, &base()).unwrap();
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/hi.m3u8");
+        assert!(!p.external_audio, "no #EXT-X-MEDIA at all ⇒ whatever audio exists is muxed in");
+    }
+
+    // ── demuxed audio (the "video plays, no sound" class) ────────────────────────────────────────────────
+
+    #[test]
+    fn a_uri_bearing_audio_rendition_marks_the_variant_video_only() {
+        // The shape that made channels silent: the only variant defers its audio to a second playlist, so
+        // concatenating it yields video with no sound. Nothing here can mux the two back together.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES,URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS=\"avc1.4d401f,mp4a.40.2\",AUDIO=\"aac\"\nv.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(p.external_audio, "every variant defers its audio ⇒ the caller must fall back");
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8", "…but still names a variant");
+    }
+
+    #[test]
+    fn an_audio_rendition_without_a_uri_is_muxed_in() {
+        // RFC 8216 §4.3.4.1: no URI ⇒ the rendition is already inside the referencing variant. Treating this
+        // as demuxed would fall back on perfectly good muxed streams that merely LABEL their audio track.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,AUDIO=\"aac\"\nv.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8");
+    }
+
+    #[test]
+    fn a_muxed_variant_wins_over_a_higher_bandwidth_demuxed_one() {
+        // Bandwidth is the wrong thing to maximise when the top rendition costs the audio track: prefer the
+        // variant that still carries sound, even though it is the smaller one.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000,AUDIO=\"aac\"\nhi-videoonly.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=800000\nlo-muxed.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/lo-muxed.m3u8");
+    }
+
+    #[test]
+    fn a_rendition_uri_containing_a_comma_does_not_split_the_attr_list() {
+        // split_attrs must own this: a naive comma split would read GROUP-ID off a URI fragment and the
+        // variant would look muxed, i.e. silently back to the original bug.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a1\",NAME=\"en\",URI=\"audio.m3u8?k=1,2\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS=\"avc1,mp4a\",AUDIO=\"a1\"\nv.m3u8\n";
+        assert!(pick_variant(m, &base()).unwrap().external_audio);
+    }
+
+    #[test]
+    fn an_unrelated_audio_group_does_not_condemn_a_variant() {
+        // The demuxed group belongs to another variant; this one names no AUDIO group at all.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"alt\",NAME=\"es\",URI=\"audio/es.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000\nv.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8");
+    }
+
+    #[test]
+    fn a_subtitle_rendition_is_not_audio() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"en\",URI=\"subs/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,SUBTITLES=\"subs\"\nv.m3u8\n";
+        assert!(!pick_variant(m, &base()).unwrap().external_audio);
     }
 
     #[test]

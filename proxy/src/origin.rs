@@ -255,6 +255,15 @@ pub struct Origin {
     evicted_segments: AtomicU64,
     /// RFC 8216 `EXT-X-DISCONTINUITY-SEQUENCE` — see `disc_seq()`.
     disc_seq: AtomicU64,
+    /// Why this upstream can NEVER be ringed, if so — a shape mismatch (fMP4, undecryptable segments, audio
+    /// the ring cannot carry), not a transient failure.
+    ///
+    /// Load-bearing for the FALLBACK, not just for logging. Without it a structural mismatch was
+    /// indistinguishable from "still warming up", so the renderers burned `READY_TIMEOUT` and then answered
+    /// 503 — a dead channel — while the ingest retried an upstream that was never going to fit. Set once by
+    /// `resolve_media`; read by `wait_ready`, which is what lets `serve_entry`/`serve_ts` decline and hand the
+    /// request back to the ordinary rewrite path.
+    ineligible: RwLock<Option<String>>,
 }
 
 impl Origin {
@@ -274,7 +283,19 @@ impl Origin {
             ingested_bytes: AtomicU64::new(0),
             evicted_segments: AtomicU64::new(0),
             disc_seq: AtomicU64::new(0),
+            ineligible: RwLock::new(None),
         }
+    }
+
+    /// Why this upstream can never be ringed, if it cannot be. `None` ⇒ still viable (or still warming up).
+    fn ineligible(&self) -> Option<String> {
+        self.ineligible.read_ok().clone()
+    }
+
+    /// Record a STRUCTURAL mismatch and wake anyone waiting on a window that is never coming.
+    fn mark_ineligible(&self, reason: String) {
+        *self.ineligible.write_ok() = Some(reason);
+        self.notify.notify_waiters();
     }
 
     /// Append a segment and evict from the front until the ring fits its byte cap.
@@ -589,6 +610,10 @@ async fn ingest(ctx: IngestCtx) {
                         next_upstream_seq = -1;
                         continue;
                     }
+                    // A STRUCTURAL decline is not a failure to retry: the shape will not change on the next
+                    // poll, and the renderer has already been told to fall back. Retrying would pull the entry
+                    // every 2 s forever for a channel nobody is being served from the ring.
+                    None if ctx.origin.ineligible().is_some() => break,
                     None => {
                         media_failures = media_failures.saturating_add(1);
                         report_iop(&ctx, "resolve_failed");
@@ -1011,8 +1036,19 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<Med
     }
 
     let (media_url, media_body) = if is_master(&body) {
-        let vurl = pick_variant(&body, &url)?;
-        let vresp = fetch_with_retry(&client, vurl.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
+        let pick = pick_variant(&body, &url)?;
+        // The ring stores ONE playlist's segments and both renderers replay exactly those bytes, so a variant
+        // whose audio lives in a separate #EXT-X-MEDIA rendition would be ringed — and served — VIDEO ONLY.
+        // `pick_variant` already preferred a muxed variant if the master offered one; reaching here means none
+        // does. Decline structurally so the request falls back to the rewrite, which passes the rendition
+        // through for the player to fetch itself.
+        if pick.external_audio {
+            let why = "audio is a separate #EXT-X-MEDIA rendition — the ring cannot carry it";
+            log::warn("iop", rid, || format!("{}: {why} — origin ingest not eligible", ctx.source));
+            ctx.origin.mark_ineligible(why.to_string());
+            return None;
+        }
+        let vresp = fetch_with_retry(&client, pick.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
@@ -1027,10 +1063,12 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<Med
     // decryptable, so an origin over either would publish bytes no renderer can honestly serve.
     if has_map(&media_body) {
         log::warn("iop", rid, || format!("{}: fMP4 (#EXT-X-MAP) — origin ingest not eligible", ctx.source));
+        ctx.origin.mark_ineligible("fMP4 (#EXT-X-MAP) is not concatenable".to_string());
         return None;
     }
     if let Some(method) = unsupported_encryption(&media_body) {
         log::warn("iop", rid, || format!("{}: unsupported encryption METHOD={method} — origin ingest not eligible", ctx.source));
+        ctx.origin.mark_ineligible(format!("unsupported encryption METHOD={method}"));
         return None;
     }
     Some(MediaSource::Hls(media_url, media_body))
@@ -1296,19 +1334,35 @@ fn render_media_playlist(
     out
 }
 
-/// Wait for a cold ring to become playable. Returns false on timeout.
-async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> bool {
+/// The three ways waiting for a playable window can end. `TimedOut` and `Ineligible` are deliberately
+/// distinct: one is "not yet, and the client should retry" (503), the other is "not ever, on this shape" —
+/// and only the latter may fall back to the ordinary rewrite path. Collapsing them to a bool is what made a
+/// shape mismatch answer 503 instead of falling back.
+enum Ready {
+    Yes,
+    TimedOut,
+    Ineligible,
+}
+
+/// Wait for a cold ring to become playable.
+async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> Ready {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if origin.ring_depth() >= MIN_SEGMENTS {
-            return true;
+            return Ready::Yes;
+        }
+        // Answer the moment the shape is known to be unringable, rather than waiting out READY_TIMEOUT for a
+        // window that is never coming. This is what turns a structural mismatch from a 503 into a fallback.
+        if let Some(why) = origin.ineligible() {
+            log::info("oop", rid, || format!("origin declined ({why}) — falling back to the manifest rewrite"));
+            return Ready::Ineligible;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             log::warn("oop", rid, || {
                 format!("ring still short ({}/{MIN_SEGMENTS}) after {READY_TIMEOUT:?} — refusing to serve an unplayable window", origin.ring_depth())
             });
-            return false;
+            return Ready::TimedOut;
         }
         // Woken by the ingest on every push; the timeout bounds a channel that never produces one.
         let _ = tokio::time::timeout(left.min(Duration::from_secs(1)), origin.wait_for_segment()).await;
@@ -1320,6 +1374,11 @@ async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> bool {
 /// The lease is dropped when this returns — a polling client renews it on every poll, and the ingest's idle
 /// grace covers the gaps. That keeps lifetime management in one place (the grace window) rather than
 /// splitting it between the request path and a teardown hook.
+///
+/// `None` ⇒ this upstream's SHAPE cannot be ringed (see `Origin::ineligible`) and the caller must fall
+/// through to the ordinary manifest rewrite. That is a real playback path, not an error: the rewrite passes
+/// `#EXT-X-MEDIA` renditions through, so a channel whose audio is demuxed still plays — with sound — where
+/// the ring could only have served it silent.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_entry(
     state: &AppState,
@@ -1331,11 +1390,13 @@ pub async fn serve_entry(
     pl: Option<&str>,
     id: &crate::proxy::Identity,
     rid: &str,
-) -> axum::response::Response {
+) -> Option<axum::response::Response> {
     let lease = subscribe(state, source, entry, pl, policy);
     let origin = lease.origin().clone();
-    if !wait_ready(&origin, rid).await {
-        return crate::proxy::text(503, "stream warming up: no playable window yet");
+    match wait_ready(&origin, rid).await {
+        Ready::Yes => {}
+        Ready::Ineligible => return None,
+        Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
     }
     // Read the counter BEFORE snapshotting the window. The two are separate atomics, so an eviction landing
     // between them leaves a one-poll skew either way — but this order makes it an UNDER-count, where the tag
@@ -1365,7 +1426,7 @@ pub async fn serve_entry(
         "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
         "bytes": body.len() as u64,
     }));
-    crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes())
+    Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()))
 }
 
 /// SIDE-2 SEGMENT: serve one ring segment from RAM.
@@ -1439,15 +1500,18 @@ pub async fn serve_ts(
     pl: Option<&str>,
     id: &crate::proxy::Identity,
     rid: &str,
-) -> axum::response::Response {
+) -> Option<axum::response::Response> {
     let lease = subscribe(state, source, entry, pl, policy);
-    if !wait_ready(lease.origin(), rid).await {
-        return crate::proxy::text(503, "stream warming up: no playable window yet");
+    match wait_ready(lease.origin(), rid).await {
+        Ready::Yes => {}
+        Ready::Ineligible => return None,
+        Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
     }
     let buffer_size_kb = policy.buffer_size_kb.load(Ordering::Relaxed);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(crate::stream::channel_capacity(buffer_size_kb));
     let ctx = TsRingCtx {
         state: state.clone(),
+        policy: policy.clone(),
         source: source.to_string(),
         entry: entry.to_string(),
         rid: rid.to_string(),
@@ -1458,16 +1522,23 @@ pub async fn serve_ts(
     // The LEASE moves into the producer: a continuous stream has no polling to renew it, so the ingest must be
     // held open for the whole session and released exactly when the socket ends.
     tokio::spawn(ts_ring_producer(lease, ctx, tx));
-    axum::response::Response::builder()
-        .status(axum::http::StatusCode::OK)
-        .header("content-type", "video/mp2t")
-        .header("cache-control", "no-store")
-        .body(axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
-        .unwrap()
+    Some(
+        axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("content-type", "video/mp2t")
+            .header("cache-control", "no-store")
+            .body(axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
+            .unwrap(),
+    )
 }
 
 struct TsRingCtx {
     state: AppState,
+    /// Carried so the producer can read `spliceNormalize` per segment, exactly as the ingest does. Without it
+    /// the kill switch covered only half its surface — a `outputFormat=ts` viewer kept getting rewritten
+    /// segments after the operator turned normalisation off, which is precisely when the switch is being used
+    /// to rule the pass in or out of a playback complaint.
+    policy: Arc<SourcePolicy>,
     source: String,
     entry: String,
     rid: String,
@@ -1516,6 +1587,13 @@ async fn ts_ring_producer(
                 splicer.reset();
             }
         }
+        // The kill switch, read per segment so a re-resolve flips it live — same contract as the ingest's.
+        // OFF serves the ring verbatim, which is the whole point of the switch: it is the operator's way to
+        // rule this pass in or out of a playback complaint without a redeploy.
+        let normalize = ctx.policy.splice_normalize.load(Ordering::Relaxed);
+        if !normalize && splicer.has_timeline() {
+            splicer.reset(); // switched off mid-stream: the timeline it was keeping no longer applies
+        }
         let mut sent_any = false;
         let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
         for seg in window.iter().filter(|s| s.seq >= from) {
@@ -1523,10 +1601,13 @@ async fn ts_ring_producer(
             // Declining is a designed outcome: a segment carrying no PSI, or a program shape the published
             // layout cannot express, is served verbatim. That reinstates the upstream splice for that one
             // segment — a visible glitch — which still beats emitting a stream we mis-rewrote.
-            let body = match splicer.normalize(&seg.bytes) {
+            let body = match normalize.then(|| splicer.normalize(&seg.bytes)).flatten() {
                 Some(bytes) => Bytes::from(bytes),
                 None => {
-                    if !warned_splice {
+                    // Only a genuine DECLINE is worth a warning. With the switch off there is nothing to
+                    // decline — serving verbatim is the requested behaviour, and saying otherwise would send
+                    // an operator hunting a stream shape that was never the problem.
+                    if normalize && !warned_splice {
                         warned_splice = true;
                         log::warn("oop", &ctx.rid, || {
                             "splice normalisation declined (no PSI, or a program shape the published layout \

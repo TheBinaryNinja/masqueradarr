@@ -259,26 +259,39 @@ pub async fn serve_stream(
     // BOTH output shapes are rendered from the SAME ring — that is what makes `outputFormat` a rendering
     // choice rather than a second pipeline. Raw TS stays external-mount-only (an in-app player is always HLS),
     // exactly as on the passthrough path.
+    //
+    // Either renderer may DECLINE (`None`) when the upstream's shape cannot be ringed — fMP4, undecryptable
+    // segments, or audio carried in a separate #EXT-X-MEDIA rendition that the ring has no muxer to fold in.
+    // Falling through to the ordinary rewrite below is then the correct answer, not an error: that path
+    // passes renditions through for the player to fetch, so the channel plays WITH sound where the ring could
+    // only have served it silent. (Before this seam a decline meant an empty ring, a `READY_TIMEOUT` wait and
+    // a 503 — a dead channel.)
     if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
         let want_ts = policy.output_format.read_ok().as_str() == "ts" && mount_path == "/api/ext/v1";
         let ident = Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() };
         if want_ts {
             log::info("proxy", &rid, || "originEnabled + outputFormat=ts — serving raw TS from the ring".to_string());
-            return crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await;
+            if let Some(r) = crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await {
+                return r;
+            }
+        } else {
+            log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
+            if let Some(r) = crate::origin::serve_entry(
+                &state,
+                &policy,
+                mount_path,
+                source,
+                &stream_entry,
+                token.as_deref(),
+                pl.as_deref(),
+                &ident,
+                &rid,
+            )
+            .await
+            {
+                return r;
+            }
         }
-        log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
-        return crate::origin::serve_entry(
-            &state,
-            &policy,
-            mount_path,
-            source,
-            &stream_entry,
-            token.as_deref(),
-            pl.as_deref(),
-            &ident,
-            &rid,
-        )
-        .await;
     }
 
     // SSRF gate. A HOP is a client-supplied child URL, so it must be IN the observational allowlist. An ENTRY
