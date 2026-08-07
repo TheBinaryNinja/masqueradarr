@@ -111,6 +111,15 @@ impl Normalizer {
         start.wrapping_sub(s.first_dts) & CLOCK_MASK
     }
 
+    /// Adopt a segment without rewriting it — record where its clocks end. One read-only pass, no copy.
+    fn observe(&mut self, bytes: &[u8]) {
+        if let Some(s) = scan(bytes) {
+            self.last_dts = Some(s.last_dts);
+            self.last_pts = s.max_pts;
+            self.frame_dur = s.frame_dur;
+        }
+    }
+
     /// Record BOTH ends of what was just published; `offset_for` decides which one the next segment clears.
     fn advance(&mut self, s: &Scan, offset: u64) {
         self.last_dts = Some(s.last_dts.wrapping_add(offset) & CLOCK_MASK);
@@ -603,9 +612,25 @@ impl Splicer {
     }
 
     /// Rewrite bytes the ring has ALREADY published — filler substitution re-emitting a program segment.
-    /// Differs only in how far the timeline then advances; see `Normalizer::advance`.
+    /// Differs from `normalize` only in where the copy may start; see `Normalizer::offset_for`.
     pub(crate) fn normalize_repeat(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
         self.publish(bytes, true)
+    }
+
+    /// Clock ONLY — rebase the timestamps, leave the pids and PSI exactly as they are.
+    ///
+    /// For filler while `spliceNormalize` is OFF. The surrounding ring is then un-normalised, so remapping
+    /// just the substituted segments onto canonical pids would introduce the very pid change the switch was
+    /// turned off to avoid — filler must look like its neighbours, whatever those are.
+    pub(crate) fn rebase_only(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
+        self.clock.rewrite(bytes, None, true)
+    }
+
+    /// Adopt a segment WITHOUT rewriting it: record where its clocks end so a later repeat is spaced after it
+    /// rather than on top of it. Also for the switch-off path, where published segments pass through untouched
+    /// but the clock still has to know where they left the timeline.
+    pub(crate) fn observe(&mut self, bytes: &[u8]) {
+        self.clock.observe(bytes);
     }
 
     fn publish(&mut self, bytes: &[u8], repeat: bool) -> Option<Vec<u8>> {

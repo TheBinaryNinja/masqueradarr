@@ -210,6 +210,28 @@ watch(
         </div>
       </div>
 
+      <!-- Splice normalisation. Sits with the origin knobs because it only acts on the ingest. Presented as
+           something you TURN OFF, not on, since it is the shipped default and off is the older behaviour. -->
+      <div class="form-grid-2" style="margin-top: 17px;">
+        <div class="form-row">
+          <div class="field-lbl">Smooth ad transitions</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle
+              :on="state.spliceNormalize"
+              :disabled="!state.originEnabled"
+              @change="(v) => (state.spliceNormalize = v)"
+            />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.spliceNormalize ? 'On' : 'Off' }}</span>
+          </div>
+          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Republishes the channel as one continuous stream, so a provider that switches encoder between ads
+            cannot stall the player. Some providers change the stream's internal layout at every ad boundary,
+            which many players cannot follow — they freeze until the layout happens to change back. Leave this
+            <b>on</b>; turn it off only to check whether it is involved in a playback problem.
+          </div>
+        </div>
+      </div>
+
       <!-- Output format shares a 2-col row with STREAM-INF Redux (it shrinks to the left half). -->
       <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">

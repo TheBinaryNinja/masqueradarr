@@ -192,6 +192,10 @@ pub struct SourcePolicy {
     /// looped program from the ring's own tail). RwLock<String> so a re-resolve can flip it, mirroring
     /// `output_format`. Meaningless unless `origin_enabled`.
     pub ad_policy: RwLock<String>,
+    /// S3/ORIGIN: republish every ingested segment onto ONE timeline with canonical pids. A KILL SWITCH for a
+    /// FIX, so it defaults ON — off restores the un-normalised republishing whose pid churn freezes players
+    /// mid-pod (see `tsnorm::Splicer`). Meaningless unless `origin_enabled`.
+    pub splice_normalize: AtomicBool,
 }
 
 impl SourcePolicy {
@@ -213,6 +217,7 @@ impl SourcePolicy {
             origin_ring_mb: AtomicU64::new(crate::origin::DEFAULT_RING_MB),
             ad_policy: RwLock::new("passthrough".to_string()),
             ad_uri_contains: RwLock::new(Vec::new()),
+            splice_normalize: AtomicBool::new(true),
         }
     }
 }
@@ -304,6 +309,10 @@ pub struct ProxyConfigWire {
     /// Absent (a pre-CUE Node) degrades to "passthrough", which is exactly Phase 1's behaviour.
     #[serde(rename = "adPolicy", default = "default_ad_policy")]
     pub ad_policy: String,
+    /// Defaults TRUE on an absent key, unlike every other S3 knob: an older Node predates the pid-remap fix,
+    /// and degrading to the broken behaviour would be the wrong way to fail.
+    #[serde(rename = "spliceNormalize", default = "default_true")]
+    pub splice_normalize: bool,
 }
 
 fn default_connect_ms() -> u64 {
@@ -340,6 +349,7 @@ impl Default for ProxyConfigWire {
             origin_enabled: false,
             origin_ring_mb: default_origin_ring_mb(),
             ad_policy: default_ad_policy(),
+            splice_normalize: true,
         }
     }
 }
@@ -709,6 +719,7 @@ impl AppState {
             .origin_ring_mb
             .store(grant.proxy_config.origin_ring_mb.max(1), Ordering::Relaxed);
         *policy.ad_policy.write_ok() = grant.proxy_config.ad_policy.clone();
+        policy.splice_normalize.store(grant.proxy_config.splice_normalize, Ordering::Relaxed);
         // S3/CUE: the adapter's ad-URI signature. Normalized ONCE here (lowercased, blanks dropped) so the
         // ingest hot path is a plain `contains` — and REPLACED wholesale, never merged, so a re-resolve onto a
         // provider that declares none correctly clears the previous one.

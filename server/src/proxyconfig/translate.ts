@@ -61,6 +61,10 @@ export function envDefaults(): ProxyConfigData {
     originEnabled: false,
     originRingMb: 25,
     adPolicy: 'passthrough',
+    // ON by default. Unlike the knobs above it this is not a behaviour CHOICE — un-normalised republishing is
+    // the defect (an upstream pid remap mid-pod freezes players outright), so the switch exists to disable a
+    // fix, not to enable a feature. `originEnabled` remains the opt-in that gates the whole path.
+    spliceNormalize: true,
   };
 }
 
@@ -82,6 +86,8 @@ export function toRuntimeProxyConfig(doc: ProxyConfigDoc): RuntimeProxyConfig {
     originEnabled: typeof doc.originEnabled === 'boolean' ? doc.originEnabled : d.originEnabled,
     originRingMb: typeof doc.originRingMb === 'number' ? doc.originRingMb : d.originRingMb,
     adPolicy: AD_POLICIES.includes(doc.adPolicy as (typeof AD_POLICIES)[number]) ? doc.adPolicy : 'passthrough',
+    // An absent key is a legacy doc, which predates the defect being fixed — so it reads as ON, not OFF.
+    spliceNormalize: typeof doc.spliceNormalize === 'boolean' ? doc.spliceNormalize : d.spliceNormalize,
   };
 }
 
@@ -176,7 +182,7 @@ export function toExternalPatch(body: unknown): PatchResult {
   }
 
   // streamInfRedux / failoverEnabled / failoverOnDefiniteError / originEnabled: plain boolean knobs (same gate).
-  for (const key of ['streamInfRedux', 'failoverEnabled', 'failoverOnDefiniteError', 'originEnabled'] as const) {
+  for (const key of ['streamInfRedux', 'failoverEnabled', 'failoverOnDefiniteError', 'originEnabled', 'spliceNormalize'] as const) {
     if (b[key] !== undefined) {
       if (typeof b[key] !== 'boolean') {
         return { ok: false, error: `${key} (boolean) required` };

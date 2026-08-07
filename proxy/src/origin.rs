@@ -756,6 +756,13 @@ async fn ingest(ctx: IngestCtx) {
             // after it rather than on top of it.
             if replace_ads && signal.is_some() && ad_break.is_none() {
                 filler = ctx.origin.program_tail(FILLER_SEGMENTS);
+                // Only when normalisation is OFF. With it ON the splicer's clock already tracks every segment
+                // it published, so there is nothing left to adopt.
+                if !policy.splice_normalize.load(Ordering::Relaxed) {
+                    if let Some(last) = filler.last() {
+                        splicer.observe(&last.bytes);
+                    }
+                }
                 filler_idx = 0;
                 warned_filler = false;
             }
@@ -767,9 +774,15 @@ async fn ingest(ctx: IngestCtx) {
             let mut replacement: Option<Bytes> = None;
             if replace_ads && signal.is_some() {
                 match filler.get(filler_idx % filler.len().max(1)) {
-                    // REPEAT contract: these bytes are already in the ring, so the copy has to clear the
-                    // original's presentation rather than merely its decode end.
-                    Some(src) => match splicer.normalize_repeat(&src.bytes) {
+                    // REPEAT contract either way: these bytes are already in the ring, so the copy has to
+                    // clear the original's presentation rather than merely its decode end. Which REWRITE
+                    // applies depends on the switch — clock-only when the ring around it is un-normalised,
+                    // or the filler would be the one segment on canonical pids.
+                    Some(src) => match if policy.splice_normalize.load(Ordering::Relaxed) {
+                        splicer.normalize_repeat(&src.bytes)
+                    } else {
+                        splicer.rebase_only(&src.bytes)
+                    } {
                         Some(bytes) => {
                             substituted = Some(src.duration);
                             filler_idx += 1;
@@ -917,9 +930,18 @@ async fn ingest(ctx: IngestCtx) {
             //
             // A substituted segment came from that same filler path and is already normalised; re-running it
             // would space it against itself.
-            let joined = splicer.has_timeline();
+            // The kill switch. OFF republishes upstream bytes untouched — the pre-fix behaviour, pid churn and
+            // all — so an operator can rule this pass in or out of a playback complaint without a redeploy.
+            // Read per segment, not once per ingest, so a re-resolve flips it live like every other knob.
+            let normalize = policy.splice_normalize.load(Ordering::Relaxed);
+            if !normalize && splicer.has_timeline() {
+                splicer.reset(); // switched off mid-stream: the timeline it was keeping no longer applies
+            }
+            let joined = normalize && splicer.has_timeline();
             let (plain, absorbed) = if substituted.is_some() {
                 (plain, true)
+            } else if !normalize {
+                (plain, false)
             } else {
                 match splicer.normalize(&plain) {
                     Some(b) => (Bytes::from(b), true),

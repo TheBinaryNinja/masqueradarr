@@ -768,6 +768,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   left: 18px;
   background: white;
 }
+/* Matches the native `:disabled` treatment the inputs beside it get — a dependent control has to read as
+   unavailable, not merely as off. */
+.toggle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
 
 /* Checkbox (cyan filled) */
 .cbx {
