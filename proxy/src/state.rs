@@ -184,14 +184,10 @@ pub struct SourcePolicy {
     pub origin_ring_mb: AtomicU64,
     /// S3/CUE: the adapter-declared ad-segment URI signature (percent-DECODED, lowercased substrings). Empty
     /// for every source that emits real cue tags — or none at all — which is what makes URI-based ad
-    /// detection FAIL CLOSED. Never inferred here; Node's adapter is the only author (see origin::ad_state
-    /// and the `Boundary` doc comment on why a URI *diff* is not an acceptable substitute).
+    /// detection FAIL CLOSED. Never inferred here; Node's adapter is the only author (see `origin::ad_signal`
+    /// and the `Boundary` doc comment on why a URI *diff* is not an acceptable substitute). Read-only: breaks
+    /// are always served as the provider sent them; this only names them in the log and telemetry.
     pub ad_uri_contains: RwLock<Vec<String>>,
-    /// S3/CUE: what the origin does with a DETECTED ad break — "passthrough" (republish the ad segments, the
-    /// shipped default and byte-identical to Phase 1) or "replace" (keep them out of the ring and substitute
-    /// looped program from the ring's own tail). RwLock<String> so a re-resolve can flip it, mirroring
-    /// `output_format`. Meaningless unless `origin_enabled`.
-    pub ad_policy: RwLock<String>,
     /// S3/ORIGIN: republish every ingested segment onto ONE timeline with canonical pids. A KILL SWITCH for a
     /// FIX, so it defaults ON — off restores the un-normalised republishing whose pid churn freezes players
     /// mid-pod (see `tsnorm::Splicer`). Meaningless unless `origin_enabled`.
@@ -215,7 +211,6 @@ impl SourcePolicy {
             failover_on_definite_error: AtomicBool::new(false),
             origin_enabled: AtomicBool::new(false),
             origin_ring_mb: AtomicU64::new(crate::origin::DEFAULT_RING_MB),
-            ad_policy: RwLock::new("passthrough".to_string()),
             ad_uri_contains: RwLock::new(Vec::new()),
             splice_normalize: AtomicBool::new(true),
         }
@@ -306,9 +301,6 @@ pub struct ProxyConfigWire {
     pub origin_enabled: bool,
     #[serde(rename = "originRingMb", default = "default_origin_ring_mb")]
     pub origin_ring_mb: u64,
-    /// Absent (a pre-CUE Node) degrades to "passthrough", which is exactly Phase 1's behaviour.
-    #[serde(rename = "adPolicy", default = "default_ad_policy")]
-    pub ad_policy: String,
     /// Defaults TRUE on an absent key, unlike every other S3 knob: an older Node predates the pid-remap fix,
     /// and degrading to the broken behaviour would be the wrong way to fail.
     #[serde(rename = "spliceNormalize", default = "default_true")]
@@ -327,10 +319,6 @@ fn default_output_format() -> String {
 fn default_true() -> bool {
     true
 }
-fn default_ad_policy() -> String {
-    "passthrough".to_string()
-}
-
 fn default_origin_ring_mb() -> u64 {
     crate::origin::DEFAULT_RING_MB
 }
@@ -348,7 +336,6 @@ impl Default for ProxyConfigWire {
             failover_on_definite_error: false,
             origin_enabled: false,
             origin_ring_mb: default_origin_ring_mb(),
-            ad_policy: default_ad_policy(),
             splice_normalize: true,
         }
     }
@@ -718,7 +705,6 @@ impl AppState {
         policy
             .origin_ring_mb
             .store(grant.proxy_config.origin_ring_mb.max(1), Ordering::Relaxed);
-        *policy.ad_policy.write_ok() = grant.proxy_config.ad_policy.clone();
         policy.splice_normalize.store(grant.proxy_config.splice_normalize, Ordering::Relaxed);
         // S3/CUE: the adapter's ad-URI signature. Normalized ONCE here (lowercased, blanks dropped) so the
         // ingest hot path is a plain `contains` — and REPLACED wholesale, never merged, so a re-resolve onto a

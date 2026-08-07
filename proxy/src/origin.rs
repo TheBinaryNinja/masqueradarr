@@ -78,20 +78,8 @@ const MEDIA_FAIL_ESCALATE: u32 = 2;
 /// that a source recycling segment names would have to wrap within it to cause a false skip.
 const RECENT_URI_MEMORY: usize = 64;
 
-/// How many trailing PROGRAM segments an ad break loops as filler — an upper bound, not a requirement:
-/// `program_tail` returns whatever the ring actually holds, and `MIN_SEGMENTS` guarantees at least 3.
-///
-/// Sized for the LOOP, not the ring. A pluto pod runs ~2 min against 5 s segments, so a 3-segment pool would
-/// repeat ~8 times where six repeats ~4 — the same material either way, but half as obviously a loop. Six is
-/// ~30 s, still comfortably inside a default 25 MiB window (measured ~16 segments), and the pool is held by
-/// `Arc` for the length of the break, so this is also its memory cost.
-const FILLER_SEGMENTS: usize = 6;
-
 /// One ingested segment, ready to serve verbatim. `bytes` is DECRYPTED — ciphertext never enters the ring, so
 /// a renderer never has to know whether the upstream was encrypted.
-// Phase 1 WRITES every field; Phase 2's renderers READ them (seq → #EXT-X-MEDIA-SEQUENCE, duration → #EXTINF,
-// discontinuity → #EXT-X-DISCONTINUITY, pdt → #EXT-X-PROGRAM-DATE-TIME). Drop this allow when they land.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Segment {
     /// OUR sequence, monotonic from ingest start. Deliberately unrelated to the upstream's media sequence:
@@ -104,11 +92,6 @@ pub struct Segment {
     pub discontinuity: bool,
     /// Ingest wall-clock → the renderer's `#EXT-X-PROGRAM-DATE-TIME`.
     pub pdt: SystemTime,
-    /// This segment is ad-break content (`ad_signal` fired). Phase 1 only WRITES this — nothing is served
-    /// differently — so the operator can see breaks in `iop:cue` before anything acts on them.
-    pub ad: bool,
-    /// Which break, for grouping a pod's segments in logs/telemetry. 0 ⇒ not in a break.
-    pub break_id: u64,
 }
 
 /// Why a segment is a splice point. Named rather than a bare bool so the `iop` log says WHICH signal fired.
@@ -127,12 +110,6 @@ pub enum Boundary {
     Tag,
     /// The media sequence skipped — we missed segments (a slow poll, or the window slid past us).
     SequenceGap,
-    /// Program resumed after an ad break we REPLACED with filler. The filler was rebased onto our timeline,
-    /// so the returning upstream media does not continue it — that jump is real and is signalled. It is the
-    /// one seam replacement cannot remove without normalising every segment forever, and unlike the ad
-    /// boundary it replaces (720p ⇄ 1080p on pluto) both sides are the same encode, so a player resyncs its
-    /// clock rather than reconfiguring its decoder.
-    AdReturn,
     /// The provider ended OUR playlist (`#EXT-X-ENDLIST`) and we re-resolved onto a new session on the same
     /// channel. Whether the bytes either side are contiguous is unknowable from here — a new session may
     /// resume where the old one stopped or jump — so the join is SIGNALLED rather than assumed. This is the
@@ -242,12 +219,10 @@ struct AdBreak {
     seconds: f64,
     /// What the opening cue tag announced, when it announced anything (0.0 otherwise).
     announced: f64,
-    /// Whether the decoder configuration actually changed at this edge. THE measurement Phase 2 is gated on:
-    /// if breaks reliably change it, no timestamp rewrite can ever hide the seam and only substitution can.
+    /// Whether the decoder configuration actually changed at this edge — i.e. whether the break really did
+    /// force the decoder to reconfigure, or the seam was only a timeline one. This is the measurement that
+    /// justifies splice normalisation (`tsnorm::Splicer`); it is reported, never acted on.
     profile_changed: bool,
-    /// How many of this break's segments were SUBSTITUTED rather than served. Less than `segments` means the
-    /// rewriter declined some — filler is best-effort by design, and the gap between the two is what says so.
-    replaced: u32,
 }
 
 /// A channel's live ring plus its ingest bookkeeping. Shared as `Arc<Origin>`: the ingest task holds one and
@@ -308,11 +283,10 @@ impl Origin {
     /// caller because it is a property of the window, not of any one push: dropping below it produces a
     /// manifest no player will start, which is worse than briefly exceeding the RAM cap.
     ///
-    /// `from_upstream` says whether these bytes were actually PULLED. Substituted filler is built from the
-    /// ring itself and costs no upstream traffic, so counting it would overstate the very number an operator
-    /// reads to size `originRingMb` and to see the ring earning its keep (`ingest` vs `bandwidth` on the
-    /// Active Streams row). The ring's own byte accounting still includes it — it really is occupying RAM.
-    fn push(&self, seg: Segment, from_upstream: bool) -> usize {
+    /// Every segment reaching here was PULLED from upstream, so the ingest counters advance unconditionally —
+    /// they are the number an operator reads to size `originRingMb` and to see the ring earning its keep
+    /// (`ingest` vs `bandwidth` on the Active Streams row).
+    fn push(&self, seg: Segment) -> usize {
         let bytes = seg.bytes.len() as u64;
         let cap = self.ring_cap_bytes.load(Ordering::Relaxed);
         let mut evicted = 0usize;
@@ -341,10 +315,8 @@ impl Origin {
         if evicted > 0 {
             self.evicted_segments.fetch_add(evicted as u64, Ordering::Relaxed);
         }
-        if from_upstream {
-            self.ingested_segments.fetch_add(1, Ordering::Relaxed);
-            self.ingested_bytes.fetch_add(bytes, Ordering::Relaxed);
-        }
+        self.ingested_segments.fetch_add(1, Ordering::Relaxed);
+        self.ingested_bytes.fetch_add(bytes, Ordering::Relaxed);
         self.notify.notify_waiters();
         evicted
     }
@@ -382,21 +354,6 @@ impl Origin {
     pub fn window(&self) -> Vec<Arc<Segment>> {
         *self.last_access.lock_ok() = Instant::now();
         self.ring.read_ok().iter().cloned().collect()
-    }
-
-    /// The last `n` PROGRAM segments in the ring, oldest first.
-    ///
-    /// Replacement material for an ad break. Returned as `Arc` clones so eviction cannot pull the bytes out
-    /// from under a break that is still running — a 2-minute pod outlives the window it was drawn from.
-    /// Filtering on `!ad` matters once a previous break's filler is still in the window: filler is itself
-    /// marked as break content, and looping a loop would compound the repetition.
-    ///
-    /// Deliberately does NOT touch `last_access`: this is the ingest reading its own ring, not a viewer.
-    pub fn program_tail(&self, n: usize) -> Vec<Arc<Segment>> {
-        let ring = self.ring.read_ok();
-        let mut out: Vec<Arc<Segment>> = ring.iter().rev().filter(|s| !s.ad).take(n).cloned().collect();
-        out.reverse();
-        out
     }
 
     /// The current generation — part of a renderer's segment paths.
@@ -529,22 +486,8 @@ async fn ingest(ctx: IngestCtx) {
     // one window's worth so a recycling source would have to wrap inside 64 segments to collide.
     let mut recent_uris: VecDeque<String> = VecDeque::new();
     let mut dedupe_by_uri = false;
-    // S3/CUE Phase 2. LATCHED once rather than re-read per poll: `SourcePolicy` is shared and an unrelated
-    // playlist's resolve can mutate it, and flipping mid-break would either strand a rebased timeline or
-    // splice filler into a stream that never asked for it.
-    //
-    // Latched on FIRST USE, not here. The ingest task is spawned by `subscribe()` and does its own resolve
-    // inside the loop below, so at this point no grant has landed and the policy is still at its shipped
-    // defaults — reading it here pins every channel to `passthrough` no matter what the operator set.
-    let mut replace_ads: Option<bool> = None;
     let mut splicer = crate::tsnorm::Splicer::new();
     let mut warned_splice = false;
-    // Program captured at the OPENING edge of the current break, looped for its duration.
-    let mut filler: Vec<Arc<Segment>> = Vec::new();
-    let mut filler_idx: usize = 0;
-    // One decline message per break, re-armed on each opening edge — the reason is a property of the stream,
-    // so repeating it every 5 s would bury the rest of the ingest log (the `warned_floor` posture).
-    let mut warned_filler = false;
     // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
     let mut media_failures: u32 = 0;
     let mut last_idle_check = Instant::now();
@@ -621,13 +564,12 @@ async fn ingest(ctx: IngestCtx) {
                             });
                             // ONLY on a real reset. A renewal is the same channel continuing, so an ad pod
                             // spans it: clearing here fragmented one 2-minute break into a fresh break per
-                            // renewal (a new id every ~2.5 s), which reset the filler pool each time and left
-                            // "no program held to loop" as the visible symptom. A reset is different — that
-                            // upstream may be another channel entirely, so its break, its rebased timeline
-                            // and the program captured from its ring are all meaningless now.
+                            // renewal — a new id every ~2.5 s in the `iop:cue` log. A reset is different: that
+                            // upstream may be another channel entirely, so its break AND its rebased timeline
+                            // are both meaningless now. `splicer.reset()` is the load-bearing half — it is what
+                            // stops the new upstream's first segment being spaced against the dead one's clock.
                             ad_break = None;
                             splicer.reset();
-                            filler.clear();
                         }
                         // The new session renumbers regardless, so sequence-gap detection must re-anchor.
                         prev = PrevSeg::default();
@@ -680,16 +622,6 @@ async fn ingest(ctx: IngestCtx) {
         );
         let read_timeout_ms = policy.read_timeout_ms.load(Ordering::Relaxed);
 
-        // First poll after a grant has landed: latch the ad policy and say so once, so an operator who turned
-        // replacement on can confirm the data plane actually received it.
-        let replace_ads = *replace_ads.get_or_insert_with(|| {
-            let on = policy.ad_policy.read_ok().as_str() == "replace";
-            log::info("iop:cue", &rid, || {
-                format!("ad policy: {}", if on { "replace breaks with looped program" } else { "passthrough" })
-            });
-            on
-        });
-
         let mut ingested_this_poll = 0u32;
         // Segments the renewal check recognised as already-held. Tracked separately from `ingested_this_poll`
         // because a poll that ingests nothing NEW but recognised a whole window is healthy, not stalled —
@@ -724,20 +656,13 @@ async fn ingest(ctx: IngestCtx) {
                 policy.hosts.write_ok().insert(h.to_lowercase());
             }
 
-            // S3/CUE: classify BEFORE the fetch. Phase 1 only needed this before the PUSH, but a replaced ad
-            // must never be pulled from upstream at all — not fetching it is most of the point.
+            // S3/CUE: classify the segment. Read-only — every break is served exactly as the provider sent it;
+            // this drives the `iop:cue` log and the ad-break telemetry, nothing else.
             let signal = ad_signal(seg, &seg_url, &policy.ad_uri_contains.read_ok());
 
-            // THIS segment is the first program after a break we filled, so the return seam belongs to it,
-            // not to the next one. Knowable before the fetch: it depends only on the signal and the open
-            // break, never on the bytes. A break we merely passed through needs nothing here — the upstream's
-            // own `#EXT-X-DISCONTINUITY` already landed on this segment.
-            let ad_return = (signal.is_none() && ad_break.as_ref().is_some_and(|b| b.replaced > 0))
-                .then_some(Boundary::AdReturn);
-
             // An upstream signal wins the naming when several apply — it says something more specific than
-            // "we reconnected" or "we substituted". `forced` survives a failed fetch (it is cleared only
-            // after a push) so a join whose first segment 404s still splices the one that does land.
+            // "we reconnected". `forced` survives a failed fetch (it is cleared only after a push) so a join
+            // whose first segment 404s still splices the one that does land.
             //
             // The SessionRenewal arm has an extra out. Recognising part of the new session's window as
             // content we already hold PROVES the two are contiguous — the overlap IS the join — so the
@@ -748,86 +673,12 @@ async fn ingest(ctx: IngestCtx) {
                 Some(Boundary::SessionRenewal) if duplicates_this_poll > 0 => None,
                 other => other,
             };
-            let upstream_boundary = boundary_before(&prev, seg, upstream_seq);
-            let candidate = upstream_boundary.or(ad_return).or(pending);
+            let boundary = boundary_before(&prev, seg, upstream_seq).or(pending);
 
-            // On the OPENING edge of a break, capture replacement material while the ring tail is still
-            // program, and tell the normalizer where that program's clock ends so the first filler lands
-            // after it rather than on top of it.
-            if replace_ads && signal.is_some() && ad_break.is_none() {
-                filler = ctx.origin.program_tail(FILLER_SEGMENTS);
-                // Only when normalisation is OFF. With it ON the splicer's clock already tracks every segment
-                // it published, so there is nothing left to adopt.
-                if !policy.splice_normalize.load(Ordering::Relaxed) {
-                    if let Some(last) = filler.last() {
-                        splicer.observe(&last.bytes);
-                    }
-                }
-                filler_idx = 0;
-                warned_filler = false;
-            }
-
-            // Substitute, or fetch. Substitution declines rather than guesses: with no filler held, or a
-            // segment the rewriter will not touch, the ad is served as before — a visible ad beats a
-            // corrupted stream.
-            let mut substituted: Option<f64> = None; // Some(the filler's own duration) once one is built
-            let mut replacement: Option<Bytes> = None;
-            if replace_ads && signal.is_some() {
-                match filler.get(filler_idx % filler.len().max(1)) {
-                    // REPEAT contract either way: these bytes are already in the ring, so the copy has to
-                    // clear the original's presentation rather than merely its decode end. Which REWRITE
-                    // applies depends on the switch — clock-only when the ring around it is un-normalised,
-                    // or the filler would be the one segment on canonical pids.
-                    Some(src) => match if policy.splice_normalize.load(Ordering::Relaxed) {
-                        splicer.normalize_repeat(&src.bytes)
-                    } else {
-                        splicer.rebase_only(&src.bytes)
-                    } {
-                        Some(bytes) => {
-                            substituted = Some(src.duration);
-                            filler_idx += 1;
-                            replacement = Some(Bytes::from(bytes));
-                        }
-                        // Declining is a designed outcome, not a failure — but a silent one would look
-                        // identical to "the operator never turned it on", so say it once per break.
-                        None => {
-                            if !warned_filler {
-                                warned_filler = true;
-                                log::warn("iop:cue", &rid, || {
-                                    "ad replacement declined: the rewriter would not touch this stream (no PSI, \
-                                     no video timestamps, or an encoding it cannot safely rebase) — serving the \
-                                     break as-is"
-                                        .to_string()
-                                });
-                            }
-                        }
-                    },
-                    None => {
-                        if !warned_filler {
-                            warned_filler = true;
-                            log::warn("iop:cue", &rid, || {
-                                "ad replacement declined: no program held to loop (the break began before the \
-                                 ring had any) — serving the break as-is"
-                                    .to_string()
-                            });
-                        }
-                    }
-                }
-            }
-            let plain = match replacement {
+            let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
                 Some(b) => b,
-                None => match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
-                    Some(b) => b,
-                    None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
-                },
+                None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
             };
-
-            // A SUBSTITUTED segment is contiguous with the program before it BY CONSTRUCTION — the rewriter
-            // placed it there. Any upstream splice that fired here describes the AD we did not serve (pluto
-            // tags every pod edge), so propagating it would announce a break in a timeline that does not have
-            // one, and would undo most of what replacement buys. A pending splice is NOT consumed here: it
-            // still belongs on the next piece of real media.
-            let boundary = if substituted.is_some() { None } else { candidate };
 
             // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log
             // naming only the trigger cannot distinguish real churn from a detector bug (that is how the two
@@ -835,24 +686,15 @@ async fn ingest(ctx: IngestCtx) {
             let was = prev.clone();
             prev = PrevSeg { upstream_seq: Some(upstream_seq) };
 
-            // A substituted segment publishes the FILLER's real length, not the ad's: the ring's timeline is
-            // ours, so `#EXTINF` has to describe the bytes we actually serve.
-            let duration = match substituted {
-                Some(d) if d > 0.0 => d,
-                _ if seg.duration > 0.0 => seg.duration,
-                _ => mp.target_duration,
-            };
+            let duration = if seg.duration > 0.0 { seg.duration } else { mp.target_duration };
             let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
 
             // Fingerprint the stream at edges only. `profile_changed` is what says whether the splice is
-            // load-bearing (the decoder MUST reconfigure) or merely cosmetic — the measurement that decides
-            // whether filler could ever be codec-matched here. Unverifiable reads as CHANGED, never as a match.
+            // load-bearing (the decoder MUST reconfigure) or merely cosmetic — it is the measurement that
+            // justifies normalising the splice at all. Unverifiable reads as CHANGED, never as a match.
             //
-            // Note what it measures once `adPolicy=replace` is on: OUR OUTPUT, not the upstream. A substituted
-            // segment is filler, so the comparison is program-vs-program and correctly reports no change —
-            // the ad whose profile differed was never fetched, so nothing here can see it. Reading a source's
-            // true break behaviour therefore means reading it in passthrough, which is why Phase 1 shipped
-            // first and why this stays honest about what it is describing.
+            // It measures the UPSTREAM: the scan runs on the fetched plaintext, before the splicer rewrites
+            // it, so what it reports is the provider's own break behaviour rather than our output's.
             let ad_edge = signal.is_some() != ad_break.is_some();
             let scan_now = boundary.is_some() || ad_edge || last_profile.is_none();
             let profile = if scan_now { crate::tsseg::scan_profile(&plain) } else { None };
@@ -876,7 +718,6 @@ async fn ingest(ctx: IngestCtx) {
                         seconds: duration,
                         announced,
                         profile_changed,
-                        replaced: u32::from(substituted.is_some()),
                     };
                     log::info("iop:cue", &rid, || {
                         let ann = if open.announced > 0.0 {
@@ -893,21 +734,17 @@ async fn ingest(ctx: IngestCtx) {
                 (Some(_), Some(b)) => {
                     b.segments += 1;
                     b.seconds += duration;
-                    b.replaced += u32::from(substituted.is_some());
                 }
                 (None, Some(b)) => {
                     // The RETURN to program is its own parameter change — report the one measured here, not
                     // the one measured when the break opened.
                     let done = AdBreak { profile_changed, ..b.clone() };
                     ad_break = None;
-                    // The pool was captured for THIS break; the next one re-captures against whatever
-                    // program is current then. (`ad_return` above already carried the resume seam.)
-                    filler.clear();
                     log::info("iop:cue", &rid, || {
                         let prof = if profile_changed { "profile CHANGED" } else { "profile same" };
                         format!(
-                            "ad break #{} CLOSE at seq {our_seq} after {} segments / {:.1}s (via {:?}) — {prof}, {} replaced",
-                            done.id, done.segments, done.seconds, done.signal, done.replaced
+                            "ad break #{} CLOSE at seq {our_seq} after {} segments / {:.1}s (via {:?}) — {prof}",
+                            done.id, done.segments, done.seconds, done.signal
                         )
                     });
                     report_cue(&ctx, "close", &done);
@@ -925,22 +762,18 @@ async fn ingest(ctx: IngestCtx) {
             // identity from changing. (The same client handled every sps-only change on a stable pid
             // unaided, which is why this never re-encodes.)
             //
-            // Runs at INGEST, once per segment, so one rewrite serves every viewer and both renderers — and
-            // so `program_tail` hands the filler path material already on this timeline.
+            // Runs at INGEST, once per segment, so one rewrite serves every viewer and both renderers.
             //
-            // A substituted segment came from that same filler path and is already normalised; re-running it
-            // would space it against itself.
-            // The kill switch. OFF republishes upstream bytes untouched — the pre-fix behaviour, pid churn and
-            // all — so an operator can rule this pass in or out of a playback complaint without a redeploy.
-            // Read per segment, not once per ingest, so a re-resolve flips it live like every other knob.
+            // `spliceNormalize` is the kill switch. OFF republishes upstream bytes untouched — the pre-fix
+            // behaviour, pid churn and all — so an operator can rule this pass in or out of a playback
+            // complaint without a redeploy. Read per segment, not once per ingest, so a re-resolve flips it
+            // live like every other knob.
             let normalize = policy.splice_normalize.load(Ordering::Relaxed);
             if !normalize && splicer.has_timeline() {
                 splicer.reset(); // switched off mid-stream: the timeline it was keeping no longer applies
             }
             let joined = normalize && splicer.has_timeline();
-            let (plain, absorbed) = if substituted.is_some() {
-                (plain, true)
-            } else if !normalize {
+            let (plain, absorbed) = if !normalize {
                 (plain, false)
             } else {
                 match splicer.normalize(&plain) {
@@ -968,20 +801,13 @@ async fn ingest(ctx: IngestCtx) {
             // upstream's own signal still governs and must still be published.
             let discontinuity = if absorbed && joined { false } else { boundary.is_some() };
 
-            let evicted = ctx.origin.push(
-                Segment {
-                    seq: our_seq,
-                    duration,
-                    bytes: plain,
-                    discontinuity,
-                    pdt: SystemTime::now(),
-                    ad: signal.is_some(),
-                    break_id: ad_break.as_ref().map(|b| b.id).unwrap_or(0),
-                },
-                // Filler is built from the ring, so it cost no upstream traffic — counting it would
-                // overstate "upstream pulled" by exactly the length of every ad break.
-                substituted.is_none(),
-            );
+            let evicted = ctx.origin.push(Segment {
+                seq: our_seq,
+                duration,
+                bytes: plain,
+                discontinuity,
+                pdt: SystemTime::now(),
+            });
             ingested_this_poll += 1;
             if pending.is_some() {
                 forced = None; // consumed — the splice is now recorded on a segment in the ring
@@ -999,7 +825,6 @@ async fn ingest(ctx: IngestCtx) {
                         ),
                         Boundary::Tag => "upstream #EXT-X-DISCONTINUITY".to_string(),
                         Boundary::SessionRenewal => "first segment of a renewed provider session".to_string(),
-                        Boundary::AdReturn => "program resumed after replaced ad break".to_string(),
                     };
                     // Say which of the two happened. An ABSORBED splice publishes no tag, so a log line that
                     // read the same either way would make the normaliser silently un-diagnosable — exactly
@@ -1277,23 +1102,16 @@ async fn ingest_raw_ts(
 }
 
 /// Push a locally-cut segment into the ring. `discontinuity` is always false: a bare TS socket is one
-/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate. `ad` is false
-/// for the same reason — there is no manifest to carry a cue tag and no segment URI to match a signature
-/// against, so a raw socket is program by construction, not by assumption.
+/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate.
 fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment) {
     let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
-    ctx.origin.push(
-        Segment {
-            seq: our_seq,
-            duration: cut.duration,
-            bytes: Bytes::from(cut.bytes),
-            discontinuity: false,
-            pdt: SystemTime::now(),
-            ad: false,
-            break_id: 0,
-        },
-        true, // every byte of a cut segment came off the upstream socket
-    );
+    ctx.origin.push(Segment {
+        seq: our_seq,
+        duration: cut.duration,
+        bytes: Bytes::from(cut.bytes),
+        discontinuity: false,
+        pdt: SystemTime::now(),
+    });
 }
 
 /// Fetch ONE segment and return its plaintext bytes, decrypting AES-128 when keyed.
@@ -1794,7 +1612,6 @@ fn report_cue(ctx: &IngestCtx, state: &str, b: &AdBreak) {
         "durationSec": b.seconds,
         "announcedSec": b.announced,
         "profileChanged": b.profile_changed,
-        "replaced": b.replaced,
     }));
 }
 
@@ -1842,8 +1659,6 @@ mod tests {
             bytes: Bytes::from(vec![0x47u8; bytes]),
             discontinuity: false,
             pdt: SystemTime::UNIX_EPOCH,
-            ad: false,
-            break_id: 0,
         }
     }
 
@@ -1865,7 +1680,7 @@ mod tests {
     fn ring_evicts_oldest_to_stay_under_the_byte_cap() {
         let o = Origin::new(1000); // 1000-byte cap
         for i in 0..10 {
-            o.push(seg(i, 200), true);
+            o.push(seg(i, 200));
         }
         let ring = o.ring.read_ok();
         assert!(o.ring_bytes.load(Ordering::Relaxed) <= 1000, "ring must respect the cap");
@@ -1880,7 +1695,7 @@ mod tests {
         // Each segment alone blows the cap — without the floor the ring would hold 1 and be unplayable.
         let o = Origin::new(100);
         for i in 0..6 {
-            o.push(seg(i, 10_000), true);
+            o.push(seg(i, 10_000));
         }
         assert_eq!(o.ring_depth(), MIN_SEGMENTS, "floor holds a playable window");
         assert!(o.floor_beat_cap(), "and reports that the cap could not be honored");
@@ -1891,7 +1706,7 @@ mod tests {
     fn cap_is_honored_when_bitrate_fits_so_no_floor_warning() {
         let o = Origin::new(10_000);
         for i in 0..20 {
-            o.push(seg(i, 500), true);
+            o.push(seg(i, 500));
         }
         assert!(o.ring_depth() > MIN_SEGMENTS);
         assert!(!o.floor_beat_cap(), "a fitting bitrate must not warn");
@@ -1902,8 +1717,8 @@ mod tests {
         let watched = Arc::new(Origin::new(10_000));
         let idle = Arc::new(Origin::new(4_000));
         for i in 0..3 {
-            watched.push(seg(i, 500), true); // 1500 bytes, under its cap
-            idle.push(seg(i, 200), true); // 600 bytes, under its cap
+            watched.push(seg(i, 500)); // 1500 bytes, under its cap
+            idle.push(seg(i, 200)); // 600 bytes, under its cap
         }
         watched.subscribers.store(2, Ordering::Relaxed);
         // `idle` keeps zero subscribers: it is inside its IDLE_GRACE window, still holding RAM. Counting it in
@@ -1931,7 +1746,7 @@ mod tests {
         let o = Origin::new(10_000);
         for i in 0..4 {
             let s = o.next_seq.fetch_add(1, Ordering::Relaxed);
-            o.push(seg(s as usize, 100), true);
+            o.push(seg(s as usize, 100));
             assert_eq!(s, i);
         }
         let gen_before = o.generation();
@@ -2045,48 +1860,6 @@ mod tests {
         // which escalates through failover instead of quietly declaring the stream complete.
     }
 
-    // ── S3/CUE Phase 2: the filler pool ──────────────────────────────────────────────────────────────────
-
-    fn ad_seg(n: usize) -> Segment {
-        Segment { ad: true, break_id: 1, ..seg(n, 100) }
-    }
-
-    #[test]
-    fn program_tail_takes_the_newest_program_segments_oldest_first() {
-        let o = Origin::new(1_000_000);
-        for i in 0..6 {
-            o.push(seg(i, 100), true);
-        }
-        let tail = o.program_tail(3);
-        assert_eq!(tail.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![3, 4, 5], "newest three, in play order");
-    }
-
-    /// The pool must skip a PREVIOUS break's filler, which is itself marked as break content. Looping a loop
-    /// would compound the repetition — the viewer would see the same few seconds twice over.
-    #[test]
-    fn program_tail_skips_break_content() {
-        let o = Origin::new(1_000_000);
-        for i in 0..3 {
-            o.push(seg(i, 100), true); // program
-        }
-        for i in 3..8 {
-            o.push(ad_seg(i), true); // a break (or the filler that replaced it)
-        }
-        let tail = o.program_tail(3);
-        assert_eq!(tail.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![0, 1, 2], "reaches past the break");
-        assert!(tail.iter().all(|s| !s.ad));
-    }
-
-    #[test]
-    fn program_tail_is_empty_when_the_ring_holds_no_program() {
-        // Nothing to loop ⇒ the caller must decline to substitute and serve the ad instead.
-        let o = Origin::new(1_000_000);
-        for i in 0..4 {
-            o.push(ad_seg(i), true);
-        }
-        assert!(o.program_tail(3).is_empty());
-    }
-
     // ── S3/CUE: ad classification ────────────────────────────────────────────────────────────────────────
     // All URIs below are VERBATIM from a live pluto capture (2026-08-06) that caught a full ~2 min pod of 5
     // creatives. The signature list is what the pluto adapter declares, already lowercased by state.rs.
@@ -2182,8 +1955,6 @@ mod tests {
                     bytes: Bytes::from(vec![0x47u8; 10]),
                     discontinuity: disc_at.contains(&i),
                     pdt: SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433),
-                    ad: false,
-                    break_id: 0,
                 })
             })
             .collect()
@@ -2292,7 +2063,7 @@ mod tests {
         for i in 0..12 {
             let mut s = seg(i, 500);
             s.discontinuity = i == 1 || i == 2; // two tags, both destined to be evicted
-            o.push(s, true);
+            o.push(s);
         }
         assert!(o.ring_depth() < 12, "the cap must have evicted something for this to test anything");
         assert_eq!(o.disc_seq(), 2, "both evicted tags counted, the surviving segments' tags not");
@@ -2306,7 +2077,7 @@ mod tests {
         for i in 0..5 {
             let mut s = seg(i, 100);
             s.discontinuity = i >= 3;
-            o.push(s, true);
+            o.push(s);
         }
         assert_eq!(o.disc_seq(), 0, "nothing evicted while the ring had room");
         let before = o.disc_seq();

@@ -1,17 +1,19 @@
-//! S3/CUE Phase 2 — rebasing a segment onto a CONTINUOUS output timeline.
+//! Rebasing a segment onto a CONTINUOUS output timeline — the engine behind "Smooth ad transitions"
+//! (`spliceNormalize`).
 //!
-//! Filler substitution re-emits a program segment the ring already holds, so the same bytes appear more than
-//! once in the published stream. Their timestamps would repeat with them, and a repeated (or backwards) PTS
-//! is not something a player can absorb — it would need an `#EXT-X-DISCONTINUITY` between every repetition,
-//! which is worse than the ads. So the bytes are copied and every clock inside them is shifted forward onto
-//! the timeline we are publishing.
+//! An ad-stitched upstream does not hand us one stream. It hands us alternating encodes: the timestamps jump
+//! at every pod edge, and — the part no HLS tag can express — the video PID itself moves (pluto ran
+//! 258 → 256 → 258 across a single pod). A demuxer does not follow an elementary stream to a new PID; it keeps
+//! rendering the one it latched and registers the new one as a stream nothing is displaying, so video freezes
+//! until the PID happens to come back. `#EXT-X-DISCONTINUITY` describes a TIMELINE break; this is a stream
+//! IDENTITY break, and the only fix is to stop the identity from changing.
 //!
-//! WHY THIS IS THE SAFE HALF OF L2. `.claude/plans/origin-republish.md` designs a general "unified timeline"
-//! pass and recommends CLOSING it, because suppressing a discontinuity the upstream signalled is only sound
-//! if the codec parameters truly match on both sides — and a false negative there turns a ~200 ms decoder
-//! reset into a decode error. None of that applies here: we generate both sides of this join ourselves out of
-//! the SAME segment, so parameter equality is guaranteed by construction rather than inferred. This module
-//! never decides whether an upstream splice was real; it only makes our own repeat play as one stream.
+//! So every ingested segment is republished onto ONE timeline with canonical PIDs: the bytes are copied, the
+//! PSI is rewritten to a locked layout, and every clock inside is shifted onto the timeline we publish. The
+//! splice is then absorbed rather than announced, and the player never sees a seam to recover from.
+//!
+//! Deliberately never re-encodes. A client that froze on every PID move handled every SPS-only change on a
+//! stable PID unaided, so identity — not parameters — is what has to be held still.
 //!
 //! THE CONTRACT
 //!   · LENGTH-INVARIANT. Fields are overwritten in place — nothing is inserted, dropped or resized — so the
@@ -23,8 +25,9 @@
 //!   · The reference clock is the VIDEO pid's DTS (PTS when the stream carries no DTS, i.e. no B-frames).
 //!     Not PCR (may be absent, lives on its own pid, carries an extension) and not PTS (non-monotonic with
 //!     B-frames, so "the last one" is ambiguous).
-//!   · BAIL ON DOUBT. Anything we cannot positively handle returns `None` and the caller declines to
-//!     substitute. Serving a mis-rewritten segment is far worse than not substituting.
+//!   · BAIL ON DOUBT. Anything we cannot positively handle returns `None` and the caller publishes the
+//!     segment verbatim, signalling the splice the old way. A visible decoder reset beats a stream we
+//!     mis-rewrote.
 //!
 //! Pure and synchronous, like `tsseg` — the whole story is testable against synthetic packets with no network.
 
@@ -89,12 +92,16 @@ impl Normalizer {
     }
 
     /// The offset that lands `s` immediately after everything already published.
+    ///
+    /// `repeat` selects WHICH end of the previous segment is cleared. Every production path passes `false`
+    /// (fresh upstream media); the `true` arm survives because it is the contract the spacing rule is written
+    /// against, and the tests below pin both halves of that rule against each other.
     fn offset_for(&self, s: &Scan, repeat: bool) -> u64 {
         let start = match self.last_dts {
             Some(last) => {
-                // A REPEAT must clear what the previous segment PRESENTED, not merely where it stopped
-                // decoding: filler re-emits bytes already published, so starting at the decode end would put
-                // the copy's first frame before the original's last and run presentation backwards.
+                // A REPEAT — the same bytes emitted twice — must clear what the previous segment PRESENTED,
+                // not merely where it stopped decoding: starting at the decode end would put the copy's first
+                // frame before the original's last and run presentation backwards.
                 // FRESH media must NOT do that — consecutive segments of one source are contiguous in decode
                 // order, and clearing `max_pts` instead injects the reorder delay as phantom time on every
                 // join (+0.50 % measured live on B-frame content).
@@ -109,15 +116,6 @@ impl Normalizer {
             None => s.first_dts,
         };
         start.wrapping_sub(s.first_dts) & CLOCK_MASK
-    }
-
-    /// Adopt a segment without rewriting it — record where its clocks end. One read-only pass, no copy.
-    fn observe(&mut self, bytes: &[u8]) {
-        if let Some(s) = scan(bytes) {
-            self.last_dts = Some(s.last_dts);
-            self.last_pts = s.max_pts;
-            self.frame_dur = s.frame_dur;
-        }
     }
 
     /// Record BOTH ends of what was just published; `offset_for` decides which one the next segment clears.
@@ -436,8 +434,8 @@ fn shift_pcr(b: &mut [u8], offset: u64) {
 //
 // So the fix is not to SIGNAL the splice, it is to REMOVE it: republish every segment onto one published
 // layout with one continuous clock, so that from the client's side no splice ever happened. Note what that
-// means for the DI bit — it stays CLEARED, exactly as on the filler path. A stale indicator would tell the
-// player to resync on a clock that no longer jumps.
+// means for the DI bit — it stays CLEARED. A stale indicator would tell the player to resync on a clock that
+// no longer jumps.
 //
 // WHAT IS LEFT UNSIGNALLED, DELIBERATELY. The resolution/SPS change survives this pass untouched. That is
 // correct: on a STABLE pid with CONTINUOUS timestamps, new parameter sets are an ordinary in-band decoder
@@ -608,32 +606,10 @@ impl Splicer {
     /// Rewrite FRESH upstream media onto the published program. `None` ⇒ could not be done safely; the
     /// caller serves the segment verbatim (a visible glitch beats a corrupted socket).
     pub(crate) fn normalize(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        self.publish(bytes, false)
+        self.publish(bytes)
     }
 
-    /// Rewrite bytes the ring has ALREADY published — filler substitution re-emitting a program segment.
-    /// Differs from `normalize` only in where the copy may start; see `Normalizer::offset_for`.
-    pub(crate) fn normalize_repeat(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        self.publish(bytes, true)
-    }
-
-    /// Clock ONLY — rebase the timestamps, leave the pids and PSI exactly as they are.
-    ///
-    /// For filler while `spliceNormalize` is OFF. The surrounding ring is then un-normalised, so remapping
-    /// just the substituted segments onto canonical pids would introduce the very pid change the switch was
-    /// turned off to avoid — filler must look like its neighbours, whatever those are.
-    pub(crate) fn rebase_only(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
-        self.clock.rewrite(bytes, None, true)
-    }
-
-    /// Adopt a segment WITHOUT rewriting it: record where its clocks end so a later repeat is spaced after it
-    /// rather than on top of it. Also for the switch-off path, where published segments pass through untouched
-    /// but the clock still has to know where they left the timeline.
-    pub(crate) fn observe(&mut self, bytes: &[u8]) {
-        self.clock.observe(bytes);
-    }
-
-    fn publish(&mut self, bytes: &[u8], repeat: bool) -> Option<Vec<u8>> {
+    fn publish(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
         let psi = read_psi(bytes)?;
         if self.layout.is_none() {
             self.layout = Some(Layout::lock(&psi)?);
@@ -644,7 +620,7 @@ impl Splicer {
         // Borrow dance: `remap` holds &self.layout while `rewrite` needs &mut self.clock. They are disjoint
         // fields, so split the borrow explicitly rather than cloning the layout on every segment.
         let clock = &mut self.clock;
-        clock.rewrite(bytes, Some(&remap), repeat)
+        clock.rewrite(bytes, Some(&remap), false)
     }
 }
 
@@ -1059,14 +1035,15 @@ mod tests {
         assert_eq!(forward_gap(first.unwrap(), last), (N * 3 - 1) * f, "no join may invent time");
     }
 
-    /// …and the other half of the same decision: a REPEAT must still clear the original's presentation, or
-    /// the copy's first frame lands before the original's last and playback runs backwards across the join.
+    /// …and the other half of the same decision, pinned at the clock layer: with `repeat` set, a segment must
+    /// clear the previous one's PRESENTATION, or the copy's first frame lands before the original's last and
+    /// playback runs backwards across the join. See `Normalizer::offset_for` for why both arms exist.
     #[test]
     fn a_repeat_still_clears_the_originals_presentation() {
         let seg = segment(1_000_000, 0); // `segment` builds PTS = DTS + one frame, i.e. real reorder lead
-        let mut sp = Splicer::new();
-        let a = sp.normalize(&seg).unwrap();
-        let b = sp.normalize_repeat(&seg).unwrap();
+        let mut n = Normalizer::new();
+        let a = n.rewrite(&seg, None, true).unwrap();
+        let b = n.rewrite(&seg, None, true).unwrap();
         let (sa, sb) = (scan(&a).unwrap(), scan(&b).unwrap());
         assert!(
             forward_gap(sa.max_pts, sb.first_dts) < CLOCK_WRAP / 2 && sb.first_dts != sa.max_pts,

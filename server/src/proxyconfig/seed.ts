@@ -21,4 +21,14 @@ export async function seedProxyConfig(): Promise<void> {
   } else {
     logger.info('seed', 'proxy config: existing Default found — keeping persisted values');
   }
+
+  // MIGRATION: drop the removed 'Ad Breaks' knob (adPolicy: 'passthrough' | 'replace'). Ad breaks are now
+  // always served as the provider sent them; smoothing the seam is spliceNormalize's job. Mongoose's strict
+  // mode already hides an unknown path on read, so this is not about correctness — it is about not carrying a
+  // dead key through config exports and backup restores forever. Runs on EVERY boot (cheap: a no-op once the
+  // field is gone) rather than gated behind a version marker the collection does not have.
+  const pruned = await ProxyConfig.updateMany({ adPolicy: { $exists: true } }, { $unset: { adPolicy: '' } });
+  if (pruned.modifiedCount > 0) {
+    logger.ok('seed', `proxy config: dropped the removed adPolicy field from ${pruned.modifiedCount} doc(s)`);
+  }
 }

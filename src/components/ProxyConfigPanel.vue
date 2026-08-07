@@ -190,26 +190,6 @@ watch(
         </div>
       </div>
 
-      <!-- S3/CUE. Directly under Local origin because it is meaningless without it: ad breaks are detected
-           by the ingest, and only the ring can supply replacement content. -->
-      <div class="form-grid-2" style="margin-top: 17px;">
-        <div class="form-row">
-          <div class="field-lbl">Ad breaks</div>
-          <Segmented
-            :value="state.adPolicy"
-            :disabled="!state.originEnabled"
-            @change="(v) => (state.adPolicy = v)"
-            :options="[{ value: 'passthrough', label: 'Play them' }, { value: 'replace', label: 'Replace' }]"
-          />
-          <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            What to do when the engine detects an ad break. <b>Play them</b> passes the break through as the
-            provider sent it. <b>Replace</b> keeps the ad segments out entirely and loops recent programming
-            in their place — so <b>the viewer sees filler, not the show</b>, but no ads and no mid-break
-            quality switch. Only breaks the provider actually signals can be replaced.
-          </div>
-        </div>
-      </div>
-
       <!-- Splice normalisation. Sits with the origin knobs because it only acts on the ingest. Presented as
            something you TURN OFF, not on, since it is the shipped default and off is the older behaviour. -->
       <div class="form-grid-2" style="margin-top: 17px;">
