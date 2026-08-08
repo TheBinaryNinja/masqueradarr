@@ -41,8 +41,8 @@ use crate::proxy::{build_headers, fetch_with_retry, is_private_host, MAX_UPSTREA
 use crate::state::{AppState, SourcePolicy};
 use crate::sync::{LockExt, RwExt};
 use crate::tsmux::{
-    decrypt_aes128_cbc, has_map, is_master, parse_media_playlist, pick_variant, poll_interval, unsupported_encryption,
-    CueKind, SegRef,
+    decrypt_aes128_cbc, encryption_method, has_map, is_master, parse_media_playlist, pick_variant, poll_interval,
+    unsupported_encryption, CueKind, SegRef,
 };
 
 /// Per-channel ring cap, MiB. Shipped default; the operator raises it per playlist via `originRingMb`.
@@ -317,6 +317,21 @@ pub struct Origin {
     /// unnoticed until a viewer reported the symptom.
     last_suspect: RwLock<Option<String>>,
     suspect_retires: AtomicU32,
+    /// What this upstream turned out to BE — `"ts"` (a bare transport-stream socket we segment ourselves),
+    /// `"hls-master"` (a master playlist we picked a variant from) or `"hls-media"` (a media playlist we
+    /// follow directly). Written by `resolve_media`, which is the only place that knows.
+    ///
+    /// It has to live on `Origin` rather than ride the return value: `MediaSource` is consumed by the ingest
+    /// loop's `match` and never stored, while `report_iop` can see nothing but `ctx.origin`. Re-written on
+    /// every resolve, so a failover onto a differently-shaped upstream corrects it rather than going stale.
+    upstream_shape: RwLock<Option<String>>,
+    /// The encryption METHOD this upstream declares — `"NONE"`, `"AES-128"`, or whatever else it names.
+    ///
+    /// Reported for DISPLAY, which is why it comes from `encryption_method` and not `unsupported_encryption`:
+    /// the latter cannot tell cleartext from AES-128, and AES-128 is what most of these sources use. Set on
+    /// every resolve BEFORE the eligibility guards, so a channel the origin declines still reports what it
+    /// found rather than reporting nothing.
+    encryption: RwLock<Option<String>>,
 }
 
 /// What a DEMUXED origin needs in order to author its own master over the pair.
@@ -356,6 +371,8 @@ impl Origin {
             demuxed_audio: RwLock::new(None),
             last_suspect: RwLock::new(None),
             suspect_retires: AtomicU32::new(0),
+            upstream_shape: RwLock::new(None),
+            encryption: RwLock::new(None),
         }
     }
 
@@ -1445,6 +1462,8 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
         log::info("iop", rid, || {
             format!("{}: upstream is a bare TS socket — segmenting locally", ctx.source)
         });
+        // Its own write site: this arm returns before the manifest handling below ever runs.
+        *ctx.origin.upstream_shape.write_ok() = Some("ts".to_string());
         return Some(MediaSource::RawTs(Box::pin(stream), first));
     }
     // A manifest: drain the (small) remainder into text.
@@ -1463,6 +1482,9 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     // Extracted HERE, not later: on the master arm `body` merely stays borrowed, but on the media arm below
     // it is MOVED into the tuple, so a deferred read would not compile.
     let master_media = if entry_is_master { Some(crate::manifest::extract_media(&body)) } else { None };
+    // One write covers both HLS arms — `entry_is_master` already made the distinction.
+    *ctx.origin.upstream_shape.write_ok() =
+        Some(if entry_is_master { "hls-master" } else { "hls-media" }.to_string());
     let (media_url, media_body, rendition) = if entry_is_master {
         let pick = pick_variant(&body, &url)?;
         variant_bandwidth = pick.bandwidth;
@@ -1499,6 +1521,10 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     } else {
         (url, body, None)
     };
+
+    // Recorded BEFORE the guards below, deliberately: the unsupported-method guard `return`s, and a channel
+    // that got declined FOR its encryption is exactly the one whose encryption an operator wants named.
+    *ctx.origin.encryption.write_ok() = Some(encryption_method(&media_body));
 
     // The same eligibility guards the raw-TS producer applies. fMP4 is not concatenable and SAMPLE-AES is not
     // decryptable, so an origin over either would publish bytes no renderer can honestly serve.
@@ -2341,7 +2367,7 @@ async fn ts_ring_producer(
                 if pending_bytes > 0 {
                     ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
                 }
-                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
                 return;
             }
         }
@@ -2363,7 +2389,8 @@ async fn ts_ring_producer(
     if pending_bytes > 0 {
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
-    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    // Single predecessor (the ingest-stopping break above), so this can be a literal.
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "ingest_stopped" }));
     log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id})"));
 }
 
@@ -2401,6 +2428,9 @@ async fn ts_ring_pair_producer(
     let mut warned_declines: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut consecutive_declines: u32 = 0;
     let mut warned_switch = false;
+    // Two paths reach this producer's close emit — the ingest-stopping `break` and the declines `break 'outer`
+    // — so unlike the muxed producer's single-predecessor epilogue, the reason has to be threaded.
+    let mut close_reason = "ingest_stopped";
 
     'outer: loop {
         let window = origin.window();
@@ -2459,6 +2489,7 @@ async fn ts_ring_pair_producer(
                         log::error("oop", &ctx.rid, || {
                             format!("{consecutive_declines} consecutive pairs declined ({why}) — ending the socket rather than holding it open with no media")
                         });
+                        close_reason = "pair_declines";
                         break 'outer;
                     }
                     continue;
@@ -2472,7 +2503,7 @@ async fn ts_ring_pair_producer(
                 if pending_bytes > 0 {
                     ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
                 }
-                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
                 return;
             }
         }
@@ -2494,7 +2525,7 @@ async fn ts_ring_pair_producer(
     if pending_bytes > 0 {
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
-    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
     log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved session close ({stream_id})"));
 }
 
@@ -2539,6 +2570,9 @@ fn report_iop(ctx: &IngestCtx, status: &str) {
         // healthy origin, because the ingest keeps a live `iop` frame either way.
         "demuxed": ctx.origin.demuxed_audio.read_ok().is_some(),
         "ineligible": ctx.origin.ineligible(),
+        // What the upstream actually IS, as opposed to what we serve. Null until the first resolve completes.
+        "upstreamShape": ctx.origin.upstream_shape.read_ok().clone(),
+        "encryption": ctx.origin.encryption.read_ok().clone(),
         // S3/UND: null until an upstream is retired for a structural fault. Present ⇒ this channel has been
         // hopping providers, which every byte-level metric here would otherwise show as perfectly healthy.
         "suspect": ctx.origin.last_suspect.read_ok().clone(),

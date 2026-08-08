@@ -267,6 +267,30 @@ function ageLabel(ms: number): string {
   return s < 90 ? `${s}s` : `${Math.round(s / 60)}m`;
 }
 function mib(bytes: number): string { return (bytes / 1048576).toFixed(1); }
+// Session-end reason → operator English. The first four are real CAUSES reported by the data plane; the last
+// three describe only how the ending was NOTICED. Kept in one map but worded so the difference survives —
+// "the polls stopped" must never read like a diagnosis. Unknown slugs pass through verbatim.
+function closeReasonLabel(reason: string): string {
+  return {
+    endlist: 'upstream ended the playlist (#EXT-X-ENDLIST)',
+    failover_exhausted: 'failover chain exhausted — nothing reachable',
+    pair_declines: 'audio/video pairs kept being declined',
+    ingest_stopped: 'the ingest stopped and the ring drained',
+    client_gone: 'the viewer disconnected',
+    socket_close: 'the socket closed',
+    socket_idle_backstop: 'socket went half-open — reaped after 60s with no bytes',
+    poll_timeout: 'the polls stopped',
+  }[reason] ?? reason;
+}
+// Upstream shape → operator English. Unknown slugs pass through verbatim rather than being mapped to a
+// friendly default: a shape we do not recognise is worth seeing raw, not worth disguising as a known one.
+function shapeLabel(shape: string): string {
+  return {
+    'ts': 'bare MPEG-TS socket — we segment it ourselves',
+    'hls-master': 'HLS master — we pick a variant',
+    'hls-media': 'HLS media playlist — followed directly',
+  }[shape] ?? shape;
+}
 
 // Asymmetric min-dwell. `ingest.status === 'stalled'` is a ONE-FRAME event — the sidecar clears its
 // empty-poll counter and the next productive poll reports 'ok' — so undamped it is a 2.5s amber blink,
@@ -787,7 +811,27 @@ function onRailKey(e: KeyboardEvent): void {
                 <span v-if="sel.upstreamHost" class="asd-sub">· resolves to {{ sel.upstreamHost }} (entry hop)</span>
               </div>
               <div class="k">Protocol</div>
-              <div class="v asd-nm">not measured — the sidecar classifies it but never reports it (register #10)</div>
+              <!-- What we PULL. Deliberately adjacent to, and worded apart from, the two neighbours it is
+                   always confused with: `delivery` is what we SERVE (the pill in the header) and `container`
+                   is what the SEGMENTS are. All three can legitimately disagree — a bare TS socket served as
+                   HLS, or an HLS master woven into raw TS. -->
+              <div class="v mono">
+                <template v-if="sel.upstreamShape || sel.encryption">
+                  <template v-if="sel.upstreamShape">{{ shapeLabel(sel.upstreamShape) }}</template>
+                  <!-- 'NONE' is a measured reading, so it renders as "cleartext" rather than vanishing —
+                       an absent row and a channel proven unencrypted are different facts. -->
+                  <template v-if="sel.encryption">
+                    <span :style="sel.encryption !== 'NONE' ? 'color: var(--accent-hi);' : ''">· {{ sel.encryption === 'NONE' ? 'cleartext' : sel.encryption }}</span>
+                  </template>
+                  <span class="asd-sub">· serving {{ deliveryLabel(sel.delivery) }}</span>
+                  <!-- The row's payoff: it names WHICH of the three possible causes made a Raw-TS request come
+                       back as HLS. The passthrough muxer cannot decrypt, so an encrypted upstream forces the
+                       fallback — while an origin ring decrypts into the ring and would not have. -->
+                  <span v-if="sel.encryption && sel.encryption !== 'NONE' && sel.requested?.outputFormat === 'ts' && sel.delivery === 'hls'"
+                        class="asd-sub" style="color: var(--warn);">· this is why Raw-TS fell back — the passthrough muxer cannot decrypt</span>
+                </template>
+                <span v-else class="asd-nm">not reported yet — set on the first upstream resolve</span>
+              </div>
               <div class="k">Video / Audio</div>
               <div class="v mono">
                 <template v-if="sel.codec || sel.audio">{{ selTech?.video }} · {{ selTech?.audio }}</template>
@@ -962,7 +1006,14 @@ function onRailKey(e: KeyboardEvent): void {
                 <div class="v mono">
                   <template v-if="sel.requested">
                     {{ sel.requested.outputFormat }} requested
-                    <span v-if="sel.requested.outputFormat === 'ts' && sel.delivery === 'hls'" class="asd-sub" style="color: var(--warn);">· fell back to HLS — the upstream is AES/fMP4 or unreachable as raw TS</span>
+                    <!-- Names the cause once it is known, and only enumerates candidates while it is not.
+                         Before register #11 this row could only ever list all three possibilities. -->
+                    <span v-if="sel.requested.outputFormat === 'ts' && sel.delivery === 'hls'" class="asd-sub" style="color: var(--warn);">
+                      · fell back to HLS —
+                      <template v-if="sel.encryption && sel.encryption !== 'NONE'">the upstream is {{ sel.encryption }} encrypted</template>
+                      <template v-else-if="sel.container === 'fMP4'">the upstream is fMP4</template>
+                      <template v-else>the upstream is AES/fMP4 or unreachable as raw TS</template>
+                    </span>
                     <span v-else class="asd-sub">· serving {{ deliveryLabel(sel.delivery) }}</span>
                     <span class="asd-sub">· ring {{ sel.requested.originEnabled ? `on, ${sel.requested.originRingMb} MB` : 'off' }}<template v-if="sel.requested.spliceNormalize">, splice-normalized</template></span>
                   </template>
@@ -978,7 +1029,20 @@ function onRailKey(e: KeyboardEvent): void {
                 <div class="k">Discontinuity</div><div class="v asd-nm">not measured</div>
                 <div class="k">Ad break</div><div class="v asd-nm">not measured</div>
                 <div class="k">Breaks seen</div><div class="v asd-nm">not measured</div>
-                <div class="k">Requested format</div><div class="v asd-nm">not measured (register #12)</div>
+                <!-- The ONE row in this branch that is not about the (absent) manifest: `requested` describes
+                     the GRANT, which every channel has. It is also at its most diagnostic here — a channel
+                     showing "ring on" in this column while the rest of the pane reads "not authored" is
+                     precisely an origin that was asked for and did not happen. -->
+                <div class="k">Requested format</div>
+                <div class="v mono">
+                  <template v-if="sel.requested">
+                    {{ sel.requested.outputFormat }} requested
+                    <span v-if="sel.requested.outputFormat === 'ts' && sel.delivery === 'hls'" class="asd-sub" style="color: var(--warn);">· fell back to HLS</span>
+                    <span v-else class="asd-sub">· serving {{ deliveryLabel(sel.delivery) }}</span>
+                    <span class="asd-sub" :style="sel.requested.originEnabled ? 'color: var(--warn);' : ''">· ring {{ sel.requested.originEnabled ? `requested (${sel.requested.originRingMb} MB) but none is running` : 'off' }}</span>
+                  </template>
+                  <span v-else class="asd-nm">not reported for this stream yet</span>
+                </div>
                 <div class="k">Cover</div><div class="v asd-nm">not measured</div>
               </template>
             </div>
@@ -1013,7 +1077,19 @@ function onRailKey(e: KeyboardEvent): void {
                 <span v-else class="asd-nm">no connected session reports it yet</span>
               </div>
               <div class="k">Session end</div>
-              <div class="v asd-nm">not measured — every ending emits the same bare frame (register #20)</div>
+              <!-- Deliberately ASYMMETRIC copy. A raw-TS socket reports a real cause; an HLS session reports
+                   only how we noticed it had gone. Rendering both through one sentence would let "poll
+                   timeout" read as a diagnosis, and would make HLS channels look healthier than raw-TS ones
+                   purely because their endings are less legible. -->
+              <div class="v mono">
+                <template v-if="sel.lastClose">
+                  {{ closeReasonLabel(sel.lastClose.reason) }}
+                  <span class="asd-sub">· {{ ageLabel(Date.now() - sel.lastClose.at) }} ago</span>
+                  <span v-if="!sel.lastClose.socketBound" class="asd-sub">· HLS sessions never announce a departure, so this is how we noticed, not why it ended</span>
+                </template>
+                <!-- Not "not measured": nothing has ended yet, which is a real state. -->
+                <span v-else class="asd-nm">no session has ended on this channel yet</span>
+              </div>
             </div>
 
             <div class="asd-label-ft" aria-hidden="true">

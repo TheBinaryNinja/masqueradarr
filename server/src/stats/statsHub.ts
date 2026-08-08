@@ -16,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, adBreakFor, pruneAdBreaks, upstreamHostFor, pruneUpstreamHost, requestedConfigFor, pruneRequestedConfig, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState, type RequestedConfig } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, adBreakFor, pruneAdBreaks, upstreamHostFor, pruneUpstreamHost, requestedConfigFor, pruneRequestedConfig, lastCloseFor, pruneLastClose, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState, type RequestedConfig, type LastClose } from '../sources/core/streamTelemetry.js';
 import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -94,6 +94,20 @@ export interface DisplayStream {
    *  summed across N viewers, and the two are not the same quantity in either unit or meaning. Comparing this
    *  against `bitrate` is how you see an upstream under-delivering what it advertises. */
   declaredBps: number | null;
+  /** What the UPSTREAM is — 'ts' (a bare transport-stream socket) | 'hls-master' | 'hls-media'. Distinct from
+   *  `delivery` (what we SERVE) and from `container` (what its SEGMENTS are): a raw-TS upstream can be served
+   *  as HLS, and an HLS master can be served as raw TS.
+   *
+   *  Two producers report it, so the precedence is resolved HERE rather than left to the client: the ORIGIN's
+   *  reading wins because it describes the upstream actually being ringed, and the passthrough rewriter's
+   *  reading is the fallback. A channel whose origin went INELIGIBLE legitimately has both — the origin's is
+   *  still the honest answer to "what is this upstream", which is what the row asks. */
+  upstreamShape: string | null;
+  /** Declared encryption METHOD — 'NONE' | 'AES-128' | 'SAMPLE-AES' | … Same origin-first precedence as
+   *  `upstreamShape`. This is the field that explains a Raw-TS request coming back as HLS: the passthrough
+   *  muxer cannot decrypt, so an AES-128 upstream forces the fallback. 'NONE' means MEASURED cleartext;
+   *  null means nothing has reported one yet. */
+  encryption: string | null;
   probe: null; // was the deep technical snapshot — always null after the video-engine teardown
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's
   // identity — the parent's own upstream is dead and the named backup is carrying the stream.
@@ -115,6 +129,10 @@ export interface DisplayStream {
   // Raw-TS-fell-back signal. Captured at resolve time, NOT re-read from the DB: a re-read would answer a
   // different question (what is configured now, not what this stream got).
   requested: RequestedConfig | null;
+  // How this channel's LAST viewer session ended. Necessarily about an already-departed viewer — the panel
+  // only lists channels that still have one — and null until a first session has ended. Raw-TS sockets carry a
+  // real cause; HLS sessions can only ever carry a mechanism, which `socketBound` on the payload distinguishes.
+  lastClose: LastClose | null;
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -203,6 +221,10 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       fps: decode.fps,
       // Raw bits/sec — NOT through mbps(), which expects bytes/sec and would be an 8× error here.
       declaredBps: media?.bandwidth ?? null,
+      // Origin first, passthrough second — see the field doc. `?? null` rather than `||` so a future empty
+      // string could not silently fall through to the other producer.
+      upstreamShape: ingestFor(r.channelKey)?.upstreamShape ?? media?.upstreamShape ?? null,
+      encryption: ingestFor(r.channelKey)?.encryption ?? media?.encryption ?? null,
       probe: null, // the deep technical snapshot is not rebuilt (video-engine teardown)
       failover: failoverFor(r.channelKey),
       ingest: ingestFor(r.channelKey),
@@ -211,6 +233,7 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       adBreak: adBreakFor(r.channelKey),
       upstreamHost: upstreamHostFor(r.channelKey),
       requested: requestedConfigFor(r.channelKey),
+      lastClose: lastCloseFor(r.channelKey),
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
@@ -220,6 +243,7 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
   pruneAdBreaks(activeKeys);
   pruneUpstreamHost(activeKeys);
   pruneRequestedConfig(activeKeys);
+  pruneLastClose(activeKeys);
   return out;
 }
 

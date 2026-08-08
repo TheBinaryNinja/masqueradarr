@@ -32,20 +32,24 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //    sentinel for a resolve failure) → noteFailed (→ failed); a transport error / mid-body stall or error with
 //    no definitive response (status 0) → noteFailure (spends one retry). Fields: { source, entryUrl, status }.
 //  · media    — manifest-declared decode metadata → noteMedia. Fields: { source, entryUrl, resolution?,
-//    codecs?, frameRate?, container? } (any subset; nulls mean "no update this poll").
+//    codecs?, frameRate?, container?, bandwidth?, upstreamShape?, encryption?, replace? }. Nulls mean "no update this poll"
+//    for the PASSTHROUGH producer (master and media playlist are separate polls); the ORIGIN producer reads
+//    both in one pass and sets `replace` so its frame overwrites instead of merging.
 //  · open/sbytes/close — P3.2/DST continuous raw-TS: the SOCKET model (a single long-lived TS connection, no
 //    polling). `open` mints a socket connId (noteSocketViewerOpen) mapped from the Rust streamId; `sbytes`
 //    (periodic) → noteSocketBytes(connId) AND noteSuccess (→ live — the socket twin of `bytes`, without which
 //    a raw-TS channel never left `establishing`); `close` → noteSocketViewerClose(connId). Only `open` carries
 //    the channel, so it also records streamId → channelKey for `sbytes` to use. Fields: open = { streamId,
-//    source, entryUrl, ip, ua, username?, playerType }, sbytes = { streamId, bytes }, close = { streamId }.
+//    source, entryUrl, ip, ua, username?, playerType }, sbytes = { streamId, bytes },
+//    close = { streamId, reason? }. NOTE only raw-TS sockets emit `close` at all — an HLS session ends by
+//    simply ceasing to poll, and is reaped by streamTelemetry's TTL sweep.
 //  · iop      — S3/ORIGIN Side-1 (the per-channel INGEST). The only INGRESS-side kind: every other event
 //    above measures what we sent to a viewer. Once one ingest feeds N viewers those are independent
 //    quantities, so this drives its own map (noteIngest) and never noteBytes. Fields: { source, entryUrl,
 //    status ('ok'|'stalled'|'resolve_failed'|'closed'), subscribers, ringSegments, ringBytes,
 //    channelRingCapBytes, ringSeconds, floorBeatsCap, headSeq, generation, discSeq, discInWindow,
-//    ingestedSegments, ingestedBytes, evictedSegments, targetDuration, demuxed, ineligible, suspect,
-//    suspectRetires }.
+//    ingestedSegments, ingestedBytes, evictedSegments, targetDuration, demuxed, ineligible, upstreamShape,
+//    encryption, suspect, suspectRetires }.
 //  · cue      — S3/CUE, Side-1 EVENT (not a snapshot): exactly two frames per ad break → noteAdBreak. Like
 //    `iop` it is an INGEST observation and never touches noteBytes — a break says nothing about egress.
 //    Fields: { source, entryUrl, state ('open'|'close'), breakId, signal, segments, durationSec,
@@ -75,6 +79,17 @@ interface TelemetryEvent {
   bandwidth?: unknown;
   // `media` only: this frame is a COMPLETE snapshot, not a partial poll — overwrite rather than merge.
   replace?: unknown;
+  // `close` only: WHY a raw-TS socket session ended ('endlist' | 'failover_exhausted' | 'pair_declines' |
+  // 'ingest_stopped' | 'client_gone'). HLS sessions emit no close frame at all — their ending is inferred by
+  // the Node TTL sweep, which can only name a mechanism.
+  reason?: unknown;
+  // Sent by BOTH `media` (passthrough, MEDIA-playlist polls only — a master carries no #EXT-X-KEY) and `iop`
+  // (origin): the declared encryption METHOD. 'NONE' is a MEASUREMENT of cleartext; absent means no reading.
+  encryption?: unknown;
+  // Sent by BOTH `media` (passthrough, entry poll only) and `iop` (origin): what the upstream turned out to
+  // be — 'ts' | 'hls-master' | 'hls-media'. Two producers, two maps, because a channel can legitimately have
+  // an origin reading and a passthrough reading at once (an INELIGIBLE origin produces both).
+  upstreamShape?: unknown;
   streamId?: unknown; // DST: the continuous-TS session id (open/sbytes/close), mapped to a socket connId
   // S3/ORIGIN `iop` (Side-1 ingest) counters. `status` is a STRING here ('ok'|'stalled'|…), unlike the
   // `upstream` kind where it is an HTTP status number — the two kinds never share a branch.
@@ -193,6 +208,10 @@ function applyEvent(e: TelemetryEvent): void {
         frameRate: optStr(e.frameRate) ?? null,
         container: optStr(e.container) ?? null,
         bandwidth: typeof e.bandwidth === 'number' && e.bandwidth > 0 ? e.bandwidth : null,
+        // optStr, not str: this is null on a HOP poll by design, and the merge below must SKIP it there
+        // rather than overwrite the entry poll's answer with an empty string.
+        upstreamShape: optStr(e.upstreamShape) ?? null,
+        encryption: optStr(e.encryption) ?? null,
       }, e.replace === true);
     }
   } else if (e.kind === 'iop') {
@@ -220,6 +239,8 @@ function applyEvent(e: TelemetryEvent): void {
         evictedSegments: num(e.evictedSegments),
         targetDuration: num(e.targetDuration),
         demuxed: e.demuxed === true,
+        upstreamShape: optStr(e.upstreamShape) ?? null,
+        encryption: optStr(e.encryption) ?? null,
         // Tri-state, so it takes the `suspect` shape rather than str(): str() coerces null to '' and the
         // difference between "eligible" and "declined, reason unknown" would be lost.
         ineligible: typeof e.ineligible === 'string' && e.ineligible ? e.ineligible.slice(0, 48) : null,
@@ -281,7 +302,8 @@ function applyEvent(e: TelemetryEvent): void {
     const streamId = str(e.streamId);
     const connId = streamId ? tsConns.get(streamId) : undefined;
     if (connId !== undefined) {
-      noteSocketViewerClose(connId);
+      // The data plane is the only party that knows WHY the socket ended — Node sees an absence, not a cause.
+      noteSocketViewerClose(connId, optStr(e.reason) ?? null);
       tsConns.delete(streamId);
     }
     tsChannels.delete(streamId);

@@ -190,6 +190,20 @@ export interface ActiveStream {
   // Not `bandwidth` (Mbps of egress summed across viewers) and not `bitrate` (per-viewer measured Mbps) —
   // declared-vs-measured is exactly the comparison that shows an upstream under-delivering.
   declaredBps?: number | null;
+  // What the UPSTREAM is — 'ts' | 'hls-master' | 'hls-media'. Three different questions live near each other
+  // and must not be conflated: this is what we PULL, `delivery` is what we SERVE, and `container` is what the
+  // segments themselves are. A raw-TS upstream can be served as HLS, and an HLS master as raw TS.
+  // The server resolves the origin-vs-passthrough precedence before sending it.
+  upstreamShape?: string | null;
+  // Declared encryption METHOD — 'NONE' | 'AES-128' | 'SAMPLE-AES' | … 'NONE' is a MEASUREMENT of cleartext;
+  // absent/null means nothing has reported one. This is what explains a Raw-TS request served as HLS: the
+  // passthrough muxer cannot decrypt, so an AES-128 upstream forces the fallback (the origin ring can).
+  encryption?: string | null;
+  // How this channel's LAST viewer session ended. Necessarily a PAST event about an already-departed viewer —
+  // this screen only lists channels that still have one — and null until a first session has ended here.
+  // `socketBound` is what says whether `reason` is a real CAUSE (raw-TS sockets report one) or merely the
+  // MECHANISM by which we noticed (an HLS viewer never announces leaving; its polls just stop).
+  lastClose?: { reason: string; at: number; socketBound: boolean } | null;
   probe: StreamProbe | null;
   // S3/ORIGIN Side-1 (ingest) health — non-null only for an origin-backed channel. The counterpart to
   // `delivery` (Side-2). `ingestedBytes` is UPSTREAM traffic for the ONE shared ingest and is deliberately

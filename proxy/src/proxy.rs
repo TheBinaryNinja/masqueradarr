@@ -569,10 +569,25 @@ pub async fn serve_stream(
                     media.container.as_deref().unwrap_or("-"),
                 )
             });
+            // The upstream's SHAPE, but ONLY on the entry poll. This branch serves the entry AND every child
+            // hop, and a hop's body is by definition the variant/media playlist — so an ungated shape would
+            // report `hls-master` once and then be overwritten with `hls-media` on the very next child poll
+            // and stay wrong for the life of the channel (noteMedia merges on non-null, and this producer
+            // sends no `replace` flag). The failure is silent and permanent, so the gate is the feature.
+            let body_is_master = crate::tsmux::is_master(&text_body);
+            let shape = if is_hop { None } else { Some(if body_is_master { "hls-master" } else { "hls-media" }) };
+            // ENCRYPTION is gated on the exact INVERSE condition to shape, and the asymmetry is the point:
+            // shape is a property of the ENTRY, while `#EXT-X-KEY` only ever appears in a MEDIA playlist. Ask
+            // a master and it answers "NONE" for every AES channel sitting behind one. So on a master-entry
+            // channel the encryption answer legitimately arrives on a later HOP poll — which works because
+            // noteMedia merges on non-null, leaving the null we send for the master alone.
+            let encryption = if body_is_master { None } else { Some(crate::tsmux::encryption_method(&text_body)) };
             state.report(serde_json::json!({
                 "kind": "media", "source": source, "entryUrl": stream_entry.as_str(),
                 "resolution": media.resolution, "codecs": media.codecs,
                 "frameRate": media.frame_rate, "container": media.container, "bandwidth": media.bandwidth,
+                "upstreamShape": shape,
+                "encryption": encryption,
             }));
         }
         // Telemetry: a served manifest poll is the viewer heartbeat (also carries the manifest byte count) AND

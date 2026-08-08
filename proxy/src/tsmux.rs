@@ -387,6 +387,33 @@ pub(crate) fn unsupported_encryption(body: &str) -> Option<String> {
     None
 }
 
+/// The encryption METHOD a media playlist declares — an OBSERVATION, not a verdict.
+///
+/// Deliberately NOT `unsupported_encryption` above: that one answers "must we bail to the rewrite?", so it
+/// returns None for cleartext AND for AES-128 — collapsing exactly the two states an operator most often
+/// needs told apart. Anything reporting encryption for display must use THIS, or every AES-128 channel (which
+/// is most of pluto and dlhd) reads as unencrypted.
+///
+/// Returns the literal `"NONE"` rather than an Option so a consumer can distinguish MEASURED cleartext from
+/// an absent reading — on this panel those mean opposite things.
+///
+/// Last key wins: a KEY applies until the next one replaces it, so what the window ENDS on is the current
+/// state. Only meaningful on a MEDIA playlist; a master carries no `#EXT-X-KEY` and would always answer NONE.
+pub(crate) fn encryption_method(body: &str) -> String {
+    let mut method = "NONE".to_string();
+    for l in body.split('\n') {
+        if let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-KEY:") {
+            let m = split_attrs(attrs)
+                .into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("METHOD"))
+                .map(|(_, v)| v.trim().trim_matches('"').to_ascii_uppercase())
+                .unwrap_or_default();
+            method = if m.is_empty() { "NONE".to_string() } else { m };
+        }
+    }
+    method
+}
+
 /// AES-128-CBC + PKCS7 decrypt one whole HLS segment. None on a bad length / padding ⇒ the caller drops the
 /// segment (all-or-nothing: a valid TS packet stream can't be reconstructed from a partial/garbled decrypt).
 pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
@@ -803,6 +830,13 @@ async fn ts_producer(
     let mut prev_media_seq: i64 = -1;
     let mut pending_bytes: u64 = 0;
     let mut last_flush = Instant::now();
+    // WHY this socket ended, for the close frame. Threaded rather than emitted at each exit because all four
+    // `break 'outer` sites funnel into ONE close emit in the epilogue.
+    //
+    // Deliberately left UNINITIALISED: the loop has no fall-through exit, so every path out is a break that
+    // names its own reason, and the compiler enforces that. A placeholder default would compile even if a
+    // future fifth break forgot to set one — and would then quietly mislabel it.
+    let close_reason;
     let mut first = true;
     // AES-128 key cache — HLS keys are stable across the live window, so fetch once per rotation (keyed by URI),
     // not per segment.
@@ -837,6 +871,7 @@ async fn ts_producer(
                     None => {
                         // Issue-level (≥1): the raw-TS session exhausted its failover chain and ends.
                         log::warn("failover", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
+                        close_reason = "failover_exhausted";
                         break 'outer; // nothing reachable — end the stream
                     }
                 },
@@ -963,6 +998,7 @@ async fn ts_producer(
                                 Some(Ok(b)) => {
                                     pending_bytes += b.len() as u64;
                                     if tx.send(Ok(b)).await.is_err() {
+                                        close_reason = "client_gone";
                                         break 'outer; // client disconnected — tear down (close reported below)
                                     }
                                 }
@@ -1000,6 +1036,7 @@ async fn ts_producer(
                                 Some(plain) => {
                                     pending_bytes += plain.len() as u64;
                                     if tx.send(Ok(Bytes::from(plain))).await.is_err() {
+                                        close_reason = "client_gone";
                                         break 'outer; // client disconnected — tear down
                                     }
                                 }
@@ -1030,6 +1067,7 @@ async fn ts_producer(
 
         if mp.endlist {
             log::info("tsmux", &ctx.rid, || "playlist #EXT-X-ENDLIST — raw-TS stream complete".to_string());
+            close_reason = "endlist";
             break 'outer; // VOD / finished event
         }
         tokio::time::sleep(poll_interval(mp.target_duration)).await;
@@ -1040,7 +1078,7 @@ async fn ts_producer(
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
     log::info("tsmux", &ctx.rid, || format!("raw-TS session close ({stream_id})"));
-    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
 }
 
 #[cfg(test)]
@@ -1174,6 +1212,42 @@ mod tests {
         let p = pick_variant(m, &base()).unwrap();
         assert!(!p.external_audio);
         assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8");
+    }
+
+    #[test]
+    fn encryption_method_separates_cleartext_from_aes128() {
+        // THE WHOLE POINT of this helper: `unsupported_encryption` answers None for BOTH of these, because it
+        // is asking "must we bail?" rather than "what is it?". Anything reporting encryption for display that
+        // reaches for that one instead labels every AES-128 channel unencrypted.
+        let clear = "#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n";
+        let aes = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:6.0,\nseg0.ts\n";
+        assert_eq!(unsupported_encryption(clear), None);
+        assert_eq!(unsupported_encryption(aes), None, "the two are indistinguishable to the bail check");
+        assert_eq!(encryption_method(clear), "NONE");
+        assert_eq!(encryption_method(aes), "AES-128", "…but not to this one");
+    }
+
+    #[test]
+    fn encryption_method_reports_measured_cleartext_not_absence() {
+        // "NONE" is a MEASUREMENT and must be distinguishable downstream from "we have no reading", which is
+        // why this returns a String rather than an Option. An explicit METHOD=NONE and a playlist with no key
+        // at all are both genuinely cleartext.
+        assert_eq!(encryption_method("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6.0,\nseg0.ts\n"), "NONE");
+        assert_eq!(encryption_method("#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n"), "NONE");
+    }
+
+    #[test]
+    fn encryption_method_takes_the_last_key_and_names_unsupported_ones() {
+        // A KEY applies until the next one replaces it, so a window that rotates OFF encryption ends cleartext.
+        let rotated = "#EXTM3U\n\
+                       #EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:6.0,\nseg0.ts\n\
+                       #EXT-X-KEY:METHOD=NONE\n#EXTINF:6.0,\nseg1.ts\n";
+        assert_eq!(encryption_method(rotated), "NONE");
+        // An unsupported method is reported verbatim rather than being flattened into "encrypted" — the panel
+        // showing SAMPLE-AES by name is what explains why the origin declined the channel.
+        let sample = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k.bin\"\n#EXTINF:6.0,\nseg0.ts\n";
+        assert_eq!(encryption_method(sample), "SAMPLE-AES");
+        assert_eq!(unsupported_encryption(sample).as_deref(), Some("SAMPLE-AES"));
     }
 
     #[test]
