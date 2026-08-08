@@ -27,6 +27,7 @@ mod sync;
 mod tsmux;
 mod tsnorm;
 mod tsseg;
+mod tsweave;
 
 use axum::{
     routing::{get, post},

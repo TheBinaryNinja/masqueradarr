@@ -57,10 +57,11 @@ export interface ProxyConfigDoc {
   // paths, no keys, no vendor tags). Default OFF = today's behavior byte-for-byte.
   originEnabled: boolean; // S3 Phase 1: INGEST only (fills the ring; output still the proxy path). Phase 2 adds the renderers.
   originRingMb: number; // per-channel ring cap (MiB). A 3-segment floor still wins over it — the data plane logs an `iop` warn when it does.
-  // S3/CUE Phase 2: what the local origin does with a DETECTED ad break. 'passthrough' republishes the ad
-  // segments (today's behaviour); 'replace' keeps them out of the ring and substitutes looped program from
-  // the ring's own tail, rebased onto a continuous timeline. Origin-only — meaningless without originEnabled.
-  adPolicy: string;
+  // S3/ORIGIN: republish every ingested segment onto ONE timeline with canonical pids, so an upstream that
+  // moves its video pid between ads (pluto: 258 → 256 → 258 in a single pod) cannot make a demuxer register
+  // a second stream and stop rendering the first. A KILL SWITCH, not an opt-in: default ON, because the
+  // un-normalised alternative is the bug it fixes and `originEnabled` is already the opt-in above it.
+  spliceNormalize: boolean;
 }
 
 export const PROXY_CONFIG_DEFAULT_ID = 'app'; // the (Default) singleton row id
@@ -81,7 +82,7 @@ const ProxyConfigSchema = new Schema<ProxyConfigDoc>(
     segmentCacheTtlSec: { type: Number, default: null },
     originEnabled: { type: Boolean, required: true, default: false },
     originRingMb: { type: Number, required: true, default: 25 }, // envDefaults() is the operative seed
-    adPolicy: { type: String, required: true, default: 'passthrough' },
+    spliceNormalize: { type: Boolean, required: true, default: true },
   },
   { versionKey: false },
 );

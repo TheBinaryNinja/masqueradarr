@@ -125,6 +125,23 @@ onBeforeUnmount(() => {
 
 <style scoped>
 /* Deliberate scoped-block exception (precedent: HlsPlayer.vue): liveline sizes to this host, so the
-   height can't be a reusable token class. */
-.liveline-host { width: 100%; height: 250px; min-height: 250px; }
+   height can't be a reusable token class. --liveline-h names it so a consumer can override it on
+   the host element.
+   liveline returns a FRAGMENT — a block value display (`showValue`) followed by the chart
+   container, which is inline-styled `height: 100%`. Against a fixed-height host the pair therefore
+   ALWAYS overflows by the value display's height (~36px), at any host height. liveline draws the
+   time axis in the canvas's bottom 28px, so those labels landed outside the host and were painted
+   over by whatever sat below (Active Streams' opaque sticky stage rail; the Dashboard metric
+   tiles). Pin the container's height instead of letting it claim 100%, and let the host grow to
+   hold both children — canvas geometry is unchanged, the host just stops lying about its size.
+   `!important` is load-bearing: an author !important declaration is the only thing that outranks
+   liveline's inline `height: 100%`. */
+.liveline-host {
+  --liveline-h: 250px;
+  width: 100%;
+  min-height: var(--liveline-h); /* floor before the React root mounts — no height jump */
+}
+/* React-created children carry no scope attribute, hence :deep(). `:last-child` is both the chart
+   container and the pre-data placeholder, which must keep the identical height. */
+.liveline-host > :deep(div:last-child) { height: var(--liveline-h) !important; }
 </style>

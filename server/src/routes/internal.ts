@@ -34,7 +34,7 @@ internalRouter.use((req, res, next) => {
 
 internalRouter.post('/resolve', async (req, res, next) => {
   try {
-    const { source, url, pl, attempt } = req.body ?? {};
+    const { source, url, pl, attempt, reason } = req.body ?? {};
     if (typeof source !== 'string' || !source || typeof url !== 'string' || !url) {
       res.status(400).json({ error: 'source_and_url_required' });
       return;
@@ -43,7 +43,10 @@ internalRouter.post('/resolve', async (req, res, next) => {
     // Older sidecars omit it → undefined (identical to today; also keeps probe-style callers inert).
     const att =
       typeof attempt === 'number' && Number.isInteger(attempt) && attempt >= 0 ? attempt : undefined;
-    const grant = await buildGrant(source, url, typeof pl === 'string' ? pl : undefined, att);
+    // `reason` (optional): why the data plane is retiring the upstream it was serving. Bounded and
+    // string-checked here rather than trusted — it reaches an adapter's memory and a log line.
+    const why = typeof reason === 'string' && reason ? reason.slice(0, 64) : undefined;
+    const grant = await buildGrant(source, url, typeof pl === 'string' ? pl : undefined, att, why);
     if (!grant.ok) {
       res.status(grant.status).json({ error: grant.error });
       return;

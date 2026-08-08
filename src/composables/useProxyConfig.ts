@@ -24,7 +24,7 @@ export interface ProxyConfigState {
   // ingest per channel decrypts + rings segments; the client gets a masqueradarr-authored stream.
   originEnabled: boolean; // LIVE — default OFF (off is byte-identical to today's output)
   originRingMb: number; // LIVE — per-channel ring cap (MiB); a 3-segment floor still wins over it
-  adPolicy: string; // LIVE — 'passthrough' | 'replace'; origin-only, replaces detected ad breaks with looped program
+  spliceNormalize: boolean; // LIVE — default ON; origin-only kill switch for splice/pid normalisation
 }
 
 export type ProxyConfigSaveState = 'idle' | 'saving' | 'saved' | 'error';
@@ -45,7 +45,7 @@ export function proxyConfigDefaults(): ProxyConfigState {
     segmentCacheTtlSec: null,
     originEnabled: false,
     originRingMb: 25,
-    adPolicy: 'passthrough',
+    spliceNormalize: true,
   };
 }
 
@@ -66,7 +66,7 @@ function normalize(raw: unknown): ProxyConfigState {
     streamInfRedux: typeof s.streamInfRedux === 'boolean' ? s.streamInfRedux : false,
     originEnabled: typeof s.originEnabled === 'boolean' ? s.originEnabled : d.originEnabled,
     originRingMb: typeof s.originRingMb === 'number' ? s.originRingMb : d.originRingMb,
-    adPolicy: typeof s.adPolicy === 'string' ? s.adPolicy : d.adPolicy,
+    spliceNormalize: typeof s.spliceNormalize === 'boolean' ? s.spliceNormalize : d.spliceNormalize,
     failoverEnabled: typeof s.failoverEnabled === 'boolean' ? s.failoverEnabled : true,
     failoverOnDefiniteError:
       typeof s.failoverOnDefiniteError === 'boolean' ? s.failoverOnDefiniteError : false,

@@ -28,6 +28,7 @@ use axum::body::Body;
 use axum::http::StatusCode;
 use axum::response::Response;
 use bytes::Bytes;
+use std::collections::HashSet;
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
@@ -87,6 +88,14 @@ pub(crate) struct SegRef {
     /// program, or the source emits no cue tags at all (pluto — see `origin::ad_state`, which falls back to
     /// an adapter-declared URI signature).
     pub cue: Option<CueState>,
+    /// This segment's `#EXT-X-PROGRAM-DATE-TIME` in epoch milliseconds: the wall-clock instant the media
+    /// starts at. Anchored by the tag and advanced by `#EXTINF` for the segments that follow it (RFC 8216
+    /// §4.3.2.6), re-anchored by any later tag. `None` when the playlist carries no PDT at all.
+    ///
+    /// This is the ONLY cross-rendition identity a demuxed pair has. The media sequence looks like one and is
+    /// not: pluto renumbers the two renditions independently across a session renewal, so the same media can
+    /// be sequence 10 on the video lane and 11 on the audio lane. See `origin`'s pairing site.
+    pub pdt_ms: Option<i64>,
 }
 
 /// Which tag family opened the break. Named rather than a bare bool for the same reason `origin::Boundary`
@@ -129,6 +138,9 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
     // to the segment that FOLLOWS them, so they are cleared on use (unlike #EXT-X-KEY, which is sticky).
     let mut pending_duration = 0f64;
     let mut pending_discontinuity = false;
+    // PDT is an ANCHOR, not a per-segment field: the tag dates the segment that follows it, and every later
+    // segment is that instant plus the running sum of `#EXTINF` until a new tag re-anchors it.
+    let mut pdt_cursor: Option<i64> = None;
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
@@ -142,6 +154,10 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
             endlist = true;
         } else if line.starts_with("#EXT-X-DISCONTINUITY") && !line.starts_with("#EXT-X-DISCONTINUITY-SEQUENCE") {
             pending_discontinuity = true; // the PREFIX guard matters: -SEQUENCE is a playlist header, not a splice
+        } else if let Some(v) = line.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
+            // An unparseable date is left as `None` rather than guessed: pairing falls back to the sequence
+            // index, which is what this whole tag exists to replace — a wrong instant would be worse.
+            pdt_cursor = parse_rfc3339_ms(v.trim());
         } else if let Some(v) = line.strip_prefix("#EXTINF:") {
             // "#EXTINF:<duration>[,<title>]" — the title is optional and may itself contain no comma.
             pending_duration = v.split(',').next().unwrap_or("").trim().parse().unwrap_or(0.0);
@@ -179,7 +195,10 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
                 duration: pending_duration,
                 discontinuity: pending_discontinuity,
                 cue: active_cue,
+                pdt_ms: pdt_cursor,
             });
+            // Advance the anchor past the segment just consumed, so the NEXT one dates correctly.
+            pdt_cursor = pdt_cursor.map(|t| t + (pending_duration * 1000.0).round() as i64);
             pending_duration = 0f64;
             pending_discontinuity = false;
         }
@@ -190,6 +209,68 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
         endlist,
         segments,
     }
+}
+
+/// Parse an RFC 3339 / ISO 8601 instant to epoch milliseconds. The read half of `origin::fmt_rfc3339`.
+///
+/// Accepts `YYYY-MM-DDThh:mm:ss[.fff…][Z|±hh:mm]` — the shapes RFC 8216 §4.3.2.6 permits for
+/// `#EXT-X-PROGRAM-DATE-TIME`. Fractional seconds beyond milliseconds are truncated (they are far below any
+/// tolerance that reads this) and a missing zone is treated as UTC. Anything else returns `None`: the caller
+/// falls back to sequence-index pairing rather than acting on a date it had to guess at.
+///
+/// Deliberately hand-rolled — the crate has no date dependency, and adding one for a fixed-shape 20-odd byte
+/// string would be the larger change.
+fn parse_rfc3339_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || (b[10] | 0x20) != b't' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> { s.get(r)?.parse::<i64>().ok() };
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // Fractional seconds, then the zone. Both optional.
+    let mut rest = &s[19..];
+    let mut millis = 0i64;
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits: String = frac.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        // Left-align to exactly 3 places: ".5" is 500 ms, ".0115" truncates to 11 ms.
+        let ms: String = digits.chars().chain(std::iter::repeat('0')).take(3).collect();
+        millis = ms.parse().ok()?;
+        rest = &rest[1 + digits.len()..];
+    }
+    let zone_ms: i64 = match rest.as_bytes().first() {
+        None => 0,
+        Some(&z) if z == b'Z' || z == b'z' => 0,
+        Some(&sign) if sign == b'+' || sign == b'-' => {
+            // ±hh:mm or ±hhmm
+            let z = &rest[1..];
+            let (zh, zm) = match z.find(':') {
+                Some(i) => (z.get(..i)?.parse::<i64>().ok()?, z.get(i + 1..i + 3)?.parse::<i64>().ok()?),
+                None => (z.get(..2)?.parse::<i64>().ok()?, z.get(2..4)?.parse::<i64>().ok()?),
+            };
+            let off = (zh * 60 + zm) * 60_000;
+            if sign == b'+' {
+                -off
+            } else {
+                off
+            }
+        }
+        _ => return None,
+    };
+    // days_from_civil (Howard Hinnant): proleptic Gregorian, no lookup tables, valid across the whole range.
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let doy = (153 * (mo + if mo > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3_600 + mi * 60 + sec) * 1_000) + millis + zone_ms)
 }
 
 /// Split an HLS attribute list `KEY=VALUE,KEY=VALUE` into (key, value) pairs, treating commas INSIDE a
@@ -306,6 +387,33 @@ pub(crate) fn unsupported_encryption(body: &str) -> Option<String> {
     None
 }
 
+/// The encryption METHOD a media playlist declares — an OBSERVATION, not a verdict.
+///
+/// Deliberately NOT `unsupported_encryption` above: that one answers "must we bail to the rewrite?", so it
+/// returns None for cleartext AND for AES-128 — collapsing exactly the two states an operator most often
+/// needs told apart. Anything reporting encryption for display must use THIS, or every AES-128 channel (which
+/// is most of pluto and dlhd) reads as unencrypted.
+///
+/// Returns the literal `"NONE"` rather than an Option so a consumer can distinguish MEASURED cleartext from
+/// an absent reading — on this panel those mean opposite things.
+///
+/// Last key wins: a KEY applies until the next one replaces it, so what the window ENDS on is the current
+/// state. Only meaningful on a MEDIA playlist; a master carries no `#EXT-X-KEY` and would always answer NONE.
+pub(crate) fn encryption_method(body: &str) -> String {
+    let mut method = "NONE".to_string();
+    for l in body.split('\n') {
+        if let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-KEY:") {
+            let m = split_attrs(attrs)
+                .into_iter()
+                .find(|(k, _)| k.eq_ignore_ascii_case("METHOD"))
+                .map(|(_, v)| v.trim().trim_matches('"').to_ascii_uppercase())
+                .unwrap_or_default();
+            method = if m.is_empty() { "NONE".to_string() } else { m };
+        }
+    }
+    method
+}
+
 /// AES-128-CBC + PKCS7 decrypt one whole HLS segment. None on a bad length / padding ⇒ the caller drops the
 /// segment (all-or-nothing: a valid TS packet stream can't be reconstructed from a partial/garbled decrypt).
 pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
@@ -318,28 +426,237 @@ pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Op
         .ok()
 }
 
-/// The highest-BANDWIDTH variant's URI (the STREAM-INF URI is the next non-comment line), resolved absolute.
-pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<Url> {
-    let mut best_bw: i64 = -1;
-    let mut best_uri: Option<String> = None;
-    let mut pending_bw: Option<i64> = None;
+/// One `#EXT-X-MEDIA:TYPE=AUDIO` rendition that carries its OWN `URI=` — audio living in a separate playlist
+/// instead of inside the variant.
+///
+/// The origin follows one of these ALONGSIDE the video variant and rings the pair (`origin::ingest`), so the
+/// labelling attributes are kept, not just the URL: our authored `#EXT-X-MEDIA` has to describe the track the
+/// same way upstream did or a client loses the language it was showing.
+#[derive(Clone, Debug)]
+pub(crate) struct AudioRendition {
+    /// The `GROUP-ID` a variant's `AUDIO=` attribute points at.
+    pub group: String,
+    /// The rendition playlist, resolved absolute against the master.
+    pub url: Url,
+    pub name: String,
+    /// `LANGUAGE`, empty when the master omits it.
+    pub language: String,
+    pub default: bool,
+    pub autoselect: bool,
+    /// `CHARACTERISTICS` marks this an AUDIO DESCRIPTION track — a narrator describing the picture for
+    /// blind viewers, not the programme's own audio. It must never be auto-selected as the main track: a
+    /// viewer who did not ask for it hears commentary over (or instead of) the dialogue, which reads as
+    /// "the audio is wrong" rather than as an accessibility feature.
+    pub describes_video: bool,
+}
+
+/// Every `#EXT-X-MEDIA:TYPE=AUDIO` rendition in a master that carries its own `URI=`, resolved absolute.
+///
+/// Per RFC 8216 §4.3.4.1 an `#EXT-X-MEDIA` WITHOUT a `URI` means that rendition is already present in the
+/// referencing variant's own playlist — so only the URI-bearing ones are actually demuxed, and a bare
+/// "does this master mention EXT-X-MEDIA" test would false-positive on every muxed stream that merely
+/// labels its audio track.
+fn demuxed_audio_renditions(body: &str, base: &Url) -> Vec<AudioRendition> {
+    let mut out = Vec::new();
+    for l in body.split('\n') {
+        let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
+        let attrs = split_attrs(attrs);
+        let val = |k: &str| {
+            attrs
+                .iter()
+                .find(|(a, _)| a.eq_ignore_ascii_case(k))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        };
+        if !val("TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
+            continue;
+        }
+        // No URI ⇒ muxed into the variant ⇒ following the variant alone still yields audio.
+        let Some(uri) = val("URI").filter(|u| !u.is_empty()) else { continue };
+        let (Some(group), Ok(url)) = (val("GROUP-ID"), base.join(&uri)) else { continue };
+        let yes = |k: &str| val(k).is_some_and(|v| v.eq_ignore_ascii_case("YES"));
+        out.push(AudioRendition {
+            group,
+            url,
+            name: val("NAME").unwrap_or_default(),
+            language: val("LANGUAGE").unwrap_or_default(),
+            default: yes("DEFAULT"),
+            autoselect: yes("AUTOSELECT"),
+            // A comma-separated list; `describes-video` is the one that matters here.
+            describes_video: val("CHARACTERISTICS")
+                .is_some_and(|c| c.to_ascii_lowercase().contains("public.accessibility.describes-video")),
+        });
+    }
+    out
+}
+
+/// Audio groups that contain at least one rendition WITHOUT a `URI` — i.e. groups whose audio is already
+/// inside the referencing variant.
+///
+/// The per-rendition rule (`demuxed_audio_renditions` skips URI-less entries) is right on its own but says
+/// nothing about the GROUP, and a group can hold both kinds. Live pluto does exactly that:
+///
+/// ```text
+/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original",DEFAULT=YES,CHANNELS="2"       ← no URI
+/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",AUTOSELECT=YES,URI="…",
+///              CHARACTERISTICS="public.accessibility.describes-video"
+/// ```
+///
+/// The programme audio is the URI-less `DEFAULT` one — muxed into the variant — and the only URI-bearing
+/// member is an audio-description track. Judging the group by its URI-bearing members alone made this look
+/// demuxed, so the origin ringed the video against the DESCRIPTION and the viewer got a narrator instead of
+/// the programme. RFC 8216 §4.3.4.1 is unambiguous that a URI-less rendition is present in the variant, so
+/// one such member is proof the variant is self-sufficient.
+fn muxed_audio_groups(body: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for l in body.split('\n') {
+        let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
+        let attrs = split_attrs(attrs);
+        let val = |k: &str| {
+            attrs
+                .iter()
+                .find(|(a, _)| a.eq_ignore_ascii_case(k))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        };
+        if !val("TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
+            continue;
+        }
+        if val("URI").is_some_and(|u| !u.is_empty()) {
+            continue; // a demuxed member says nothing about the group
+        }
+        if let Some(g) = val("GROUP-ID") {
+            out.insert(g);
+        }
+    }
+    out
+}
+
+/// Which rendition of a group to follow: `DEFAULT=YES` wins, else `AUTOSELECT=YES`, else the first the master
+/// listed. The same order a player would apply with no user preference expressed.
+///
+/// AUDIO DESCRIPTION tracks are held back from all three rungs. A player only selects one when the viewer
+/// asks for it; auto-selecting it here would serve commentary as if it were the programme. It stays as a last
+/// resort rather than being excluded outright, so a group offering nothing else still yields audio instead of
+/// silently declining a channel that used to play.
+fn pick_rendition(renditions: &[AudioRendition], group: &str) -> Option<AudioRendition> {
+    let pick = |ad: bool| {
+        let in_group = || renditions.iter().filter(|r| r.group == group && r.describes_video == ad);
+        in_group()
+            .find(|r| r.default)
+            .or_else(|| in_group().find(|r| r.autoselect))
+            .or_else(|| in_group().next())
+            .cloned()
+    };
+    pick(false).or_else(|| pick(true))
+}
+
+/// The variant the byte-paths will follow.
+pub(crate) struct VariantPick {
+    pub url: Url,
+    /// True when this variant's audio lives in a separate `#EXT-X-MEDIA` rendition playlist — i.e. following
+    /// this playlist alone yields VIDEO ONLY.
+    pub external_audio: bool,
+    /// The rendition to follow ALONGSIDE `url` when `external_audio`. `None` whenever the audio is muxed in.
+    ///
+    /// The raw-TS paths still DECLINE on `external_audio` — they concatenate one playlist and have no muxer.
+    /// The ORIGIN uses this instead: it rings the pair and republishes both, which is the only way a demuxed
+    /// source gets `tsnorm`'s pid remap at all (see `origin::ingest`).
+    pub audio: Option<AudioRendition>,
+    /// The picked variant's `BANDWIDTH` — the one `#EXT-X-STREAM-INF` attribute RFC 8216 makes REQUIRED, so
+    /// the origin needs it to author a master over the pair. 0 when the upstream omitted it.
+    pub bandwidth: i64,
+    /// The rest of the PICKED line's decode attributes, for telemetry.
+    ///
+    /// These must come off the same line as `bandwidth` or the reported tuple describes two different
+    /// renditions: `manifest::extract_media` keeps the highest-BANDWIDTH variant, while this function
+    /// deliberately prefers a LOWER-bandwidth muxed one when the top variant would cost the audio track. On
+    /// such a ladder the two disagree, and a frame mixing them would advertise a resolution/codec this path
+    /// never actually carries. `None` when the upstream omitted the attribute.
+    pub resolution: Option<String>,
+    pub codecs: Option<String>,
+    pub frame_rate: Option<String>,
+}
+
+/// The decode attributes of one `#EXT-X-STREAM-INF` line, carried through the pick so the winner's — and only
+/// the winner's — reach `VariantPick`.
+#[derive(Default, Clone)]
+struct VariantAttrs {
+    resolution: Option<String>,
+    codecs: Option<String>,
+    frame_rate: Option<String>,
+}
+
+/// Pick the variant to follow (the STREAM-INF URI is the next non-comment line), resolved absolute.
+///
+/// PREFERS the highest-BANDWIDTH variant whose audio is muxed IN — no `AUDIO=` attribute, or an `AUDIO=`
+/// group whose renditions carry no URI of their own. THIS path (the passthrough concatenator) follows exactly
+/// ONE playlist and has no muxer that could interleave a second elementary stream, so a video-only variant is
+/// served SILENT. Bandwidth is the wrong thing to maximise when the top rendition costs the audio track.
+///
+/// Only when EVERY variant defers its audio does this report `external_audio = true`, and then `audio` names
+/// the rendition to follow beside it. A passthrough raw-TS caller falls back to the HLS rewrite on that; the
+/// origin rings the pair, and its raw-TS renderer interleaves it (`tsweave`) rather than declining.
+pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
+    let renditions = demuxed_audio_renditions(body, base);
+    // A group holding even ONE URI-less rendition has its audio inside the variant, so the variant is
+    // playable on its own and must not be treated as demuxed — see `muxed_audio_groups`.
+    let muxed = muxed_audio_groups(body);
+    let demuxed: HashSet<String> =
+        renditions.iter().map(|r| r.group.clone()).filter(|g| !muxed.contains(g)).collect();
+    let mut best: Option<(i64, String, VariantAttrs)> = None; // audio-safe variants only
+    let mut best_any: Option<(i64, String, Option<String>, VariantAttrs)> = None; // any variant + its demuxed group
+    let mut pending: Option<(i64, Option<String>, VariantAttrs)> = None; // awaiting its URI line
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
-            pending_bw = Some(parse_bandwidth(rest));
+            // Keeping the GROUP-ID (rather than collapsing to a bool) is what lets the origin find the
+            // rendition afterwards. A group with no URI-bearing member is NOT demuxed — filtering here keeps
+            // the old `external` semantics exactly.
+            let parsed = split_attrs(rest);
+            let attr = |name: &str| {
+                parsed
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.trim().trim_matches('"').to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            let group = attr("AUDIO").filter(|g| demuxed.contains(g));
+            let attrs = VariantAttrs {
+                resolution: attr("RESOLUTION"),
+                codecs: attr("CODECS"),
+                frame_rate: attr("FRAME-RATE"),
+            };
+            pending = Some((parse_bandwidth(rest), group, attrs));
         } else if !line.starts_with('#') {
-            if let Some(bw) = pending_bw.take() {
-                if bw >= best_bw {
-                    best_bw = bw;
-                    best_uri = Some(line.to_string());
+            if let Some((bw, group, attrs)) = pending.take() {
+                if group.is_none() && best.as_ref().is_none_or(|(b, _, _)| bw >= *b) {
+                    best = Some((bw, line.to_string(), attrs.clone()));
+                }
+                if best_any.as_ref().is_none_or(|(b, _, _, _)| bw >= *b) {
+                    best_any = Some((bw, line.to_string(), group, attrs));
                 }
             }
         }
     }
-    best_uri.and_then(|u| base.join(&u).ok())
+    let (uri, external_audio, group, bandwidth, attrs) = match best {
+        Some((bw, u, a)) => (u, false, None, bw, a),
+        None => {
+            let (bw, u, g, a) = best_any?;
+            (u, true, g, bw, a)
+        }
+    };
+    let audio = group.as_deref().and_then(|g| pick_rendition(&renditions, g));
+    base.join(&uri).ok().map(|url| VariantPick {
+        url,
+        external_audio,
+        audio,
+        bandwidth: bandwidth.max(0),
+        resolution: attrs.resolution,
+        codecs: attrs.codecs,
+        frame_rate: attrs.frame_rate,
+    })
 }
 
 fn parse_bandwidth(attrs: &str) -> i64 {
@@ -369,8 +686,20 @@ pub async fn try_ts_response(
 ) -> Option<Response> {
     // Resolve to the MEDIA playlist to follow (peek the top variant for a master), then guard TS-only.
     let (media_url, media_body) = if is_master(&first_body) {
-        let vurl = pick_variant(&first_body, &first_url)?;
-        let resp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
+        let pick = pick_variant(&first_body, &first_url)?;
+        // Every variant defers its audio to a separate #EXT-X-MEDIA rendition, so following any one of them
+        // would concatenate VIDEO ONLY. There is no muxer here to interleave the second playlist, so bail to
+        // the HLS rewrite (which passes the rendition through) rather than serve a silent socket.
+        if pick.external_audio {
+            log::warn("tsmux", &ctx.rid, || {
+                format!(
+                    "raw-TS not eligible for {}/{}: audio is a separate #EXT-X-MEDIA rendition — falling back to HLS rewrite",
+                    ctx.source, ctx.entry
+                )
+            });
+            return None;
+        }
+        let resp = fetch_with_retry(&ctx.client, pick.url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !resp.status().is_success() {
@@ -454,8 +783,19 @@ async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
     let furl = resp.url().clone();
     let body = resp.text().await.ok()?;
     if is_master(&body) {
-        let vurl = pick_variant(&body, &furl)?;
-        let vresp = fetch_with_retry(&ctx.client, vurl.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
+        let pick = pick_variant(&body, &furl)?;
+        // Mid-session the fallback door is already shut (the client holds a video/mp2t socket), so ending the
+        // session is the honest outcome — a silent one would look like working playback.
+        if pick.external_audio {
+            log::warn("tsmux", &ctx.rid, || {
+                format!(
+                    "{}/{}: re-resolved upstream defers audio to a separate #EXT-X-MEDIA rendition — cannot continue as raw TS",
+                    ctx.source, ctx.entry
+                )
+            });
+            return None;
+        }
+        let vresp = fetch_with_retry(&ctx.client, pick.url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
@@ -490,6 +830,13 @@ async fn ts_producer(
     let mut prev_media_seq: i64 = -1;
     let mut pending_bytes: u64 = 0;
     let mut last_flush = Instant::now();
+    // WHY this socket ended, for the close frame. Threaded rather than emitted at each exit because all four
+    // `break 'outer` sites funnel into ONE close emit in the epilogue.
+    //
+    // Deliberately left UNINITIALISED: the loop has no fall-through exit, so every path out is a break that
+    // names its own reason, and the compiler enforces that. A placeholder default would compile even if a
+    // future fifth break forgot to set one — and would then quietly mislabel it.
+    let close_reason;
     let mut first = true;
     // AES-128 key cache — HLS keys are stable across the live window, so fetch once per rotation (keyed by URI),
     // not per segment.
@@ -524,6 +871,7 @@ async fn ts_producer(
                     None => {
                         // Issue-level (≥1): the raw-TS session exhausted its failover chain and ends.
                         log::warn("failover", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
+                        close_reason = "failover_exhausted";
                         break 'outer; // nothing reachable — end the stream
                     }
                 },
@@ -650,6 +998,7 @@ async fn ts_producer(
                                 Some(Ok(b)) => {
                                     pending_bytes += b.len() as u64;
                                     if tx.send(Ok(b)).await.is_err() {
+                                        close_reason = "client_gone";
                                         break 'outer; // client disconnected — tear down (close reported below)
                                     }
                                 }
@@ -687,6 +1036,7 @@ async fn ts_producer(
                                 Some(plain) => {
                                     pending_bytes += plain.len() as u64;
                                     if tx.send(Ok(Bytes::from(plain))).await.is_err() {
+                                        close_reason = "client_gone";
                                         break 'outer; // client disconnected — tear down
                                     }
                                 }
@@ -717,6 +1067,7 @@ async fn ts_producer(
 
         if mp.endlist {
             log::info("tsmux", &ctx.rid, || "playlist #EXT-X-ENDLIST — raw-TS stream complete".to_string());
+            close_reason = "endlist";
             break 'outer; // VOD / finished event
         }
         tokio::time::sleep(poll_interval(mp.target_duration)).await;
@@ -727,7 +1078,7 @@ async fn ts_producer(
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
     log::info("tsmux", &ctx.rid, || format!("raw-TS session close ({stream_id})"));
-    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
 }
 
 #[cfg(test)]
@@ -832,7 +1183,197 @@ mod tests {
     fn master_detection_and_highest_bandwidth_variant() {
         let m = "#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=800000\nlo.m3u8\n#EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS=\"avc1,mp4a\"\nhi.m3u8\n";
         assert!(is_master(m));
-        assert_eq!(pick_variant(m, &base()).unwrap().as_str(), "https://cdn.example.com/live/hi.m3u8");
+        let p = pick_variant(m, &base()).unwrap();
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/hi.m3u8");
+        assert!(!p.external_audio, "no #EXT-X-MEDIA at all ⇒ whatever audio exists is muxed in");
+    }
+
+    // ── demuxed audio (the "video plays, no sound" class) ────────────────────────────────────────────────
+
+    #[test]
+    fn a_uri_bearing_audio_rendition_marks_the_variant_video_only() {
+        // The shape that made channels silent: the only variant defers its audio to a second playlist, so
+        // concatenating it yields video with no sound. Nothing here can mux the two back together.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES,URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS=\"avc1.4d401f,mp4a.40.2\",AUDIO=\"aac\"\nv.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(p.external_audio, "every variant defers its audio ⇒ the caller must fall back");
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8", "…but still names a variant");
+    }
+
+    #[test]
+    fn an_audio_rendition_without_a_uri_is_muxed_in() {
+        // RFC 8216 §4.3.4.1: no URI ⇒ the rendition is already inside the referencing variant. Treating this
+        // as demuxed would fall back on perfectly good muxed streams that merely LABEL their audio track.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,AUDIO=\"aac\"\nv.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8");
+    }
+
+    #[test]
+    fn encryption_method_separates_cleartext_from_aes128() {
+        // THE WHOLE POINT of this helper: `unsupported_encryption` answers None for BOTH of these, because it
+        // is asking "must we bail?" rather than "what is it?". Anything reporting encryption for display that
+        // reaches for that one instead labels every AES-128 channel unencrypted.
+        let clear = "#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n";
+        let aes = "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:6.0,\nseg0.ts\n";
+        assert_eq!(unsupported_encryption(clear), None);
+        assert_eq!(unsupported_encryption(aes), None, "the two are indistinguishable to the bail check");
+        assert_eq!(encryption_method(clear), "NONE");
+        assert_eq!(encryption_method(aes), "AES-128", "…but not to this one");
+    }
+
+    #[test]
+    fn encryption_method_reports_measured_cleartext_not_absence() {
+        // "NONE" is a MEASUREMENT and must be distinguishable downstream from "we have no reading", which is
+        // why this returns a String rather than an Option. An explicit METHOD=NONE and a playlist with no key
+        // at all are both genuinely cleartext.
+        assert_eq!(encryption_method("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6.0,\nseg0.ts\n"), "NONE");
+        assert_eq!(encryption_method("#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n"), "NONE");
+    }
+
+    #[test]
+    fn encryption_method_takes_the_last_key_and_names_unsupported_ones() {
+        // A KEY applies until the next one replaces it, so a window that rotates OFF encryption ends cleartext.
+        let rotated = "#EXTM3U\n\
+                       #EXT-X-KEY:METHOD=AES-128,URI=\"k.bin\"\n#EXTINF:6.0,\nseg0.ts\n\
+                       #EXT-X-KEY:METHOD=NONE\n#EXTINF:6.0,\nseg1.ts\n";
+        assert_eq!(encryption_method(rotated), "NONE");
+        // An unsupported method is reported verbatim rather than being flattened into "encrypted" — the panel
+        // showing SAMPLE-AES by name is what explains why the origin declined the channel.
+        let sample = "#EXTM3U\n#EXT-X-KEY:METHOD=SAMPLE-AES,URI=\"k.bin\"\n#EXTINF:6.0,\nseg0.ts\n";
+        assert_eq!(encryption_method(sample), "SAMPLE-AES");
+        assert_eq!(unsupported_encryption(sample).as_deref(), Some("SAMPLE-AES"));
+    }
+
+    #[test]
+    fn a_muxed_variant_wins_over_a_higher_bandwidth_demuxed_one() {
+        // Bandwidth is the wrong thing to maximise when the top rendition costs the audio track: prefer the
+        // variant that still carries sound, even though it is the smaller one.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=6000000,AUDIO=\"aac\"\nhi-videoonly.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=800000\nlo-muxed.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/lo-muxed.m3u8");
+        assert!(p.audio.is_none(), "a muxed pick has no rendition to follow beside it");
+    }
+
+    #[test]
+    fn a_demuxed_master_names_the_rendition_the_origin_should_pair_with() {
+        // pluto's real shape: every variant defers, and the group offers a DEFAULT track plus an
+        // audio-description one. The origin follows the pair, so it needs the URL and the labelling.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",AUTOSELECT=YES,URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English [Original]\",AUTOSELECT=YES,DEFAULT=YES,URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=1042180,AUDIO=\"audio\"\n360p/playlist.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3321280,AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(p.external_audio, "every variant defers its audio");
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/1080p/playlist.m3u8", "highest bandwidth");
+        assert_eq!(p.bandwidth, 3_321_280, "carried so the origin can author a spec-legal master");
+        let a = p.audio.expect("the rendition to pair with");
+        // DEFAULT=YES wins even though the audio-description track was listed FIRST and is also AUTOSELECT.
+        assert_eq!(a.url.as_str(), "https://cdn.example.com/live/audio/en.m3u8");
+        assert_eq!(a.name, "English [Original]");
+        assert_eq!(a.language, "en");
+    }
+
+    /// THE REGRESSION, from the live Comedy Central master: the group's programme audio is the URI-LESS
+    /// `DEFAULT` member (muxed into the variant) and the only URI-bearing member is an audio-description
+    /// track. Judging the group by its URI-bearing members alone made this look demuxed, so the origin ringed
+    /// the video against the DESCRIPTION and the viewer heard a narrator over the programme.
+    #[test]
+    fn a_group_mixing_a_muxed_default_with_an_audio_description_is_not_demuxed() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",DEFAULT=NO,FORCED=NO,URI=\"subs/en.m3u8\",LANGUAGE=\"en\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"Original\",AUTOSELECT=YES,DEFAULT=YES,CHANNELS=\"2\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",AUTOSELECT=YES,CHANNELS=\"2\",URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1042180,SUBTITLES=\"subs\",AUDIO=\"audio\"\n360p/playlist.m3u8\n\
+                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=3321280,SUBTITLES=\"subs\",AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio, "the URI-less DEFAULT proves the variant already carries the audio");
+        assert!(p.audio.is_none(), "so there is no rendition to pair — and no audio-description to mis-serve");
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/1080p/playlist.m3u8", "highest bandwidth");
+    }
+
+    #[test]
+    fn an_audio_description_track_never_wins_the_rendition_pick() {
+        // A genuinely demuxed group (no URI-less member) offering description ALONGSIDE programme audio: the
+        // description is AUTOSELECT and listed first, but must still lose to the plain track.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"Described\",AUTOSELECT=YES,URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",AUTOSELECT=YES,URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3321280,AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(p.external_audio, "no URI-less member, so this one really is demuxed");
+        let a = p.audio.expect("a rendition to pair with");
+        assert_eq!(a.url.as_str(), "https://cdn.example.com/live/audio/en.m3u8", "the plain track wins");
+        assert!(!a.describes_video);
+
+        // …even when the description is the one flagged DEFAULT — a viewer who did not ask for commentary
+        // must not be given it.
+        let m2 = m.replace("NAME=\"Described\",AUTOSELECT=YES", "NAME=\"Described\",DEFAULT=YES,AUTOSELECT=YES");
+        let a2 = pick_variant(&m2, &base()).unwrap().audio.expect("a rendition");
+        assert_eq!(a2.name, "English", "a DEFAULT audio-description still loses to programme audio");
+    }
+
+    #[test]
+    fn a_description_only_group_is_still_served_rather_than_declined() {
+        // Last resort: if description is all a demuxed group offers, pair with it — silence would be worse,
+        // and declining would turn a channel that used to play into a fallback.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"Described\",AUTOSELECT=YES,URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3321280,AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let a = pick_variant(m, &base()).unwrap().audio.expect("the only rendition there is");
+        assert!(a.describes_video);
+        assert_eq!(a.name, "Described");
+    }
+
+    #[test]
+    fn a_group_whose_renditions_carry_no_uri_yields_no_pairing_target() {
+        // RFC 8216 §4.3.4.1: a URI-less rendition is already inside the variant. The variant is muxed, so
+        // there is nothing to pair — and nothing to decline over either.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"aac\"\nmuxed.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert!(p.audio.is_none());
+    }
+
+    #[test]
+    fn a_rendition_uri_containing_a_comma_does_not_split_the_attr_list() {
+        // split_attrs must own this: a naive comma split would read GROUP-ID off a URI fragment and the
+        // variant would look muxed, i.e. silently back to the original bug.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"a1\",NAME=\"en\",URI=\"audio.m3u8?k=1,2\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,CODECS=\"avc1,mp4a\",AUDIO=\"a1\"\nv.m3u8\n";
+        assert!(pick_variant(m, &base()).unwrap().external_audio);
+    }
+
+    #[test]
+    fn an_unrelated_audio_group_does_not_condemn_a_variant() {
+        // The demuxed group belongs to another variant; this one names no AUDIO group at all.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"alt\",NAME=\"es\",URI=\"audio/es.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000\nv.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/v.m3u8");
+    }
+
+    #[test]
+    fn a_subtitle_rendition_is_not_audio() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"en\",URI=\"subs/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3000000,SUBTITLES=\"subs\"\nv.m3u8\n";
+        assert!(!pick_variant(m, &base()).unwrap().external_audio);
     }
 
     #[test]
@@ -855,6 +1396,55 @@ mod tests {
         );
         assert_eq!(unsupported_encryption("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6,\ns.ts\n"), None);
         assert_eq!(unsupported_encryption("#EXTM3U\n#EXTINF:6,\ns.ts\n"), None);
+    }
+
+    #[test]
+    fn rfc3339_parses_the_shapes_a_playlist_can_carry() {
+        // The epoch itself, then the pluto shape (millis + Z), then the offset forms.
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.000Z"), Some(1_786_183_180_000));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.011Z"), Some(1_786_183_180_011));
+        // Fractions are left-aligned to milliseconds, not read as an integer.
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.5Z"), Some(1_786_183_180_500));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.0115Z"), Some(1_786_183_180_011));
+        // A zone is applied, not ignored — an hour east is an hour EARLIER in absolute terms.
+        let z = parse_rfc3339_ms("2026-08-08T10:59:40.000+01:00").unwrap();
+        assert_eq!(z, 1_786_183_180_000, "+01:00 resolves to the same instant as the Z form");
+        assert_eq!(parse_rfc3339_ms("2026-08-08T08:59:40.000-01:00"), Some(1_786_183_180_000));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T10:59:40.000+0100"), Some(1_786_183_180_000));
+        // A missing zone is UTC (RFC 8216 permits it); leap day is a real date.
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40"), Some(1_786_183_180_000));
+        assert!(parse_rfc3339_ms("2024-02-29T00:00:00Z").is_some());
+        // Anything we cannot read is None, never a guess — the caller falls back to the sequence index.
+        for bad in ["", "not-a-date", "2026-08-08 09:59:40Z", "2026-13-08T09:59:40Z", "2026-08-08T09:59:40.Z"] {
+            assert_eq!(parse_rfc3339_ms(bad), None, "{bad:?} must not parse");
+        }
+    }
+
+    #[test]
+    fn program_date_time_anchors_and_advances_by_extinf() {
+        // PDT dates the segment that FOLLOWS it and the rest are derived by adding #EXTINF, so one tag at the
+        // head has to date the whole window — that is what makes it a cross-rendition key.
+        let m = parse_media_playlist(
+            "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-PROGRAM-DATE-TIME:2026-08-08T09:59:40.000Z\n\
+             #EXTINF:5.0,\na.ts\n#EXTINF:5.0,\nb.ts\n#EXTINF:4.992,\nc.ts\n",
+        );
+        let base = 1_786_183_180_000i64;
+        assert_eq!(m.segments[0].pdt_ms, Some(base));
+        assert_eq!(m.segments[1].pdt_ms, Some(base + 5_000));
+        assert_eq!(m.segments[2].pdt_ms, Some(base + 10_000));
+
+        // A later tag RE-ANCHORS rather than being ignored — that is how a source corrects drift mid-window.
+        let m2 = parse_media_playlist(
+            "#EXTM3U\n#EXT-X-PROGRAM-DATE-TIME:2026-08-08T09:59:40.000Z\n#EXTINF:5.0,\na.ts\n\
+             #EXT-X-PROGRAM-DATE-TIME:2026-08-08T10:00:00.000Z\n#EXTINF:5.0,\nb.ts\n",
+        );
+        assert_eq!(m2.segments[0].pdt_ms, Some(base));
+        assert_eq!(m2.segments[1].pdt_ms, Some(base + 20_000), "the second tag wins over the derived time");
+
+        // A playlist with no PDT leaves every segment undated, which is what selects the index fallback.
+        let m3 = parse_media_playlist("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:5,\na.ts\n");
+        assert_eq!(m3.segments[0].pdt_ms, None);
     }
 
     #[test]

@@ -190,22 +190,24 @@ watch(
         </div>
       </div>
 
-      <!-- S3/CUE. Directly under Local origin because it is meaningless without it: ad breaks are detected
-           by the ingest, and only the ring can supply replacement content. -->
+      <!-- Splice normalisation. Sits with the origin knobs because it only acts on the ingest. Presented as
+           something you TURN OFF, not on, since it is the shipped default and off is the older behaviour. -->
       <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
-          <div class="field-lbl">Ad breaks</div>
-          <Segmented
-            :value="state.adPolicy"
-            :disabled="!state.originEnabled"
-            @change="(v) => (state.adPolicy = v)"
-            :options="[{ value: 'passthrough', label: 'Play them' }, { value: 'replace', label: 'Replace' }]"
-          />
+          <div class="field-lbl">Smooth ad transitions</div>
+          <div class="row" style="align-items: center; gap: 10px;">
+            <Toggle
+              :on="state.spliceNormalize"
+              :disabled="!state.originEnabled"
+              @change="(v) => (state.spliceNormalize = v)"
+            />
+            <span class="muted" style="font-size: var(--fs-xs);">{{ state.spliceNormalize ? 'On' : 'Off' }}</span>
+          </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
-            What to do when the engine detects an ad break. <b>Play them</b> passes the break through as the
-            provider sent it. <b>Replace</b> keeps the ad segments out entirely and loops recent programming
-            in their place — so <b>the viewer sees filler, not the show</b>, but no ads and no mid-break
-            quality switch. Only breaks the provider actually signals can be replaced.
+            Republishes the channel as one continuous stream, so a provider that switches encoder between ads
+            cannot stall the player. Some providers change the stream's internal layout at every ad boundary,
+            which many players cannot follow — they freeze until the layout happens to change back. Leave this
+            <b>on</b>; turn it off only to check whether it is involved in a playback problem.
           </div>
         </div>
       </div>

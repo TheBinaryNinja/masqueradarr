@@ -88,6 +88,13 @@ export interface ResolveOptions {
    * instead of spending the whole budget re-trying providers we already know are dead.
    */
   advance?: boolean;
+  /**
+   * WHY the serving player is being retired, when `advance` is set — recorded against the burn so the memo
+   * (and the status route reading it) can tell "this provider isn't carrying the channel" apart from "this
+   * provider serves video the decoder can't use". The latter is the one that looks healthy in every
+   * byte-level metric; see `origin.rs`'s S3/UND detector, which is what sends `undecodable-video`.
+   */
+  advanceReason?: string;
 }
 
 /**
@@ -411,10 +418,13 @@ export async function resolveStreamUrl(
   // rather than leave the channel with nothing to try.
   const strict = opts?.advance === true;
   if (strict) {
-    const burned = burnCurrent(id);
-    logTrace(
+    // The data plane names the cause when it has one (S3/UND sends `undecodable-video`); anything else is
+    // the generic play-time failure. Recorded against the player so the burn list says WHY, not just THAT.
+    const why = opts?.advanceReason || 'play-time-failure';
+    const burned = burnCurrent(id, why);
+    logMilestone(
       'dlhd:stream',
-      `channel ${id}: advancing past ${burned === null ? 'the current player' : `Player ${burned}`}`,
+      `channel ${id}: retiring ${burned === null ? 'the current player' : `Player ${burned}`} (${why}) and walking the alternates`,
     );
   }
   const failures: string[] = [];

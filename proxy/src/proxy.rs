@@ -117,6 +117,18 @@ pub async fn serve_stream(
             None => return text(400, "bad request: malformed encoded url"),
         };
         let rid = log::rid(source, &entry);
+        // A DEMUXED origin also publishes its two authored media playlists here, for the same reason its
+        // segments live here: answered from the ring, no resolve, no Node round-trip, and never seen by
+        // buildGrant's stored-entry gate.
+        let lane = match file {
+            "v.m3u8" => Some(crate::origin::Lane::Video),
+            "a.m3u8" => Some(crate::origin::Lane::Audio),
+            _ => None,
+        };
+        if let Some(lane) = lane {
+            let (token, pl, _) = parse_query(query);
+            return crate::origin::serve_playlist(&state, mount_path, source, &entry, lane, token.as_deref(), pl.as_deref(), &id, &rid).await;
+        }
         return crate::origin::serve_segment(&state, source, &entry, file, &id, &rid).await;
     }
     // HOP if the segment after the source is the `h/` marker; else ENTRY.
@@ -259,26 +271,39 @@ pub async fn serve_stream(
     // BOTH output shapes are rendered from the SAME ring — that is what makes `outputFormat` a rendering
     // choice rather than a second pipeline. Raw TS stays external-mount-only (an in-app player is always HLS),
     // exactly as on the passthrough path.
+    //
+    // Either renderer may DECLINE (`None`) when the upstream's shape cannot be ringed — fMP4, undecryptable
+    // segments, or audio carried in a separate #EXT-X-MEDIA rendition that the ring has no muxer to fold in.
+    // Falling through to the ordinary rewrite below is then the correct answer, not an error: that path
+    // passes renditions through for the player to fetch, so the channel plays WITH sound where the ring could
+    // only have served it silent. (Before this seam a decline meant an empty ring, a `READY_TIMEOUT` wait and
+    // a 503 — a dead channel.)
     if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
         let want_ts = policy.output_format.read_ok().as_str() == "ts" && mount_path == "/api/ext/v1";
         let ident = Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() };
         if want_ts {
             log::info("proxy", &rid, || "originEnabled + outputFormat=ts — serving raw TS from the ring".to_string());
-            return crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await;
+            if let Some(r) = crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await {
+                return r;
+            }
+        } else {
+            log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
+            if let Some(r) = crate::origin::serve_entry(
+                &state,
+                &policy,
+                mount_path,
+                source,
+                &stream_entry,
+                token.as_deref(),
+                pl.as_deref(),
+                &ident,
+                &rid,
+            )
+            .await
+            {
+                return r;
+            }
         }
-        log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
-        return crate::origin::serve_entry(
-            &state,
-            &policy,
-            mount_path,
-            source,
-            &stream_entry,
-            token.as_deref(),
-            pl.as_deref(),
-            &ident,
-            &rid,
-        )
-        .await;
     }
 
     // SSRF gate. A HOP is a client-supplied child URL, so it must be IN the observational allowlist. An ENTRY
@@ -473,8 +498,10 @@ pub async fn serve_stream(
             return raw(200, "application/octet-stream", raw_body.to_vec());
         }
         let text_body = String::from_utf8_lossy(&raw_body).into_owned();
-        // (S3 Phase 3 retired the ingest-warming hook that used to sit here: BOTH origin shapes now return
-        // from the ring above, so nothing below this point ever runs with origin enabled.)
+        // (S3 Phase 3 retired the ingest-warming hook that used to sit here.) With origin enabled BOTH output
+        // shapes normally return from the ring above — including a demuxed source's raw TS, which RMX now
+        // weaves rather than declining. What still reaches here is the `Ready::Ineligible` fallback: a shape
+        // the ring cannot hold at all (fMP4, `SAMPLE-AES`), where the rewrite below is the correct answer.
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
@@ -542,10 +569,25 @@ pub async fn serve_stream(
                     media.container.as_deref().unwrap_or("-"),
                 )
             });
+            // The upstream's SHAPE, but ONLY on the entry poll. This branch serves the entry AND every child
+            // hop, and a hop's body is by definition the variant/media playlist — so an ungated shape would
+            // report `hls-master` once and then be overwritten with `hls-media` on the very next child poll
+            // and stay wrong for the life of the channel (noteMedia merges on non-null, and this producer
+            // sends no `replace` flag). The failure is silent and permanent, so the gate is the feature.
+            let body_is_master = crate::tsmux::is_master(&text_body);
+            let shape = if is_hop { None } else { Some(if body_is_master { "hls-master" } else { "hls-media" }) };
+            // ENCRYPTION is gated on the exact INVERSE condition to shape, and the asymmetry is the point:
+            // shape is a property of the ENTRY, while `#EXT-X-KEY` only ever appears in a MEDIA playlist. Ask
+            // a master and it answers "NONE" for every AES channel sitting behind one. So on a master-entry
+            // channel the encryption answer legitimately arrives on a later HOP poll — which works because
+            // noteMedia merges on non-null, leaving the null we send for the master alone.
+            let encryption = if body_is_master { None } else { Some(crate::tsmux::encryption_method(&text_body)) };
             state.report(serde_json::json!({
                 "kind": "media", "source": source, "entryUrl": stream_entry.as_str(),
                 "resolution": media.resolution, "codecs": media.codecs,
                 "frameRate": media.frame_rate, "container": media.container, "bandwidth": media.bandwidth,
+                "upstreamShape": shape,
+                "encryption": encryption,
             }));
         }
         // Telemetry: a served manifest poll is the viewer heartbeat (also carries the manifest byte count) AND
@@ -665,7 +707,7 @@ pub(crate) async fn failover_walk(
         tried += 1;
         // Level-3 lineage: one line per hop of the walk (attempt cursor + how many we've tried this walk).
         log::trace("failover", rid, || format!("attempt {attempt} (tried {tried}/{MAX_FAILOVER_ATTEMPTS})"));
-        match state.resolve_at(source, stream_entry, pl, attempt).await {
+        match state.resolve_at(source, stream_entry, pl, attempt, None).await {
             Ok((p, target)) => {
                 // The grant carries the authoritative failoverEnabled — a cold pre-walk policy cache may
                 // have defaulted it on. Never SERVE a child the operator disabled failover to; a disabled

@@ -3,7 +3,7 @@ import { resolveProxyConfig } from '../proxyconfig/resolve.js';
 import type { RuntimeProxyConfig } from '../proxyconfig/translate.js';
 import { PlaylistChannel, type PlaylistChannelDoc } from '../models/PlaylistChannel.js';
 import type { ResolveStreamOptions } from '../sources/types.js';
-import { noteFailoverServing } from '../sources/core/streamTelemetry.js';
+import { noteFailoverServing, noteUpstreamHost, noteRequestedConfig } from '../sources/core/streamTelemetry.js';
 import { logger } from '../sources/core/logger.js';
 import { logMilestone, logTrace } from '../logs/tier.js';
 
@@ -118,6 +118,7 @@ export async function buildGrant(
   url: string,
   pl?: string,
   attempt?: number,
+  advanceReason?: string,
 ): Promise<ResolveGrant | ResolveError> {
   const adapter = getSource(source);
   if (!adapter) return { ok: false, status: 404, error: 'unknown_source' };
@@ -168,6 +169,7 @@ export async function buildGrant(
       if (adapter.playerSelectable) {
         opts.player = await channelPlayerPref(source, url, pl);
         opts.advance = advance;
+        if (advance && advanceReason) opts.advanceReason = advanceReason;
       }
       const resolved = await adapter.resolveStream(url, opts);
       target = resolved.masterUrl;
@@ -234,6 +236,24 @@ export async function buildGrant(
     // An explicit attempt 0 is the data plane (re)trying the channel itself — any prior "something else is
     // serving" attribution is stale the moment this grant is built (a later failed fetch re-sets it).
     noteFailoverServing(source, url, null);
+  }
+  // Attribution + the requested-vs-served pair, recorded where they are RESOLVED. Both carry the same
+  // `attempt !== undefined` gate as the failover block above, and for the same reason: probeAll resolves
+  // every Active channel on a schedule with no `attempt` and no `pl`, so ungated it would (a) overwrite a
+  // live stream's host attribution and (b) — worse — record the DEFAULT proxy config over a Custom
+  // playlist's, making the panel report `originEnabled: false` for a channel demonstrably running a ring.
+  if (attempt !== undefined) {
+    try {
+      noteUpstreamHost(source, url, new URL(target).host);
+    } catch {
+      // Entries are not guaranteed to be URLs — the synthetic sources accept arbitrary stored values.
+    }
+    noteRequestedConfig(source, url, {
+      outputFormat: proxyConfig.outputFormat,
+      originEnabled: proxyConfig.originEnabled,
+      originRingMb: proxyConfig.originRingMb,
+      spliceNormalize: proxyConfig.spliceNormalize,
+    });
   }
 
   // P1 sources (dulo/dlhd) are all public-CDN + private-IP-rejecting. A future LAN adapter (hdhomerun/
@@ -367,6 +387,20 @@ async function buildFailoverGrant(
   // actually serves so Active Streams can show "failover → <child>" (see statsHub DisplayStream.failover).
   const failover = { attempt, total: children.length, candidateId: cand.id, candidateName: cand.tvg_name };
   noteFailoverServing(source, url, failover);
+  // Same parent identity, and no `attempt` gate needed here — this function is only reachable from the
+  // `attempt !== undefined && attempt > altAttempts` branch, and its own signature types `attempt` as a
+  // required number, so probeAll can never reach this path.
+  try {
+    noteUpstreamHost(source, url, new URL(target).host);
+  } catch {
+    // As above: a stored entry is not guaranteed to be a URL.
+  }
+  noteRequestedConfig(source, url, {
+    outputFormat: proxyConfig.outputFormat,
+    originEnabled: proxyConfig.originEnabled,
+    originRingMb: proxyConfig.originRingMb,
+    spliceNormalize: proxyConfig.spliceNormalize,
+  });
   // Milestone (≥2): a backup is now serving in place of the parent — the headline failover event.
   logMilestone(
     'failover',

@@ -71,7 +71,7 @@ let regionsLoaded = false;
 
 const selectedRegion = () => regions.value.find((r) => r.href === selectedHref.value) || null;
 
-// ── Jesmann tab state (a guided picker over the hardcoded epg.jesmann.com catalog) ─────────
+// ── Jesmann tab state (a guided picker over the hardcoded epg.guru catalog) ─────────
 // The user picks a Region + Download type; the pair resolves to one concrete .xml URL that is created as a
 // 'jesmann'-kind XMLTV source. It re-fetches exactly like a 'remote url' source (the backend treats both as
 // re-fetchable XMLTV URLs), but carries its own 'jesmann' source type so 'remote url' stays reserved for the
@@ -80,7 +80,7 @@ const jesmannRegionId = ref('');
 const jesmannTypeId = ref('');
 
 // Live size-probe state. A region's variant URLs are HEAD-probed on the SERVER (the SPA can't reach
-// epg.jesmann.com directly — CORS + the outbound DNS override lives server-side) so the picker can list every
+// epg.guru directly — CORS + the outbound DNS override lives server-side) so the picker can list every
 // download with its real size and grey out ones that aren't available. Keyed by the absolute variant URL.
 const jesmannProbing = ref(false);
 const jesmannProbeError = ref('');
@@ -285,13 +285,13 @@ function jesmannErrorMessage(code: unknown, message?: unknown): string {
   const detail = typeof message === 'string' && message ? ` (${message})` : '';
   switch (code) {
     case 'xmltv_unreachable':
-      return `Could not reach epg.jesmann.com${detail} — the guide may be temporarily unavailable, or check the server's DNS / network egress.`;
+      return `Could not reach epg.guru${detail} — the guide may be temporarily unavailable, or check the server's DNS / network egress.`;
     case 'xmltv_http':
-      return `epg.jesmann.com rejected the request${detail || ' with an HTTP error'}.`;
+      return `epg.guru rejected the request${detail || ' with an HTTP error'}.`;
     case 'xmltv_tls':
-      return `TLS/certificate error contacting epg.jesmann.com${detail}.`;
+      return `TLS/certificate error contacting epg.guru${detail}.`;
     case 'xmltv_timeout':
-      return `Timed out contacting epg.jesmann.com${detail} — it may be blocked or unreachable.`;
+      return `Timed out contacting epg.guru${detail} — it may be blocked or unreachable.`;
     case 'xmltv_parse':
       return `The guide downloaded but is not valid XMLTV${detail}.`;
     case 'xmltv_db':
@@ -747,7 +747,7 @@ async function add() {
 
           <div class="muted" style="font-size: var(--fs-xs); display: flex; gap: 6px; align-items: flex-start;">
             <Icon name="epg" :size="13" />
-            <span>Guides from <strong>epg.jesmann.com</strong> are for personal use only.</span>
+            <span>Guides from <strong>epg.guru</strong> are for personal use only.</span>
           </div>
         </div>
 

@@ -478,6 +478,88 @@ fn parameter_sets(es: &[u8], stream_type: u8) -> Option<u64> {
     (!found.is_empty()).then(|| fnv1a(&found))
 }
 
+// ── S3/UND: is this upstream structurally usable? ────────────────────────────────────────────────────────
+//
+// Every OTHER health signal in the engine answers "are bytes arriving?". A provider can serve flawless
+// HTTP 200s that no decoder can turn into a picture, and nothing above notices — serve counts measure
+// fetching, not rendering. This layer is the narrow exception: a read-only verdict on the MEDIA, computed
+// from what `scan_profile` already extracts.
+//
+// THE BAR FOR ADDING A REASON, learned the hard way. The first cut struck on "no video parameter sets"
+// alone, which is also true of an audio-only program — and dlhd channel 521 draws exactly that shape from
+// one of its providers. A WORKING channel was declined off the origin path. So every reason here must have:
+//
+//   1. a confirmed live TRUE positive, reproduced against the provider DIRECT (proxy out of the path), and
+//   2. a test pinning the innocent shape it must NOT fire on.
+//
+// A reason that cannot show both does not belong here. Hopping off a working provider is a visible
+// regression for every viewer of that channel; missing a broken one costs one channel until an operator
+// looks. That asymmetry is the whole design constraint.
+
+/// Why an upstream looks structurally unusable. Named rather than a bool so the `iop` log and the burn
+/// record both say WHICH fault, and so a future reason cannot silently inherit this one's evidence.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Suspect {
+    /// The bytes are not an MPEG transport stream at all — an error page, an image, a truncated body.
+    /// Nothing downstream can use them, and today they would be ringed and served verbatim.
+    NotTransportStream,
+    /// The program DECLARES video, but its elementary stream carries no decoder parameter sets (H.264
+    /// SPS/PPS, HEVC VPS/SPS/PPS) — so a decoder has nothing to configure itself from and emits no frames.
+    /// Live true positive: dlhd ch 648 via Player 4 (`non-existing PPS 0 referenced` / `no frame!`).
+    NoVideoParameterSets,
+}
+
+impl Suspect {
+    /// Stable slug sent to the resolve seam as `reason`, and recorded against the burnt provider.
+    pub(crate) fn slug(self) -> &'static str {
+        match self {
+            Suspect::NotTransportStream => "not-transport-stream",
+            Suspect::NoVideoParameterSets => "undecodable-video",
+        }
+    }
+
+    /// Operator-facing phrasing for the `iop` line.
+    pub(crate) fn describe(self) -> &'static str {
+        match self {
+            Suspect::NotTransportStream => "segments are not an MPEG transport stream",
+            Suspect::NoVideoParameterSets => "declares video but serves no decoder parameter sets",
+        }
+    }
+}
+
+/// How many packet-strides of 0x47 prove a buffer really is a transport stream. `find_sync` corroborates
+/// with ONE follow-up, which is right for locating a boundary mid-stream but too weak to judge a whole
+/// segment: random payload produces a coincidental pair often enough. Five in a row does not.
+const TS_SYNC_PROOF: usize = 5;
+
+/// Enough bytes to judge at all. Below this a short or truncated body is UNVERIFIABLE, not broken — the
+/// ingest's own retry is the right response to a partial fetch, not retiring the provider.
+const TS_MIN_JUDGEABLE: usize = TS_SYNC_PROOF * PKT * 2;
+
+/// Whether `bytes` is an MPEG transport stream, judged on SYNC BYTES rather than anything about the URL.
+/// That distinction is load-bearing: dlhd and pluto both serve valid TS from `.png`-named objects on
+/// object storage, so an extension test would condemn perfectly good media.
+fn looks_like_transport_stream(bytes: &[u8]) -> bool {
+    let Some(start) = find_sync(bytes) else { return false };
+    (0..TS_SYNC_PROOF).all(|k| bytes.get(start + k * PKT).is_some_and(|&b| b == SYNC))
+}
+
+/// Judge ONE decrypted segment. `None` ⇒ nothing to hold against this upstream — either it is healthy, or
+/// it cannot be verified (no PSI, too short), which must never be read as a fault.
+pub(crate) fn inspect_segment(bytes: &[u8]) -> Option<Suspect> {
+    if bytes.len() < TS_MIN_JUDGEABLE {
+        return None; // unverifiable
+    }
+    if !looks_like_transport_stream(bytes) {
+        return Some(Suspect::NotTransportStream);
+    }
+    let p = scan_profile(bytes)?; // no PMT ⇒ unverifiable, NOT a fault
+    // BOTH halves, always: video must be DECLARED before its missing parameter sets mean anything. Without
+    // this an audio-only program reads as undecodable video — the false positive that cost a live channel.
+    let declares_video = p.streams.iter().any(|&(_, t)| is_video_stream_type(t));
+    (declares_video && p.video_params.is_none()).then_some(Suspect::NoVideoParameterSets)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,6 +637,152 @@ mod tests {
     const VPID: u16 = 0x100;
     const PMTPID: u16 = 0x1000;
     const SEC: u64 = 90_000; // one second of PCR base
+
+    /// An AUDIO-ONLY program — the shape a dlhd provider hands out when it serves `tracks-a1/mono.m3u8`
+    /// instead of `tracks-v1a1`. Legitimately has no video pid, so no parameter sets exist to find.
+    fn audio_only_pmt(pmt_pid: u16, apid: u16) -> Vec<u8> {
+        let mut sec = vec![
+            0x02, 0xB0, 0x12, 0x00, 0x01, 0xC1, 0x00, 0x00,
+            (0xE0 | (apid >> 8) as u8), (apid & 0xFF) as u8, // PCR on the audio pid
+            0xF0, 0x00,
+            0x0F, (0xE0 | (apid >> 8) as u8), (apid & 0xFF) as u8, 0xF0, 0x00, // AAC
+            0, 0, 0, 0,
+        ];
+        sec.insert(0, 0x00);
+        pkt(pmt_pid, true, false, None, &sec)
+    }
+
+    /// The S3/UND rule needs BOTH halves, and this is the half that was missing: a program with NO video
+    /// declared must not read as "undecodable video". It cost a live false positive — dlhd channel 521 drew
+    /// an audio-only master, struck out three times, and the whole channel was declined off the origin path.
+    #[test]
+    fn an_audio_only_program_is_not_evidence_of_undecodable_video() {
+        let mut s = Vec::new();
+        s.extend(pat(PMTPID));
+        s.extend(audio_only_pmt(PMTPID, 0x101));
+        let p = scan_profile(&s).expect("a PMT is present, so the profile parses");
+        assert!(p.video_params.is_none(), "no video pid ⇒ nothing to extract parameter sets from");
+        assert!(
+            !p.streams.iter().any(|&(_, t)| is_video_stream_type(t)),
+            "…and crucially NO video is declared, which is what must veto the strike"
+        );
+    }
+
+    /// The other half, unchanged: video IS declared and carries no parameter sets — the real fault
+    /// (dlhd Boomerang via Player 4, `non-existing PPS 0 referenced` / `no frame!`).
+    #[test]
+    fn a_declared_video_with_no_parameter_sets_is_the_undecodable_shape() {
+        let mut s = Vec::new();
+        s.extend(pat(PMTPID));
+        s.extend(pmt(PMTPID, VPID));
+        // A video PES with slice data but NO SPS/PPS — exactly what a decoder cannot configure itself from.
+        let mut payload = vec![0x00, 0x00, 0x01, 0xE0, 0x00, 0x00, 0x80, 0x00, 0x00];
+        payload.extend_from_slice(&[0x00, 0x00, 0x01, 0x61, 0x9A, 0x21, 0x0C]); // non-IDR slice only
+        s.extend(pkt(VPID, true, true, None, &payload));
+        let p = scan_profile(&s).expect("profile parses");
+        assert!(p.video_params.is_none(), "no SPS/PPS anywhere in the video ES");
+        assert!(
+            p.streams.iter().any(|&(_, t)| is_video_stream_type(t)),
+            "video IS declared — both halves true, so this is a genuine strike"
+        );
+    }
+
+    /// …and a healthy segment must satisfy neither half, so it can never strike.
+    #[test]
+    fn a_healthy_segment_carries_parameter_sets_and_never_strikes() {
+        let p = scan_profile(&segment_with(VPID, 0x1F)).expect("profile parses");
+        assert!(p.video_params.is_some(), "SPS+PPS found ⇒ no strike regardless of the declaration");
+    }
+
+    // ── S3/UND: the verdict layer ────────────────────────────────────────────────────────────────────────
+
+    /// Pad a segment out past `TS_MIN_JUDGEABLE` with null packets so `inspect_segment` will judge it at all.
+    fn judgeable(mut s: Vec<u8>) -> Vec<u8> {
+        while s.len() < TS_MIN_JUDGEABLE + PKT {
+            s.extend(pkt(0x1FFF, false, false, None, &[0xFF; 8]));
+        }
+        s
+    }
+
+    #[test]
+    fn a_healthy_segment_is_not_suspect() {
+        assert_eq!(inspect_segment(&judgeable(segment_with(VPID, 0x1F))), None);
+    }
+
+    /// THE FALSE POSITIVE, pinned. An audio-only program (dlhd ch 521's `tracks-a1` draw) has no video pid
+    /// and therefore no parameter sets — innocent, and must never be read as undecodable video.
+    #[test]
+    fn an_audio_only_program_is_never_suspect() {
+        let mut s = Vec::new();
+        s.extend(pat(PMTPID));
+        s.extend(audio_only_pmt(PMTPID, 0x101));
+        assert_eq!(inspect_segment(&judgeable(s)), None, "no video declared ⇒ no verdict, ever");
+    }
+
+    /// The true positive: video declared, no parameter sets anywhere in its ES.
+    #[test]
+    fn declared_video_with_no_parameter_sets_is_suspect() {
+        let mut s = Vec::new();
+        s.extend(pat(PMTPID));
+        s.extend(pmt(PMTPID, VPID));
+        let mut payload = vec![0x00, 0x00, 0x01, 0xE0, 0x00, 0x00, 0x80, 0x00, 0x00];
+        payload.extend_from_slice(&[0x00, 0x00, 0x01, 0x61, 0x9A, 0x21, 0x0C]); // non-IDR slice only
+        s.extend(pkt(VPID, true, true, None, &payload));
+        assert_eq!(inspect_segment(&judgeable(s)), Some(Suspect::NoVideoParameterSets));
+    }
+
+    #[test]
+    fn a_body_that_is_not_a_transport_stream_is_suspect() {
+        // What a provider actually serves when it breaks: an error page where media should be.
+        let html = b"<!DOCTYPE html><html><head><title>403 Forbidden</title></head><body>\
+                     <h1>Forbidden</h1><p>Access denied.</p></body></html>";
+        let mut body = Vec::new();
+        while body.len() < TS_MIN_JUDGEABLE + 512 {
+            body.extend_from_slice(html);
+        }
+        assert_eq!(inspect_segment(&body), Some(Suspect::NotTransportStream));
+    }
+
+    /// Sync bytes, never the file name. dlhd and pluto both serve valid TS from `.png`-named objects on
+    /// object storage — judging by extension would condemn perfectly good media.
+    #[test]
+    fn valid_ts_is_judged_by_sync_bytes_not_by_looking_like_media() {
+        let s = judgeable(segment_with(VPID, 0x1F));
+        assert!(looks_like_transport_stream(&s));
+        assert_eq!(inspect_segment(&s), None, "content decides, and this content is a transport stream");
+    }
+
+    #[test]
+    fn a_short_body_is_unverifiable_rather_than_broken() {
+        // A truncated fetch must not retire a provider — the ingest's own retry is the right response.
+        assert_eq!(inspect_segment(b"\x47\x40\x00\x10short"), None);
+        assert_eq!(inspect_segment(&[]), None);
+    }
+
+    #[test]
+    fn a_stray_sync_byte_run_does_not_pass_for_a_transport_stream() {
+        // `find_sync` corroborates with ONE follow-up, which is too weak to judge a whole body; the verdict
+        // layer demands TS_SYNC_PROOF strides so random payload cannot fake it.
+        let mut body = vec![0u8; TS_MIN_JUDGEABLE + PKT];
+        body[10] = SYNC;
+        body[10 + PKT] = SYNC; // exactly the pair find_sync accepts…
+        assert!(find_sync(&body).is_some(), "…so the locator is satisfied");
+        assert!(!looks_like_transport_stream(&body), "…but the verdict layer is not");
+    }
+
+    #[test]
+    fn every_suspect_reason_has_a_distinct_slug_and_phrase() {
+        // The slug reaches the burn record and the phrase reaches the operator; a collision would make two
+        // different faults indistinguishable in both places.
+        let all = [Suspect::NotTransportStream, Suspect::NoVideoParameterSets];
+        for (i, a) in all.iter().enumerate() {
+            for b in &all[i + 1..] {
+                assert_ne!(a.slug(), b.slug());
+                assert_ne!(a.describe(), b.describe());
+            }
+            assert!(!a.slug().is_empty() && !a.describe().is_empty());
+        }
+    }
 
     #[test]
     fn parses_pat_and_pmt_to_the_video_pid() {

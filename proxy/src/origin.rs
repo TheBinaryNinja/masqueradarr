@@ -41,8 +41,8 @@ use crate::proxy::{build_headers, fetch_with_retry, is_private_host, MAX_UPSTREA
 use crate::state::{AppState, SourcePolicy};
 use crate::sync::{LockExt, RwExt};
 use crate::tsmux::{
-    decrypt_aes128_cbc, has_map, is_master, parse_media_playlist, pick_variant, poll_interval, unsupported_encryption,
-    CueKind, SegRef,
+    decrypt_aes128_cbc, encryption_method, has_map, is_master, parse_media_playlist, pick_variant, poll_interval,
+    unsupported_encryption, CueKind, SegRef,
 };
 
 /// Per-channel ring cap, MiB. Shipped default; the operator raises it per playlist via `originRingMb`.
@@ -73,25 +73,41 @@ const MAX_EMPTY_POLLS: u32 = 5;
 /// own retry loop and never passes through the handler's `failover_walk`.
 const MEDIA_FAIL_ESCALATE: u32 = 2;
 
+/// S3/UND — how many consecutive segments must carry the SAME structural fault before the upstream is
+/// retired. The faults themselves are named and judged by `tsseg::inspect_segment`.
+///
+/// The failure this exists for is invisible to every other health signal. A dlhd player provider can serve
+/// HTTP 200 for every playlist and every segment — ring filling, manifests rendering, no timeouts — while its
+/// H.264 carries no SPS/PPS at all, so the DECODER produces nothing and the viewer sees a black screen. Serve
+/// counts measure fetching, not rendering, so "all segments served" cannot tell the two apart. Measured live
+/// on dlhd channel 648 (Boomerang) via Player 4: `non-existing PPS 0 referenced` / `no frame!`, reproduced
+/// identically against the provider DIRECT, with masqueradarr entirely out of the path.
+///
+/// THREE consecutive, not one: a single segment may legitimately lack parameter sets (a mid-GOP cut, a
+/// provider that repeats them only every few seconds). Hopping off a working provider is worse than the
+/// disease, so the bar is deliberately high.
+const UNDECODABLE_STRIKES: u32 = 3;
+
+/// …and only within this many segments of a fresh resolve. A provider that has been serving decodable video
+/// for minutes and then stutters is a different problem from one that never had parameter sets at all; this
+/// check answers only the second question, at the moment a new upstream is adopted.
+const UNDECODABLE_PROBE_SEGMENTS: u32 = 6;
+
+/// How many consecutive pairs the INTERLEAVED raw-TS producer may decline before it ends the socket.
+///
+/// One decline is a shape `tsweave` could not carry — skip the pair, warn, carry on. Three in a row means the
+/// stream shape has genuinely moved out from under the published program, and a socket that stays open while
+/// emitting nothing looks like working playback rather than a fault. Ending it lets the client reconnect,
+/// which re-dispatches: an origin that has actually become muxed then lands on `ts_ring_producer`.
+const MAX_PAIR_DECLINES: u32 = 3;
+
 /// How many recently-ingested upstream segment URIs the ingest remembers, for recognising the window a
 /// RENEWED provider session re-offers (see `dedupe_by_uri`). About one live window plus slack — small enough
 /// that a source recycling segment names would have to wrap within it to cause a false skip.
 const RECENT_URI_MEMORY: usize = 64;
 
-/// How many trailing PROGRAM segments an ad break loops as filler — an upper bound, not a requirement:
-/// `program_tail` returns whatever the ring actually holds, and `MIN_SEGMENTS` guarantees at least 3.
-///
-/// Sized for the LOOP, not the ring. A pluto pod runs ~2 min against 5 s segments, so a 3-segment pool would
-/// repeat ~8 times where six repeats ~4 — the same material either way, but half as obviously a loop. Six is
-/// ~30 s, still comfortably inside a default 25 MiB window (measured ~16 segments), and the pool is held by
-/// `Arc` for the length of the break, so this is also its memory cost.
-const FILLER_SEGMENTS: usize = 6;
-
 /// One ingested segment, ready to serve verbatim. `bytes` is DECRYPTED — ciphertext never enters the ring, so
 /// a renderer never has to know whether the upstream was encrypted.
-// Phase 1 WRITES every field; Phase 2's renderers READ them (seq → #EXT-X-MEDIA-SEQUENCE, duration → #EXTINF,
-// discontinuity → #EXT-X-DISCONTINUITY, pdt → #EXT-X-PROGRAM-DATE-TIME). Drop this allow when they land.
-#[allow(dead_code)]
 #[derive(Clone, Debug)]
 pub struct Segment {
     /// OUR sequence, monotonic from ingest start. Deliberately unrelated to the upstream's media sequence:
@@ -104,11 +120,19 @@ pub struct Segment {
     pub discontinuity: bool,
     /// Ingest wall-clock → the renderer's `#EXT-X-PROGRAM-DATE-TIME`.
     pub pdt: SystemTime,
-    /// This segment is ad-break content (`ad_signal` fired). Phase 1 only WRITES this — nothing is served
-    /// differently — so the operator can see breaks in `iop:cue` before anything acts on them.
-    pub ad: bool,
-    /// Which break, for grouping a pod's segments in logs/telemetry. 0 ⇒ not in a break.
-    pub break_id: u64,
+    /// The paired audio-rendition segment, on a DEMUXED origin only. `None` on a muxed one (the audio is
+    /// already inside `bytes`) and on every raw-TS cut.
+    ///
+    /// Held on the SAME ring entry rather than in a second deque on purpose: it makes the two published
+    /// windows identical by construction (same `#EXT-X-MEDIA-SEQUENCE`, same `#EXT-X-DISCONTINUITY-SEQUENCE`,
+    /// same PDT anchor), makes eviction inherently paired, and means a renderer can never serve half a pair.
+    ///
+    /// `duration` above is published for BOTH lanes. The rendition's own `#EXTINF` differs slightly — AAC
+    /// quantises to ~21.3 ms (1024 samples @ 48 kHz), so pluto states `5.013 / 4.992` against a flat video
+    /// `5` — but the difference OSCILLATES rather than accumulating (~2 ms over 25 s). Publishing one ladder
+    /// keeps the two playlists' computed timelines identical on paper; the media's own PTS, held together by
+    /// the shared offset, is what actually governs sync.
+    pub audio: Option<Bytes>,
 }
 
 /// Why a segment is a splice point. Named rather than a bare bool so the `iop` log says WHICH signal fired.
@@ -127,12 +151,6 @@ pub enum Boundary {
     Tag,
     /// The media sequence skipped — we missed segments (a slow poll, or the window slid past us).
     SequenceGap,
-    /// Program resumed after an ad break we REPLACED with filler. The filler was rebased onto our timeline,
-    /// so the returning upstream media does not continue it — that jump is real and is signalled. It is the
-    /// one seam replacement cannot remove without normalising every segment forever, and unlike the ad
-    /// boundary it replaces (720p ⇄ 1080p on pluto) both sides are the same encode, so a player resyncs its
-    /// clock rather than reconfiguring its decoder.
-    AdReturn,
     /// The provider ended OUR playlist (`#EXT-X-ENDLIST`) and we re-resolved onto a new session on the same
     /// channel. Whether the bytes either side are contiguous is unknowable from here — a new session may
     /// resume where the old one stopped or jump — so the join is SIGNALLED rather than assumed. This is the
@@ -242,12 +260,10 @@ struct AdBreak {
     seconds: f64,
     /// What the opening cue tag announced, when it announced anything (0.0 otherwise).
     announced: f64,
-    /// Whether the decoder configuration actually changed at this edge. THE measurement Phase 2 is gated on:
-    /// if breaks reliably change it, no timestamp rewrite can ever hide the seam and only substitution can.
+    /// Whether the decoder configuration actually changed at this edge — i.e. whether the break really did
+    /// force the decoder to reconfigure, or the seam was only a timeline one. This is the measurement that
+    /// justifies splice normalisation (`tsnorm::Splicer`); it is reported, never acted on.
     profile_changed: bool,
-    /// How many of this break's segments were SUBSTITUTED rather than served. Less than `segments` means the
-    /// rewriter declined some — filler is best-effort by design, and the gap between the two is what says so.
-    replaced: u32,
 }
 
 /// A channel's live ring plus its ingest bookkeeping. Shared as `Arc<Origin>`: the ingest task holds one and
@@ -280,6 +296,58 @@ pub struct Origin {
     evicted_segments: AtomicU64,
     /// RFC 8216 `EXT-X-DISCONTINUITY-SEQUENCE` — see `disc_seq()`.
     disc_seq: AtomicU64,
+    /// Why this upstream can NEVER be ringed, if so — a shape mismatch (fMP4, undecryptable segments, audio
+    /// the ring cannot carry), not a transient failure.
+    ///
+    /// Load-bearing for the FALLBACK, not just for logging. Without it a structural mismatch was
+    /// indistinguishable from "still warming up", so the renderers burned `READY_TIMEOUT` and then answered
+    /// 503 — a dead channel — while the ingest retried an upstream that was never going to fit. Set once by
+    /// `resolve_media`; read by `wait_ready`, which is what lets `serve_entry`/`serve_ts` decline and hand the
+    /// request back to the ordinary rewrite path.
+    ineligible: RwLock<Option<String>>,
+    /// Set once the ingest learns this upstream is DEMUXED — the audio rendition it rings beside the video.
+    ///
+    /// Read by Side-2 to pick the renderer: the HLS one authors an `#EXT-X-MEDIA` from it (so the client still
+    /// sees the track labelled as upstream labelled it), and `serve_ts` routes to the INTERLEAVING producer
+    /// (`ts_ring_pair_producer` → `tsweave`), which folds the pair into one program on the way out.
+    demuxed_audio: RwLock<Option<DemuxedMaster>>,
+    /// S3/UND — the last structural fault that retired an upstream on this channel, and how many upstreams
+    /// have been retired for one. Reported on the `iop` health frame so a channel quietly hopping providers
+    /// is visible in Active Streams, not only in the log. That invisibility is what let a false positive run
+    /// unnoticed until a viewer reported the symptom.
+    last_suspect: RwLock<Option<String>>,
+    suspect_retires: AtomicU32,
+    /// What this upstream turned out to BE — `"ts"` (a bare transport-stream socket we segment ourselves),
+    /// `"hls-master"` (a master playlist we picked a variant from) or `"hls-media"` (a media playlist we
+    /// follow directly). Written by `resolve_media`, which is the only place that knows.
+    ///
+    /// It has to live on `Origin` rather than ride the return value: `MediaSource` is consumed by the ingest
+    /// loop's `match` and never stored, while `report_iop` can see nothing but `ctx.origin`. Re-written on
+    /// every resolve, so a failover onto a differently-shaped upstream corrects it rather than going stale.
+    upstream_shape: RwLock<Option<String>>,
+    /// The encryption METHOD this upstream declares — `"NONE"`, `"AES-128"`, or whatever else it names.
+    ///
+    /// Reported for DISPLAY, which is why it comes from `encryption_method` and not `unsupported_encryption`:
+    /// the latter cannot tell cleartext from AES-128, and AES-128 is what most of these sources use. Set on
+    /// every resolve BEFORE the eligibility guards, so a channel the origin declines still reports what it
+    /// found rather than reporting nothing.
+    encryption: RwLock<Option<String>>,
+}
+
+/// What a DEMUXED origin needs in order to author its own master over the pair.
+#[derive(Clone)]
+pub struct DemuxedMaster {
+    pub audio: crate::tsmux::AudioRendition,
+    /// The picked variant's `BANDWIDTH` — RFC 8216 makes it the one required `#EXT-X-STREAM-INF` attribute.
+    pub bandwidth: i64,
+}
+
+/// Which rendition of a demuxed origin a request addresses. `Video` is also the whole of a muxed origin, so
+/// it is the shape every existing URL keeps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lane {
+    Video,
+    Audio,
 }
 
 impl Origin {
@@ -299,7 +367,36 @@ impl Origin {
             ingested_bytes: AtomicU64::new(0),
             evicted_segments: AtomicU64::new(0),
             disc_seq: AtomicU64::new(0),
+            ineligible: RwLock::new(None),
+            demuxed_audio: RwLock::new(None),
+            last_suspect: RwLock::new(None),
+            suspect_retires: AtomicU32::new(0),
+            upstream_shape: RwLock::new(None),
+            encryption: RwLock::new(None),
         }
+    }
+
+    /// The audio rendition this origin rings beside the video, if it is a demuxed one.
+    fn demuxed_audio(&self) -> Option<DemuxedMaster> {
+        self.demuxed_audio.read_ok().clone()
+    }
+
+    /// Refresh the idle clock without reading the ring. The authored MASTER is fetched once and carries no
+    /// segments, so it has no window to snapshot — but it is still a live client saying "I am here", and the
+    /// idle check is half `last_access`.
+    fn touch(&self) {
+        *self.last_access.lock_ok() = Instant::now();
+    }
+
+    /// Why this upstream can never be ringed, if it cannot be. `None` ⇒ still viable (or still warming up).
+    fn ineligible(&self) -> Option<String> {
+        self.ineligible.read_ok().clone()
+    }
+
+    /// Record a STRUCTURAL mismatch and wake anyone waiting on a window that is never coming.
+    fn mark_ineligible(&self, reason: String) {
+        *self.ineligible.write_ok() = Some(reason);
+        self.notify.notify_waiters();
     }
 
     /// Append a segment and evict from the front until the ring fits its byte cap.
@@ -308,12 +405,14 @@ impl Origin {
     /// caller because it is a property of the window, not of any one push: dropping below it produces a
     /// manifest no player will start, which is worse than briefly exceeding the RAM cap.
     ///
-    /// `from_upstream` says whether these bytes were actually PULLED. Substituted filler is built from the
-    /// ring itself and costs no upstream traffic, so counting it would overstate the very number an operator
-    /// reads to size `originRingMb` and to see the ring earning its keep (`ingest` vs `bandwidth` on the
-    /// Active Streams row). The ring's own byte accounting still includes it — it really is occupying RAM.
-    fn push(&self, seg: Segment, from_upstream: bool) -> usize {
-        let bytes = seg.bytes.len() as u64;
+    /// Every segment reaching here was PULLED from upstream, so the ingest counters advance unconditionally —
+    /// they are the number an operator reads to size `originRingMb` and to see the ring earning its keep
+    /// (`ingest` vs `bandwidth` on the Active Streams row).
+    fn push(&self, seg: Segment) -> usize {
+        // Both lanes count. The cap is a RAM budget and the pair is what occupies the RAM; on pluto the audio
+        // rendition is ~3 % of the video's bitrate, so a given `originRingMb` holds a marginally shorter
+        // window than it did — the honest reading, and the one `floor_beat_cap` should be judging.
+        let bytes = seg.bytes.len() as u64 + seg.audio.as_ref().map_or(0, |a| a.len() as u64);
         let cap = self.ring_cap_bytes.load(Ordering::Relaxed);
         let mut evicted = 0usize;
         {
@@ -323,7 +422,7 @@ impl Origin {
             while total > cap && ring.len() > MIN_SEGMENTS {
                 match ring.pop_front() {
                     Some(old) => {
-                        total -= old.bytes.len() as u64;
+                        total -= old.bytes.len() as u64 + old.audio.as_ref().map_or(0, |a| a.len() as u64);
                         // THE INVARIANT: `disc_seq` counts discontinuity tags that have LEFT the published
                         // playlist. A tag rides on the segment it precedes, so evicting that segment is
                         // exactly when its tag stops being visible — and every segment still held is by
@@ -341,10 +440,8 @@ impl Origin {
         if evicted > 0 {
             self.evicted_segments.fetch_add(evicted as u64, Ordering::Relaxed);
         }
-        if from_upstream {
-            self.ingested_segments.fetch_add(1, Ordering::Relaxed);
-            self.ingested_bytes.fetch_add(bytes, Ordering::Relaxed);
-        }
+        self.ingested_segments.fetch_add(1, Ordering::Relaxed);
+        self.ingested_bytes.fetch_add(bytes, Ordering::Relaxed);
         self.notify.notify_waiters();
         evicted
     }
@@ -384,21 +481,6 @@ impl Origin {
         self.ring.read_ok().iter().cloned().collect()
     }
 
-    /// The last `n` PROGRAM segments in the ring, oldest first.
-    ///
-    /// Replacement material for an ad break. Returned as `Arc` clones so eviction cannot pull the bytes out
-    /// from under a break that is still running — a 2-minute pod outlives the window it was drawn from.
-    /// Filtering on `!ad` matters once a previous break's filler is still in the window: filler is itself
-    /// marked as break content, and looping a loop would compound the repetition.
-    ///
-    /// Deliberately does NOT touch `last_access`: this is the ingest reading its own ring, not a viewer.
-    pub fn program_tail(&self, n: usize) -> Vec<Arc<Segment>> {
-        let ring = self.ring.read_ok();
-        let mut out: Vec<Arc<Segment>> = ring.iter().rev().filter(|s| !s.ad).take(n).cloned().collect();
-        out.reverse();
-        out
-    }
-
     /// The current generation — part of a renderer's segment paths.
     pub fn generation(&self) -> u64 {
         self.generation.load(Ordering::Relaxed)
@@ -418,6 +500,47 @@ impl Origin {
     fn ring_depth(&self) -> usize {
         self.ring.read_ok().len()
     }
+
+    /// Everything the telemetry frame needs from the window, under exactly ONE read guard.
+    ///
+    /// The predicates are INLINED rather than delegated to `ring_depth` / `floor_beat_cap` on purpose: each of
+    /// those takes its own `self.ring.read_ok()`, and these are `std::sync::RwLock`s, which give no
+    /// re-entrancy guarantee — a second read acquired while the first guard is live can deadlock against a
+    /// writer that queued between them. A per-poll reporter is the last place to introduce that.
+    ///
+    /// Deliberately NOT built on `window()`: that stamps `last_access`, and the idle shutdown fires on
+    /// `subscribers == 0 && last_access.elapsed() >= IDLE_GRACE`. `report_iop("ok")` runs on every productive
+    /// poll — always faster than `IDLE_GRACE` — so reporting through `window()` would let the ingest
+    /// heartbeat its own idle clock and a viewerless origin would pin its ring in RAM forever. (It also
+    /// clones every `Arc` into a fresh `Vec`, which is pure waste for an observational read.)
+    fn ring_stats(&self) -> RingStats {
+        let ring = self.ring.read_ok();
+        let bytes = self.ring_bytes.load(Ordering::Relaxed);
+        RingStats {
+            segments: ring.len(),
+            seconds: ring.iter().map(|s| s.duration).sum::<f64>(),
+            disc_in_window: ring.iter().filter(|s| s.discontinuity).count(),
+            floor_beat_cap: ring.len() <= MIN_SEGMENTS
+                && bytes > self.ring_cap_bytes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// An observational snapshot of one live window — see `Origin::ring_stats`, which is its only producer.
+///
+/// Kept off `ring_footprint` by design: that function holds the registry `Mutex` across its whole loop and
+/// documents why it must never touch `Origin.ring`.
+struct RingStats {
+    segments: usize,
+    /// Σ of the held segments' own durations. The honest "how much time is on air", as opposed to
+    /// `segments × target_duration`, which over-reads by the gap between each segment and the window's max.
+    seconds: f64,
+    /// Discontinuity tags still INSIDE the window. Disjoint by construction from `disc_seq`, which counts
+    /// only the tags that have already left it.
+    disc_in_window: usize,
+    /// The byte cap could not be honored because the `MIN_SEGMENTS` floor won — i.e. we are over cap on
+    /// purpose. Same predicate as `floor_beat_cap`, inlined here to stay on one guard.
+    floor_beat_cap: bool,
 }
 
 /// An RAII subscription. Holding one keeps the ingest alive; dropping it releases the channel to the idle
@@ -479,6 +602,15 @@ pub fn subscribe(state: &AppState, source: &str, entry: &str, pl: Option<&str>, 
     OriginLease { origin }
 }
 
+/// One poll's worth of playlists: the media playlist being followed, plus the paired audio rendition's on a
+/// DEMUXED source. Both are refreshed together — a stale audio window against a fresh video one would stop
+/// pairing, which is a re-resolve, not something to serve around.
+struct PollPlaylists {
+    url: Url,
+    body: String,
+    audio: Option<(Url, String)>,
+}
+
 struct IngestCtx {
     state: AppState,
     origin: Arc<Origin>,
@@ -503,8 +635,11 @@ async fn ingest(ctx: IngestCtx) {
     let mut next_upstream_seq: i64 = -1;
     let mut empty_polls: u32 = 0;
     let mut key_cache: Option<(String, [u8; 16])> = None;
+    // The audio rendition rotates its OWN keyfile on its own schedule, so it needs its own cache slot —
+    // sharing one would refetch on every alternation between the two lanes.
+    let mut audio_key_cache: Option<(String, [u8; 16])> = None;
     let mut warned_floor = false;
-    let mut media: Option<(Url, String)> = None;
+    let mut media: Option<PollPlaylists> = None;
     // S3/CUE: the ad break open right now (None = program), and the label counter for the next one. Per-ingest
     // like `prev` — a break id is a session-local grouping label, not a stable identity.
     let mut ad_break: Option<AdBreak> = None;
@@ -529,22 +664,26 @@ async fn ingest(ctx: IngestCtx) {
     // one window's worth so a recycling source would have to wrap inside 64 segments to collide.
     let mut recent_uris: VecDeque<String> = VecDeque::new();
     let mut dedupe_by_uri = false;
-    // S3/CUE Phase 2. LATCHED once rather than re-read per poll: `SourcePolicy` is shared and an unrelated
-    // playlist's resolve can mutate it, and flipping mid-break would either strand a rebased timeline or
-    // splice filler into a stream that never asked for it.
-    //
-    // Latched on FIRST USE, not here. The ingest task is spawned by `subscribe()` and does its own resolve
-    // inside the loop below, so at this point no grant has landed and the policy is still at its shipped
-    // defaults — reading it here pins every channel to `passthrough` no matter what the operator set.
-    let mut replace_ads: Option<bool> = None;
     let mut splicer = crate::tsnorm::Splicer::new();
-    let mut warned_splice = false;
-    // Program captured at the OPENING edge of the current break, looped for its duration.
-    let mut filler: Vec<Arc<Segment>> = Vec::new();
-    let mut filler_idx: usize = 0;
-    // One decline message per break, re-armed on each opening edge — the reason is a property of the stream,
-    // so repeating it every 5 s would bury the rest of the ingest log (the `warned_floor` posture).
-    let mut warned_filler = false;
+    // The demuxed counterpart. Only one of the two ever runs for a given session — which one is decided by
+    // whether `resolve_media` found an audio rendition — but both are held so a re-resolve can change shape
+    // without rebuilding the task.
+    let mut pair_splicer = crate::tsnorm::PairSplicer::new();
+    let mut warned_splice: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut warned_pairing = false;
+    // Latch for the one-shot line naming which key is pairing this source's two renditions.
+    let mut pairing_logged = false;
+    // S3/UND — the undecodable-upstream detector. Scoped to `playerSelectable` sources (dlhd): retiring an
+    // upstream is only useful where there are alternates to walk to, and every other source would just
+    // re-resolve the same dead provider on a 2 s loop.
+    let undecodable_watch = ctx.source == "dlhd";
+    let mut probe_segments: u32 = 0;
+    // The fault currently repeating, and how many segments in a row have shown it.
+    let mut suspect_run: Option<(crate::tsseg::Suspect, u32)> = None;
+    let mut undecodable_bail = false;
+    // Set for exactly one resolve: the NEXT one carries this reason, so the adapter records WHICH fault
+    // retired the provider rather than a generic "it failed".
+    let mut pending_reason: Option<&'static str> = None;
     // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
     let mut media_failures: u32 = 0;
     let mut last_idle_check = Instant::now();
@@ -568,8 +707,8 @@ async fn ingest(ctx: IngestCtx) {
         }
 
         // (Re)resolve whenever we have no media playlist to follow — first pass, or after a persistent failure.
-        let (media_url, media_body) = match media.take() {
-            Some(m) => m,
+        let (media_url, media_body, audio_pl) = match media.take() {
+            Some(m) => (m.url, m.body, m.audio),
             None => {
                 // Escalate once the pinned candidate has failed to produce a playable window MEDIA_FAIL_ESCALATE
                 // times running (~a few seconds at the 2 s retry cadence). Below that we re-resolve the same
@@ -590,7 +729,16 @@ async fn ingest(ctx: IngestCtx) {
                 if escalate {
                     renewing_session = false;
                 }
-                let resolved = resolve_media(&ctx, &rid, escalate).await;
+                // S3/UND: name the cause on the resolve that retires the provider, then disarm — a later
+                // ordinary re-resolve must not keep blaming it.
+                let reason = pending_reason.take();
+                let resolved = resolve_media(&ctx, &rid, escalate, reason).await;
+                // A fresh upstream gets a fresh verdict: the probe window re-opens so the NEW provider is
+                // judged on its own segments, not on the corpse of the last one.
+                if resolved.is_some() {
+                    probe_segments = 0;
+                    suspect_run = None;
+                }
                 // A fresh resolve may point at a different upstream, so the previous window's bytes cannot be
                 // ASSUMED contiguous with the next ones. There are two honest ways to say that, and which one
                 // is right depends on why we re-resolved:
@@ -621,13 +769,13 @@ async fn ingest(ctx: IngestCtx) {
                             });
                             // ONLY on a real reset. A renewal is the same channel continuing, so an ad pod
                             // spans it: clearing here fragmented one 2-minute break into a fresh break per
-                            // renewal (a new id every ~2.5 s), which reset the filler pool each time and left
-                            // "no program held to loop" as the visible symptom. A reset is different — that
-                            // upstream may be another channel entirely, so its break, its rebased timeline
-                            // and the program captured from its ring are all meaningless now.
+                            // renewal — a new id every ~2.5 s in the `iop:cue` log. A reset is different: that
+                            // upstream may be another channel entirely, so its break AND its rebased timeline
+                            // are both meaningless now. `splicer.reset()` is the load-bearing half — it is what
+                            // stops the new upstream's first segment being spaced against the dead one's clock.
                             ad_break = None;
                             splicer.reset();
-                            filler.clear();
+                            pair_splicer.reset();
                         }
                         // The new session renumbers regardless, so sequence-gap detection must re-anchor.
                         prev = PrevSeg::default();
@@ -639,7 +787,7 @@ async fn ingest(ctx: IngestCtx) {
                     renewing_session = false;
                 }
                 match resolved {
-                    Some(MediaSource::Hls(u, b)) => (u, b),
+                    Some(MediaSource::Hls(u, b, a)) => (u, b, a),
                     // A bare TS socket has nothing to poll: hand off to the local segmenter for the whole
                     // session, then fall back into this loop (which re-checks stop/idle and re-resolves).
                     Some(MediaSource::RawTs(stream, first)) => {
@@ -647,6 +795,10 @@ async fn ingest(ctx: IngestCtx) {
                         next_upstream_seq = -1;
                         continue;
                     }
+                    // A STRUCTURAL decline is not a failure to retry: the shape will not change on the next
+                    // poll, and the renderer has already been told to fall back. Retrying would pull the entry
+                    // every 2 s forever for a channel nobody is being served from the ring.
+                    None if ctx.origin.ineligible().is_some() => break,
                     None => {
                         media_failures = media_failures.saturating_add(1);
                         report_iop(&ctx, "resolve_failed");
@@ -658,6 +810,8 @@ async fn ingest(ctx: IngestCtx) {
         };
 
         let mp = parse_media_playlist(&media_body);
+        // The paired audio window for this poll — parsed once here, indexed per segment below.
+        let ap = audio_pl.as_ref().map(|(u, b)| (u.clone(), parse_media_playlist(b)));
         if mp.target_duration > 0.0 {
             let ms = (mp.target_duration * 1000.0) as u64;
             ctx.origin.target_duration_ms.fetch_max(ms, Ordering::Relaxed);
@@ -680,16 +834,6 @@ async fn ingest(ctx: IngestCtx) {
         );
         let read_timeout_ms = policy.read_timeout_ms.load(Ordering::Relaxed);
 
-        // First poll after a grant has landed: latch the ad policy and say so once, so an operator who turned
-        // replacement on can confirm the data plane actually received it.
-        let replace_ads = *replace_ads.get_or_insert_with(|| {
-            let on = policy.ad_policy.read_ok().as_str() == "replace";
-            log::info("iop:cue", &rid, || {
-                format!("ad policy: {}", if on { "replace breaks with looped program" } else { "passthrough" })
-            });
-            on
-        });
-
         let mut ingested_this_poll = 0u32;
         // Segments the renewal check recognised as already-held. Tracked separately from `ingested_this_poll`
         // because a poll that ingests nothing NEW but recognised a whole window is healthy, not stalled —
@@ -702,6 +846,55 @@ async fn ingest(ctx: IngestCtx) {
             let upstream_seq = mp.media_sequence + i as i64;
             if upstream_seq < next_upstream_seq {
                 continue; // already ingested
+            }
+
+            // ── PAIRING ──────────────────────────────────────────────────────────────────────────────────
+            // On a demuxed source the ring holds only COMPLETE pairs, so a video segment is not consumed
+            // until its audio partner exists. The key is `#EXT-X-PROGRAM-DATE-TIME` — the wall clock of the
+            // media itself — falling back to the media-sequence index only where a lane publishes no PDT.
+            //
+            // The media sequence was the original key and is NOT a cross-rendition identity: pluto renumbers
+            // the two renditions independently across a session renewal, so the same media is sequence 10 on
+            // one lane and 11 on the other. See `pair_audio` for the live trace.
+            let audio_seg = match &ap {
+                None => None,
+                Some((aurl, apl)) => match pair_audio(seg, upstream_seq, apl) {
+                    PairPick::Found(a) => Some((aurl.clone(), a.clone())),
+                    // The audio partner is already gone, so this pair can never be completed. Drop the video
+                    // segment too: publishing it unpaired would put the two playlists on different windows,
+                    // and the next segment's sequence check reports the gap honestly.
+                    PairPick::RolledPast => {
+                        if !warned_pairing {
+                            warned_pairing = true;
+                            log::warn("iop", &rid, || {
+                                format!(
+                                    "audio rendition is ahead of the video at upstream seq={upstream_seq} (audio media-sequence {}) — dropping the pair to keep both playlists aligned",
+                                    apl.media_sequence
+                                )
+                            });
+                        }
+                        next_upstream_seq = upstream_seq + 1;
+                        continue;
+                    }
+                    // HOLD the video segment — `next_upstream_seq` is deliberately NOT advanced — and retry
+                    // on the next poll. A lane that never catches up is caught by MAX_EMPTY_POLLS.
+                    PairPick::NotYet => break,
+                },
+            };
+            // One line per ingest naming WHICH key is pairing this source, so a mispairing complaint can be
+            // told apart from a source that never had a PDT to pair on.
+            if let (Some((_, apl)), Some(_)) = (&ap, &audio_seg) {
+                if !pairing_logged {
+                    pairing_logged = true;
+                    let by_pdt = seg.pdt_ms.is_some() && apl.segments.iter().any(|a| a.pdt_ms.is_some());
+                    log::info("iop", &rid, || {
+                        if by_pdt {
+                            "pairing the two renditions on #EXT-X-PROGRAM-DATE-TIME (survives a session renewal renumbering either lane)".to_string()
+                        } else {
+                            "pairing the two renditions on the media-sequence index — no #EXT-X-PROGRAM-DATE-TIME on one or both lanes".to_string()
+                        }
+                    });
+                }
             }
             next_upstream_seq = upstream_seq + 1;
 
@@ -724,20 +917,13 @@ async fn ingest(ctx: IngestCtx) {
                 policy.hosts.write_ok().insert(h.to_lowercase());
             }
 
-            // S3/CUE: classify BEFORE the fetch. Phase 1 only needed this before the PUSH, but a replaced ad
-            // must never be pulled from upstream at all — not fetching it is most of the point.
+            // S3/CUE: classify the segment. Read-only — every break is served exactly as the provider sent it;
+            // this drives the `iop:cue` log and the ad-break telemetry, nothing else.
             let signal = ad_signal(seg, &seg_url, &policy.ad_uri_contains.read_ok());
 
-            // THIS segment is the first program after a break we filled, so the return seam belongs to it,
-            // not to the next one. Knowable before the fetch: it depends only on the signal and the open
-            // break, never on the bytes. A break we merely passed through needs nothing here — the upstream's
-            // own `#EXT-X-DISCONTINUITY` already landed on this segment.
-            let ad_return = (signal.is_none() && ad_break.as_ref().is_some_and(|b| b.replaced > 0))
-                .then_some(Boundary::AdReturn);
-
             // An upstream signal wins the naming when several apply — it says something more specific than
-            // "we reconnected" or "we substituted". `forced` survives a failed fetch (it is cleared only
-            // after a push) so a join whose first segment 404s still splices the one that does land.
+            // "we reconnected". `forced` survives a failed fetch (it is cleared only after a push) so a join
+            // whose first segment 404s still splices the one that does land.
             //
             // The SessionRenewal arm has an extra out. Recognising part of the new session's window as
             // content we already hold PROVES the two are contiguous — the overlap IS the join — so the
@@ -748,73 +934,37 @@ async fn ingest(ctx: IngestCtx) {
                 Some(Boundary::SessionRenewal) if duplicates_this_poll > 0 => None,
                 other => other,
             };
-            let upstream_boundary = boundary_before(&prev, seg, upstream_seq);
-            let candidate = upstream_boundary.or(ad_return).or(pending);
+            let boundary = boundary_before(&prev, seg, upstream_seq).or(pending);
 
-            // On the OPENING edge of a break, capture replacement material while the ring tail is still
-            // program, and tell the normalizer where that program's clock ends so the first filler lands
-            // after it rather than on top of it.
-            if replace_ads && signal.is_some() && ad_break.is_none() {
-                filler = ctx.origin.program_tail(FILLER_SEGMENTS);
-                filler_idx = 0;
-                warned_filler = false;
-            }
-
-            // Substitute, or fetch. Substitution declines rather than guesses: with no filler held, or a
-            // segment the rewriter will not touch, the ad is served as before — a visible ad beats a
-            // corrupted stream.
-            let mut substituted: Option<f64> = None; // Some(the filler's own duration) once one is built
-            let mut replacement: Option<Bytes> = None;
-            if replace_ads && signal.is_some() {
-                match filler.get(filler_idx % filler.len().max(1)) {
-                    // REPEAT contract: these bytes are already in the ring, so the copy has to clear the
-                    // original's presentation rather than merely its decode end.
-                    Some(src) => match splicer.normalize_repeat(&src.bytes) {
-                        Some(bytes) => {
-                            substituted = Some(src.duration);
-                            filler_idx += 1;
-                            replacement = Some(Bytes::from(bytes));
-                        }
-                        // Declining is a designed outcome, not a failure — but a silent one would look
-                        // identical to "the operator never turned it on", so say it once per break.
-                        None => {
-                            if !warned_filler {
-                                warned_filler = true;
-                                log::warn("iop:cue", &rid, || {
-                                    "ad replacement declined: the rewriter would not touch this stream (no PSI, \
-                                     no video timestamps, or an encoding it cannot safely rebase) — serving the \
-                                     break as-is"
-                                        .to_string()
-                                });
-                            }
-                        }
-                    },
-                    None => {
-                        if !warned_filler {
-                            warned_filler = true;
-                            log::warn("iop:cue", &rid, || {
-                                "ad replacement declined: no program held to loop (the break began before the \
-                                 ring had any) — serving the break as-is"
-                                    .to_string()
-                            });
-                        }
-                    }
-                }
-            }
-            let plain = match replacement {
+            let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
                 Some(b) => b,
-                None => match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
-                    Some(b) => b,
-                    None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
-                },
+                None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
             };
 
-            // A SUBSTITUTED segment is contiguous with the program before it BY CONSTRUCTION — the rewriter
-            // placed it there. Any upstream splice that fired here describes the AD we did not serve (pluto
-            // tags every pod edge), so propagating it would announce a break in a timeline that does not have
-            // one, and would undo most of what replacement buys. A pending splice is NOT consumed here: it
-            // still belongs on the next piece of real media.
-            let boundary = if substituted.is_some() { None } else { candidate };
+            // The audio half, against the RENDITION's own base url and key cache. The implicit-IV derivation
+            // (RFC 8216 §5.2) uses the same media sequence, which is exactly what pairing established.
+            let audio_plain = match &audio_seg {
+                None => None,
+                Some((aurl, aseg)) => {
+                    let aseg_url = match aurl.join(&aseg.uri) {
+                        Ok(u) => u,
+                        Err(_) => continue,
+                    };
+                    if let Some(h) = aseg_url.host_str() {
+                        if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                            log::warn("iop", &rid, || format!("audio segment host {h} private/blocked — skipping"));
+                            continue;
+                        }
+                        policy.hosts.write_ok().insert(h.to_lowercase());
+                    }
+                    match fetch_segment(&ctx, &rid, &client, &policy, aurl, aseg, &aseg_url, upstream_seq, read_timeout_ms, &mut audio_key_cache).await {
+                        Some(b) => Some(b),
+                        // No partner bytes ⇒ no pair. Dropping BOTH keeps the two published windows aligned;
+                        // the next segment's sequence check turns the hole into an honest splice.
+                        None => continue,
+                    }
+                }
+            };
 
             // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log
             // naming only the trigger cannot distinguish real churn from a detector bug (that is how the two
@@ -822,24 +972,15 @@ async fn ingest(ctx: IngestCtx) {
             let was = prev.clone();
             prev = PrevSeg { upstream_seq: Some(upstream_seq) };
 
-            // A substituted segment publishes the FILLER's real length, not the ad's: the ring's timeline is
-            // ours, so `#EXTINF` has to describe the bytes we actually serve.
-            let duration = match substituted {
-                Some(d) if d > 0.0 => d,
-                _ if seg.duration > 0.0 => seg.duration,
-                _ => mp.target_duration,
-            };
+            let duration = if seg.duration > 0.0 { seg.duration } else { mp.target_duration };
             let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
 
             // Fingerprint the stream at edges only. `profile_changed` is what says whether the splice is
-            // load-bearing (the decoder MUST reconfigure) or merely cosmetic — the measurement that decides
-            // whether filler could ever be codec-matched here. Unverifiable reads as CHANGED, never as a match.
+            // load-bearing (the decoder MUST reconfigure) or merely cosmetic — it is the measurement that
+            // justifies normalising the splice at all. Unverifiable reads as CHANGED, never as a match.
             //
-            // Note what it measures once `adPolicy=replace` is on: OUR OUTPUT, not the upstream. A substituted
-            // segment is filler, so the comparison is program-vs-program and correctly reports no change —
-            // the ad whose profile differed was never fetched, so nothing here can see it. Reading a source's
-            // true break behaviour therefore means reading it in passthrough, which is why Phase 1 shipped
-            // first and why this stays honest about what it is describing.
+            // It measures the UPSTREAM: the scan runs on the fetched plaintext, before the splicer rewrites
+            // it, so what it reports is the provider's own break behaviour rather than our output's.
             let ad_edge = signal.is_some() != ad_break.is_some();
             let scan_now = boundary.is_some() || ad_edge || last_profile.is_none();
             let profile = if scan_now { crate::tsseg::scan_profile(&plain) } else { None };
@@ -863,7 +1004,6 @@ async fn ingest(ctx: IngestCtx) {
                         seconds: duration,
                         announced,
                         profile_changed,
-                        replaced: u32::from(substituted.is_some()),
                     };
                     log::info("iop:cue", &rid, || {
                         let ann = if open.announced > 0.0 {
@@ -880,21 +1020,17 @@ async fn ingest(ctx: IngestCtx) {
                 (Some(_), Some(b)) => {
                     b.segments += 1;
                     b.seconds += duration;
-                    b.replaced += u32::from(substituted.is_some());
                 }
                 (None, Some(b)) => {
                     // The RETURN to program is its own parameter change — report the one measured here, not
                     // the one measured when the break opened.
                     let done = AdBreak { profile_changed, ..b.clone() };
                     ad_break = None;
-                    // The pool was captured for THIS break; the next one re-captures against whatever
-                    // program is current then. (`ad_return` above already carried the resume seam.)
-                    filler.clear();
                     log::info("iop:cue", &rid, || {
                         let prof = if profile_changed { "profile CHANGED" } else { "profile same" };
                         format!(
-                            "ad break #{} CLOSE at seq {our_seq} after {} segments / {:.1}s (via {:?}) — {prof}, {} replaced",
-                            done.id, done.segments, done.seconds, done.signal, done.replaced
+                            "ad break #{} CLOSE at seq {our_seq} after {} segments / {:.1}s (via {:?}) — {prof}",
+                            done.id, done.segments, done.seconds, done.signal
                         )
                     });
                     report_cue(&ctx, "close", &done);
@@ -912,54 +1048,119 @@ async fn ingest(ctx: IngestCtx) {
             // identity from changing. (The same client handled every sps-only change on a stable pid
             // unaided, which is why this never re-encodes.)
             //
-            // Runs at INGEST, once per segment, so one rewrite serves every viewer and both renderers — and
-            // so `program_tail` hands the filler path material already on this timeline.
+            // Runs at INGEST, once per segment, so one rewrite serves every viewer and both renderers.
             //
-            // A substituted segment came from that same filler path and is already normalised; re-running it
-            // would space it against itself.
-            let joined = splicer.has_timeline();
-            let (plain, absorbed) = if substituted.is_some() {
-                (plain, true)
-            } else {
-                match splicer.normalize(&plain) {
-                    Some(b) => (Bytes::from(b), true),
-                    None => {
-                        // Declining is designed, not a failure: publish the bytes untouched and drop the
-                        // timeline so the next segment re-anchors on its own clock rather than being spaced
-                        // against one whose media nobody received. Upstream's splice is then signalled the
-                        // old way — a visible decoder reset beats a stream we mis-rewrote.
-                        if !warned_splice {
-                            warned_splice = true;
-                            log::warn("iop", &rid, || {
-                                "splice normalisation declined (no PSI, or a program shape the published \
-                                 layout cannot carry) — publishing verbatim and signalling the splice"
-                                    .to_string()
-                            });
-                        }
-                        splicer.reset();
-                        (plain, false)
+            // `spliceNormalize` is the kill switch. OFF republishes upstream bytes untouched — the pre-fix
+            // behaviour, pid churn and all — so an operator can rule this pass in or out of a playback
+            // complaint without a redeploy. Read per segment, not once per ingest, so a re-resolve flips it
+            // live like every other knob.
+            // A DEMUXED source runs `PairSplicer` instead: same contract, but ONE offset computed from the
+            // video lane's DTS is applied to both renditions, so upstream's authored A/V skew survives
+            // bit-exactly. A per-lane offset would manufacture a lip-sync error that was not in the source.
+            // ── S3/UND: is this upstream structurally DECODABLE? ─────────────────────────────────────────
+            // Every other health signal answers "are bytes arriving?", and a provider can serve perfect
+            // HTTP 200s whose H.264 carries no parameter sets — decodes to nothing, looks healthy here.
+            // `scan_profile` already extracts SPS/PPS for the pod-edge fingerprint; this reads the same
+            // field as a liveness signal. `None` (no PSI at all) is UNVERIFIABLE, not undecodable — samsung's
+            // first segment is legitimately PSI-less — so only a parsed profile missing its parameter sets
+            // counts as a strike.
+            if undecodable_watch && probe_segments < UNDECODABLE_PROBE_SEGMENTS {
+                probe_segments += 1;
+                // The run must be of the SAME fault. A segment that is not a transport stream followed by one
+                // missing its parameter sets is two different problems, and counting them together would
+                // retire a provider on evidence that never actually repeated.
+                suspect_run = match (crate::tsseg::inspect_segment(&plain), suspect_run) {
+                    (Some(s), Some((prev, n))) if prev == s => Some((s, n + 1)),
+                    (Some(s), _) => Some((s, 1)),
+                    (None, _) => None,
+                };
+                if let Some((s, n)) = suspect_run {
+                    log::trace("iop", &rid, || format!("upstream {} ({n}/{UNDECODABLE_STRIKES})", s.describe()));
+                    if n >= UNDECODABLE_STRIKES {
+                        // RETIRE AND RE-RESOLVE — deliberately not a write-off. The escalating resolve burns
+                        // this provider and walks the alternates; the adapter's own burn TTL is what stops a
+                        // hot walk. An earlier cut marked the whole channel ineligible after two passes, but
+                        // that state lived on the ingest, which dies 30 s after the last viewer — so a client
+                        // with auto-reconnect never reached it anyway, while the one time it DID fire it
+                        // wrote off a working channel. The harshest available action is the wrong response to
+                        // a heuristic; hopping providers is the right one.
+                        log::warn("iop", &rid, || {
+                            format!(
+                                "upstream {} ({UNDECODABLE_STRIKES} consecutive segments) — retiring this provider and walking the alternates",
+                                s.describe()
+                            )
+                        });
+                        suspect_run = None;
+                        probe_segments = 0;
+                        pending_reason = Some(s.slug());
+                        *ctx.origin.last_suspect.write_ok() = Some(s.slug().to_string());
+                        ctx.origin.suspect_retires.fetch_add(1, Ordering::Relaxed);
+                        undecodable_bail = true;
+                        break;
                     }
                 }
+            }
+
+            let normalize = policy.splice_normalize.load(Ordering::Relaxed);
+            let demuxed = audio_plain.is_some();
+            if !normalize {
+                // switched off mid-stream: the timeline being kept no longer applies
+                if splicer.has_timeline() {
+                    splicer.reset();
+                }
+                if pair_splicer.has_timeline() {
+                    pair_splicer.reset();
+                }
+            }
+            let joined = normalize && if demuxed { pair_splicer.has_timeline() } else { splicer.has_timeline() };
+            // Declining is designed, not a failure: publish the bytes untouched and drop the timeline so the
+            // next segment re-anchors on its own clock rather than being spaced against one whose media
+            // nobody received. Upstream's splice is then signalled the old way — a visible decoder reset
+            // beats a stream we mis-rewrote. On the paired path it is all-or-nothing: both lanes go verbatim
+            // together, so they stay in sync with each other.
+            let mut declined: Option<String> = None;
+            let (plain, audio_out, absorbed) = match (normalize, audio_plain) {
+                (false, a) => (plain, a, false),
+                (true, Some(araw)) => match pair_splicer.normalize_pair(&plain, &araw) {
+                    Some((v, a)) => (Bytes::from(v), Some(Bytes::from(a)), true),
+                    None => {
+                        declined = Some(pair_splicer.last_decline().to_string());
+                        pair_splicer.reset();
+                        (plain, Some(araw), false)
+                    }
+                },
+                (true, None) => match splicer.normalize(&plain) {
+                    Some(b) => (Bytes::from(b), None, true),
+                    None => {
+                        declined = Some("no PSI, or a program shape the published layout cannot carry".to_string());
+                        splicer.reset();
+                        (plain, None, false)
+                    }
+                },
             };
+            // Latched per DISTINCT reason rather than once per ingest. One latch hid the thing that matters —
+            // whether a pod edge declines for the same cause every time (a shape to handle) or for a
+            // different one each time (a bug in this pass).
+            if let Some(why) = declined {
+                if warned_splice.insert(why.clone()) {
+                    log::warn("iop", &rid, || {
+                        format!("splice normalisation declined — {why}; publishing verbatim and signalling the splice")
+                    });
+                }
+            }
             // Drop the tag ONLY when the splice was genuinely absorbed — the segment was moved onto a clock
             // that already existed. A FRESH anchor leaves the timestamps exactly where upstream put them, so
             // upstream's own signal still governs and must still be published.
             let discontinuity = if absorbed && joined { false } else { boundary.is_some() };
 
-            let evicted = ctx.origin.push(
-                Segment {
-                    seq: our_seq,
-                    duration,
-                    bytes: plain,
-                    discontinuity,
-                    pdt: SystemTime::now(),
-                    ad: signal.is_some(),
-                    break_id: ad_break.as_ref().map(|b| b.id).unwrap_or(0),
-                },
-                // Filler is built from the ring, so it cost no upstream traffic — counting it would
-                // overstate "upstream pulled" by exactly the length of every ad break.
-                substituted.is_none(),
-            );
+            let evicted = ctx.origin.push(Segment {
+                seq: our_seq,
+                duration,
+                bytes: plain,
+                discontinuity,
+                pdt: SystemTime::now(),
+                audio: audio_out,
+            });
             ingested_this_poll += 1;
             if pending.is_some() {
                 forced = None; // consumed — the splice is now recorded on a segment in the ring
@@ -977,7 +1178,6 @@ async fn ingest(ctx: IngestCtx) {
                         ),
                         Boundary::Tag => "upstream #EXT-X-DISCONTINUITY".to_string(),
                         Boundary::SessionRenewal => "first segment of a renewed provider session".to_string(),
-                        Boundary::AdReturn => "program resumed after replaced ad break".to_string(),
                     };
                     // Say which of the two happened. An ABSORBED splice publishes no tag, so a log line that
                     // read the same either way would make the normaliser silently un-diagnosable — exactly
@@ -1012,6 +1212,16 @@ async fn ingest(ctx: IngestCtx) {
             } else if !beat {
                 warned_floor = false;
             }
+        }
+
+        // S3/UND: the upstream was retired (or the channel written off) mid-poll. Drop straight back to the
+        // top so the next pass re-resolves — carrying the reason, so the adapter burns the RIGHT provider
+        // for the RIGHT cause. `mark_ineligible` (the give-up case) is picked up by the resolve arm there.
+        if undecodable_bail {
+            undecodable_bail = false;
+            media = None;
+            media_failures = MEDIA_FAIL_ESCALATE; // force the ESCALATING resolve, not a re-resolve in place
+            continue;
         }
 
         // The URI memory is a RENEWAL tool only — leaving it armed would let it skip real content on a
@@ -1075,16 +1285,34 @@ async fn ingest(ctx: IngestCtx) {
 
         tokio::time::sleep(poll_interval(mp.target_duration)).await;
 
-        // Refresh the playlist for the next pass. A failed refresh clears `media` so the loop head re-resolves.
-        match fetch_with_retry(&client, media_url.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-playlist", MAX_UPSTREAM_RETRIES).await {
-            Ok(resp) if resp.status().is_success() => {
-                let url = resp.url().clone();
-                match resp.text().await {
-                    Ok(body) => media = Some((url, body)),
-                    Err(_) => media = None,
-                }
+        // Refresh the playlist(s) for the next pass. A failed refresh clears `media` so the loop head
+        // re-resolves. On a demuxed source BOTH lanes are refreshed together and a failure on either clears
+        // `media`: a stale audio window against a fresh video one would stop pairing, and re-resolving is
+        // the recovery that already exists.
+        let audio_url = audio_pl.as_ref().map(|(u, _)| u.clone());
+        let refreshed = async {
+            let vresp = fetch_with_retry(&client, media_url.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-playlist", MAX_UPSTREAM_RETRIES).await.ok()?;
+            if !vresp.status().is_success() {
+                return None;
             }
-            _ => {
+            let vurl = vresp.url().clone();
+            let vbody = vresp.text().await.ok()?;
+            let audio = match &audio_url {
+                None => None,
+                Some(u) => {
+                    let aresp = fetch_with_retry(&client, u.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-audio", MAX_UPSTREAM_RETRIES).await.ok()?;
+                    if !aresp.status().is_success() {
+                        return None;
+                    }
+                    Some((aresp.url().clone(), aresp.text().await.ok()?))
+                }
+            };
+            Some((vurl, vbody, audio))
+        }
+        .await;
+        match refreshed {
+            Some((url, body, audio)) => media = Some(PollPlaylists { url, body, audio }),
+            None => {
                 log::warn("iop", &rid, || "media playlist refresh failed — re-resolving".to_string());
                 media_failures = media_failures.saturating_add(1);
                 media = None;
@@ -1109,15 +1337,94 @@ async fn ingest(ctx: IngestCtx) {
     });
 }
 
+/// Which audio segment partners a video one — the outcome of the pairing lookup.
+enum PairPick<'a> {
+    Found(&'a SegRef),
+    /// The audio window has already rolled past this video segment; the pair can never complete.
+    RolledPast,
+    /// The audio lane has not published this far yet — HOLD the video segment and retry next poll.
+    NotYet,
+}
+
+/// How far two lanes' `#EXT-X-PROGRAM-DATE-TIME` values may differ and still describe the same media, in ms.
+///
+/// HALF a segment. Measured on live pluto, a correctly-paired demuxed segment agrees to **~20 ms** across the
+/// two renditions, while a mispairing is a WHOLE segment out (~5000 ms) — so half a segment sits two orders of
+/// magnitude clear of both. It also absorbs AAC's ~21.3 ms `#EXTINF` quantisation (1024 samples @ 48 kHz),
+/// which oscillates rather than accumulating, so it can never walk a correct pair out of tolerance.
+fn pair_tolerance_ms(video_duration: f64, target_duration: f64) -> i64 {
+    let d = if video_duration > 0.1 {
+        video_duration
+    } else if target_duration > 0.1 {
+        target_duration
+    } else {
+        6.0 // no ladder at all: assume a generous segment rather than a tolerance of zero
+    };
+    ((d * 1000.0) / 2.0).round() as i64
+}
+
+/// Find the audio segment that partners `video`.
+///
+/// PAIRS ON WALL CLOCK, not on the media sequence. The sequence *looks* like a cross-rendition identity and is
+/// not: pluto renumbers the two renditions independently across a session renewal (its stitcher ENDLISTs every
+/// ~25 s), so a fresh video playlist can open at sequence 10 against the audio's 11 **for the same media**.
+/// Index pairing then puts every pair of that session ~one segment out, which `PairSplicer`'s skew guard
+/// correctly refuses — costing the HLS lane its splice absorption and the raw-TS lane the segment outright.
+/// Live trace behind this:
+///
+/// ```text
+/// session renewed — ring kept (63 seg), join marked as a splice
+/// audio rendition is ahead of the video (upstream seq=10 < audio media-sequence 11)
+/// splice normalisation declined — the two renditions' clocks drifted apart by 9997 ms
+/// ```
+///
+/// `#EXT-X-PROGRAM-DATE-TIME` is the identity the sequence pretends to be — RFC 8216 dates the media itself,
+/// so it survives any renumbering. Both pluto renditions carry it and agree to ~11 ms.
+///
+/// The sequence index remains the FALLBACK for a source that publishes no PDT, so nothing that pairs correctly
+/// today changes behaviour: an aligned pair resolves to the same segment either way.
+fn pair_audio<'a>(video: &SegRef, upstream_seq: i64, apl: &'a crate::tsmux::MediaPlaylist) -> PairPick<'a> {
+    if let Some(vt) = video.pdt_ms {
+        let mut best: Option<(&SegRef, i64)> = None;
+        for a in &apl.segments {
+            let Some(at) = a.pdt_ms else { continue };
+            let d = (at - vt).abs();
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((a, d));
+            }
+        }
+        // Only trust this path when the audio lane actually dates itself; a lane with no PDT at all falls
+        // through to the index rather than being declared "rolled past".
+        if let Some((a, d)) = best {
+            if d <= pair_tolerance_ms(video.duration, apl.target_duration) {
+                return PairPick::Found(a);
+            }
+            // Out of tolerance: which SIDE decides hold-vs-drop. Before the window ⇒ the partner is already
+            // gone; after it ⇒ it has not been published yet.
+            let first = apl.segments.iter().find_map(|s| s.pdt_ms).unwrap_or(vt);
+            return if vt < first { PairPick::RolledPast } else { PairPick::NotYet };
+        }
+    }
+    // FALLBACK — the pre-existing sequence-index lookup, byte-for-byte the old behaviour.
+    let idx = upstream_seq - apl.media_sequence;
+    if idx < 0 {
+        return PairPick::RolledPast;
+    }
+    match apl.segments.get(idx as usize) {
+        Some(a) => PairPick::Found(a),
+        None => PairPick::NotYet,
+    }
+}
+
 /// Resolve the entry and walk to the MEDIA playlist to follow (peeking the top variant when the entry is a
 /// master). `None` when nothing usable is reachable — the caller backs off and retries.
-async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<MediaSource> {
+async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Option<&str>) -> Option<MediaSource> {
     // `escalate` = the pinned candidate has failed us repeatedly, so advance the failover cursor instead of
     // re-resolving the same one. The ingest loop drives its own retries and never enters the handler's
     // failover_walk, so this is the ONLY way an origin-mode stream reaches the source's alternate upstreams
     // (dlhd's other player providers) or the channel's configured backups.
     let resolved = if escalate {
-        ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+        ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref(), reason).await
     } else {
         ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
     };
@@ -1155,6 +1462,8 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<Med
         log::info("iop", rid, || {
             format!("{}: upstream is a bare TS socket — segmenting locally", ctx.source)
         });
+        // Its own write site: this arm returns before the manifest handling below ever runs.
+        *ctx.origin.upstream_shape.write_ok() = Some("ts".to_string());
         return Some(MediaSource::RawTs(Box::pin(stream), first));
     }
     // A manifest: drain the (small) remainder into text.
@@ -1163,36 +1472,187 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<Med
         body.push_str(&String::from_utf8_lossy(&b));
     }
 
-    let (media_url, media_body) = if is_master(&body) {
-        let vurl = pick_variant(&body, &url)?;
-        let vresp = fetch_with_retry(&client, vurl.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
+    let mut variant_bandwidth = 0i64;
+    // The PICKED variant's own decode attributes (resolution, codecs, frame rate), carried out of the arm
+    // below for the telemetry frame. They must travel WITH `variant_bandwidth` off the same STREAM-INF line —
+    // see the `VariantPick` doc for why reading them back off the master instead would describe a different
+    // rendition than the one this origin rings.
+    let mut variant_attrs: (Option<String>, Option<String>, Option<String>) = (None, None, None);
+    let entry_is_master = is_master(&body);
+    // Extracted HERE, not later: on the master arm `body` merely stays borrowed, but on the media arm below
+    // it is MOVED into the tuple, so a deferred read would not compile.
+    let master_media = if entry_is_master { Some(crate::manifest::extract_media(&body)) } else { None };
+    // One write covers both HLS arms — `entry_is_master` already made the distinction.
+    *ctx.origin.upstream_shape.write_ok() =
+        Some(if entry_is_master { "hls-master" } else { "hls-media" }.to_string());
+    let (media_url, media_body, rendition) = if entry_is_master {
+        let pick = pick_variant(&body, &url)?;
+        variant_bandwidth = pick.bandwidth;
+        variant_attrs = (pick.resolution.clone(), pick.codecs.clone(), pick.frame_rate.clone());
+        // A variant whose audio lives in a separate #EXT-X-MEDIA rendition is followed as a PAIR: the ring
+        // holds one entry per (video, audio) segment pair and the HLS renderer authors a master over both.
+        // `pick_variant` still prefers a muxed variant when the master offers one — pairing is the fallback
+        // for a source that offers nothing muxed, never the preferred shape.
+        //
+        // Before this, reaching here declined the whole origin, which is what put pluto — the one source with
+        // ad pods, and so the whole reason `tsnorm` exists — permanently on the un-normalised rewrite path.
+        let rendition = if pick.external_audio {
+            match pick.audio.clone() {
+                Some(a) => Some(a),
+                // The master said every variant defers its audio but named no rendition we can follow. There
+                // is nothing to pair with, so this is still a structural decline.
+                None => {
+                    let why = "audio is deferred to an #EXT-X-MEDIA group that names no playable rendition";
+                    log::warn("iop", rid, || format!("{}: {why} — origin ingest not eligible", ctx.source));
+                    ctx.origin.mark_ineligible(why.to_string());
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
+        let vresp = fetch_with_retry(&client, pick.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
             return None;
         }
-        (vresp.url().clone(), vresp.text().await.ok()?)
+        (vresp.url().clone(), vresp.text().await.ok()?, rendition)
     } else {
-        (url, body)
+        (url, body, None)
     };
+
+    // Recorded BEFORE the guards below, deliberately: the unsupported-method guard `return`s, and a channel
+    // that got declined FOR its encryption is exactly the one whose encryption an operator wants named.
+    *ctx.origin.encryption.write_ok() = Some(encryption_method(&media_body));
 
     // The same eligibility guards the raw-TS producer applies. fMP4 is not concatenable and SAMPLE-AES is not
     // decryptable, so an origin over either would publish bytes no renderer can honestly serve.
     if has_map(&media_body) {
         log::warn("iop", rid, || format!("{}: fMP4 (#EXT-X-MAP) — origin ingest not eligible", ctx.source));
+        ctx.origin.mark_ineligible("fMP4 (#EXT-X-MAP) is not concatenable".to_string());
         return None;
     }
     if let Some(method) = unsupported_encryption(&media_body) {
         log::warn("iop", rid, || format!("{}: unsupported encryption METHOD={method} — origin ingest not eligible", ctx.source));
+        ctx.origin.mark_ineligible(format!("unsupported encryption METHOD={method}"));
         return None;
     }
-    Some(MediaSource::Hls(media_url, media_body))
+
+    // The audio lane, when there is one. Fetched here so the SAME guards run over it — a rendition that is
+    // fMP4 or SAMPLE-AES is exactly as unringable as a variant that is.
+    let audio = match &rendition {
+        None => None,
+        Some(r) => {
+            let aresp = fetch_with_retry(&client, r.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-audio", MAX_UPSTREAM_RETRIES)
+                .await
+                .ok()?;
+            if !aresp.status().is_success() {
+                return None;
+            }
+            let aurl = aresp.url().clone();
+            let abody = aresp.text().await.ok()?;
+            if has_map(&abody) {
+                log::warn("iop", rid, || format!("{}: audio rendition is fMP4 (#EXT-X-MAP) — origin ingest not eligible", ctx.source));
+                ctx.origin.mark_ineligible("audio rendition is fMP4 (#EXT-X-MAP)".to_string());
+                return None;
+            }
+            if let Some(method) = unsupported_encryption(&abody) {
+                log::warn("iop", rid, || format!("{}: audio rendition METHOD={method} — origin ingest not eligible", ctx.source));
+                ctx.origin.mark_ineligible(format!("audio rendition unsupported encryption METHOD={method}"));
+                return None;
+            }
+            log::info("iop", rid, || {
+                format!(
+                    "{}: demuxed master — ringing the video variant plus audio rendition \"{}\"{} as pairs",
+                    ctx.source,
+                    r.name,
+                    if r.language.is_empty() { String::new() } else { format!(" ({})", r.language) }
+                )
+            });
+            Some((aurl, abody))
+        }
+    };
+    // DEC: manifest-declared decode metadata for an ORIGIN-backed channel. The passthrough rewrite path is
+    // otherwise the ONLY producer of `kind:"media"`, and origin mode returns long before reaching it — so
+    // codec / audio / container / resolution / fps read null on every channel actually served from a ring,
+    // which is precisely the set an operator most wants to inspect.
+    //
+    // TWO extractions, because neither playlist carries the whole picture: a MASTER declares
+    // resolution/codecs/frame-rate/bandwidth and no `#EXTINF`; a MEDIA playlist declares the container hint
+    // and no `#EXT-X-STREAM-INF`. Reporting off the master alone would leave `container` null here forever.
+    //
+    // Placed after EVERY eligibility guard above — including the audio lane's — so a channel about to be
+    // DECLINED never advertises ring-backed decode metadata for output the ring will not author.
+    {
+        let mut dec = master_media.unwrap_or_default();
+        // The PICKED line's attributes OVERRIDE the master extraction. `extract_media` keeps the
+        // highest-BANDWIDTH variant; `pick_variant` deliberately prefers a lower-bandwidth MUXED one when the
+        // top variant would cost the audio track. On such a ladder they are different renditions, and a frame
+        // that took resolution/codecs from one and bandwidth from the other would be self-contradictory —
+        // advertising a stream this origin never carries.
+        let (v_res, v_codecs, v_fps) = variant_attrs;
+        if v_res.is_some() {
+            dec.resolution = v_res;
+        }
+        if v_codecs.is_some() {
+            dec.codecs = v_codecs;
+        }
+        if v_fps.is_some() {
+            dec.frame_rate = v_fps;
+        }
+        let from_media = crate::manifest::extract_media(&media_body);
+        if dec.resolution.is_none() {
+            dec.resolution = from_media.resolution;
+        }
+        if dec.codecs.is_none() {
+            dec.codecs = from_media.codecs;
+        }
+        if dec.frame_rate.is_none() {
+            dec.frame_rate = from_media.frame_rate;
+        }
+        if dec.container.is_none() {
+            dec.container = from_media.container;
+        }
+        // The declared rate of the variant we ACTUALLY ring. `pick_variant` prefers a muxed variant while
+        // `extract_media` keeps the highest-bandwidth one, so on a demuxed master those are different
+        // variants — reporting the latter would describe a rendition this origin never touches.
+        if variant_bandwidth > 0 {
+            dec.bandwidth = Some(variant_bandwidth);
+        }
+        // Same `any()` gate as the passthrough emit: a playlist that declared nothing must not spam an empty
+        // frame, because Node merges these per channel and only overwrites on non-null.
+        if dec.any() {
+            ctx.state.report(serde_json::json!({
+                "kind": "media",
+                "source": ctx.source,
+                "entryUrl": ctx.entry,
+                "resolution": dec.resolution,
+                "codecs": dec.codecs,
+                "frameRate": dec.frame_rate,
+                "container": dec.container,
+                "bandwidth": dec.bandwidth,
+                // Unlike the passthrough producer's partial polls, this frame is a COMPLETE snapshot of the
+                // upstream just resolved — both playlists were read in this one pass. Without the flag Node
+                // merges on non-null, so an escalation onto a leaner upstream (or one whose entry is a bare
+                // media playlist) would keep the RETIRED provider's resolution and declared bitrate forever.
+                "replace": true,
+            }));
+        }
+    }
+
+    // Re-recorded on every resolve, so a session renewal that re-mints the master picks up a moved rendition
+    // URL without any renewal-specific code.
+    *ctx.origin.demuxed_audio.write_ok() =
+        rendition.map(|audio| DemuxedMaster { audio, bandwidth: variant_bandwidth });
+    Some(MediaSource::Hls(media_url, media_body, audio))
 }
 
 /// What an upstream turned out to BE. Both shapes feed the same ring; only the way boundaries are discovered
 /// differs — an HLS playlist states them, a bare socket has to be segmented locally (tsseg.rs).
 enum MediaSource {
-    Hls(Url, String),
+    /// The media playlist to follow, plus the paired audio rendition's playlist on a DEMUXED source.
+    Hls(Url, String, Option<(Url, String)>),
     /// The live byte stream plus the chunk already consumed to identify it.
     RawTs(std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>>, Bytes),
 }
@@ -1255,23 +1715,18 @@ async fn ingest_raw_ts(
 }
 
 /// Push a locally-cut segment into the ring. `discontinuity` is always false: a bare TS socket is one
-/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate. `ad` is false
-/// for the same reason — there is no manifest to carry a cue tag and no segment URI to match a signature
-/// against, so a raw socket is program by construction, not by assumption.
+/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate.
 fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment) {
     let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
-    ctx.origin.push(
-        Segment {
-            seq: our_seq,
-            duration: cut.duration,
-            bytes: Bytes::from(cut.bytes),
-            discontinuity: false,
-            pdt: SystemTime::now(),
-            ad: false,
-            break_id: 0,
-        },
-        true, // every byte of a cut segment came off the upstream socket
-    );
+    // A bare TS socket is one muxed stream, so there is never a second lane to pair with.
+    ctx.origin.push(Segment {
+        seq: our_seq,
+        duration: cut.duration,
+        bytes: Bytes::from(cut.bytes),
+        discontinuity: false,
+        pdt: SystemTime::now(),
+        audio: None,
+    });
 }
 
 /// Fetch ONE segment and return its plaintext bytes, decrypting AES-128 when keyed.
@@ -1410,6 +1865,7 @@ fn render_media_playlist(
     token: Option<&str>,
     pl: Option<&str>,
     disc_seq: u64,
+    lane: Lane,
 ) -> String {
     // TARGETDURATION must be an integer >= the longest #EXTINF, or players reject the playlist.
     let longest = window.iter().fold(target_duration, |m, s| if s.duration > m { s.duration } else { m });
@@ -1439,8 +1895,18 @@ fn render_media_playlist(
         if i == 0 || seg.discontinuity {
             out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(seg.pdt)));
         }
+        // ONE `#EXTINF` ladder for both lanes. The audio rendition states its own, marginally different
+        // durations upstream (AAC quantises to ~21.3 ms), but that difference oscillates rather than
+        // accumulating — so publishing one ladder keeps the two playlists' computed timelines identical,
+        // while the media's own PTS, held together by the shared offset, is what governs sync.
         out.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
-        out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{}.ts", seg.seq));
+        // Only the segment URI differs between lanes. The video shape is unchanged, so a muxed origin's
+        // output is byte-identical to what it was before pairing existed.
+        let l = match lane {
+            Lane::Video => "",
+            Lane::Audio => "a",
+        };
+        out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{l}{}.ts", seg.seq));
         // The token MUST ride on every segment URI: our paths are guessable by construction, so this is what
         // keeps per-account governance (streamGate) meaningful. `pl` rides along for config resolution.
         if let Some(t) = token {
@@ -1456,19 +1922,80 @@ fn render_media_playlist(
     out
 }
 
-/// Wait for a cold ring to become playable. Returns false on timeout.
-async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> bool {
+/// Render the AUTHORED MASTER a demuxed origin publishes at its entry: one variant plus one audio rendition,
+/// both pointing back into our own `o/` namespace.
+///
+/// The two media-playlist URIs deliberately carry NO generation. A client fetches this master ONCE and then
+/// polls the media playlists for the rest of the session, so a generation in those paths would make a
+/// failover ring reset 404 the live session permanently. Segments keep it — that guard is what makes a stale
+/// SEGMENT url fail cleanly — and each playlist poll re-renders under the current generation.
+///
+/// `streamInfRedux` does not apply here: it is a post-transform over a PROXIED master (proxy.rs), and this
+/// one is authored, under 1 KiB, with the `#EXT-X-STREAM-INF` already inside any player's manifest peek.
+fn render_master(
+    mount_path: &str,
+    source: &str,
+    entry: &str,
+    m: &DemuxedMaster,
+    token: Option<&str>,
+    pl: Option<&str>,
+) -> String {
+    let enc_entry = crate::manifest::enc(entry);
+    let q = match (token, pl) {
+        (Some(t), Some(p)) => format!("?token={t}&pl={p}"),
+        (Some(t), None) => format!("?token={t}"),
+        (None, Some(p)) => format!("?pl={p}"),
+        (None, None) => String::new(),
+    };
+    let base = format!("{mount_path}/{source}/o/{enc_entry}");
+    // VERSION 4: `#EXT-X-MEDIA` is a version-4 tag. The media playlists stay at 3.
+    let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:4\n");
+    out.push_str("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\"");
+    // Carry upstream's own labelling so a client still names the track the way it did before.
+    if !m.audio.name.is_empty() {
+        out.push_str(&format!(",NAME=\"{}\"", m.audio.name.replace('"', "")));
+    } else {
+        out.push_str(",NAME=\"Audio\"");
+    }
+    if !m.audio.language.is_empty() {
+        out.push_str(&format!(",LANGUAGE=\"{}\"", m.audio.language.replace('"', "")));
+    }
+    out.push_str(&format!(",DEFAULT=YES,AUTOSELECT=YES,URI=\"{base}/a.m3u8{q}\"\n"));
+    let bw = if m.bandwidth > 0 { m.bandwidth } else { 1_000_000 };
+    out.push_str(&format!("#EXT-X-STREAM-INF:BANDWIDTH={bw},AUDIO=\"audio\"\n"));
+    out.push_str(&format!("{base}/v.m3u8{q}\n"));
+    out
+}
+
+/// The three ways waiting for a playable window can end. `TimedOut` and `Ineligible` are deliberately
+/// distinct: one is "not yet, and the client should retry" (503), the other is "not ever, on this shape" —
+/// and only the latter may fall back to the ordinary rewrite path. Collapsing them to a bool is what made a
+/// shape mismatch answer 503 instead of falling back.
+enum Ready {
+    Yes,
+    TimedOut,
+    Ineligible,
+}
+
+/// Wait for a cold ring to become playable.
+async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> Ready {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
         if origin.ring_depth() >= MIN_SEGMENTS {
-            return true;
+            return Ready::Yes;
+        }
+        // Answer the moment the shape is known to be unringable, rather than waiting out READY_TIMEOUT for a
+        // window that is never coming. This is what turns a structural mismatch from a 503 into a fallback.
+        if let Some(why) = origin.ineligible() {
+            log::info("oop", rid, || format!("origin declined ({why}) — falling back to the manifest rewrite"));
+            return Ready::Ineligible;
         }
         let left = deadline.saturating_duration_since(Instant::now());
         if left.is_zero() {
             log::warn("oop", rid, || {
                 format!("ring still short ({}/{MIN_SEGMENTS}) after {READY_TIMEOUT:?} — refusing to serve an unplayable window", origin.ring_depth())
             });
-            return false;
+            return Ready::TimedOut;
         }
         // Woken by the ingest on every push; the timeout bounds a channel that never produces one.
         let _ = tokio::time::timeout(left.min(Duration::from_secs(1)), origin.wait_for_segment()).await;
@@ -1480,6 +2007,11 @@ async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> bool {
 /// The lease is dropped when this returns — a polling client renews it on every poll, and the ingest's idle
 /// grace covers the gaps. That keeps lifetime management in one place (the grace window) rather than
 /// splitting it between the request path and a teardown hook.
+///
+/// `None` ⇒ this upstream's SHAPE cannot be ringed (see `Origin::ineligible`) and the caller must fall
+/// through to the ordinary manifest rewrite. That is a real playback path, not an error: the rewrite passes
+/// `#EXT-X-MEDIA` renditions through, so a channel whose audio is demuxed still plays — with sound — where
+/// the ring could only have served it silent.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_entry(
     state: &AppState,
@@ -1491,16 +2023,34 @@ pub async fn serve_entry(
     pl: Option<&str>,
     id: &crate::proxy::Identity,
     rid: &str,
-) -> axum::response::Response {
+) -> Option<axum::response::Response> {
     let lease = subscribe(state, source, entry, pl, policy);
     let origin = lease.origin().clone();
-    if !wait_ready(&origin, rid).await {
-        return crate::proxy::text(503, "stream warming up: no playable window yet");
+    match wait_ready(&origin, rid).await {
+        Ready::Yes => {}
+        Ready::Ineligible => return None,
+        Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
     }
     // Read the counter BEFORE snapshotting the window. The two are separate atomics, so an eviction landing
     // between them leaves a one-poll skew either way — but this order makes it an UNDER-count, where the tag
     // is still in the window and the client counts it itself. The other order double-counts it. (Monotonicity
     // holds regardless: the counter only ever rises.)
+    // A DEMUXED origin answers the entry with an authored MASTER over the two lanes; a muxed one answers
+    // with the single media playlist, byte-identically to before pairing existed.
+    if let Some(m) = origin.demuxed_audio() {
+        origin.touch(); // the master itself carries no segments, but it is still a live client
+        let body = render_master(mount_path, source, entry, &m, token, pl);
+        log::info("oop", rid, || {
+            format!("origin master served (1 variant + audio rendition \"{}\", {} bytes)", m.audio.name, body.len())
+        });
+        state.report(serde_json::json!({
+            "kind": "viewer", "source": source, "entryUrl": entry,
+            "ip": id.ip, "ua": id.ua, "username": id.username,
+            "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
+            "bytes": body.len() as u64,
+        }));
+        return Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()));
+    }
     let disc_seq = origin.disc_seq();
     let window = origin.window();
     let body = render_media_playlist(
@@ -1513,12 +2063,70 @@ pub async fn serve_entry(
         token,
         pl,
         disc_seq,
+        Lane::Video,
     );
     log::info("oop", rid, || {
         format!("origin manifest served ({} segment(s), {} bytes)", window.len(), body.len())
     });
     // A manifest poll is the viewer heartbeat, exactly as on the proxy path — the difference is that these
     // bytes came from RAM, so no upstream fetch was involved and none is reported.
+    state.report(serde_json::json!({
+        "kind": "viewer", "source": source, "entryUrl": entry,
+        "ip": id.ip, "ua": id.ua, "username": id.username,
+        "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
+        "bytes": body.len() as u64,
+    }));
+    Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()))
+}
+
+/// SIDE-2 PLAYLIST: one lane's authored media playlist, for a demuxed origin's authored master.
+///
+/// Answered straight from the registry like `serve_segment` — no resolve, no Node round-trip. It does NOT
+/// `subscribe`: the ingest already exists (the master could not have been served otherwise), and `window()`
+/// refreshes `last_access`, which is the half of the idle check that a lease-less reader can keep alive. That
+/// matters because the master is fetched ONCE — if the heartbeat stayed only on the entry, every demuxed
+/// channel would look idle after `IDLE_GRACE` and be reaped out from under a watching client.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_playlist(
+    state: &AppState,
+    mount_path: &str,
+    source: &str,
+    entry: &str,
+    lane: Lane,
+    token: Option<&str>,
+    pl: Option<&str>,
+    id: &crate::proxy::Identity,
+    rid: &str,
+) -> axum::response::Response {
+    let key = crate::state::target_key(source, entry);
+    let origin = match state.origins().lock_ok().get(&key) {
+        Some(o) => o.clone(),
+        None => {
+            log::warn("oop", rid, || format!("playlist {lane:?}: no live ingest for {source}"));
+            return crate::proxy::text(404, "not found: no live ingest");
+        }
+    };
+    // Same ordering rule as `serve_entry`: read the counter BEFORE the window so a concurrent eviction
+    // under-counts rather than double-counts.
+    let disc_seq = origin.disc_seq();
+    let window = origin.window();
+    let body = render_media_playlist(
+        &window,
+        origin.target_duration(),
+        mount_path,
+        source,
+        entry,
+        origin.generation(),
+        token,
+        pl,
+        disc_seq,
+        lane,
+    );
+    log::info("oop", rid, || {
+        format!("origin manifest served ({lane:?} lane, {} segment(s), {} bytes)", window.len(), body.len())
+    });
+    // The viewer heartbeat. `noteViewer` keys on (ip, ua, username, channel), so the two lanes' polls
+    // collapse to ONE viewer rather than double-counting the client.
     state.report(serde_json::json!({
         "kind": "viewer", "source": source, "entryUrl": entry,
         "ip": id.ip, "ua": id.ua, "username": id.username,
@@ -1544,6 +2152,11 @@ pub async fn serve_segment(
     let (gen_s, seq_s) = match stem.split_once('-') {
         Some(p) => p,
         None => return crate::proxy::text(400, "bad request: malformed segment name"),
+    };
+    // `<gen>-<seq>.ts` is the video/primary lane (unchanged); `<gen>-a<seq>.ts` is the demuxed audio lane.
+    let (lane, seq_s) = match seq_s.strip_prefix('a') {
+        Some(rest) => (Lane::Audio, rest),
+        None => (Lane::Video, seq_s),
     };
     let (want_gen, want_seq) = match (gen_s.parse::<u64>(), seq_s.parse::<u64>()) {
         (Ok(g), Ok(s)) => (g, s),
@@ -1571,15 +2184,27 @@ pub async fn serve_segment(
             return crate::proxy::text(404, "not found: segment evicted");
         }
     };
-    let n = seg.bytes.len() as u64;
-    log::trace("oop", rid, || format!("segment seq={want_seq} served from ring ({n} bytes)"));
+    let bytes = match lane {
+        Lane::Video => seg.bytes.clone(),
+        Lane::Audio => match seg.audio.clone() {
+            Some(b) => b,
+            // A muxed origin carries no second lane. Only a stale URL from a previous, demuxed session can
+            // ask for one, so this is the same class of miss as a stale generation.
+            None => {
+                log::trace("oop", rid, || format!("segment {file}: this origin carries no audio lane — 404"));
+                return crate::proxy::text(404, "not found: lane not carried");
+            }
+        },
+    };
+    let n = bytes.len() as u64;
+    log::trace("oop", rid, || format!("segment seq={want_seq} lane={lane:?} served from ring ({n} bytes)"));
     // Egress accounting. Ingest bytes are reported separately under kind:"iop" and must never be folded in
     // here — one upstream byte can serve N viewers, so conflating them would over-count by a factor of N.
     state.report(serde_json::json!({
         "kind": "bytes", "source": source, "entryUrl": entry,
         "ip": id.ip, "ua": id.ua, "username": id.username, "bytes": n,
     }));
-    crate::proxy::raw(200, "video/mp2t", seg.bytes.to_vec())
+    crate::proxy::raw(200, "video/mp2t", bytes.to_vec())
 }
 
 /// SIDE-2 RAW TS: one continuous `video/mp2t` socket concatenated from the ring.
@@ -1599,15 +2224,23 @@ pub async fn serve_ts(
     pl: Option<&str>,
     id: &crate::proxy::Identity,
     rid: &str,
-) -> axum::response::Response {
+) -> Option<axum::response::Response> {
     let lease = subscribe(state, source, entry, pl, policy);
-    if !wait_ready(lease.origin(), rid).await {
-        return crate::proxy::text(503, "stream warming up: no playable window yet");
+    match wait_ready(lease.origin(), rid).await {
+        Ready::Yes => {}
+        Ready::Ineligible => return None,
+        Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
     }
+    // A demuxed ring holds two elementary streams as two separate transport streams, which do not concatenate
+    // — for a long time that made `outputFormat=ts` decline here and fall back to the manifest rewrite, on
+    // exactly the source shape the origin exists for. RMX (`tsweave`) closes that: the pair is woven into ONE
+    // authored program on the way out, off the same ring the HLS lanes are rendered from.
+    let demuxed = lease.origin().demuxed_audio().is_some();
     let buffer_size_kb = policy.buffer_size_kb.load(Ordering::Relaxed);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(crate::stream::channel_capacity(buffer_size_kb));
     let ctx = TsRingCtx {
         state: state.clone(),
+        policy: policy.clone(),
         source: source.to_string(),
         entry: entry.to_string(),
         rid: rid.to_string(),
@@ -1617,17 +2250,36 @@ pub async fn serve_ts(
     };
     // The LEASE moves into the producer: a continuous stream has no polling to renew it, so the ingest must be
     // held open for the whole session and released exactly when the socket ends.
-    tokio::spawn(ts_ring_producer(lease, ctx, tx));
-    axum::response::Response::builder()
-        .status(axum::http::StatusCode::OK)
-        .header("content-type", "video/mp2t")
-        .header("cache-control", "no-store")
-        .body(axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
-        .unwrap()
+    //
+    // TWO producers rather than one loop with a branch inside it. The muxed one is proven and must keep
+    // emitting byte-identical output, so the paired shape gets its own copy — the same posture `LayoutMode`
+    // took when the demuxed arms were added, where the muxed predicates were reproduced unchanged rather than
+    // relaxed to cover both.
+    if demuxed {
+        log::info("oop", rid, || {
+            "demuxed ring — interleaving both renditions into one raw-TS socket".to_string()
+        });
+        tokio::spawn(ts_ring_pair_producer(lease, ctx, tx));
+    } else {
+        tokio::spawn(ts_ring_producer(lease, ctx, tx));
+    }
+    Some(
+        axum::response::Response::builder()
+            .status(axum::http::StatusCode::OK)
+            .header("content-type", "video/mp2t")
+            .header("cache-control", "no-store")
+            .body(axum::body::Body::from_stream(tokio_stream::wrappers::ReceiverStream::new(rx)))
+            .unwrap(),
+    )
 }
 
 struct TsRingCtx {
     state: AppState,
+    /// Carried so the producer can read `spliceNormalize` per segment, exactly as the ingest does. Without it
+    /// the kill switch covered only half its surface — a `outputFormat=ts` viewer kept getting rewritten
+    /// segments after the operator turned normalisation off, which is precisely when the switch is being used
+    /// to rule the pass in or out of a playback complaint.
+    policy: Arc<SourcePolicy>,
     source: String,
     entry: String,
     rid: String,
@@ -1676,6 +2328,13 @@ async fn ts_ring_producer(
                 splicer.reset();
             }
         }
+        // The kill switch, read per segment so a re-resolve flips it live — same contract as the ingest's.
+        // OFF serves the ring verbatim, which is the whole point of the switch: it is the operator's way to
+        // rule this pass in or out of a playback complaint without a redeploy.
+        let normalize = ctx.policy.splice_normalize.load(Ordering::Relaxed);
+        if !normalize && splicer.has_timeline() {
+            splicer.reset(); // switched off mid-stream: the timeline it was keeping no longer applies
+        }
         let mut sent_any = false;
         let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
         for seg in window.iter().filter(|s| s.seq >= from) {
@@ -1683,10 +2342,13 @@ async fn ts_ring_producer(
             // Declining is a designed outcome: a segment carrying no PSI, or a program shape the published
             // layout cannot express, is served verbatim. That reinstates the upstream splice for that one
             // segment — a visible glitch — which still beats emitting a stream we mis-rewrote.
-            let body = match splicer.normalize(&seg.bytes) {
+            let body = match normalize.then(|| splicer.normalize(&seg.bytes)).flatten() {
                 Some(bytes) => Bytes::from(bytes),
                 None => {
-                    if !warned_splice {
+                    // Only a genuine DECLINE is worth a warning. With the switch off there is nothing to
+                    // decline — serving verbatim is the requested behaviour, and saying otherwise would send
+                    // an operator hunting a stream shape that was never the problem.
+                    if normalize && !warned_splice {
                         warned_splice = true;
                         log::warn("oop", &ctx.rid, || {
                             "splice normalisation declined (no PSI, or a program shape the published layout \
@@ -1705,7 +2367,7 @@ async fn ts_ring_producer(
                 if pending_bytes > 0 {
                     ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
                 }
-                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
                 return;
             }
         }
@@ -1727,28 +2389,194 @@ async fn ts_ring_producer(
     if pending_bytes > 0 {
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
-    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    // Single predecessor (the ingest-stopping break above), so this can be a literal.
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "ingest_stopped" }));
     log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id})"));
+}
+
+/// SIDE-2 RAW TS, DEMUXED (S3/RMX): follow the ring, weaving each PAIR into one socket.
+///
+/// A deliberate sibling of `ts_ring_producer` rather than a branch inside it — the muxed path is proven and
+/// must keep emitting byte-identical output. Everything around the per-segment step is the same by design:
+/// same lease-held-for-the-session contract, same open/sbytes/close telemetry, same start-at-the-oldest-held
+/// join, same fell-behind-the-ring handling, same 30 s park on `wait_for_segment`.
+///
+/// The step itself is what differs. `tsweave::PairWeaver` is per-SESSION for the same reason the muxed
+/// producer's `Splicer` is: a bare TS socket has no `#EXT-X-DISCONTINUITY` to splice with, and two viewers who
+/// joined the ring at different points sit at different points on their own output timelines.
+async fn ts_ring_pair_producer(
+    lease: OriginLease,
+    ctx: TsRingCtx,
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) {
+    let origin = lease.origin().clone();
+    let stream_id = ctx.state.next_stream_id();
+    log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved session open ({stream_id})"));
+    ctx.state.report(serde_json::json!({
+        "kind": "open", "streamId": stream_id, "source": ctx.source, "entryUrl": ctx.entry,
+        "ip": ctx.ip, "ua": ctx.ua, "username": ctx.username, "playerType": "externalPlayer",
+    }));
+
+    // Start at the OLDEST segment held — the ring doubles as the client's initial buffer, exactly as on the
+    // muxed path.
+    let mut next_seq = origin.window().first().map(|s| s.seq).unwrap_or(0);
+    let mut pending_bytes: u64 = 0;
+    let mut last_flush = Instant::now();
+    let mut weaver = crate::tsweave::PairWeaver::new();
+    // Latched per DISTINCT reason, like the ingest's — one latch would hide whether a pod edge declines for
+    // the same cause every time (a shape to handle) or a different one each time (a bug in the pass).
+    let mut warned_declines: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut consecutive_declines: u32 = 0;
+    let mut warned_switch = false;
+    // Two paths reach this producer's close emit — the ingest-stopping `break` and the declines `break 'outer`
+    // — so unlike the muxed producer's single-predecessor epilogue, the reason has to be threaded.
+    let mut close_reason = "ingest_stopped";
+
+    'outer: loop {
+        let window = origin.window();
+        // Fell off the back of the ring — same diagnosis and same remedy as the muxed producer.
+        if let Some(front) = window.first() {
+            if next_seq < front.seq {
+                log::warn("oop", &ctx.rid, || {
+                    format!("client fell behind the ring (wanted seq={next_seq}, oldest held={}) — skipping ahead; raise originRingMb if this repeats", front.seq)
+                });
+                next_seq = front.seq;
+                // The skipped media is gone, so re-anchor rather than spacing the next pair against a clock
+                // whose media the client never received. This also drops the seam carry-over.
+                weaver.reset();
+            }
+        }
+        // `spliceNormalize` deliberately does NOT gate this path, and saying so once is the honest thing: it
+        // is the kill switch for splice ABSORPTION, but folding two renditions into one program requires
+        // authored PSI and a shared clock to exist at all. Turning the weave off means asking for HLS.
+        if !ctx.policy.splice_normalize.load(Ordering::Relaxed) && !warned_switch {
+            warned_switch = true;
+            log::info("oop", &ctx.rid, || {
+                "spliceNormalize is off, but interleaving still applies the pid remap and the shared clock — \
+                 a single program cannot be authored without them; set outputFormat=hls to publish the two \
+                 renditions untouched"
+                    .to_string()
+            });
+        }
+        let mut sent_any = false;
+        let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
+        for seg in window.iter().filter(|s| s.seq >= from) {
+            next_seq = seg.seq + 1;
+            // Unlike the muxed path there is NO serve-verbatim fallback: one transport stream concatenates,
+            // two do not. A pair we cannot publish is skipped, which costs one segment of media and keeps the
+            // published program stable — the alternative is emitting a stream we mis-authored.
+            let woven = seg.audio.as_ref().and_then(|a| weaver.weave(&seg.bytes, a));
+            let body = match woven {
+                Some(b) => {
+                    consecutive_declines = 0;
+                    Bytes::from(b)
+                }
+                None => {
+                    let why = match seg.audio.as_ref() {
+                        Some(_) => weaver.last_decline().to_string(),
+                        // The origin re-resolved onto a muxed upstream mid-session. Ending on the decline cap
+                        // is the recovery: the client reconnects and dispatches to `ts_ring_producer`.
+                        None => "the ring entry carries no audio lane".to_string(),
+                    };
+                    weaver.reset();
+                    consecutive_declines += 1;
+                    if warned_declines.insert(why.clone()) {
+                        log::warn("oop", &ctx.rid, || {
+                            format!("interleave declined — {why}; skipping the pair")
+                        });
+                    }
+                    if consecutive_declines >= MAX_PAIR_DECLINES {
+                        log::error("oop", &ctx.rid, || {
+                            format!("{consecutive_declines} consecutive pairs declined ({why}) — ending the socket rather than holding it open with no media")
+                        });
+                        close_reason = "pair_declines";
+                        break 'outer;
+                    }
+                    continue;
+                }
+            };
+            pending_bytes += body.len() as u64;
+            sent_any = true;
+            if tx.send(Ok(body)).await.is_err() {
+                // Client disconnected — the receiver dropped. Close out and release the lease.
+                log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved client disconnected ({stream_id})"));
+                if pending_bytes > 0 {
+                    ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+                }
+                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
+                return;
+            }
+        }
+        if pending_bytes > 0 && last_flush.elapsed() >= Duration::from_secs(1) {
+            ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+            pending_bytes = 0;
+            last_flush = Instant::now();
+        }
+        if !sent_any {
+            // Nothing new yet — wait for the ingest to push rather than spinning on the ring.
+            let _ = tokio::time::timeout(Duration::from_secs(30), origin.wait_for_segment()).await;
+            // The ingest died (idle-stopped or the upstream ended) and drained: end the socket cleanly.
+            if origin.stopping.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    }
+
+    if pending_bytes > 0 {
+        ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+    }
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
+    log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved session close ({stream_id})"));
 }
 
 /// Emit the Side-1 telemetry event. Distinct `kind` from every egress event so Node can attribute ingest
 /// health separately — ingest bytes must NEVER be folded into the egress byte counters, or one upstream byte
 /// serving N viewers would be counted N+1 times.
 fn report_iop(ctx: &IngestCtx, status: &str) {
+    // Bound BEFORE the macro: one ring read guard for the four window-derived numbers, and `json!` cannot
+    // destructure. Everything else on the frame is a plain atomic load.
+    let rs = ctx.origin.ring_stats();
     ctx.state.report(serde_json::json!({
         "kind": "iop",
         "source": ctx.source,
         "entryUrl": ctx.entry,
         "status": status,
         "subscribers": ctx.origin.subscribers.load(Ordering::Relaxed),
-        "ringSegments": ctx.origin.ring_depth(),
+        "ringSegments": rs.segments,
         "ringBytes": ctx.origin.ring_bytes.load(Ordering::Relaxed),
+        // This channel's LIVE applied cap — the denominator `ringBytes` never had. Deliberately not named
+        // `ringCapBytes`: that key is already taken by the process-wide `ring` frame, where it means the Σ of
+        // every origin's cap. On a flat, untagged event interface one key must mean one thing.
+        "channelRingCapBytes": ctx.origin.ring_cap_bytes.load(Ordering::Relaxed),
+        // Σ of the held segments' real durations, not `segments × targetDuration`.
+        "ringSeconds": rs.seconds,
+        // We are over cap on purpose: the `MIN_SEGMENTS` floor won, i.e. this channel's bitrate does not fit
+        // its `originRingMb`. Fill% legitimately exceeds 100 while this is true.
+        "floorBeatsCap": rs.floor_beat_cap,
         "headSeq": ctx.origin.next_seq.load(Ordering::Relaxed),
         "generation": ctx.origin.generation(),
+        // The two discontinuity counts are DISJOINT: `discSeq` is RFC 8216's
+        // `EXT-X-DISCONTINUITY-SEQUENCE` — tags that have already aged out of the window — while
+        // `discInWindow` counts the ones still in it. Neither is a lifetime total on its own.
+        "discSeq": ctx.origin.disc_seq(),
+        "discInWindow": rs.disc_in_window,
         "ingestedSegments": ctx.origin.ingested_segments.load(Ordering::Relaxed),
         "ingestedBytes": ctx.origin.ingested_bytes.load(Ordering::Relaxed),
         "evictedSegments": ctx.origin.evicted_segments.load(Ordering::Relaxed),
         "targetDuration": ctx.origin.target_duration(),
+        // The two structural facts that decide whether this origin is authoring output at all. `ineligible`
+        // is the reason string set when the origin DECLINED the upstream (fMP4 / SAMPLE-AES / unpairable
+        // audio) and the rewrite path took over serving — from Node's side that is indistinguishable from a
+        // healthy origin, because the ingest keeps a live `iop` frame either way.
+        "demuxed": ctx.origin.demuxed_audio.read_ok().is_some(),
+        "ineligible": ctx.origin.ineligible(),
+        // What the upstream actually IS, as opposed to what we serve. Null until the first resolve completes.
+        "upstreamShape": ctx.origin.upstream_shape.read_ok().clone(),
+        "encryption": ctx.origin.encryption.read_ok().clone(),
+        // S3/UND: null until an upstream is retired for a structural fault. Present ⇒ this channel has been
+        // hopping providers, which every byte-level metric here would otherwise show as perfectly healthy.
+        "suspect": ctx.origin.last_suspect.read_ok().clone(),
+        "suspectRetires": ctx.origin.suspect_retires.load(Ordering::Relaxed),
     }));
 }
 
@@ -1772,7 +2600,6 @@ fn report_cue(ctx: &IngestCtx, state: &str, b: &AdBreak) {
         "durationSec": b.seconds,
         "announcedSec": b.announced,
         "profileChanged": b.profile_changed,
-        "replaced": b.replaced,
     }));
 }
 
@@ -1820,8 +2647,7 @@ mod tests {
             bytes: Bytes::from(vec![0x47u8; bytes]),
             discontinuity: false,
             pdt: SystemTime::UNIX_EPOCH,
-            ad: false,
-            break_id: 0,
+            audio: None,
         }
     }
 
@@ -1836,6 +2662,7 @@ mod tests {
             duration: 5.0,
             discontinuity: disc,
             cue: None,
+            pdt_ms: None,
         }
     }
 
@@ -1843,7 +2670,7 @@ mod tests {
     fn ring_evicts_oldest_to_stay_under_the_byte_cap() {
         let o = Origin::new(1000); // 1000-byte cap
         for i in 0..10 {
-            o.push(seg(i, 200), true);
+            o.push(seg(i, 200));
         }
         let ring = o.ring.read_ok();
         assert!(o.ring_bytes.load(Ordering::Relaxed) <= 1000, "ring must respect the cap");
@@ -1853,12 +2680,111 @@ mod tests {
         assert_eq!(ring.back().unwrap().seq, 9);
     }
 
+    // ── demuxed pairing (PDT vs the media-sequence index) ────────────────────────────────────────────────
+
+    /// A media playlist whose segments are dated from `base_ms`, at `media_sequence`.
+    fn lane(media_sequence: i64, base_ms: i64, n: usize, dur: f64, dated: bool) -> crate::tsmux::MediaPlaylist {
+        let mut body = format!("#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:{media_sequence}\n");
+        if dated {
+            // Only the head is dated; the rest derive by #EXTINF, exactly as pluto publishes it.
+            body.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(
+                SystemTime::UNIX_EPOCH + Duration::from_millis(base_ms as u64),
+            )));
+        }
+        for i in 0..n {
+            body.push_str(&format!("#EXTINF:{dur},\nseg{}.ts\n", media_sequence + i as i64));
+        }
+        crate::tsmux::parse_media_playlist(&body)
+    }
+
+    /// THE REGRESSION, reproduced from the live trace: after a pluto session renewal the fresh video playlist
+    /// opens at media-sequence 10 while the audio opens at 11 **for the same media**. Index pairing then puts
+    /// every pair one segment out; PDT pairing is immune because it dates the media, not the numbering.
+    #[test]
+    fn a_renumbered_audio_lane_still_pairs_on_program_date_time() {
+        const BASE: i64 = 1_786_183_180_000;
+        let v = lane(10, BASE, 5, 5.0, true);
+        // Same media, same wall clock — but numbered from 11, and the audio ladder is AAC-quantised.
+        let a = lane(11, BASE, 5, 4.992, true);
+
+        for (i, vs) in v.segments.iter().enumerate() {
+            let useq = v.media_sequence + i as i64;
+            match pair_audio(vs, useq, &a) {
+                PairPick::Found(p) => {
+                    let d = (p.pdt_ms.unwrap() - vs.pdt_ms.unwrap()).abs();
+                    assert!(d < 100, "seq {useq} paired to media {d} ms away — that is a different segment");
+                }
+                _ => panic!("seq {useq} failed to pair despite the audio being present"),
+            }
+        }
+
+        // …and the old key really would have mispaired: index 0 of the audio lane is one segment out.
+        let idx = v.media_sequence - a.media_sequence; // -1 → the old code's "audio is ahead" drop
+        assert_eq!(idx, -1, "the renumbering is exactly the off-by-one the live trace showed");
+    }
+
+    #[test]
+    fn an_aligned_pair_picks_the_same_segment_as_the_index_did() {
+        // The no-regression case: where the two lanes agree on numbering, PDT pairing must be a no-op.
+        const BASE: i64 = 1_786_183_180_000;
+        let v = lane(40, BASE, 5, 5.0, true);
+        let a = lane(40, BASE, 5, 4.992, true);
+        for (i, vs) in v.segments.iter().enumerate() {
+            let useq = v.media_sequence + i as i64;
+            let by_pdt = match pair_audio(vs, useq, &a) {
+                PairPick::Found(p) => p.uri.clone(),
+                _ => panic!("aligned pair must resolve"),
+            };
+            let by_index = a.segments[(useq - a.media_sequence) as usize].uri.clone();
+            assert_eq!(by_pdt, by_index, "seq {useq}: PDT and index must agree on an aligned source");
+        }
+    }
+
+    #[test]
+    fn a_lane_without_program_date_time_falls_back_to_the_index() {
+        // A source that publishes no PDT must behave exactly as before this change.
+        let v = lane(10, 0, 3, 5.0, false);
+        let a = lane(10, 0, 3, 5.0, false);
+        match pair_audio(&v.segments[1], 11, &a) {
+            PairPick::Found(p) => assert_eq!(p.uri, "seg11.ts", "index pairing still selects positionally"),
+            _ => panic!("the fallback must still pair"),
+        }
+        // …including its rolled-past arm.
+        assert!(matches!(pair_audio(&v.segments[0], 9, &a), PairPick::RolledPast));
+    }
+
+    #[test]
+    fn an_audio_lane_that_has_not_caught_up_holds_rather_than_mispairs() {
+        // The video is ahead of everything the audio has published: HOLD, so the pair completes next poll.
+        const BASE: i64 = 1_786_183_180_000;
+        let v = lane(10, BASE + 60_000, 2, 5.0, true);
+        let a = lane(10, BASE, 3, 5.0, true);
+        assert!(matches!(pair_audio(&v.segments[0], 10, &a), PairPick::NotYet));
+
+        // …and the mirror image: the audio window has rolled past, so the pair can never complete.
+        let v2 = lane(10, BASE, 2, 5.0, true);
+        let a2 = lane(10, BASE + 60_000, 3, 5.0, true);
+        assert!(matches!(pair_audio(&v2.segments[0], 10, &a2), PairPick::RolledPast));
+    }
+
+    #[test]
+    fn the_tolerance_separates_aac_jitter_from_a_whole_segment_out() {
+        // Measured live: a healthy pluto pair agrees to ~20 ms, a mispair is ~5000 ms. The tolerance has to
+        // sit well clear of both.
+        let tol = pair_tolerance_ms(5.0, 5.0);
+        assert_eq!(tol, 2_500);
+        assert!(tol > 20 * 10, "AAC's ~21 ms quantisation is far inside tolerance");
+        assert!(tol < 5_000 / 2 + 1, "a whole segment out is far outside it");
+        // No ladder at all still yields a usable tolerance rather than zero.
+        assert!(pair_tolerance_ms(0.0, 0.0) > 0);
+    }
+
     #[test]
     fn min_segments_floor_beats_the_byte_cap() {
         // Each segment alone blows the cap — without the floor the ring would hold 1 and be unplayable.
         let o = Origin::new(100);
         for i in 0..6 {
-            o.push(seg(i, 10_000), true);
+            o.push(seg(i, 10_000));
         }
         assert_eq!(o.ring_depth(), MIN_SEGMENTS, "floor holds a playable window");
         assert!(o.floor_beat_cap(), "and reports that the cap could not be honored");
@@ -1869,7 +2795,7 @@ mod tests {
     fn cap_is_honored_when_bitrate_fits_so_no_floor_warning() {
         let o = Origin::new(10_000);
         for i in 0..20 {
-            o.push(seg(i, 500), true);
+            o.push(seg(i, 500));
         }
         assert!(o.ring_depth() > MIN_SEGMENTS);
         assert!(!o.floor_beat_cap(), "a fitting bitrate must not warn");
@@ -1880,8 +2806,8 @@ mod tests {
         let watched = Arc::new(Origin::new(10_000));
         let idle = Arc::new(Origin::new(4_000));
         for i in 0..3 {
-            watched.push(seg(i, 500), true); // 1500 bytes, under its cap
-            idle.push(seg(i, 200), true); // 600 bytes, under its cap
+            watched.push(seg(i, 500)); // 1500 bytes, under its cap
+            idle.push(seg(i, 200)); // 600 bytes, under its cap
         }
         watched.subscribers.store(2, Ordering::Relaxed);
         // `idle` keeps zero subscribers: it is inside its IDLE_GRACE window, still holding RAM. Counting it in
@@ -1909,7 +2835,7 @@ mod tests {
         let o = Origin::new(10_000);
         for i in 0..4 {
             let s = o.next_seq.fetch_add(1, Ordering::Relaxed);
-            o.push(seg(s as usize, 100), true);
+            o.push(seg(s as usize, 100));
             assert_eq!(s, i);
         }
         let gen_before = o.generation();
@@ -2023,48 +2949,6 @@ mod tests {
         // which escalates through failover instead of quietly declaring the stream complete.
     }
 
-    // ── S3/CUE Phase 2: the filler pool ──────────────────────────────────────────────────────────────────
-
-    fn ad_seg(n: usize) -> Segment {
-        Segment { ad: true, break_id: 1, ..seg(n, 100) }
-    }
-
-    #[test]
-    fn program_tail_takes_the_newest_program_segments_oldest_first() {
-        let o = Origin::new(1_000_000);
-        for i in 0..6 {
-            o.push(seg(i, 100), true);
-        }
-        let tail = o.program_tail(3);
-        assert_eq!(tail.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![3, 4, 5], "newest three, in play order");
-    }
-
-    /// The pool must skip a PREVIOUS break's filler, which is itself marked as break content. Looping a loop
-    /// would compound the repetition — the viewer would see the same few seconds twice over.
-    #[test]
-    fn program_tail_skips_break_content() {
-        let o = Origin::new(1_000_000);
-        for i in 0..3 {
-            o.push(seg(i, 100), true); // program
-        }
-        for i in 3..8 {
-            o.push(ad_seg(i), true); // a break (or the filler that replaced it)
-        }
-        let tail = o.program_tail(3);
-        assert_eq!(tail.iter().map(|s| s.seq).collect::<Vec<_>>(), vec![0, 1, 2], "reaches past the break");
-        assert!(tail.iter().all(|s| !s.ad));
-    }
-
-    #[test]
-    fn program_tail_is_empty_when_the_ring_holds_no_program() {
-        // Nothing to loop ⇒ the caller must decline to substitute and serve the ad instead.
-        let o = Origin::new(1_000_000);
-        for i in 0..4 {
-            o.push(ad_seg(i), true);
-        }
-        assert!(o.program_tail(3).is_empty());
-    }
-
     // ── S3/CUE: ad classification ────────────────────────────────────────────────────────────────────────
     // All URIs below are VERBATIM from a live pluto capture (2026-08-06) that caught a full ~2 min pod of 5
     // creatives. The signature list is what the pluto adapter declares, already lowercased by state.rs.
@@ -2119,6 +3003,7 @@ mod tests {
             duration: 5.0,
             discontinuity: false,
             cue: Some(crate::tsmux::CueState { kind: CueKind::CueOut, duration: 30.0 }),
+            pdt_ms: None,
         };
         let url = Url::parse(PGM_URI).unwrap();
         assert_eq!(ad_signal(&cued, &url, &[]), Some(AdSignal::CueTag), "believed even with no signature");
@@ -2137,6 +3022,7 @@ mod tests {
             duration: 5.0,
             discontinuity: false,
             cue: Some(crate::tsmux::CueState { kind: CueKind::DateRange, duration: 120.0 }),
+            pdt_ms: None,
         };
         assert_eq!(ad_signal(&seg, &Url::parse(PGM_URI).unwrap(), &[]), Some(AdSignal::DateRange));
     }
@@ -2160,8 +3046,7 @@ mod tests {
                     bytes: Bytes::from(vec![0x47u8; 10]),
                     discontinuity: disc_at.contains(&i),
                     pdt: SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433),
-                    ad: false,
-                    break_id: 0,
+                    audio: None,
                 })
             })
             .collect()
@@ -2178,6 +3063,7 @@ mod tests {
             Some("tok123"),
             Some("testplaylist"),
             0,
+            Lane::Video,
         )
     }
 
@@ -2214,6 +3100,67 @@ mod tests {
         let uris: Vec<&str> = m.lines().filter(|l| l.contains("/o/")).collect();
         assert_eq!(uris.len(), 4);
         assert!(uris.iter().all(|u| u.contains("token=tok123")), "no segment may be servable without the token");
+    }
+
+    // ── demuxed rendering ────────────────────────────────────────────────────────────────────────────────
+
+    fn render_lane(w: &[Arc<Segment>], lane: Lane) -> String {
+        render_media_playlist(w, 5.0, "/api/ext/v1", "pluto", "pluto://us_east/abc", 3, Some("tok123"), Some("pl1"), 9, lane)
+    }
+
+    /// THE rendering invariant: one window, two renderings. hls.js aligns renditions by (media sequence,
+    /// discontinuity sequence) and interpolates within a PDT anchor, so any disagreement between the two
+    /// documents would place the audio on a different timeline from the video.
+    #[test]
+    fn both_lanes_render_identically_apart_from_the_segment_uris() {
+        let w = window(4, &[2]);
+        let strip = |m: String| {
+            m.lines().filter(|l| !l.contains("/o/")).map(|l| l.to_string()).collect::<Vec<_>>().join("\n")
+        };
+        assert_eq!(
+            strip(render_lane(&w, Lane::Video)),
+            strip(render_lane(&w, Lane::Audio)),
+            "sequence, discontinuity positions, PDT anchors and #EXTINF must be identical"
+        );
+        let v: Vec<String> = render_lane(&w, Lane::Video).lines().filter(|l| l.contains("/o/")).map(String::from).collect();
+        let a: Vec<String> = render_lane(&w, Lane::Audio).lines().filter(|l| l.contains("/o/")).map(String::from).collect();
+        assert_eq!(v.len(), a.len());
+        assert!(v[0].contains("/o/") && v[0].contains("/3-100.ts"), "the video lane's shape is unchanged: {}", v[0]);
+        assert!(a[0].contains("/3-a100.ts"), "the audio lane carries the `a` marker: {}", a[0]);
+    }
+
+    #[test]
+    fn the_authored_master_points_only_at_our_own_playlists() {
+        let m = render_master(
+            "/api/ext/v1",
+            "pluto",
+            "pluto://us_east/abc",
+            &DemuxedMaster {
+                audio: crate::tsmux::AudioRendition {
+                    group: "audio".into(),
+                    url: Url::parse("https://siloh-ns1.plutotv.net/live/audio/audio.m3u8").unwrap(),
+                    name: "English [Original]".into(),
+                    language: "en".into(),
+                    default: true,
+                    autoselect: true,
+                    describes_video: false,
+                },
+                bandwidth: 3_321_280,
+            },
+            Some("tok123"),
+            Some("pl1"),
+        );
+        // The same "clean" contract the media playlists are held to: no upstream host, no vendor tag, no hop.
+        assert!(!m.contains("plutotv.net"), "no upstream host may leak into the authored master:\n{m}");
+        assert!(!m.contains("/h/"), "no hop URIs");
+        assert!(m.contains("#EXT-X-VERSION:4"), "#EXT-X-MEDIA is a version-4 tag");
+        assert!(m.contains("BANDWIDTH=3321280"), "RFC 8216 makes BANDWIDTH required");
+        assert!(m.contains("LANGUAGE=\"en\""), "upstream's own labelling is carried through");
+        assert!(m.contains("/o/") && m.contains("/a.m3u8?token=tok123&pl=pl1"), "audio rendition is ours:\n{m}");
+        assert!(m.contains("/v.m3u8?token=tok123&pl=pl1"), "so is the variant:\n{m}");
+        // The generation must NOT appear: the master is fetched once and the playlists polled forever, so a
+        // ring reset would otherwise 404 the live session permanently.
+        assert!(!m.contains("/3-"), "no generation in a playlist path:\n{m}");
     }
 
     #[test]
@@ -2270,7 +3217,7 @@ mod tests {
         for i in 0..12 {
             let mut s = seg(i, 500);
             s.discontinuity = i == 1 || i == 2; // two tags, both destined to be evicted
-            o.push(s, true);
+            o.push(s);
         }
         assert!(o.ring_depth() < 12, "the cap must have evicted something for this to test anything");
         assert_eq!(o.disc_seq(), 2, "both evicted tags counted, the surviving segments' tags not");
@@ -2284,7 +3231,7 @@ mod tests {
         for i in 0..5 {
             let mut s = seg(i, 100);
             s.discontinuity = i >= 3;
-            o.push(s, true);
+            o.push(s);
         }
         assert_eq!(o.disc_seq(), 0, "nothing evicted while the ring had room");
         let before = o.disc_seq();
@@ -2298,7 +3245,7 @@ mod tests {
     fn the_discontinuity_sequence_tag_is_always_present() {
         // Omitting it is not "0 by default": it pins the published value at 0 while the true count climbs.
         assert!(render(&window(3, &[])).contains("#EXT-X-DISCONTINUITY-SEQUENCE:0"));
-        let m = render_media_playlist(&window(2, &[]), 5.0, "/api/ext/v1", "s", "e", 0, None, None, 42);
+        let m = render_media_playlist(&window(2, &[]), 5.0, "/api/ext/v1", "s", "e", 0, None, None, 42, Lane::Video);
         assert!(m.contains("#EXT-X-DISCONTINUITY-SEQUENCE:42"));
     }
 
@@ -2307,13 +3254,13 @@ mod tests {
         // A playlist whose TARGETDURATION is below any #EXTINF is rejected by players.
         let mut w = window(2, &[]);
         w[1] = Arc::new(Segment { duration: 5.005, ..(*w[1]).clone() });
-        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None, 0);
+        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None, 0, Lane::Video);
         assert!(m.contains("#EXT-X-TARGETDURATION:6"), "must ceil above the longest EXTINF");
     }
 
     #[test]
     fn generation_appears_in_segment_paths_so_stale_urls_can_404() {
-        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None, 0);
+        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None, 0, Lane::Video);
         assert!(m.contains("/7-100.ts"), "generation is part of the path");
     }
 

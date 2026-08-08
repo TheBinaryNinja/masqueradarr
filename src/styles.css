@@ -768,6 +768,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   left: 18px;
   background: white;
 }
+/* Matches the native `:disabled` treatment the inputs beside it get — a dependent control has to read as
+   unavailable, not merely as off. */
+.toggle.disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  box-shadow: none;
+}
 
 /* Checkbox (cyan filled) */
 .cbx {
@@ -2665,7 +2672,9 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .stream-detail-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; }
 /* The Connected sessions card sizes to its content (header + the capped, self-scrolling sessions table);
-   it must NOT absorb leftover height — the panel does not scroll, the sessions table is the only scroller. */
+   it must NOT absorb leftover height. NOTE: `.stream-detail-main` IS itself a scroller — see the scoped
+   `overflow-y: auto` in ActiveStreamsScreen.vue, added so a column taller than the fixed-height panel
+   scrolls instead of clipping the sessions rows. It is also the named query container for the stage rail. */
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
