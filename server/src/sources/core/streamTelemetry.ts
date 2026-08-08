@@ -261,11 +261,22 @@ export interface MediaInfo {
 
 const mediaByChannel = new Map<string, MediaInfo>(); // channelKey → merged decode metadata
 
-/** Merge manifest-declared decode metadata for a channel (only the non-null fields of this poll overwrite). */
-export function noteMedia(source: string, entryUrl: string, m: MediaInfo): void {
+/**
+ * Record manifest-declared decode metadata for a channel.
+ *
+ * TWO producers with genuinely different semantics, hence `replace`:
+ *  - The passthrough rewriter polls the master and the media playlist SEPARATELY, so each frame is partial
+ *    and `null` means "no update this poll" — those must MERGE, or the master's resolution would be erased
+ *    by the next variant poll. That is the default.
+ *  - The origin resolver extracts both playlists in ONE pass, so its frame is a COMPLETE snapshot of the
+ *    upstream it just resolved and `null` means "this upstream declares nothing". Merging those would pin a
+ *    retired provider's resolution/bandwidth forever across a failover or an escalation onto a leaner
+ *    upstream — and that stale bandwidth is what the panel compares the served bitrate against.
+ */
+export function noteMedia(source: string, entryUrl: string, m: MediaInfo, replace = false): void {
   const key = streamKey(source, entryUrl);
   const cur = mediaByChannel.get(key);
-  if (!cur) {
+  if (!cur || replace) {
     mediaByChannel.set(key, { ...m });
     return;
   }
@@ -313,6 +324,65 @@ export function pruneFailoverServing(activeKeys: Set<string>): void {
   for (const key of failoverByChannel.keys()) if (!activeKeys.has(key)) failoverByChannel.delete(key);
 }
 
+// ── Upstream attribution: which HOST is actually carrying this channel ─────────────────────────────────
+// The channel row names a SOURCE (`dlhd`), which for a multi-provider source says nothing about which of its
+// interchangeable providers is on air right now. The resolve seam knows — it just discarded it. Same
+// in-memory idiom and the same (parent source, parent entry) key as the failover map above, so a child
+// serving under its parent's identity files its host under the parent, where statsHub can join it.
+
+const hostByChannel = new Map<string, string>(); // channelKey → entry-hop host
+
+/** Record the host a channel's grant currently resolves to. Callers MUST pass the caller's own (source,
+ *  entryUrl), never a resolved candidate's — see noteFailoverServing for why. */
+export function noteUpstreamHost(source: string, entryUrl: string, host: string): void {
+  hostByChannel.set(streamKey(source, entryUrl), host);
+}
+
+/** The entry-hop host serving a channel (null = nothing resolved yet). NOT necessarily the host serving
+ *  segments: the data plane grows its allow-set from each manifest, so segments routinely come from a
+ *  different CDN host than the master. */
+export function upstreamHostFor(channelKey: string): string | null {
+  return hostByChannel.get(channelKey) ?? null;
+}
+
+/** Drop host attribution for channels no longer active (statsHub calls this with the live key set). */
+export function pruneUpstreamHost(activeKeys: Set<string>): void {
+  for (const key of hostByChannel.keys()) if (!activeKeys.has(key)) hostByChannel.delete(key);
+}
+
+// ── The proxy config a stream was actually GRANTED ──────────────────────────────────────────────────────
+// Answers the one question the panel could not: "I set Raw-TS and I am still being served HLS — why?" The
+// served half is `delivery`; this is the requested half, captured where it is resolved rather than re-read
+// from the DB (a re-read answers a different question — what is configured NOW, not what this stream got).
+
+/** The four scalars only. Deliberately NOT the runtime config object: that carries operator-supplied
+ *  `headerOverrides`, which can hold Authorization/Cookie values, and this shape is broadcast verbatim to
+ *  every connected admin socket. Keeping it narrow also keeps this DB-free core free of a Mongo-adjacent
+ *  type. */
+export interface RequestedConfig {
+  outputFormat: string;
+  originEnabled: boolean;
+  originRingMb: number;
+  spliceNormalize: boolean;
+}
+
+const requestedByChannel = new Map<string, RequestedConfig>(); // channelKey → config resolved into the grant
+
+/** Record the proxy config resolved into a channel's grant. */
+export function noteRequestedConfig(source: string, entryUrl: string, c: RequestedConfig): void {
+  requestedByChannel.set(streamKey(source, entryUrl), c);
+}
+
+/** The config a channel's current grant was built from (null = nothing granted yet). */
+export function requestedConfigFor(channelKey: string): RequestedConfig | null {
+  return requestedByChannel.get(channelKey) ?? null;
+}
+
+/** Drop requested config for channels no longer active (statsHub calls this with the live key set). */
+export function pruneRequestedConfig(activeKeys: Set<string>): void {
+  for (const key of requestedByChannel.keys()) if (!activeKeys.has(key)) requestedByChannel.delete(key);
+}
+
 // ── S3/ORIGIN ingest health (the `iop` side) ───────────────────────────────────────────────────────────
 // Everything else in this file measures EGRESS — bytes we sent to a viewer. Origin mode adds a second,
 // independent quantity: what ONE ingest pulled from upstream on behalf of N viewers. Conflating them would
@@ -325,12 +395,32 @@ export interface IngestHealth {
   subscribers: number; // live leases (viewers sharing this one ingest)
   ringSegments: number;
   ringBytes: number;
+  /** THIS channel's live applied cap in bytes — the denominator `ringBytes` needs to mean anything. NOT the
+   *  configured `originRingMb` (a shrink is applied lazily) and NOT the process-wide Σ that
+   *  `noteRingFootprint` carries; all three legitimately differ at the same instant. */
+  channelRingCapBytes: number;
+  /** Σ of the held segments' own durations — the real window length, as opposed to
+   *  `ringSegments × targetDuration`, which over-reads by each segment's gap below the window max. */
+  ringSeconds: number;
+  /** The byte cap could not be honored because the MIN_SEGMENTS floor won: this channel's bitrate does not
+   *  fit its ring budget. While true, `ringBytes` legitimately exceeds `channelRingCapBytes`. */
+  floorBeatsCap: boolean;
   headSeq: number; // our next sequence — monotonic for the life of the ingest
   generation: number; // bumped on a failover ring reset
+  /** RFC 8216's EXT-X-DISCONTINUITY-SEQUENCE: discontinuity tags that have already LEFT the window. */
+  discSeq: number;
+  /** Discontinuity tags still INSIDE the window. Disjoint from `discSeq` — never sum the two. */
+  discInWindow: number;
   ingestedSegments: number;
   ingestedBytes: number; // UPSTREAM bytes — distinct from egress; one of these can serve N viewers
   evictedSegments: number;
   targetDuration: number;
+  /** True when the origin paired a separate audio rendition into every segment (a DEMUXED upstream). */
+  demuxed: boolean;
+  /** Non-null ⇒ the origin DECLINED this upstream (fMP4 / SAMPLE-AES / unpairable audio) and the rewrite
+   *  path is serving the client instead. The ingest keeps reporting either way, so without this field a
+   *  declined channel is indistinguishable from a healthy ring-backed one. */
+  ineligible: string | null;
   at: number; // Date.now() of the last iop event — staleness tells you an ingest stopped reporting
   /** S3/UND: slug of the last structural fault that retired an upstream (`undecodable-video`,
    *  `not-transport-stream`), or null if none. Non-null means this channel has been hopping providers —
@@ -757,6 +847,18 @@ export interface ClientTelemetry {
   bytes: number;
   currentRate: number; // bytes/sec
   segments: number;
+  /** Per-viewer QoE that the aggregate egress rate cannot show — one stalling client is invisible in a
+   *  channel-wide Mbps figure.
+   *
+   *  THE TWO ARE DELIBERATELY OUT OF STEP. `bufferCount` is incremented when an interval OPENS; `rebufferMs`
+   *  is folded in only when it CLOSES. So a viewer stalling RIGHT NOW is already counted while contributing
+   *  no milliseconds yet, and `1 stall · 0.0 s` is a correct reading, not a bug. Anything rendering these
+   *  must say so — calling the count "completed intervals" describes the data backwards. */
+  bufferCount: number;
+  rebufferMs: number;
+  /** This viewer holds a continuous raw-TS SOCKET rather than polling HLS segments. Explains why one row's
+   *  cadence and byte pattern differ completely from its neighbours' on the same channel. */
+  socketBound: boolean;
   // GeoIP enrichment — left unset by this DB-free core; filled in by the activeStreams route (which owns the
   // geoip lookup) so the response shape stays a single shared type the SPA's StreamClient mirrors.
   location?: string | null;
@@ -775,6 +877,13 @@ export function clientsFor(channelKey: string): ClientTelemetry[] {
     bytes: c.bytes,
     currentRate: c.currentRate,
     segments: c.segments,
+    bufferCount: c.bufferCount,
+    rebufferMs: c.rebufferMs,
+    // `socketBound` is optional on ClientConn — only noteSocketViewerOpen sets it — so it is normalised here
+    // rather than published as `boolean | undefined`.
+    socketBound: c.socketBound === true,
+    // `bufferEvents` is deliberately NOT projected: it is an unbounded array only truncated at session close,
+    // and this shape rides a 4 s poll.
   }));
 }
 

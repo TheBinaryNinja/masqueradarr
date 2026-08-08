@@ -42,8 +42,10 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //  · iop      — S3/ORIGIN Side-1 (the per-channel INGEST). The only INGRESS-side kind: every other event
 //    above measures what we sent to a viewer. Once one ingest feeds N viewers those are independent
 //    quantities, so this drives its own map (noteIngest) and never noteBytes. Fields: { source, entryUrl,
-//    status ('ok'|'stalled'|'resolve_failed'|'closed'), subscribers, ringSegments, ringBytes, headSeq,
-//    generation, ingestedSegments, ingestedBytes, evictedSegments, targetDuration }.
+//    status ('ok'|'stalled'|'resolve_failed'|'closed'), subscribers, ringSegments, ringBytes,
+//    channelRingCapBytes, ringSeconds, floorBeatsCap, headSeq, generation, discSeq, discInWindow,
+//    ingestedSegments, ingestedBytes, evictedSegments, targetDuration, demuxed, ineligible, suspect,
+//    suspectRetires }.
 //  · cue      — S3/CUE, Side-1 EVENT (not a snapshot): exactly two frames per ad break → noteAdBreak. Like
 //    `iop` it is an INGEST observation and never touches noteBytes — a break says nothing about egress.
 //    Fields: { source, entryUrl, state ('open'|'close'), breakId, signal, segments, durationSec,
@@ -71,18 +73,37 @@ interface TelemetryEvent {
   frameRate?: unknown;
   container?: unknown;
   bandwidth?: unknown;
+  // `media` only: this frame is a COMPLETE snapshot, not a partial poll — overwrite rather than merge.
+  replace?: unknown;
   streamId?: unknown; // DST: the continuous-TS session id (open/sbytes/close), mapped to a socket connId
   // S3/ORIGIN `iop` (Side-1 ingest) counters. `status` is a STRING here ('ok'|'stalled'|…), unlike the
   // `upstream` kind where it is an HTTP status number — the two kinds never share a branch.
   subscribers?: unknown;
   ringSegments?: unknown;
   ringBytes?: unknown;
+  // THIS channel's live applied cap — `ringBytes`' missing denominator. Named apart from the `ring` kind's
+  // `ringCapBytes` below (Σ across every origin) because this interface is flat and untagged: one key here
+  // cannot be allowed to mean two things.
+  channelRingCapBytes?: unknown;
+  // Σ of the held segments' real durations. BOOLEAN, not a count — `floorBeatsCap` says the MIN_SEGMENTS
+  // floor beat the byte cap, i.e. the ring is over budget on purpose.
+  ringSeconds?: unknown;
+  floorBeatsCap?: unknown;
   headSeq?: unknown;
   generation?: unknown;
+  // Disjoint discontinuity counts: `discSeq` = tags that have LEFT the window (RFC 8216's
+  // EXT-X-DISCONTINUITY-SEQUENCE), `discInWindow` = tags still in it. Never add them together.
+  discSeq?: unknown;
+  discInWindow?: unknown;
   ingestedSegments?: unknown;
   ingestedBytes?: unknown;
   evictedSegments?: unknown;
   targetDuration?: unknown;
+  // Whether the origin is actually authoring output. `demuxed` is a BOOLEAN; `ineligible` is a nullable
+  // REASON STRING, set when the origin declined the upstream and the rewrite path took over serving — from
+  // here that case is otherwise indistinguishable from a healthy origin, since both keep emitting `iop`.
+  demuxed?: unknown;
+  ineligible?: unknown;
   // S3/UND: the last structural fault that retired an upstream on this channel, and how many have been
   // retired for one. Null/0 on a healthy channel; non-null means it has been hopping providers, which none
   // of the byte counters above can express.
@@ -160,7 +181,11 @@ function applyEvent(e: TelemetryEvent): void {
       else noteFailure(key);
     }
   } else if (e.kind === 'media') {
-    // DEC: merge manifest-declared decode metadata for this channel (null fields = no update this poll).
+    // DEC: manifest-declared decode metadata. `replace` distinguishes the two producers — the passthrough
+    // rewriter sends PARTIAL frames (master and media playlist are separate polls, so null = "no update this
+    // poll" and must merge), while the origin resolver sends a COMPLETE snapshot of the upstream it just
+    // resolved (null = "this upstream declares nothing"), which must overwrite or a retired provider's
+    // numbers outlive it. See noteMedia.
     if (source && entryUrl) {
       noteMedia(source, entryUrl, {
         resolution: optStr(e.resolution) ?? null,
@@ -168,7 +193,7 @@ function applyEvent(e: TelemetryEvent): void {
         frameRate: optStr(e.frameRate) ?? null,
         container: optStr(e.container) ?? null,
         bandwidth: typeof e.bandwidth === 'number' && e.bandwidth > 0 ? e.bandwidth : null,
-      });
+      }, e.replace === true);
     }
   } else if (e.kind === 'iop') {
     // S3/ORIGIN Side-1. Deliberately does NOT call noteBytes: `ingestedBytes` is what the single ingest pulled
@@ -181,12 +206,23 @@ function applyEvent(e: TelemetryEvent): void {
         subscribers: num(e.subscribers),
         ringSegments: num(e.ringSegments),
         ringBytes: num(e.ringBytes),
+        channelRingCapBytes: num(e.channelRingCapBytes),
+        ringSeconds: num(e.ringSeconds),
+        // Booleans go through `=== true`, NEVER num() — num() tests `typeof v === 'number'` and would map
+        // `true` to 0, i.e. permanently false. Same shape as the cue branch's `profileChanged` below.
+        floorBeatsCap: e.floorBeatsCap === true,
         headSeq: num(e.headSeq),
         generation: num(e.generation),
+        discSeq: num(e.discSeq),
+        discInWindow: num(e.discInWindow),
         ingestedSegments: num(e.ingestedSegments),
         ingestedBytes: num(e.ingestedBytes),
         evictedSegments: num(e.evictedSegments),
         targetDuration: num(e.targetDuration),
+        demuxed: e.demuxed === true,
+        // Tri-state, so it takes the `suspect` shape rather than str(): str() coerces null to '' and the
+        // difference between "eligible" and "declined, reason unknown" would be lost.
+        ineligible: typeof e.ineligible === 'string' && e.ineligible ? e.ineligible.slice(0, 48) : null,
         suspect: typeof e.suspect === 'string' && e.suspect ? e.suspect.slice(0, 48) : null,
         suspectRetires: num(e.suspectRetires),
         at: Date.now(),

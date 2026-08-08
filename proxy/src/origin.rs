@@ -483,6 +483,47 @@ impl Origin {
     fn ring_depth(&self) -> usize {
         self.ring.read_ok().len()
     }
+
+    /// Everything the telemetry frame needs from the window, under exactly ONE read guard.
+    ///
+    /// The predicates are INLINED rather than delegated to `ring_depth` / `floor_beat_cap` on purpose: each of
+    /// those takes its own `self.ring.read_ok()`, and these are `std::sync::RwLock`s, which give no
+    /// re-entrancy guarantee — a second read acquired while the first guard is live can deadlock against a
+    /// writer that queued between them. A per-poll reporter is the last place to introduce that.
+    ///
+    /// Deliberately NOT built on `window()`: that stamps `last_access`, and the idle shutdown fires on
+    /// `subscribers == 0 && last_access.elapsed() >= IDLE_GRACE`. `report_iop("ok")` runs on every productive
+    /// poll — always faster than `IDLE_GRACE` — so reporting through `window()` would let the ingest
+    /// heartbeat its own idle clock and a viewerless origin would pin its ring in RAM forever. (It also
+    /// clones every `Arc` into a fresh `Vec`, which is pure waste for an observational read.)
+    fn ring_stats(&self) -> RingStats {
+        let ring = self.ring.read_ok();
+        let bytes = self.ring_bytes.load(Ordering::Relaxed);
+        RingStats {
+            segments: ring.len(),
+            seconds: ring.iter().map(|s| s.duration).sum::<f64>(),
+            disc_in_window: ring.iter().filter(|s| s.discontinuity).count(),
+            floor_beat_cap: ring.len() <= MIN_SEGMENTS
+                && bytes > self.ring_cap_bytes.load(Ordering::Relaxed),
+        }
+    }
+}
+
+/// An observational snapshot of one live window — see `Origin::ring_stats`, which is its only producer.
+///
+/// Kept off `ring_footprint` by design: that function holds the registry `Mutex` across its whole loop and
+/// documents why it must never touch `Origin.ring`.
+struct RingStats {
+    segments: usize,
+    /// Σ of the held segments' own durations. The honest "how much time is on air", as opposed to
+    /// `segments × target_duration`, which over-reads by the gap between each segment and the window's max.
+    seconds: f64,
+    /// Discontinuity tags still INSIDE the window. Disjoint by construction from `disc_seq`, which counts
+    /// only the tags that have already left it.
+    disc_in_window: usize,
+    /// The byte cap could not be honored because the `MIN_SEGMENTS` floor won — i.e. we are over cap on
+    /// purpose. Same predicate as `floor_beat_cap`, inlined here to stay on one guard.
+    floor_beat_cap: bool,
 }
 
 /// An RAII subscription. Holding one keeps the ingest alive; dropping it releases the channel to the idle
@@ -1413,9 +1454,19 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     }
 
     let mut variant_bandwidth = 0i64;
-    let (media_url, media_body, rendition) = if is_master(&body) {
+    // The PICKED variant's own decode attributes (resolution, codecs, frame rate), carried out of the arm
+    // below for the telemetry frame. They must travel WITH `variant_bandwidth` off the same STREAM-INF line —
+    // see the `VariantPick` doc for why reading them back off the master instead would describe a different
+    // rendition than the one this origin rings.
+    let mut variant_attrs: (Option<String>, Option<String>, Option<String>) = (None, None, None);
+    let entry_is_master = is_master(&body);
+    // Extracted HERE, not later: on the master arm `body` merely stays borrowed, but on the media arm below
+    // it is MOVED into the tuple, so a deferred read would not compile.
+    let master_media = if entry_is_master { Some(crate::manifest::extract_media(&body)) } else { None };
+    let (media_url, media_body, rendition) = if entry_is_master {
         let pick = pick_variant(&body, &url)?;
         variant_bandwidth = pick.bandwidth;
+        variant_attrs = (pick.resolution.clone(), pick.codecs.clone(), pick.frame_rate.clone());
         // A variant whose audio lives in a separate #EXT-X-MEDIA rendition is followed as a PAIR: the ring
         // holds one entry per (video, audio) segment pair and the HLS renderer authors a master over both.
         // `pick_variant` still prefers a muxed variant when the master offers one — pairing is the fallback
@@ -1496,6 +1547,74 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
             Some((aurl, abody))
         }
     };
+    // DEC: manifest-declared decode metadata for an ORIGIN-backed channel. The passthrough rewrite path is
+    // otherwise the ONLY producer of `kind:"media"`, and origin mode returns long before reaching it — so
+    // codec / audio / container / resolution / fps read null on every channel actually served from a ring,
+    // which is precisely the set an operator most wants to inspect.
+    //
+    // TWO extractions, because neither playlist carries the whole picture: a MASTER declares
+    // resolution/codecs/frame-rate/bandwidth and no `#EXTINF`; a MEDIA playlist declares the container hint
+    // and no `#EXT-X-STREAM-INF`. Reporting off the master alone would leave `container` null here forever.
+    //
+    // Placed after EVERY eligibility guard above — including the audio lane's — so a channel about to be
+    // DECLINED never advertises ring-backed decode metadata for output the ring will not author.
+    {
+        let mut dec = master_media.unwrap_or_default();
+        // The PICKED line's attributes OVERRIDE the master extraction. `extract_media` keeps the
+        // highest-BANDWIDTH variant; `pick_variant` deliberately prefers a lower-bandwidth MUXED one when the
+        // top variant would cost the audio track. On such a ladder they are different renditions, and a frame
+        // that took resolution/codecs from one and bandwidth from the other would be self-contradictory —
+        // advertising a stream this origin never carries.
+        let (v_res, v_codecs, v_fps) = variant_attrs;
+        if v_res.is_some() {
+            dec.resolution = v_res;
+        }
+        if v_codecs.is_some() {
+            dec.codecs = v_codecs;
+        }
+        if v_fps.is_some() {
+            dec.frame_rate = v_fps;
+        }
+        let from_media = crate::manifest::extract_media(&media_body);
+        if dec.resolution.is_none() {
+            dec.resolution = from_media.resolution;
+        }
+        if dec.codecs.is_none() {
+            dec.codecs = from_media.codecs;
+        }
+        if dec.frame_rate.is_none() {
+            dec.frame_rate = from_media.frame_rate;
+        }
+        if dec.container.is_none() {
+            dec.container = from_media.container;
+        }
+        // The declared rate of the variant we ACTUALLY ring. `pick_variant` prefers a muxed variant while
+        // `extract_media` keeps the highest-bandwidth one, so on a demuxed master those are different
+        // variants — reporting the latter would describe a rendition this origin never touches.
+        if variant_bandwidth > 0 {
+            dec.bandwidth = Some(variant_bandwidth);
+        }
+        // Same `any()` gate as the passthrough emit: a playlist that declared nothing must not spam an empty
+        // frame, because Node merges these per channel and only overwrites on non-null.
+        if dec.any() {
+            ctx.state.report(serde_json::json!({
+                "kind": "media",
+                "source": ctx.source,
+                "entryUrl": ctx.entry,
+                "resolution": dec.resolution,
+                "codecs": dec.codecs,
+                "frameRate": dec.frame_rate,
+                "container": dec.container,
+                "bandwidth": dec.bandwidth,
+                // Unlike the passthrough producer's partial polls, this frame is a COMPLETE snapshot of the
+                // upstream just resolved — both playlists were read in this one pass. Without the flag Node
+                // merges on non-null, so an escalation onto a leaner upstream (or one whose entry is a bare
+                // media playlist) would keep the RETIRED provider's resolution and declared bitrate forever.
+                "replace": true,
+            }));
+        }
+    }
+
     // Re-recorded on every resolve, so a session renewal that re-mints the master picks up a moved rendition
     // URL without any renewal-specific code.
     *ctx.origin.demuxed_audio.write_ok() =
@@ -2383,20 +2502,43 @@ async fn ts_ring_pair_producer(
 /// health separately — ingest bytes must NEVER be folded into the egress byte counters, or one upstream byte
 /// serving N viewers would be counted N+1 times.
 fn report_iop(ctx: &IngestCtx, status: &str) {
+    // Bound BEFORE the macro: one ring read guard for the four window-derived numbers, and `json!` cannot
+    // destructure. Everything else on the frame is a plain atomic load.
+    let rs = ctx.origin.ring_stats();
     ctx.state.report(serde_json::json!({
         "kind": "iop",
         "source": ctx.source,
         "entryUrl": ctx.entry,
         "status": status,
         "subscribers": ctx.origin.subscribers.load(Ordering::Relaxed),
-        "ringSegments": ctx.origin.ring_depth(),
+        "ringSegments": rs.segments,
         "ringBytes": ctx.origin.ring_bytes.load(Ordering::Relaxed),
+        // This channel's LIVE applied cap — the denominator `ringBytes` never had. Deliberately not named
+        // `ringCapBytes`: that key is already taken by the process-wide `ring` frame, where it means the Σ of
+        // every origin's cap. On a flat, untagged event interface one key must mean one thing.
+        "channelRingCapBytes": ctx.origin.ring_cap_bytes.load(Ordering::Relaxed),
+        // Σ of the held segments' real durations, not `segments × targetDuration`.
+        "ringSeconds": rs.seconds,
+        // We are over cap on purpose: the `MIN_SEGMENTS` floor won, i.e. this channel's bitrate does not fit
+        // its `originRingMb`. Fill% legitimately exceeds 100 while this is true.
+        "floorBeatsCap": rs.floor_beat_cap,
         "headSeq": ctx.origin.next_seq.load(Ordering::Relaxed),
         "generation": ctx.origin.generation(),
+        // The two discontinuity counts are DISJOINT: `discSeq` is RFC 8216's
+        // `EXT-X-DISCONTINUITY-SEQUENCE` — tags that have already aged out of the window — while
+        // `discInWindow` counts the ones still in it. Neither is a lifetime total on its own.
+        "discSeq": ctx.origin.disc_seq(),
+        "discInWindow": rs.disc_in_window,
         "ingestedSegments": ctx.origin.ingested_segments.load(Ordering::Relaxed),
         "ingestedBytes": ctx.origin.ingested_bytes.load(Ordering::Relaxed),
         "evictedSegments": ctx.origin.evicted_segments.load(Ordering::Relaxed),
         "targetDuration": ctx.origin.target_duration(),
+        // The two structural facts that decide whether this origin is authoring output at all. `ineligible`
+        // is the reason string set when the origin DECLINED the upstream (fMP4 / SAMPLE-AES / unpairable
+        // audio) and the rewrite path took over serving — from Node's side that is indistinguishable from a
+        // healthy origin, because the ingest keeps a live `iop` frame either way.
+        "demuxed": ctx.origin.demuxed_audio.read_ok().is_some(),
+        "ineligible": ctx.origin.ineligible(),
         // S3/UND: null until an upstream is retired for a structural fault. Present ⇒ this channel has been
         // hopping providers, which every byte-level metric here would otherwise show as perfectly healthy.
         "suspect": ctx.origin.last_suspect.read_ok().clone(),

@@ -16,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, adBreakFor, pruneAdBreaks, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, adBreakFor, pruneAdBreaks, upstreamHostFor, pruneUpstreamHost, requestedConfigFor, pruneRequestedConfig, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState, type RequestedConfig } from '../sources/core/streamTelemetry.js';
 import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -64,6 +64,13 @@ export interface DisplayStream {
   source: string;
   phase: StreamPhase;
   status: 'good' | 'warn' | 'bad'; // live → good, establishing/buffer → warn, failed → bad (live↔buffer debounced; see displayPhase)
+  /** Retries spent against this channel's budget (0..MAX_RETRIES). Reads 0 both for a channel that has never
+   *  had a problem AND for one whose failed-cooldown just expired — pair it with `everStreamed` to tell those
+   *  apart. Comes off the SAME phaseFor() read as `phase`; see the row builder for why that matters. */
+  retry: number;
+  /** This channel has served at least one successful byte at some point. What separates "still coming up for
+   *  the first time" from "was live and is recovering" — both of which present as the same phase. */
+  everStreamed: boolean;
   uptime: string; // human "1h 42m"
   uptimeMin: number;
   viewers: number;
@@ -82,6 +89,11 @@ export interface DisplayStream {
   container: string | null;
   resolution: string | null;
   fps: number | null;
+  /** The manifest-DECLARED bitrate of the variant being carried, in BITS/sec straight off `#EXT-X-STREAM-INF`
+   *  BANDWIDTH. Deliberately raw bps and deliberately NOT named `bandwidth`: that field is Mbps of EGRESS
+   *  summed across N viewers, and the two are not the same quantity in either unit or meaning. Comparing this
+   *  against `bitrate` is how you see an upstream under-delivering what it advertises. */
+  declaredBps: number | null;
   probe: null; // was the deep technical snapshot — always null after the video-engine teardown
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's
   // identity — the parent's own upstream is dead and the named backup is carrying the stream.
@@ -94,6 +106,15 @@ export interface DisplayStream {
   // S3/CUE Side-1 ad-break state. Null until the data plane has actually detected a break on this channel,
   // so it stays null for every source that emits no cue tags AND declares no ad-URI signature.
   adBreak: AdBreakState | null;
+  // The host the current grant's ENTRY hop resolved to. `source` names the adapter; for a multi-provider
+  // source that says nothing about which provider is actually on air. Not necessarily the host serving
+  // segments — the data plane grows its allow-set per manifest, so segments often come from another CDN host.
+  upstreamHost: string | null;
+  // The proxy config this stream's grant was built FROM — the requested half of requested-vs-served (the
+  // served half is `delivery`). `requested.outputFormat === 'ts'` with `delivery === 'hls'` is exactly the
+  // Raw-TS-fell-back signal. Captured at resolve time, NOT re-read from the DB: a re-read would answer a
+  // different question (what is configured now, not what this stream got).
+  requested: RequestedConfig | null;
 }
 
 // (source, entryUrl) → PlaylistChannel._id. Cached like routes/sources.ts → channelIdCache.
@@ -146,14 +167,23 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
     const channelId = await resolveChannelId(r.source, r.entryUrl);
     if (!channelId) continue; // a channel with no PlaylistChannel row (shouldn't happen for a real play)
     activeKeys.add(r.channelKey);
-    const { phase, status } = displayPhase(r.channelKey, phaseFor(r.channelKey).phase, now);
-    const decode = decodeFields(mediaFor(r.channelKey));
+    // ONE phaseFor() call, bound to a local. It is a SIDE-EFFECTING read — a lazy TTL that clears an expired
+    // failed state and reports the retry count it just reset — so a second inline call would take a different
+    // branch and pair this row's phase with a retry count from a different logical read.
+    const info = phaseFor(r.channelKey);
+    const { phase, status } = displayPhase(r.channelKey, info.phase, now);
+    // One mediaFor() read: `decodeFields` humanizes a subset, and `declaredBps` needs the raw BANDWIDTH the
+    // Pick<> deliberately omits.
+    const media = mediaFor(r.channelKey);
+    const decode = decodeFields(media);
     out.push({
       id: channelId,
       channelId,
       source: r.source,
       phase,
       status,
+      retry: info.retry,
+      everStreamed: info.everStreamed,
       uptime: humanUptime(r.uptimeMs),
       uptimeMin: Math.round(r.uptimeMs / 60000),
       viewers: r.viewers,
@@ -171,12 +201,16 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
       container: decode.container,
       resolution: decode.resolution,
       fps: decode.fps,
+      // Raw bits/sec — NOT through mbps(), which expects bytes/sec and would be an 8× error here.
+      declaredBps: media?.bandwidth ?? null,
       probe: null, // the deep technical snapshot is not rebuilt (video-engine teardown)
       failover: failoverFor(r.channelKey),
       ingest: ingestFor(r.channelKey),
       // S3/CUE: null for every source that never signals a break (most of them) — the row only grows an
       // ad-break readout once the data plane has actually seen one.
       adBreak: adBreakFor(r.channelKey),
+      upstreamHost: upstreamHostFor(r.channelKey),
+      requested: requestedConfigFor(r.channelKey),
     });
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
@@ -184,6 +218,8 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
   pruneFailoverServing(activeKeys);
   pruneIngest(activeKeys);
   pruneAdBreaks(activeKeys);
+  pruneUpstreamHost(activeKeys);
+  pruneRequestedConfig(activeKeys);
   return out;
 }
 

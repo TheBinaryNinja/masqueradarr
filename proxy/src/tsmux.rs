@@ -537,6 +537,25 @@ pub(crate) struct VariantPick {
     /// The picked variant's `BANDWIDTH` — the one `#EXT-X-STREAM-INF` attribute RFC 8216 makes REQUIRED, so
     /// the origin needs it to author a master over the pair. 0 when the upstream omitted it.
     pub bandwidth: i64,
+    /// The rest of the PICKED line's decode attributes, for telemetry.
+    ///
+    /// These must come off the same line as `bandwidth` or the reported tuple describes two different
+    /// renditions: `manifest::extract_media` keeps the highest-BANDWIDTH variant, while this function
+    /// deliberately prefers a LOWER-bandwidth muxed one when the top variant would cost the audio track. On
+    /// such a ladder the two disagree, and a frame mixing them would advertise a resolution/codec this path
+    /// never actually carries. `None` when the upstream omitted the attribute.
+    pub resolution: Option<String>,
+    pub codecs: Option<String>,
+    pub frame_rate: Option<String>,
+}
+
+/// The decode attributes of one `#EXT-X-STREAM-INF` line, carried through the pick so the winner's — and only
+/// the winner's — reach `VariantPick`.
+#[derive(Default, Clone)]
+struct VariantAttrs {
+    resolution: Option<String>,
+    codecs: Option<String>,
+    frame_rate: Option<String>,
 }
 
 /// Pick the variant to follow (the STREAM-INF URI is the next non-comment line), resolved absolute.
@@ -556,9 +575,9 @@ pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
     let muxed = muxed_audio_groups(body);
     let demuxed: HashSet<String> =
         renditions.iter().map(|r| r.group.clone()).filter(|g| !muxed.contains(g)).collect();
-    let mut best: Option<(i64, String)> = None; // audio-safe variants only
-    let mut best_any: Option<(i64, String, Option<String>)> = None; // any variant + its demuxed group
-    let mut pending: Option<(i64, Option<String>)> = None; // (bandwidth, demuxed group) awaiting its URI line
+    let mut best: Option<(i64, String, VariantAttrs)> = None; // audio-safe variants only
+    let mut best_any: Option<(i64, String, Option<String>, VariantAttrs)> = None; // any variant + its demuxed group
+    let mut pending: Option<(i64, Option<String>, VariantAttrs)> = None; // awaiting its URI line
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
@@ -568,32 +587,49 @@ pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
             // Keeping the GROUP-ID (rather than collapsing to a bool) is what lets the origin find the
             // rendition afterwards. A group with no URI-bearing member is NOT demuxed — filtering here keeps
             // the old `external` semantics exactly.
-            let group = split_attrs(rest)
-                .into_iter()
-                .find(|(k, _)| k.eq_ignore_ascii_case("AUDIO"))
-                .map(|(_, v)| v.trim().trim_matches('"').to_string())
-                .filter(|g| demuxed.contains(g));
-            pending = Some((parse_bandwidth(rest), group));
+            let parsed = split_attrs(rest);
+            let attr = |name: &str| {
+                parsed
+                    .iter()
+                    .find(|(k, _)| k.eq_ignore_ascii_case(name))
+                    .map(|(_, v)| v.trim().trim_matches('"').to_string())
+                    .filter(|v| !v.is_empty())
+            };
+            let group = attr("AUDIO").filter(|g| demuxed.contains(g));
+            let attrs = VariantAttrs {
+                resolution: attr("RESOLUTION"),
+                codecs: attr("CODECS"),
+                frame_rate: attr("FRAME-RATE"),
+            };
+            pending = Some((parse_bandwidth(rest), group, attrs));
         } else if !line.starts_with('#') {
-            if let Some((bw, group)) = pending.take() {
-                if group.is_none() && best.as_ref().is_none_or(|(b, _)| bw >= *b) {
-                    best = Some((bw, line.to_string()));
+            if let Some((bw, group, attrs)) = pending.take() {
+                if group.is_none() && best.as_ref().is_none_or(|(b, _, _)| bw >= *b) {
+                    best = Some((bw, line.to_string(), attrs.clone()));
                 }
-                if best_any.as_ref().is_none_or(|(b, _, _)| bw >= *b) {
-                    best_any = Some((bw, line.to_string(), group));
+                if best_any.as_ref().is_none_or(|(b, _, _, _)| bw >= *b) {
+                    best_any = Some((bw, line.to_string(), group, attrs));
                 }
             }
         }
     }
-    let (uri, external_audio, group, bandwidth) = match best {
-        Some((bw, u)) => (u, false, None, bw),
+    let (uri, external_audio, group, bandwidth, attrs) = match best {
+        Some((bw, u, a)) => (u, false, None, bw, a),
         None => {
-            let (bw, u, g) = best_any?;
-            (u, true, g, bw)
+            let (bw, u, g, a) = best_any?;
+            (u, true, g, bw, a)
         }
     };
     let audio = group.as_deref().and_then(|g| pick_rendition(&renditions, g));
-    base.join(&uri).ok().map(|url| VariantPick { url, external_audio, audio, bandwidth: bandwidth.max(0) })
+    base.join(&uri).ok().map(|url| VariantPick {
+        url,
+        external_audio,
+        audio,
+        bandwidth: bandwidth.max(0),
+        resolution: attrs.resolution,
+        codecs: attrs.codecs,
+        frame_rate: attrs.frame_rate,
+    })
 }
 
 fn parse_bandwidth(attrs: &str) -> i64 {
