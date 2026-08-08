@@ -35,7 +35,9 @@ import { streamKey, noteSuccess, noteFailed, noteFailure } from '../sources/core
 //    codecs?, frameRate?, container? } (any subset; nulls mean "no update this poll").
 //  · open/sbytes/close — P3.2/DST continuous raw-TS: the SOCKET model (a single long-lived TS connection, no
 //    polling). `open` mints a socket connId (noteSocketViewerOpen) mapped from the Rust streamId; `sbytes`
-//    (periodic) → noteSocketBytes(connId); `close` → noteSocketViewerClose(connId). Fields: open = { streamId,
+//    (periodic) → noteSocketBytes(connId) AND noteSuccess (→ live — the socket twin of `bytes`, without which
+//    a raw-TS channel never left `establishing`); `close` → noteSocketViewerClose(connId). Only `open` carries
+//    the channel, so it also records streamId → channelKey for `sbytes` to use. Fields: open = { streamId,
 //    source, entryUrl, ip, ua, username?, playerType }, sbytes = { streamId, bytes }, close = { streamId }.
 //  · iop      — S3/ORIGIN Side-1 (the per-channel INGEST). The only INGRESS-side kind: every other event
 //    above measures what we sent to a viewer. Once one ingest feeds N viewers those are independent
@@ -106,6 +108,16 @@ interface TelemetryEvent {
 // per LIVE raw-TS stream); entries are removed on `close`, and the socket telemetry's 60s no-byte backstop
 // reaps a viewer whose `close` never arrived (a sidecar crash), so a leaked map entry only wastes a few bytes.
 const tsConns = new Map<string, number>();
+
+// PHZ: the same streamId → the CHANNEL it is serving, captured on `open` (the only socket event that carries
+// source/entryUrl — `sbytes` and `close` are identified by streamId alone).
+//
+// Why this exists: `phaseFor` reports `establishing` until `noteSuccess` is called, and `noteSuccess` was
+// reachable only from the `viewer` and `bytes` kinds — both POLLING paths. A continuous raw-TS stream emits
+// `open`/`sbytes`/`close` and none of those, so every TS channel sat on `establishing` FOREVER, playing
+// perfectly, on all three producers (tsmux passthrough, origin muxed, origin interleaved). This map is what
+// lets `sbytes` — the socket equivalent of `bytes` — drive the phase the same way.
+const tsChannels = new Map<string, string>();
 
 function str(v: unknown): string {
   return typeof v === 'string' ? v : '';
@@ -214,6 +226,7 @@ function applyEvent(e: TelemetryEvent): void {
       if (prev !== undefined) noteSocketViewerClose(prev);
       const connId = nextSocketConnId();
       tsConns.set(streamId, connId);
+      tsChannels.set(streamId, streamKey(source, entryUrl)); // PHZ: so `sbytes` can drive the phase
       const playerType: PlayerType = e.playerType === 'externalPlayer' ? 'externalPlayer' : 'appPlayer';
       noteSocketViewerOpen(source, entryUrl, ip, ua, username, playerType, connId);
     }
@@ -222,6 +235,11 @@ function applyEvent(e: TelemetryEvent): void {
     const streamId = str(e.streamId);
     const connId = streamId ? tsConns.get(streamId) : undefined;
     if (connId !== undefined && bytes) noteSocketBytes(connId, bytes);
+    // PHZ: bytes reaching a client ARE the success signal — this is the socket twin of the `bytes` kind, and
+    // without it a raw-TS channel never leaves `establishing`. Deliberately gated on bytes actually flowing
+    // rather than on `open`: a socket that opens and then delivers nothing has not succeeded at anything.
+    const channelKey = streamId ? tsChannels.get(streamId) : undefined;
+    if (channelKey && bytes) noteSuccess(channelKey);
   } else if (e.kind === 'close') {
     // DST continuous-TS: the socket ended → close the session (persists a ViewSession) + drop the mapping.
     const streamId = str(e.streamId);
@@ -230,6 +248,7 @@ function applyEvent(e: TelemetryEvent): void {
       noteSocketViewerClose(connId);
       tsConns.delete(streamId);
     }
+    tsChannels.delete(streamId);
   }
 }
 
