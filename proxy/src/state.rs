@@ -457,7 +457,7 @@ impl AppState {
                 return Ok((policy, target));
             }
         }
-        self.resolve_at(source, entry, pl, attempt).await
+        self.resolve_at(source, entry, pl, attempt, None).await
     }
 
     /// FOG: force a FRESH resolve of a SPECIFIC candidate (bypass the target cache) and re-cache the
@@ -470,8 +470,9 @@ impl AppState {
         entry: &str,
         pl: Option<&str>,
         attempt: u32,
+        reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
-        let (policy, policy_key, target) = self.resolve(source, entry, pl, attempt).await?;
+        let (policy, policy_key, target) = self.resolve(source, entry, pl, attempt, reason).await?;
         let now = Instant::now();
         self.targets.lock_ok().insert(
             target_key(source, entry),
@@ -496,7 +497,7 @@ impl AppState {
         pl: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let attempt = self.cursor_attempt(source, entry);
-        self.resolve_at(source, entry, pl, attempt).await
+        self.resolve_at(source, entry, pl, attempt, None).await
     }
 
     /// Like `resolve_fresh`, but ADVANCES the stream's failover cursor first — "the candidate you last gave
@@ -512,16 +513,17 @@ impl AppState {
         source: &str,
         entry: &str,
         pl: Option<&str>,
+        reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let next = self.bump_cursor(source, entry);
         if next >= MAX_FAILOVER_ATTEMPTS {
             self.reset_cursor(source, entry);
-            return self.resolve_at(source, entry, pl, 0).await;
+            return self.resolve_at(source, entry, pl, 0, reason).await;
         }
-        match self.resolve_at(source, entry, pl, next).await {
+        match self.resolve_at(source, entry, pl, next, reason).await {
             Err(ResolveErr::Exhausted) => {
                 self.reset_cursor(source, entry);
-                self.resolve_at(source, entry, pl, 0).await
+                self.resolve_at(source, entry, pl, 0, reason).await
             }
             other => other,
         }
@@ -650,6 +652,7 @@ impl AppState {
         entry_url: &str,
         pl: Option<&str>,
         attempt: u32,
+        reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String, String), ResolveErr> {
         let rid = crate::log::rid(source, entry_url);
         crate::log::trace("resolve", &rid, || {
@@ -658,8 +661,12 @@ impl AppState {
                 crate::proxy::host_of(entry_url)
             )
         });
-        let body =
-            serde_json::json!({ "source": source, "url": entry_url, "pl": pl, "attempt": attempt });
+        // `reason` rides along on an ESCALATING resolve so the adapter can record WHY the upstream it was
+        // serving is being retired. Without it every burn looks the same in the player memory, and "this
+        // provider 404s" is a different operational fact from "this provider serves undecodable video".
+        let body = serde_json::json!({
+            "source": source, "url": entry_url, "pl": pl, "attempt": attempt, "reason": reason,
+        });
         let resp = self
             .client
             .post(format!("{}/api/internal/resolve", self.node_url))

@@ -118,6 +118,7 @@ export async function buildGrant(
   url: string,
   pl?: string,
   attempt?: number,
+  advanceReason?: string,
 ): Promise<ResolveGrant | ResolveError> {
   const adapter = getSource(source);
   if (!adapter) return { ok: false, status: 404, error: 'unknown_source' };
@@ -168,6 +169,7 @@ export async function buildGrant(
       if (adapter.playerSelectable) {
         opts.player = await channelPlayerPref(source, url, pl);
         opts.advance = advance;
+        if (advance && advanceReason) opts.advanceReason = advanceReason;
       }
       const resolved = await adapter.resolveStream(url, opts);
       target = resolved.masterUrl;

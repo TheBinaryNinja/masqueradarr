@@ -783,7 +783,8 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
   `video/mp2t`** stream (segments concatenated, no remux) for players that prefer a flat TS pipe. On the
   passthrough path fMP4 / AES sources auto-fall back to HLS; with
   [local origin](#local-origin-republishing-the-stream) enabled AES-128 is decrypted at ingest instead, so
-  only fMP4 and `SAMPLE-AES` still decline.
+  only fMP4 and `SAMPLE-AES` still decline. A **demuxed** source needs more than concatenation — origin mode
+  [interleaves the pair](#demuxed-sources-and-the-interleaving-muxer) into one program rather than declining.
 
 ## Local origin — republishing the stream
 
@@ -801,7 +802,7 @@ shapes are then rendered from that ring:
 | | `originEnabled: false` | `originEnabled: true` |
 |---|---|---|
 | `outputFormat: 'hls'` | the upstream playlist, URI-rewritten | a playlist **we authored** + our own segment paths |
-| `outputFormat: 'ts'` | upstream segments concatenated per viewer | the same ring concatenated (decrypts); declines on a demuxed source |
+| `outputFormat: 'ts'` | upstream segments concatenated per viewer | the same ring concatenated (decrypts); a demuxed source is **interleaved** into one program |
 
 What a player receives in origin mode contains **no provider host, path, session id or query; no
 `#EXT-X-KEY`; no vendor tags; no proxy hop URLs** — only our own `#EXT-X-MEDIA-SEQUENCE`, `#EXTINF`, and
@@ -820,7 +821,9 @@ Three consequences worth knowing:
   upstream tags one, or where a media-sequence gap proves segments were missed; it deliberately does *not*
   guess splices from URL shape (that was tried, and produced false positives on two different CDNs).
 
-**Demuxed sources (audio in its own `#EXT-X-MEDIA` rendition).** Some providers — pluto on every device
+### Demuxed sources and the interleaving muxer
+
+**Audio in its own `#EXT-X-MEDIA` rendition.** Some providers — pluto on every device
 cohort — offer no muxed variant at all: every `#EXT-X-STREAM-INF` defers its audio to a separate rendition
 playlist. Following the variant alone would ring, and serve, **video only**. The engine therefore rings the
 **pair**: one ring entry holds the video segment *and* its audio partner, matched on the upstream media
@@ -839,9 +842,37 @@ Two properties make this safe, and both are load-bearing:
   would leave the audio track dying at every break.
 
 The two authored playlists are rendered from the same ring entries, so their media sequence, discontinuity
-sequence, `#EXTINF` ladder and `#EXT-X-PROGRAM-DATE-TIME` anchors are identical by construction. `outputFormat:
-'ts'` is **not** available for a demuxed source — flattening two elementary streams into one socket needs a
-real interleaver — and declines to the ordinary rewrite with a WARN naming the reason.
+sequence, `#EXTINF` ladder and `#EXT-X-PROGRAM-DATE-TIME` anchors are identical by construction.
+
+**`outputFormat: 'ts'` on a demuxed source — the interleaving muxer.** HLS can publish a pair as two
+playlists; raw TS is *one socket*, and two transport streams do not concatenate. That used to be a decline,
+which meant the one source shape local origin exists for was exactly the shape raw TS could not serve. It is
+now woven instead: the two lanes are folded into **one authored program** on the way out, off the same ring
+the HLS lanes are rendered from.
+
+The muxer is small because the pairing above already did the hard part — one shared clock, disjoint canonical
+pids, correct per-pid continuity counters. So the weave is transport-layer only, with **no decode, no
+re-encode and no timestamp rewriting**: drop each lane's PSI and padding, emit one PAT + one PMT declaring
+both elementary streams, and merge the two lanes' PES access units in **decode order** (video keyed on DTS,
+audio on PTS — for AAC they are the same thing). Per-pid packet order survives by construction, because an
+access unit is contiguous within its pid.
+
+Three details worth knowing:
+
+- **No PCR is generated.** The video lane's clock references were already shifted by the shared offset and the
+  merge keeps the video lane's relative order, so PCR stays monotonic and its spacing *in stream time* is
+  unchanged. The published PMT names the video pid as `PCR_PID`.
+- **The published program is locked** on the first woven pair and re-emitted byte-identically, on a ~110 ms
+  cadence so a demuxer that resyncs finds it again quickly. A later pair whose stream set differs is declined
+  rather than republished under a changed table — a PMT that changes shape mid-socket is itself a
+  reconfiguration event.
+- **A declined pair is skipped**, not served verbatim: there is no verbatim option when the output is one
+  socket. The reason is logged under `oop`, latched per distinct cause, and three consecutive declines end the
+  socket cleanly so the client reconnects instead of watching a stream that is open but frozen.
+
+`spliceNormalize` does **not** gate this path — it is the kill switch for splice *absorption*, but authoring
+one program out of two renditions requires the pid remap and shared clock to exist at all. Set
+`outputFormat: 'hls'` to publish the two renditions untouched.
 
 **RAM, not disk.** The ring holds *decrypted* media and is never written to disk. It is bounded per channel
 by `originRingMb` (default 25 MiB ≈ a minute at 3.3 Mbps), oldest segment evicted first, with a hard floor of

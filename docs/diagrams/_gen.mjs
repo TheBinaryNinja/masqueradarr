@@ -600,7 +600,7 @@ topology({
   });
 
   const hls = card({ x: 636, y: 150, w: 264, minH: HH, rail: C.teal, title: 'authored manifest', sub: ['our MEDIA-SEQUENCE / EXTINF', 'no keys · no vendor tags · no hops'] });
-  const ts = card({ x: 636, y: 262, w: 264, minH: HH, rail: C.teal, title: 'raw TS concat', sub: ['one continuous video/mp2t', 'segment boundary = keyframe'] });
+  const ts = card({ x: 636, y: 262, w: 264, minH: HH, rail: C.teal, title: 'raw TS concat + weave', sub: ['one continuous video/mp2t', 'a demuxed pair is interleaved'] });
   const cl = card({ x: 636, y: 400, w: 264, minH: HH, rail: C.ash, title: 'N viewers', sub: ['a 2nd viewer costs', 'NO extra upstream'] });
 
   b += edge([[172, 232], [172, 251]], { color: 'amber' });

@@ -498,8 +498,10 @@ pub async fn serve_stream(
             return raw(200, "application/octet-stream", raw_body.to_vec());
         }
         let text_body = String::from_utf8_lossy(&raw_body).into_owned();
-        // (S3 Phase 3 retired the ingest-warming hook that used to sit here: BOTH origin shapes now return
-        // from the ring above, so nothing below this point ever runs with origin enabled.)
+        // (S3 Phase 3 retired the ingest-warming hook that used to sit here.) With origin enabled BOTH output
+        // shapes normally return from the ring above — including a demuxed source's raw TS, which RMX now
+        // weaves rather than declining. What still reaches here is the `Ready::Ineligible` fallback: a shape
+        // the ring cannot hold at all (fMP4, `SAMPLE-AES`), where the rewrite below is the correct answer.
         // DST: continuous raw-TS output on the external mount when the (Default)/(Custom) proxyconfig selects
         // outputFormat 'ts' AND the upstream is pure MPEG-TS. Only on the ENTRY (the client then holds ONE TS
         // socket and issues no HOP polls). Not eligible (fMP4 / AES / no reachable variant) → fall through to
@@ -690,7 +692,7 @@ pub(crate) async fn failover_walk(
         tried += 1;
         // Level-3 lineage: one line per hop of the walk (attempt cursor + how many we've tried this walk).
         log::trace("failover", rid, || format!("attempt {attempt} (tried {tried}/{MAX_FAILOVER_ATTEMPTS})"));
-        match state.resolve_at(source, stream_entry, pl, attempt).await {
+        match state.resolve_at(source, stream_entry, pl, attempt, None).await {
             Ok((p, target)) => {
                 // The grant carries the authoritative failoverEnabled — a cold pre-walk policy cache may
                 // have defaulted it on. Never SERVE a child the operator disabled failover to; a disabled

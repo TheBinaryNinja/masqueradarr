@@ -26,8 +26,8 @@ interface PlayerMemo {
   /** 1-based index of the player that last resolved AND validated. */
   lastGood: number | null;
   lastGoodAt: number;
-  /** playerIndex → epoch ms at which the burn lapses. */
-  burnt: Map<number, number>;
+  /** playerIndex → { until: epoch ms at which the burn lapses; why: what retired it }. */
+  burnt: Map<number, { until: number; why: string }>;
   /** How many failover `attempt`s this channel has already spent walking players (see resolveSeam). */
   consumed: number;
   touchedAt: number;
@@ -69,9 +69,9 @@ export function preferredPlayer(channelId: string): number | null {
 /** Is this player currently burnt (recently failed) for this channel? */
 export function isBurnt(channelId: string, playerIndex: number): boolean {
   const m = MEMO.get(channelId);
-  const until = m?.burnt.get(playerIndex);
-  if (until === undefined) return false;
-  if (until <= now()) {
+  const b = m?.burnt.get(playerIndex);
+  if (b === undefined) return false;
+  if (b.until <= now()) {
     m!.burnt.delete(playerIndex);
     return false;
   }
@@ -87,10 +87,17 @@ export function noteGood(channelId: string, playerIndex: number): void {
   m.consumed = 0;
 }
 
-/** Record a player that failed to produce a playable stream. */
-export function noteBad(channelId: string, playerIndex: number): void {
+/**
+ * Record a player that failed to produce a playable stream.
+ *
+ * `why` is kept because the two failure classes need different operator responses. A provider that 404s or
+ * 403s is simply not carrying this channel; a provider that serves HTTP 200 for everything while its video
+ * has no decoder parameter sets LOOKS healthy in every byte-level metric and is the harder fault to see.
+ * Collapsing both to "burnt" hides exactly the distinction worth surfacing.
+ */
+export function noteBad(channelId: string, playerIndex: number, why = 'resolve-failed'): void {
   const m = entry(channelId);
-  m.burnt.set(playerIndex, now() + BURN_MS);
+  m.burnt.set(playerIndex, { until: now() + BURN_MS, why });
   if (m.lastGood === playerIndex) m.lastGood = null;
 }
 
@@ -99,10 +106,10 @@ export function noteBad(channelId: string, playerIndex: number): void {
  * a play-time failure (`attempt >= 1`). Returns the burned player index, or null when nothing was pinned
  * (the next resolve then simply walks from the operator's preference).
  */
-export function burnCurrent(channelId: string): number | null {
+export function burnCurrent(channelId: string, why = 'play-time-failure'): number | null {
   const cur = preferredPlayer(channelId);
   if (cur === null) return null;
-  noteBad(channelId, cur);
+  noteBad(channelId, cur, why);
   return cur;
 }
 
@@ -134,6 +141,8 @@ export interface PlayerMemoView {
   lastGood: number | null;
   lastGoodAgeMs: number | null;
   burnt: number[];
+  /** Why each burnt player was retired, keyed by player index — see `noteBad`. */
+  burntWhy: Record<number, string>;
 }
 
 export function memoView(channelId: string): PlayerMemoView | null {
@@ -144,7 +153,10 @@ export function memoView(channelId: string): PlayerMemoView | null {
   return {
     lastGood: fresh ? m.lastGood : null,
     lastGoodAgeMs: fresh ? t - m.lastGoodAt : null,
-    burnt: [...m.burnt.entries()].filter(([, until]) => until > t).map(([i]) => i),
+    burnt: [...m.burnt.entries()].filter(([, b]) => b.until > t).map(([i]) => i),
+    burntWhy: Object.fromEntries(
+      [...m.burnt.entries()].filter(([, b]) => b.until > t).map(([i, b]) => [i, b.why]),
+    ),
   };
 }
 

@@ -37,8 +37,8 @@ use crate::tsseg::{parse_pat, parse_pmt, PKT, SYNC};
 
 /// The 33-bit PTS/DTS/PCR-base clock wraps roughly every 26.5 hours. Every arithmetic step below is masked to
 /// it, so a wrap is a normal event rather than a special case.
-const CLOCK_WRAP: u64 = 1 << 33;
-const CLOCK_MASK: u64 = CLOCK_WRAP - 1;
+pub(crate) const CLOCK_WRAP: u64 = 1 << 33;
+pub(crate) const CLOCK_MASK: u64 = CLOCK_WRAP - 1;
 
 /// Fallback inter-frame gap (90 kHz ticks) when a segment is too short to measure one — 1/25 s. Only used to
 /// space one segment from the next, so being a frame out is inaudible and invisible.
@@ -142,7 +142,7 @@ impl Normalizer {
 
 /// Distance from `a` forward to `b` on the 33-bit clock. Used instead of `<`/`>` so a comparison that
 /// straddles the wrap reads as "a bit later" rather than as an enormous jump backwards.
-fn forward_gap(a: u64, b: u64) -> u64 {
+pub(crate) fn forward_gap(a: u64, b: u64) -> u64 {
     b.wrapping_sub(a) & CLOCK_MASK
 }
 
@@ -277,7 +277,7 @@ fn apply(out: &mut [u8], offset: u64, cc: &mut HashMap<u16, u8>, remap: Option<&
     Some(())
 }
 
-fn packets(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
+pub(crate) fn packets(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     let mut i = 0usize;
     std::iter::from_fn(move || {
         while i + PKT <= bytes.len() {
@@ -293,7 +293,7 @@ fn packets(bytes: &[u8]) -> impl Iterator<Item = &[u8]> {
     })
 }
 
-fn pid_of(pkt: &[u8]) -> u16 {
+pub(crate) fn pid_of(pkt: &[u8]) -> u16 {
     (((pkt[1] & 0x1F) as u16) << 8) | pkt[2] as u16
 }
 
@@ -311,7 +311,7 @@ fn payload_start(pkt: &[u8]) -> Option<usize> {
 /// `(pts, dts)` from the PES header at the head of a PUSI packet. `Ok(None, None)` for a payload that is not
 /// a PES start we understand; `None` (the outer Option) for one we understand but must not touch.
 #[allow(clippy::type_complexity)]
-fn pes_timestamps(pkt: &[u8]) -> Option<(Option<u64>, Option<u64>)> {
+pub(crate) fn pes_timestamps(pkt: &[u8]) -> Option<(Option<u64>, Option<u64>)> {
     let Some(off) = payload_start(pkt) else { return Some((None, None)) };
     let p = &pkt[off..];
     if p.len() < 9 || p[0..3] != [0x00, 0x00, 0x01] {
@@ -449,9 +449,9 @@ fn shift_pcr(b: &mut [u8], offset: u64) {
 
 /// The published layout. Fixed values rather than "whatever the first segment used", so the wire shape of a
 /// masqueradarr raw-TS stream is a property of masqueradarr and not of whichever ad happened to play first.
-const OUT_PMT_PID: u16 = 0x1000;
-const OUT_VIDEO_PID: u16 = 0x100;
-const OUT_AUDIO_BASE: u16 = 0x101;
+pub(crate) const OUT_PMT_PID: u16 = 0x1000;
+pub(crate) const OUT_VIDEO_PID: u16 = 0x100;
+pub(crate) const OUT_AUDIO_BASE: u16 = 0x101;
 const OUT_PROGRAM: u16 = 1;
 /// Published audio tracks. Beyond this the segment is declined rather than silently losing a language.
 const MAX_AUDIO: usize = 4;
@@ -978,7 +978,7 @@ fn finish_section(mut s: Vec<u8>) -> Vec<u8> {
 }
 
 /// A single-program PAT pointing at `OUT_PMT_PID`.
-fn build_pat() -> Vec<u8> {
+pub(crate) fn build_pat() -> Vec<u8> {
     let mut s = vec![
         0x00, 0x00, 0x00, // table_id, section_length (patched)
         0x00, 0x01, // transport_stream_id
@@ -993,7 +993,7 @@ fn build_pat() -> Vec<u8> {
 /// The published PMT. No ES descriptors are emitted: every accepted stream type carries its own
 /// configuration in-band (see `is_self_describing_*`), and copying descriptors forward from ONE segment
 /// would attach the first ad's metadata to the whole session.
-fn build_pmt(pcr_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
+pub(crate) fn build_pmt(pcr_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
     let mut s = vec![0x02, 0x00, 0x00];
     s.extend_from_slice(&OUT_PROGRAM.to_be_bytes());
     s.extend_from_slice(&[0xC1, 0x00, 0x00]); // version 0 + current_next, section 0 of 0
@@ -1010,7 +1010,7 @@ fn build_pmt(pcr_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
 /// Overwrite `pkt` with a complete PSI section on `pid`. Length-invariant: the section is padded out to the
 /// full 188 bytes. `None` when the section would not fit one packet — this module never emits a table that
 /// has to span packets, and would rather decline than write half of one.
-fn write_section(pkt: &mut [u8], pid: u16, section: &[u8]) -> Option<()> {
+pub(crate) fn write_section(pkt: &mut [u8], pid: u16, section: &[u8]) -> Option<()> {
     if 5 + section.len() > PKT {
         return None;
     }

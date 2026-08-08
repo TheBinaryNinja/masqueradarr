@@ -88,6 +88,14 @@ pub(crate) struct SegRef {
     /// program, or the source emits no cue tags at all (pluto — see `origin::ad_state`, which falls back to
     /// an adapter-declared URI signature).
     pub cue: Option<CueState>,
+    /// This segment's `#EXT-X-PROGRAM-DATE-TIME` in epoch milliseconds: the wall-clock instant the media
+    /// starts at. Anchored by the tag and advanced by `#EXTINF` for the segments that follow it (RFC 8216
+    /// §4.3.2.6), re-anchored by any later tag. `None` when the playlist carries no PDT at all.
+    ///
+    /// This is the ONLY cross-rendition identity a demuxed pair has. The media sequence looks like one and is
+    /// not: pluto renumbers the two renditions independently across a session renewal, so the same media can
+    /// be sequence 10 on the video lane and 11 on the audio lane. See `origin`'s pairing site.
+    pub pdt_ms: Option<i64>,
 }
 
 /// Which tag family opened the break. Named rather than a bare bool for the same reason `origin::Boundary`
@@ -130,6 +138,9 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
     // to the segment that FOLLOWS them, so they are cleared on use (unlike #EXT-X-KEY, which is sticky).
     let mut pending_duration = 0f64;
     let mut pending_discontinuity = false;
+    // PDT is an ANCHOR, not a per-segment field: the tag dates the segment that follows it, and every later
+    // segment is that instant plus the running sum of `#EXTINF` until a new tag re-anchors it.
+    let mut pdt_cursor: Option<i64> = None;
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
@@ -143,6 +154,10 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
             endlist = true;
         } else if line.starts_with("#EXT-X-DISCONTINUITY") && !line.starts_with("#EXT-X-DISCONTINUITY-SEQUENCE") {
             pending_discontinuity = true; // the PREFIX guard matters: -SEQUENCE is a playlist header, not a splice
+        } else if let Some(v) = line.strip_prefix("#EXT-X-PROGRAM-DATE-TIME:") {
+            // An unparseable date is left as `None` rather than guessed: pairing falls back to the sequence
+            // index, which is what this whole tag exists to replace — a wrong instant would be worse.
+            pdt_cursor = parse_rfc3339_ms(v.trim());
         } else if let Some(v) = line.strip_prefix("#EXTINF:") {
             // "#EXTINF:<duration>[,<title>]" — the title is optional and may itself contain no comma.
             pending_duration = v.split(',').next().unwrap_or("").trim().parse().unwrap_or(0.0);
@@ -180,7 +195,10 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
                 duration: pending_duration,
                 discontinuity: pending_discontinuity,
                 cue: active_cue,
+                pdt_ms: pdt_cursor,
             });
+            // Advance the anchor past the segment just consumed, so the NEXT one dates correctly.
+            pdt_cursor = pdt_cursor.map(|t| t + (pending_duration * 1000.0).round() as i64);
             pending_duration = 0f64;
             pending_discontinuity = false;
         }
@@ -191,6 +209,68 @@ pub(crate) fn parse_media_playlist(body: &str) -> MediaPlaylist {
         endlist,
         segments,
     }
+}
+
+/// Parse an RFC 3339 / ISO 8601 instant to epoch milliseconds. The read half of `origin::fmt_rfc3339`.
+///
+/// Accepts `YYYY-MM-DDThh:mm:ss[.fff…][Z|±hh:mm]` — the shapes RFC 8216 §4.3.2.6 permits for
+/// `#EXT-X-PROGRAM-DATE-TIME`. Fractional seconds beyond milliseconds are truncated (they are far below any
+/// tolerance that reads this) and a missing zone is treated as UTC. Anything else returns `None`: the caller
+/// falls back to sequence-index pairing rather than acting on a date it had to guess at.
+///
+/// Deliberately hand-rolled — the crate has no date dependency, and adding one for a fixed-shape 20-odd byte
+/// string would be the larger change.
+fn parse_rfc3339_ms(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() < 19 || b[4] != b'-' || b[7] != b'-' || (b[10] | 0x20) != b't' || b[13] != b':' || b[16] != b':' {
+        return None;
+    }
+    let num = |r: std::ops::Range<usize>| -> Option<i64> { s.get(r)?.parse::<i64>().ok() };
+    let (y, mo, d) = (num(0..4)?, num(5..7)?, num(8..10)?);
+    let (h, mi, sec) = (num(11..13)?, num(14..16)?, num(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    // Fractional seconds, then the zone. Both optional.
+    let mut rest = &s[19..];
+    let mut millis = 0i64;
+    if let Some(frac) = rest.strip_prefix('.') {
+        let digits: String = frac.chars().take_while(|c| c.is_ascii_digit()).collect();
+        if digits.is_empty() {
+            return None;
+        }
+        // Left-align to exactly 3 places: ".5" is 500 ms, ".0115" truncates to 11 ms.
+        let ms: String = digits.chars().chain(std::iter::repeat('0')).take(3).collect();
+        millis = ms.parse().ok()?;
+        rest = &rest[1 + digits.len()..];
+    }
+    let zone_ms: i64 = match rest.as_bytes().first() {
+        None => 0,
+        Some(&z) if z == b'Z' || z == b'z' => 0,
+        Some(&sign) if sign == b'+' || sign == b'-' => {
+            // ±hh:mm or ±hhmm
+            let z = &rest[1..];
+            let (zh, zm) = match z.find(':') {
+                Some(i) => (z.get(..i)?.parse::<i64>().ok()?, z.get(i + 1..i + 3)?.parse::<i64>().ok()?),
+                None => (z.get(..2)?.parse::<i64>().ok()?, z.get(2..4)?.parse::<i64>().ok()?),
+            };
+            let off = (zh * 60 + zm) * 60_000;
+            if sign == b'+' {
+                -off
+            } else {
+                off
+            }
+        }
+        _ => return None,
+    };
+    // days_from_civil (Howard Hinnant): proleptic Gregorian, no lookup tables, valid across the whole range.
+    let y2 = if mo <= 2 { y - 1 } else { y };
+    let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
+    let yoe = y2 - era * 400;
+    let doy = (153 * (mo + if mo > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    Some(((days * 86_400 + h * 3_600 + mi * 60 + sec) * 1_000) + millis + zone_ms)
 }
 
 /// Split an HLS attribute list `KEY=VALUE,KEY=VALUE` into (key, value) pairs, treating commas INSIDE a
@@ -336,6 +416,11 @@ pub(crate) struct AudioRendition {
     pub language: String,
     pub default: bool,
     pub autoselect: bool,
+    /// `CHARACTERISTICS` marks this an AUDIO DESCRIPTION track — a narrator describing the picture for
+    /// blind viewers, not the programme's own audio. It must never be auto-selected as the main track: a
+    /// viewer who did not ask for it hears commentary over (or instead of) the dialogue, which reads as
+    /// "the audio is wrong" rather than as an accessibility feature.
+    pub describes_video: bool,
 }
 
 /// Every `#EXT-X-MEDIA:TYPE=AUDIO` rendition in a master that carries its own `URI=`, resolved absolute.
@@ -369,20 +454,72 @@ fn demuxed_audio_renditions(body: &str, base: &Url) -> Vec<AudioRendition> {
             language: val("LANGUAGE").unwrap_or_default(),
             default: yes("DEFAULT"),
             autoselect: yes("AUTOSELECT"),
+            // A comma-separated list; `describes-video` is the one that matters here.
+            describes_video: val("CHARACTERISTICS")
+                .is_some_and(|c| c.to_ascii_lowercase().contains("public.accessibility.describes-video")),
         });
+    }
+    out
+}
+
+/// Audio groups that contain at least one rendition WITHOUT a `URI` — i.e. groups whose audio is already
+/// inside the referencing variant.
+///
+/// The per-rendition rule (`demuxed_audio_renditions` skips URI-less entries) is right on its own but says
+/// nothing about the GROUP, and a group can hold both kinds. Live pluto does exactly that:
+///
+/// ```text
+/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original",DEFAULT=YES,CHANNELS="2"       ← no URI
+/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",AUTOSELECT=YES,URI="…",
+///              CHARACTERISTICS="public.accessibility.describes-video"
+/// ```
+///
+/// The programme audio is the URI-less `DEFAULT` one — muxed into the variant — and the only URI-bearing
+/// member is an audio-description track. Judging the group by its URI-bearing members alone made this look
+/// demuxed, so the origin ringed the video against the DESCRIPTION and the viewer got a narrator instead of
+/// the programme. RFC 8216 §4.3.4.1 is unambiguous that a URI-less rendition is present in the variant, so
+/// one such member is proof the variant is self-sufficient.
+fn muxed_audio_groups(body: &str) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for l in body.split('\n') {
+        let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
+        let attrs = split_attrs(attrs);
+        let val = |k: &str| {
+            attrs
+                .iter()
+                .find(|(a, _)| a.eq_ignore_ascii_case(k))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        };
+        if !val("TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
+            continue;
+        }
+        if val("URI").is_some_and(|u| !u.is_empty()) {
+            continue; // a demuxed member says nothing about the group
+        }
+        if let Some(g) = val("GROUP-ID") {
+            out.insert(g);
+        }
     }
     out
 }
 
 /// Which rendition of a group to follow: `DEFAULT=YES` wins, else `AUTOSELECT=YES`, else the first the master
 /// listed. The same order a player would apply with no user preference expressed.
+///
+/// AUDIO DESCRIPTION tracks are held back from all three rungs. A player only selects one when the viewer
+/// asks for it; auto-selecting it here would serve commentary as if it were the programme. It stays as a last
+/// resort rather than being excluded outright, so a group offering nothing else still yields audio instead of
+/// silently declining a channel that used to play.
 fn pick_rendition(renditions: &[AudioRendition], group: &str) -> Option<AudioRendition> {
-    let in_group = || renditions.iter().filter(|r| r.group == group);
-    in_group()
-        .find(|r| r.default)
-        .or_else(|| in_group().find(|r| r.autoselect))
-        .or_else(|| in_group().next())
-        .cloned()
+    let pick = |ad: bool| {
+        let in_group = || renditions.iter().filter(|r| r.group == group && r.describes_video == ad);
+        in_group()
+            .find(|r| r.default)
+            .or_else(|| in_group().find(|r| r.autoselect))
+            .or_else(|| in_group().next())
+            .cloned()
+    };
+    pick(false).or_else(|| pick(true))
 }
 
 /// The variant the byte-paths will follow.
@@ -405,17 +542,20 @@ pub(crate) struct VariantPick {
 /// Pick the variant to follow (the STREAM-INF URI is the next non-comment line), resolved absolute.
 ///
 /// PREFERS the highest-BANDWIDTH variant whose audio is muxed IN — no `AUDIO=` attribute, or an `AUDIO=`
-/// group whose renditions carry no URI of their own. Both raw-TS paths concatenate exactly ONE playlist and
-/// have no muxer that could interleave a second elementary stream (RMX stays deferred), so a video-only
-/// variant is served SILENT. Bandwidth is the wrong thing to maximise when the top rendition costs the
-/// audio track.
+/// group whose renditions carry no URI of their own. THIS path (the passthrough concatenator) follows exactly
+/// ONE playlist and has no muxer that could interleave a second elementary stream, so a video-only variant is
+/// served SILENT. Bandwidth is the wrong thing to maximise when the top rendition costs the audio track.
 ///
 /// Only when EVERY variant defers its audio does this report `external_audio = true`, and then `audio` names
-/// the rendition to follow beside it. A raw-TS caller falls back to the HLS rewrite on that; the origin rings
-/// the pair.
+/// the rendition to follow beside it. A passthrough raw-TS caller falls back to the HLS rewrite on that; the
+/// origin rings the pair, and its raw-TS renderer interleaves it (`tsweave`) rather than declining.
 pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
     let renditions = demuxed_audio_renditions(body, base);
-    let demuxed: HashSet<String> = renditions.iter().map(|r| r.group.clone()).collect();
+    // A group holding even ONE URI-less rendition has its audio inside the variant, so the variant is
+    // playable on its own and must not be treated as demuxed — see `muxed_audio_groups`.
+    let muxed = muxed_audio_groups(body);
+    let demuxed: HashSet<String> =
+        renditions.iter().map(|r| r.group.clone()).filter(|g| !muxed.contains(g)).collect();
     let mut best: Option<(i64, String)> = None; // audio-safe variants only
     let mut best_any: Option<(i64, String, Option<String>)> = None; // any variant + its demuxed group
     let mut pending: Option<(i64, Option<String>)> = None; // (bandwidth, demuxed group) awaiting its URI line
@@ -1034,6 +1174,57 @@ mod tests {
         assert_eq!(a.language, "en");
     }
 
+    /// THE REGRESSION, from the live Comedy Central master: the group's programme audio is the URI-LESS
+    /// `DEFAULT` member (muxed into the variant) and the only URI-bearing member is an audio-description
+    /// track. Judging the group by its URI-bearing members alone made this look demuxed, so the origin ringed
+    /// the video against the DESCRIPTION and the viewer heard a narrator over the programme.
+    #[test]
+    fn a_group_mixing_a_muxed_default_with_an_audio_description_is_not_demuxed() {
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"subs\",NAME=\"English\",DEFAULT=NO,FORCED=NO,URI=\"subs/en.m3u8\",LANGUAGE=\"en\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"Original\",AUTOSELECT=YES,DEFAULT=YES,CHANNELS=\"2\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",AUTOSELECT=YES,CHANNELS=\"2\",URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=1042180,SUBTITLES=\"subs\",AUDIO=\"audio\"\n360p/playlist.m3u8\n\
+                 #EXT-X-STREAM-INF:PROGRAM-ID=1,BANDWIDTH=3321280,SUBTITLES=\"subs\",AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio, "the URI-less DEFAULT proves the variant already carries the audio");
+        assert!(p.audio.is_none(), "so there is no rendition to pair — and no audio-description to mis-serve");
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/1080p/playlist.m3u8", "highest bandwidth");
+    }
+
+    #[test]
+    fn an_audio_description_track_never_wins_the_rendition_pick() {
+        // A genuinely demuxed group (no URI-less member) offering description ALONGSIDE programme audio: the
+        // description is AUTOSELECT and listed first, but must still lose to the plain track.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"Described\",AUTOSELECT=YES,URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",AUTOSELECT=YES,URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3321280,AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(p.external_audio, "no URI-less member, so this one really is demuxed");
+        let a = p.audio.expect("a rendition to pair with");
+        assert_eq!(a.url.as_str(), "https://cdn.example.com/live/audio/en.m3u8", "the plain track wins");
+        assert!(!a.describes_video);
+
+        // …even when the description is the one flagged DEFAULT — a viewer who did not ask for commentary
+        // must not be given it.
+        let m2 = m.replace("NAME=\"Described\",AUTOSELECT=YES", "NAME=\"Described\",DEFAULT=YES,AUTOSELECT=YES");
+        let a2 = pick_variant(&m2, &base()).unwrap().audio.expect("a rendition");
+        assert_eq!(a2.name, "English", "a DEFAULT audio-description still loses to programme audio");
+    }
+
+    #[test]
+    fn a_description_only_group_is_still_served_rather_than_declined() {
+        // Last resort: if description is all a demuxed group offers, pair with it — silence would be worse,
+        // and declining would turn a channel that used to play into a fallback.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"Described\",AUTOSELECT=YES,URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3321280,AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let a = pick_variant(m, &base()).unwrap().audio.expect("the only rendition there is");
+        assert!(a.describes_video);
+        assert_eq!(a.name, "Described");
+    }
+
     #[test]
     fn a_group_whose_renditions_carry_no_uri_yields_no_pairing_target() {
         // RFC 8216 §4.3.4.1: a URI-less rendition is already inside the variant. The variant is muxed, so
@@ -1095,6 +1286,55 @@ mod tests {
         );
         assert_eq!(unsupported_encryption("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6,\ns.ts\n"), None);
         assert_eq!(unsupported_encryption("#EXTM3U\n#EXTINF:6,\ns.ts\n"), None);
+    }
+
+    #[test]
+    fn rfc3339_parses_the_shapes_a_playlist_can_carry() {
+        // The epoch itself, then the pluto shape (millis + Z), then the offset forms.
+        assert_eq!(parse_rfc3339_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.000Z"), Some(1_786_183_180_000));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.011Z"), Some(1_786_183_180_011));
+        // Fractions are left-aligned to milliseconds, not read as an integer.
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.5Z"), Some(1_786_183_180_500));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40.0115Z"), Some(1_786_183_180_011));
+        // A zone is applied, not ignored — an hour east is an hour EARLIER in absolute terms.
+        let z = parse_rfc3339_ms("2026-08-08T10:59:40.000+01:00").unwrap();
+        assert_eq!(z, 1_786_183_180_000, "+01:00 resolves to the same instant as the Z form");
+        assert_eq!(parse_rfc3339_ms("2026-08-08T08:59:40.000-01:00"), Some(1_786_183_180_000));
+        assert_eq!(parse_rfc3339_ms("2026-08-08T10:59:40.000+0100"), Some(1_786_183_180_000));
+        // A missing zone is UTC (RFC 8216 permits it); leap day is a real date.
+        assert_eq!(parse_rfc3339_ms("2026-08-08T09:59:40"), Some(1_786_183_180_000));
+        assert!(parse_rfc3339_ms("2024-02-29T00:00:00Z").is_some());
+        // Anything we cannot read is None, never a guess — the caller falls back to the sequence index.
+        for bad in ["", "not-a-date", "2026-08-08 09:59:40Z", "2026-13-08T09:59:40Z", "2026-08-08T09:59:40.Z"] {
+            assert_eq!(parse_rfc3339_ms(bad), None, "{bad:?} must not parse");
+        }
+    }
+
+    #[test]
+    fn program_date_time_anchors_and_advances_by_extinf() {
+        // PDT dates the segment that FOLLOWS it and the rest are derived by adding #EXTINF, so one tag at the
+        // head has to date the whole window — that is what makes it a cross-rendition key.
+        let m = parse_media_playlist(
+            "#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:10\n#EXT-X-PROGRAM-DATE-TIME:2026-08-08T09:59:40.000Z\n\
+             #EXTINF:5.0,\na.ts\n#EXTINF:5.0,\nb.ts\n#EXTINF:4.992,\nc.ts\n",
+        );
+        let base = 1_786_183_180_000i64;
+        assert_eq!(m.segments[0].pdt_ms, Some(base));
+        assert_eq!(m.segments[1].pdt_ms, Some(base + 5_000));
+        assert_eq!(m.segments[2].pdt_ms, Some(base + 10_000));
+
+        // A later tag RE-ANCHORS rather than being ignored — that is how a source corrects drift mid-window.
+        let m2 = parse_media_playlist(
+            "#EXTM3U\n#EXT-X-PROGRAM-DATE-TIME:2026-08-08T09:59:40.000Z\n#EXTINF:5.0,\na.ts\n\
+             #EXT-X-PROGRAM-DATE-TIME:2026-08-08T10:00:00.000Z\n#EXTINF:5.0,\nb.ts\n",
+        );
+        assert_eq!(m2.segments[0].pdt_ms, Some(base));
+        assert_eq!(m2.segments[1].pdt_ms, Some(base + 20_000), "the second tag wins over the derived time");
+
+        // A playlist with no PDT leaves every segment undated, which is what selects the index fallback.
+        let m3 = parse_media_playlist("#EXTM3U\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:5,\na.ts\n");
+        assert_eq!(m3.segments[0].pdt_ms, None);
     }
 
     #[test]

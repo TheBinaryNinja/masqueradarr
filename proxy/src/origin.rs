@@ -73,6 +73,34 @@ const MAX_EMPTY_POLLS: u32 = 5;
 /// own retry loop and never passes through the handler's `failover_walk`.
 const MEDIA_FAIL_ESCALATE: u32 = 2;
 
+/// S3/UND — how many consecutive segments must carry the SAME structural fault before the upstream is
+/// retired. The faults themselves are named and judged by `tsseg::inspect_segment`.
+///
+/// The failure this exists for is invisible to every other health signal. A dlhd player provider can serve
+/// HTTP 200 for every playlist and every segment — ring filling, manifests rendering, no timeouts — while its
+/// H.264 carries no SPS/PPS at all, so the DECODER produces nothing and the viewer sees a black screen. Serve
+/// counts measure fetching, not rendering, so "all segments served" cannot tell the two apart. Measured live
+/// on dlhd channel 648 (Boomerang) via Player 4: `non-existing PPS 0 referenced` / `no frame!`, reproduced
+/// identically against the provider DIRECT, with masqueradarr entirely out of the path.
+///
+/// THREE consecutive, not one: a single segment may legitimately lack parameter sets (a mid-GOP cut, a
+/// provider that repeats them only every few seconds). Hopping off a working provider is worse than the
+/// disease, so the bar is deliberately high.
+const UNDECODABLE_STRIKES: u32 = 3;
+
+/// …and only within this many segments of a fresh resolve. A provider that has been serving decodable video
+/// for minutes and then stutters is a different problem from one that never had parameter sets at all; this
+/// check answers only the second question, at the moment a new upstream is adopted.
+const UNDECODABLE_PROBE_SEGMENTS: u32 = 6;
+
+/// How many consecutive pairs the INTERLEAVED raw-TS producer may decline before it ends the socket.
+///
+/// One decline is a shape `tsweave` could not carry — skip the pair, warn, carry on. Three in a row means the
+/// stream shape has genuinely moved out from under the published program, and a socket that stays open while
+/// emitting nothing looks like working playback rather than a fault. Ending it lets the client reconnect,
+/// which re-dispatches: an origin that has actually become muxed then lands on `ts_ring_producer`.
+const MAX_PAIR_DECLINES: u32 = 3;
+
 /// How many recently-ingested upstream segment URIs the ingest remembers, for recognising the window a
 /// RENEWED provider session re-offers (see `dedupe_by_uri`). About one live window plus slack — small enough
 /// that a source recycling segment names would have to wrap within it to cause a false skip.
@@ -279,9 +307,9 @@ pub struct Origin {
     ineligible: RwLock<Option<String>>,
     /// Set once the ingest learns this upstream is DEMUXED — the audio rendition it rings beside the video.
     ///
-    /// Read by Side-2: the HLS renderer authors an `#EXT-X-MEDIA` from it (so the client still sees the track
-    /// labelled as upstream labelled it), and `serve_ts` declines on it — a paired ring cannot be flattened
-    /// into one socket without an interleaver, and RMX stays deferred.
+    /// Read by Side-2 to pick the renderer: the HLS one authors an `#EXT-X-MEDIA` from it (so the client still
+    /// sees the track labelled as upstream labelled it), and `serve_ts` routes to the INTERLEAVING producer
+    /// (`ts_ring_pair_producer` → `tsweave`), which folds the pair into one program on the way out.
     demuxed_audio: RwLock<Option<DemuxedMaster>>,
 }
 
@@ -577,6 +605,19 @@ async fn ingest(ctx: IngestCtx) {
     let mut pair_splicer = crate::tsnorm::PairSplicer::new();
     let mut warned_splice: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut warned_pairing = false;
+    // Latch for the one-shot line naming which key is pairing this source's two renditions.
+    let mut pairing_logged = false;
+    // S3/UND — the undecodable-upstream detector. Scoped to `playerSelectable` sources (dlhd): retiring an
+    // upstream is only useful where there are alternates to walk to, and every other source would just
+    // re-resolve the same dead provider on a 2 s loop.
+    let undecodable_watch = ctx.source == "dlhd";
+    let mut probe_segments: u32 = 0;
+    // The fault currently repeating, and how many segments in a row have shown it.
+    let mut suspect_run: Option<(crate::tsseg::Suspect, u32)> = None;
+    let mut undecodable_bail = false;
+    // Set for exactly one resolve: the NEXT one carries this reason, so the adapter records WHICH fault
+    // retired the provider rather than a generic "it failed".
+    let mut pending_reason: Option<&'static str> = None;
     // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
     let mut media_failures: u32 = 0;
     let mut last_idle_check = Instant::now();
@@ -622,7 +663,16 @@ async fn ingest(ctx: IngestCtx) {
                 if escalate {
                     renewing_session = false;
                 }
-                let resolved = resolve_media(&ctx, &rid, escalate).await;
+                // S3/UND: name the cause on the resolve that retires the provider, then disarm — a later
+                // ordinary re-resolve must not keep blaming it.
+                let reason = pending_reason.take();
+                let resolved = resolve_media(&ctx, &rid, escalate, reason).await;
+                // A fresh upstream gets a fresh verdict: the probe window re-opens so the NEW provider is
+                // judged on its own segments, not on the corpse of the last one.
+                if resolved.is_some() {
+                    probe_segments = 0;
+                    suspect_run = None;
+                }
                 // A fresh resolve may point at a different upstream, so the previous window's bytes cannot be
                 // ASSUMED contiguous with the next ones. There are two honest ways to say that, and which one
                 // is right depends on why we re-resolved:
@@ -734,27 +784,25 @@ async fn ingest(ctx: IngestCtx) {
 
             // ── PAIRING ──────────────────────────────────────────────────────────────────────────────────
             // On a demuxed source the ring holds only COMPLETE pairs, so a video segment is not consumed
-            // until its audio partner exists. The key is the upstream MEDIA SEQUENCE, which pluto keeps
-            // exactly aligned across both renditions — verified live, including ACROSS a pod edge: one ad
-            // creative is JIT-transmuxed into `video_600.mp4` and `audio.mp4` and the stitcher advances both
-            // in lockstep.
+            // until its audio partner exists. The key is `#EXT-X-PROGRAM-DATE-TIME` — the wall clock of the
+            // media itself — falling back to the media-sequence index only where a lane publishes no PDT.
             //
-            // Deliberately NOT cumulative `#EXTINF`: AAC quantises to ~21.3 ms, so the two ladders differ per
-            // segment (`5.013 / 4.992` against a flat `5`) while describing the same window. That difference
-            // oscillates rather than accumulating, so it is never a pairing failure.
+            // The media sequence was the original key and is NOT a cross-rendition identity: pluto renumbers
+            // the two renditions independently across a session renewal, so the same media is sequence 10 on
+            // one lane and 11 on the other. See `pair_audio` for the live trace.
             let audio_seg = match &ap {
                 None => None,
-                Some((aurl, apl)) => {
-                    let idx = upstream_seq - apl.media_sequence;
-                    if idx < 0 {
-                        // The audio window has rolled past this sequence, so the pair can never be completed.
-                        // Drop the video segment too: publishing it unpaired would put the two playlists on
-                        // different windows, and the next segment's sequence check reports the gap honestly.
+                Some((aurl, apl)) => match pair_audio(seg, upstream_seq, apl) {
+                    PairPick::Found(a) => Some((aurl.clone(), a.clone())),
+                    // The audio partner is already gone, so this pair can never be completed. Drop the video
+                    // segment too: publishing it unpaired would put the two playlists on different windows,
+                    // and the next segment's sequence check reports the gap honestly.
+                    PairPick::RolledPast => {
                         if !warned_pairing {
                             warned_pairing = true;
                             log::warn("iop", &rid, || {
                                 format!(
-                                    "audio rendition is ahead of the video (upstream seq={upstream_seq} < audio media-sequence {}) — dropping the pair to keep both playlists aligned",
+                                    "audio rendition is ahead of the video at upstream seq={upstream_seq} (audio media-sequence {}) — dropping the pair to keep both playlists aligned",
                                     apl.media_sequence
                                 )
                             });
@@ -762,15 +810,26 @@ async fn ingest(ctx: IngestCtx) {
                         next_upstream_seq = upstream_seq + 1;
                         continue;
                     }
-                    match apl.segments.get(idx as usize) {
-                        Some(a) => Some((aurl.clone(), a.clone())),
-                        // The audio lane has not published this sequence yet. HOLD the video segment —
-                        // `next_upstream_seq` is deliberately NOT advanced — and retry on the next poll. A
-                        // lane that never catches up is caught by the existing MAX_EMPTY_POLLS re-resolve.
-                        None => break,
-                    }
-                }
+                    // HOLD the video segment — `next_upstream_seq` is deliberately NOT advanced — and retry
+                    // on the next poll. A lane that never catches up is caught by MAX_EMPTY_POLLS.
+                    PairPick::NotYet => break,
+                },
             };
+            // One line per ingest naming WHICH key is pairing this source, so a mispairing complaint can be
+            // told apart from a source that never had a PDT to pair on.
+            if let (Some((_, apl)), Some(_)) = (&ap, &audio_seg) {
+                if !pairing_logged {
+                    pairing_logged = true;
+                    let by_pdt = seg.pdt_ms.is_some() && apl.segments.iter().any(|a| a.pdt_ms.is_some());
+                    log::info("iop", &rid, || {
+                        if by_pdt {
+                            "pairing the two renditions on #EXT-X-PROGRAM-DATE-TIME (survives a session renewal renumbering either lane)".to_string()
+                        } else {
+                            "pairing the two renditions on the media-sequence index — no #EXT-X-PROGRAM-DATE-TIME on one or both lanes".to_string()
+                        }
+                    });
+                }
+            }
             next_upstream_seq = upstream_seq + 1;
 
             // The renewed session re-offers the window we were already holding. Skipping by URI keeps the
@@ -932,6 +991,48 @@ async fn ingest(ctx: IngestCtx) {
             // A DEMUXED source runs `PairSplicer` instead: same contract, but ONE offset computed from the
             // video lane's DTS is applied to both renditions, so upstream's authored A/V skew survives
             // bit-exactly. A per-lane offset would manufacture a lip-sync error that was not in the source.
+            // ── S3/UND: is this upstream structurally DECODABLE? ─────────────────────────────────────────
+            // Every other health signal answers "are bytes arriving?", and a provider can serve perfect
+            // HTTP 200s whose H.264 carries no parameter sets — decodes to nothing, looks healthy here.
+            // `scan_profile` already extracts SPS/PPS for the pod-edge fingerprint; this reads the same
+            // field as a liveness signal. `None` (no PSI at all) is UNVERIFIABLE, not undecodable — samsung's
+            // first segment is legitimately PSI-less — so only a parsed profile missing its parameter sets
+            // counts as a strike.
+            if undecodable_watch && probe_segments < UNDECODABLE_PROBE_SEGMENTS {
+                probe_segments += 1;
+                // The run must be of the SAME fault. A segment that is not a transport stream followed by one
+                // missing its parameter sets is two different problems, and counting them together would
+                // retire a provider on evidence that never actually repeated.
+                suspect_run = match (crate::tsseg::inspect_segment(&plain), suspect_run) {
+                    (Some(s), Some((prev, n))) if prev == s => Some((s, n + 1)),
+                    (Some(s), _) => Some((s, 1)),
+                    (None, _) => None,
+                };
+                if let Some((s, n)) = suspect_run {
+                    log::trace("iop", &rid, || format!("upstream {} ({n}/{UNDECODABLE_STRIKES})", s.describe()));
+                    if n >= UNDECODABLE_STRIKES {
+                        // RETIRE AND RE-RESOLVE — deliberately not a write-off. The escalating resolve burns
+                        // this provider and walks the alternates; the adapter's own burn TTL is what stops a
+                        // hot walk. An earlier cut marked the whole channel ineligible after two passes, but
+                        // that state lived on the ingest, which dies 30 s after the last viewer — so a client
+                        // with auto-reconnect never reached it anyway, while the one time it DID fire it
+                        // wrote off a working channel. The harshest available action is the wrong response to
+                        // a heuristic; hopping providers is the right one.
+                        log::warn("iop", &rid, || {
+                            format!(
+                                "upstream {} ({UNDECODABLE_STRIKES} consecutive segments) — retiring this provider and walking the alternates",
+                                s.describe()
+                            )
+                        });
+                        suspect_run = None;
+                        probe_segments = 0;
+                        pending_reason = Some(s.slug());
+                        undecodable_bail = true;
+                        break;
+                    }
+                }
+            }
+
             let normalize = policy.splice_normalize.load(Ordering::Relaxed);
             let demuxed = audio_plain.is_some();
             if !normalize {
@@ -1043,6 +1144,16 @@ async fn ingest(ctx: IngestCtx) {
             } else if !beat {
                 warned_floor = false;
             }
+        }
+
+        // S3/UND: the upstream was retired (or the channel written off) mid-poll. Drop straight back to the
+        // top so the next pass re-resolves — carrying the reason, so the adapter burns the RIGHT provider
+        // for the RIGHT cause. `mark_ineligible` (the give-up case) is picked up by the resolve arm there.
+        if undecodable_bail {
+            undecodable_bail = false;
+            media = None;
+            media_failures = MEDIA_FAIL_ESCALATE; // force the ESCALATING resolve, not a re-resolve in place
+            continue;
         }
 
         // The URI memory is a RENEWAL tool only — leaving it armed would let it skip real content on a
@@ -1158,15 +1269,94 @@ async fn ingest(ctx: IngestCtx) {
     });
 }
 
+/// Which audio segment partners a video one — the outcome of the pairing lookup.
+enum PairPick<'a> {
+    Found(&'a SegRef),
+    /// The audio window has already rolled past this video segment; the pair can never complete.
+    RolledPast,
+    /// The audio lane has not published this far yet — HOLD the video segment and retry next poll.
+    NotYet,
+}
+
+/// How far two lanes' `#EXT-X-PROGRAM-DATE-TIME` values may differ and still describe the same media, in ms.
+///
+/// HALF a segment. Measured on live pluto, a correctly-paired demuxed segment agrees to **~20 ms** across the
+/// two renditions, while a mispairing is a WHOLE segment out (~5000 ms) — so half a segment sits two orders of
+/// magnitude clear of both. It also absorbs AAC's ~21.3 ms `#EXTINF` quantisation (1024 samples @ 48 kHz),
+/// which oscillates rather than accumulating, so it can never walk a correct pair out of tolerance.
+fn pair_tolerance_ms(video_duration: f64, target_duration: f64) -> i64 {
+    let d = if video_duration > 0.1 {
+        video_duration
+    } else if target_duration > 0.1 {
+        target_duration
+    } else {
+        6.0 // no ladder at all: assume a generous segment rather than a tolerance of zero
+    };
+    ((d * 1000.0) / 2.0).round() as i64
+}
+
+/// Find the audio segment that partners `video`.
+///
+/// PAIRS ON WALL CLOCK, not on the media sequence. The sequence *looks* like a cross-rendition identity and is
+/// not: pluto renumbers the two renditions independently across a session renewal (its stitcher ENDLISTs every
+/// ~25 s), so a fresh video playlist can open at sequence 10 against the audio's 11 **for the same media**.
+/// Index pairing then puts every pair of that session ~one segment out, which `PairSplicer`'s skew guard
+/// correctly refuses — costing the HLS lane its splice absorption and the raw-TS lane the segment outright.
+/// Live trace behind this:
+///
+/// ```text
+/// session renewed — ring kept (63 seg), join marked as a splice
+/// audio rendition is ahead of the video (upstream seq=10 < audio media-sequence 11)
+/// splice normalisation declined — the two renditions' clocks drifted apart by 9997 ms
+/// ```
+///
+/// `#EXT-X-PROGRAM-DATE-TIME` is the identity the sequence pretends to be — RFC 8216 dates the media itself,
+/// so it survives any renumbering. Both pluto renditions carry it and agree to ~11 ms.
+///
+/// The sequence index remains the FALLBACK for a source that publishes no PDT, so nothing that pairs correctly
+/// today changes behaviour: an aligned pair resolves to the same segment either way.
+fn pair_audio<'a>(video: &SegRef, upstream_seq: i64, apl: &'a crate::tsmux::MediaPlaylist) -> PairPick<'a> {
+    if let Some(vt) = video.pdt_ms {
+        let mut best: Option<(&SegRef, i64)> = None;
+        for a in &apl.segments {
+            let Some(at) = a.pdt_ms else { continue };
+            let d = (at - vt).abs();
+            if best.is_none_or(|(_, bd)| d < bd) {
+                best = Some((a, d));
+            }
+        }
+        // Only trust this path when the audio lane actually dates itself; a lane with no PDT at all falls
+        // through to the index rather than being declared "rolled past".
+        if let Some((a, d)) = best {
+            if d <= pair_tolerance_ms(video.duration, apl.target_duration) {
+                return PairPick::Found(a);
+            }
+            // Out of tolerance: which SIDE decides hold-vs-drop. Before the window ⇒ the partner is already
+            // gone; after it ⇒ it has not been published yet.
+            let first = apl.segments.iter().find_map(|s| s.pdt_ms).unwrap_or(vt);
+            return if vt < first { PairPick::RolledPast } else { PairPick::NotYet };
+        }
+    }
+    // FALLBACK — the pre-existing sequence-index lookup, byte-for-byte the old behaviour.
+    let idx = upstream_seq - apl.media_sequence;
+    if idx < 0 {
+        return PairPick::RolledPast;
+    }
+    match apl.segments.get(idx as usize) {
+        Some(a) => PairPick::Found(a),
+        None => PairPick::NotYet,
+    }
+}
+
 /// Resolve the entry and walk to the MEDIA playlist to follow (peeking the top variant when the entry is a
 /// master). `None` when nothing usable is reachable — the caller backs off and retries.
-async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<MediaSource> {
+async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Option<&str>) -> Option<MediaSource> {
     // `escalate` = the pinned candidate has failed us repeatedly, so advance the failover cursor instead of
     // re-resolving the same one. The ingest loop drives its own retries and never enters the handler's
     // failover_walk, so this is the ONLY way an origin-mode stream reaches the source's alternate upstreams
     // (dlhd's other player providers) or the channel's configured backups.
     let resolved = if escalate {
-        ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+        ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref(), reason).await
     } else {
         ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
     };
@@ -1886,19 +2076,11 @@ pub async fn serve_ts(
         Ready::Ineligible => return None,
         Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
     }
-    // A demuxed ring holds two elementary streams as two separate transport streams, and flattening them into
-    // ONE socket needs a real interleaver with its own PCR scheduling — RMX stays deferred. Decline here
-    // rather than in `resolve_media`: ineligibility is a property of (shape, OUTPUT format), not of the
-    // upstream, and the same ring is serving HLS viewers perfectly. The caller falls through to the rewrite,
-    // which is byte-for-byte the raw-TS behaviour this source had before pairing existed.
-    if lease.origin().demuxed_audio().is_some() {
-        log::warn("oop", rid, || {
-            "outputFormat=ts is not available for a demuxed source — the ring carries two renditions and \
-             there is no interleaving muxer (RMX is deferred); falling back to the manifest rewrite"
-                .to_string()
-        });
-        return None;
-    }
+    // A demuxed ring holds two elementary streams as two separate transport streams, which do not concatenate
+    // — for a long time that made `outputFormat=ts` decline here and fall back to the manifest rewrite, on
+    // exactly the source shape the origin exists for. RMX (`tsweave`) closes that: the pair is woven into ONE
+    // authored program on the way out, off the same ring the HLS lanes are rendered from.
+    let demuxed = lease.origin().demuxed_audio().is_some();
     let buffer_size_kb = policy.buffer_size_kb.load(Ordering::Relaxed);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(crate::stream::channel_capacity(buffer_size_kb));
     let ctx = TsRingCtx {
@@ -1913,7 +2095,19 @@ pub async fn serve_ts(
     };
     // The LEASE moves into the producer: a continuous stream has no polling to renew it, so the ingest must be
     // held open for the whole session and released exactly when the socket ends.
-    tokio::spawn(ts_ring_producer(lease, ctx, tx));
+    //
+    // TWO producers rather than one loop with a branch inside it. The muxed one is proven and must keep
+    // emitting byte-identical output, so the paired shape gets its own copy — the same posture `LayoutMode`
+    // took when the demuxed arms were added, where the muxed predicates were reproduced unchanged rather than
+    // relaxed to cover both.
+    if demuxed {
+        log::info("oop", rid, || {
+            "demuxed ring — interleaving both renditions into one raw-TS socket".to_string()
+        });
+        tokio::spawn(ts_ring_pair_producer(lease, ctx, tx));
+    } else {
+        tokio::spawn(ts_ring_producer(lease, ctx, tx));
+    }
     Some(
         axum::response::Response::builder()
             .status(axum::http::StatusCode::OK)
@@ -2044,6 +2238,137 @@ async fn ts_ring_producer(
     log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id})"));
 }
 
+/// SIDE-2 RAW TS, DEMUXED (S3/RMX): follow the ring, weaving each PAIR into one socket.
+///
+/// A deliberate sibling of `ts_ring_producer` rather than a branch inside it — the muxed path is proven and
+/// must keep emitting byte-identical output. Everything around the per-segment step is the same by design:
+/// same lease-held-for-the-session contract, same open/sbytes/close telemetry, same start-at-the-oldest-held
+/// join, same fell-behind-the-ring handling, same 30 s park on `wait_for_segment`.
+///
+/// The step itself is what differs. `tsweave::PairWeaver` is per-SESSION for the same reason the muxed
+/// producer's `Splicer` is: a bare TS socket has no `#EXT-X-DISCONTINUITY` to splice with, and two viewers who
+/// joined the ring at different points sit at different points on their own output timelines.
+async fn ts_ring_pair_producer(
+    lease: OriginLease,
+    ctx: TsRingCtx,
+    tx: tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) {
+    let origin = lease.origin().clone();
+    let stream_id = ctx.state.next_stream_id();
+    log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved session open ({stream_id})"));
+    ctx.state.report(serde_json::json!({
+        "kind": "open", "streamId": stream_id, "source": ctx.source, "entryUrl": ctx.entry,
+        "ip": ctx.ip, "ua": ctx.ua, "username": ctx.username, "playerType": "externalPlayer",
+    }));
+
+    // Start at the OLDEST segment held — the ring doubles as the client's initial buffer, exactly as on the
+    // muxed path.
+    let mut next_seq = origin.window().first().map(|s| s.seq).unwrap_or(0);
+    let mut pending_bytes: u64 = 0;
+    let mut last_flush = Instant::now();
+    let mut weaver = crate::tsweave::PairWeaver::new();
+    // Latched per DISTINCT reason, like the ingest's — one latch would hide whether a pod edge declines for
+    // the same cause every time (a shape to handle) or a different one each time (a bug in the pass).
+    let mut warned_declines: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut consecutive_declines: u32 = 0;
+    let mut warned_switch = false;
+
+    'outer: loop {
+        let window = origin.window();
+        // Fell off the back of the ring — same diagnosis and same remedy as the muxed producer.
+        if let Some(front) = window.first() {
+            if next_seq < front.seq {
+                log::warn("oop", &ctx.rid, || {
+                    format!("client fell behind the ring (wanted seq={next_seq}, oldest held={}) — skipping ahead; raise originRingMb if this repeats", front.seq)
+                });
+                next_seq = front.seq;
+                // The skipped media is gone, so re-anchor rather than spacing the next pair against a clock
+                // whose media the client never received. This also drops the seam carry-over.
+                weaver.reset();
+            }
+        }
+        // `spliceNormalize` deliberately does NOT gate this path, and saying so once is the honest thing: it
+        // is the kill switch for splice ABSORPTION, but folding two renditions into one program requires
+        // authored PSI and a shared clock to exist at all. Turning the weave off means asking for HLS.
+        if !ctx.policy.splice_normalize.load(Ordering::Relaxed) && !warned_switch {
+            warned_switch = true;
+            log::info("oop", &ctx.rid, || {
+                "spliceNormalize is off, but interleaving still applies the pid remap and the shared clock — \
+                 a single program cannot be authored without them; set outputFormat=hls to publish the two \
+                 renditions untouched"
+                    .to_string()
+            });
+        }
+        let mut sent_any = false;
+        let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
+        for seg in window.iter().filter(|s| s.seq >= from) {
+            next_seq = seg.seq + 1;
+            // Unlike the muxed path there is NO serve-verbatim fallback: one transport stream concatenates,
+            // two do not. A pair we cannot publish is skipped, which costs one segment of media and keeps the
+            // published program stable — the alternative is emitting a stream we mis-authored.
+            let woven = seg.audio.as_ref().and_then(|a| weaver.weave(&seg.bytes, a));
+            let body = match woven {
+                Some(b) => {
+                    consecutive_declines = 0;
+                    Bytes::from(b)
+                }
+                None => {
+                    let why = match seg.audio.as_ref() {
+                        Some(_) => weaver.last_decline().to_string(),
+                        // The origin re-resolved onto a muxed upstream mid-session. Ending on the decline cap
+                        // is the recovery: the client reconnects and dispatches to `ts_ring_producer`.
+                        None => "the ring entry carries no audio lane".to_string(),
+                    };
+                    weaver.reset();
+                    consecutive_declines += 1;
+                    if warned_declines.insert(why.clone()) {
+                        log::warn("oop", &ctx.rid, || {
+                            format!("interleave declined — {why}; skipping the pair")
+                        });
+                    }
+                    if consecutive_declines >= MAX_PAIR_DECLINES {
+                        log::error("oop", &ctx.rid, || {
+                            format!("{consecutive_declines} consecutive pairs declined ({why}) — ending the socket rather than holding it open with no media")
+                        });
+                        break 'outer;
+                    }
+                    continue;
+                }
+            };
+            pending_bytes += body.len() as u64;
+            sent_any = true;
+            if tx.send(Ok(body)).await.is_err() {
+                // Client disconnected — the receiver dropped. Close out and release the lease.
+                log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved client disconnected ({stream_id})"));
+                if pending_bytes > 0 {
+                    ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+                }
+                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+                return;
+            }
+        }
+        if pending_bytes > 0 && last_flush.elapsed() >= Duration::from_secs(1) {
+            ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+            pending_bytes = 0;
+            last_flush = Instant::now();
+        }
+        if !sent_any {
+            // Nothing new yet — wait for the ingest to push rather than spinning on the ring.
+            let _ = tokio::time::timeout(Duration::from_secs(30), origin.wait_for_segment()).await;
+            // The ingest died (idle-stopped or the upstream ended) and drained: end the socket cleanly.
+            if origin.stopping.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+    }
+
+    if pending_bytes > 0 {
+        ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+    }
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id }));
+    log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved session close ({stream_id})"));
+}
+
 /// Emit the Side-1 telemetry event. Distinct `kind` from every egress event so Node can attribute ingest
 /// health separately — ingest bytes must NEVER be folded into the egress byte counters, or one upstream byte
 /// serving N viewers would be counted N+1 times.
@@ -2147,6 +2472,7 @@ mod tests {
             duration: 5.0,
             discontinuity: disc,
             cue: None,
+            pdt_ms: None,
         }
     }
 
@@ -2162,6 +2488,105 @@ mod tests {
         // Oldest evicted first — the window is the TAIL of what was ingested.
         assert_eq!(ring.front().unwrap().seq, 5);
         assert_eq!(ring.back().unwrap().seq, 9);
+    }
+
+    // ── demuxed pairing (PDT vs the media-sequence index) ────────────────────────────────────────────────
+
+    /// A media playlist whose segments are dated from `base_ms`, at `media_sequence`.
+    fn lane(media_sequence: i64, base_ms: i64, n: usize, dur: f64, dated: bool) -> crate::tsmux::MediaPlaylist {
+        let mut body = format!("#EXTM3U\n#EXT-X-TARGETDURATION:5\n#EXT-X-MEDIA-SEQUENCE:{media_sequence}\n");
+        if dated {
+            // Only the head is dated; the rest derive by #EXTINF, exactly as pluto publishes it.
+            body.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(
+                SystemTime::UNIX_EPOCH + Duration::from_millis(base_ms as u64),
+            )));
+        }
+        for i in 0..n {
+            body.push_str(&format!("#EXTINF:{dur},\nseg{}.ts\n", media_sequence + i as i64));
+        }
+        crate::tsmux::parse_media_playlist(&body)
+    }
+
+    /// THE REGRESSION, reproduced from the live trace: after a pluto session renewal the fresh video playlist
+    /// opens at media-sequence 10 while the audio opens at 11 **for the same media**. Index pairing then puts
+    /// every pair one segment out; PDT pairing is immune because it dates the media, not the numbering.
+    #[test]
+    fn a_renumbered_audio_lane_still_pairs_on_program_date_time() {
+        const BASE: i64 = 1_786_183_180_000;
+        let v = lane(10, BASE, 5, 5.0, true);
+        // Same media, same wall clock — but numbered from 11, and the audio ladder is AAC-quantised.
+        let a = lane(11, BASE, 5, 4.992, true);
+
+        for (i, vs) in v.segments.iter().enumerate() {
+            let useq = v.media_sequence + i as i64;
+            match pair_audio(vs, useq, &a) {
+                PairPick::Found(p) => {
+                    let d = (p.pdt_ms.unwrap() - vs.pdt_ms.unwrap()).abs();
+                    assert!(d < 100, "seq {useq} paired to media {d} ms away — that is a different segment");
+                }
+                _ => panic!("seq {useq} failed to pair despite the audio being present"),
+            }
+        }
+
+        // …and the old key really would have mispaired: index 0 of the audio lane is one segment out.
+        let idx = v.media_sequence - a.media_sequence; // -1 → the old code's "audio is ahead" drop
+        assert_eq!(idx, -1, "the renumbering is exactly the off-by-one the live trace showed");
+    }
+
+    #[test]
+    fn an_aligned_pair_picks_the_same_segment_as_the_index_did() {
+        // The no-regression case: where the two lanes agree on numbering, PDT pairing must be a no-op.
+        const BASE: i64 = 1_786_183_180_000;
+        let v = lane(40, BASE, 5, 5.0, true);
+        let a = lane(40, BASE, 5, 4.992, true);
+        for (i, vs) in v.segments.iter().enumerate() {
+            let useq = v.media_sequence + i as i64;
+            let by_pdt = match pair_audio(vs, useq, &a) {
+                PairPick::Found(p) => p.uri.clone(),
+                _ => panic!("aligned pair must resolve"),
+            };
+            let by_index = a.segments[(useq - a.media_sequence) as usize].uri.clone();
+            assert_eq!(by_pdt, by_index, "seq {useq}: PDT and index must agree on an aligned source");
+        }
+    }
+
+    #[test]
+    fn a_lane_without_program_date_time_falls_back_to_the_index() {
+        // A source that publishes no PDT must behave exactly as before this change.
+        let v = lane(10, 0, 3, 5.0, false);
+        let a = lane(10, 0, 3, 5.0, false);
+        match pair_audio(&v.segments[1], 11, &a) {
+            PairPick::Found(p) => assert_eq!(p.uri, "seg11.ts", "index pairing still selects positionally"),
+            _ => panic!("the fallback must still pair"),
+        }
+        // …including its rolled-past arm.
+        assert!(matches!(pair_audio(&v.segments[0], 9, &a), PairPick::RolledPast));
+    }
+
+    #[test]
+    fn an_audio_lane_that_has_not_caught_up_holds_rather_than_mispairs() {
+        // The video is ahead of everything the audio has published: HOLD, so the pair completes next poll.
+        const BASE: i64 = 1_786_183_180_000;
+        let v = lane(10, BASE + 60_000, 2, 5.0, true);
+        let a = lane(10, BASE, 3, 5.0, true);
+        assert!(matches!(pair_audio(&v.segments[0], 10, &a), PairPick::NotYet));
+
+        // …and the mirror image: the audio window has rolled past, so the pair can never complete.
+        let v2 = lane(10, BASE, 2, 5.0, true);
+        let a2 = lane(10, BASE + 60_000, 3, 5.0, true);
+        assert!(matches!(pair_audio(&v2.segments[0], 10, &a2), PairPick::RolledPast));
+    }
+
+    #[test]
+    fn the_tolerance_separates_aac_jitter_from_a_whole_segment_out() {
+        // Measured live: a healthy pluto pair agrees to ~20 ms, a mispair is ~5000 ms. The tolerance has to
+        // sit well clear of both.
+        let tol = pair_tolerance_ms(5.0, 5.0);
+        assert_eq!(tol, 2_500);
+        assert!(tol > 20 * 10, "AAC's ~21 ms quantisation is far inside tolerance");
+        assert!(tol < 5_000 / 2 + 1, "a whole segment out is far outside it");
+        // No ladder at all still yields a usable tolerance rather than zero.
+        assert!(pair_tolerance_ms(0.0, 0.0) > 0);
     }
 
     #[test]
@@ -2388,6 +2813,7 @@ mod tests {
             duration: 5.0,
             discontinuity: false,
             cue: Some(crate::tsmux::CueState { kind: CueKind::CueOut, duration: 30.0 }),
+            pdt_ms: None,
         };
         let url = Url::parse(PGM_URI).unwrap();
         assert_eq!(ad_signal(&cued, &url, &[]), Some(AdSignal::CueTag), "believed even with no signature");
@@ -2406,6 +2832,7 @@ mod tests {
             duration: 5.0,
             discontinuity: false,
             cue: Some(crate::tsmux::CueState { kind: CueKind::DateRange, duration: 120.0 }),
+            pdt_ms: None,
         };
         assert_eq!(ad_signal(&seg, &Url::parse(PGM_URI).unwrap(), &[]), Some(AdSignal::DateRange));
     }
@@ -2526,6 +2953,7 @@ mod tests {
                     language: "en".into(),
                     default: true,
                     autoselect: true,
+                    describes_video: false,
                 },
                 bandwidth: 3_321_280,
             },

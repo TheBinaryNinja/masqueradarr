@@ -98,6 +98,13 @@ export interface ResolveStreamOptions {
    */
   deep?: boolean;
   /**
+   * WHY the upstream is being retired, when `advance` is set. The data plane names the cause so the adapter
+   * can record it against the provider it burns: "this provider 404s" and "this provider serves video the
+   * decoder cannot use" are different operational facts, and an operator staring at a burnt player list
+   * needs to tell them apart. Free-form; adapters that don't record reasons ignore it.
+   */
+  advanceReason?: string;
+  /**
    * "The upstream you handed me last time just failed — give me a DIFFERENT one." Set by the resolve seam
    * on a play-time failover attempt. A `playerSelectable` adapter honors it by excluding the player it last
    * served (dlhd burns it for a short TTL, so the walk skips it); adapters without alternates ignore it and
