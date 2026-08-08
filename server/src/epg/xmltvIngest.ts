@@ -936,16 +936,17 @@ export interface XmltvProbeResult {
 }
 
 // SSRF gate: the probe fetches caller-supplied URLs server-side (through the global undici DNS dispatcher), so
-// restrict it to the one host the Jesmann picker targets. Off-host / non-https URLs report unavailable WITHOUT
-// any fetch.
-const JESMANN_HOST = 'epg.jesmann.com';
+// restrict it to the hosts the Jesmann picker targets — the site itself plus the CDN it serves the 7-day builds
+// from (see JESMANN_BASE / JESMANN_CDN_BASE in src/composables/jesmannCatalog.ts). Off-host / non-https URLs
+// report unavailable WITHOUT any fetch. The pre-2026 host (epg.jesmann.com) is gone and is NOT allow-listed.
+const JESMANN_HOSTS = new Set(['epg.guru', 'cdn.epg.guru']);
 const PROBE_TTL_MS = 10 * 60 * 1000; // Jesmann guides regenerate ~daily; 10 min keeps re-selecting a region snappy.
 const probeCache = new Map<string, { result: XmltvProbeResult; at: number }>();
 
 function isJesmannUrl(url: string): boolean {
   try {
     const u = new URL(url);
-    return u.protocol === 'https:' && u.hostname.toLowerCase() === JESMANN_HOST;
+    return u.protocol === 'https:' && JESMANN_HOSTS.has(u.hostname.toLowerCase());
   } catch {
     return false;
   }

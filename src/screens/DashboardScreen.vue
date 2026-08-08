@@ -280,9 +280,6 @@ onBeforeUnmount(() => {
       <div style="padding: 12px var(--pad-card) 0;">
         <LivelineChart :series="cpuChart.series" :times="cpuChart.times" :target="80" />
       </div>
-      <!-- 32px spacer between the CPU liveline and the metric tiles (keeps the liveline's scrolling
-           y-axis numbers from overlapping the row below) -->
-      <div style="height: 32px;" />
       <!-- Bottom row: the 5 live metric tiles (flex: 1) + the DB Health mini-card pinned to the right.
            Wrapped in its own nested .card flush so it keeps a carded surface while the chart above
            blends into the page (.sys-flush on the outer card). -->

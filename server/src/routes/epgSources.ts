@@ -412,7 +412,7 @@ epgSourcesRouter.get('/epgpw/preview', async (req, res, next) => {
 
 // Live-probe availability + download SIZE of a region's Jesmann catalog URLs so the Add-EPG picker can list
 // real sizes and grey out missing variants. Body: { urls: string[] } (the region's variant URLs). Each is
-// SSRF-gated to epg.jesmann.com inside probeXmltvUrl, then HEAD-probed (.gz first, matching fetchXmltvStream;
+// SSRF-gated to epg.guru / cdn.epg.guru inside probeXmltvUrl, then HEAD-probed (.gz first, matching fetchXmltvStream;
 // ranged-GET fallback). Returns { results: XmltvProbeResult[] } 1:1 with the input. Per the never-block contract
 // this NEVER 502s on a dead/off-host file — that variant simply comes back available:false so the picker
 // degrades gracefully. Admin-gated + JSON-parsed by the /api/epg-sources mount.
