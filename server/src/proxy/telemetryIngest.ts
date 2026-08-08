@@ -81,6 +81,11 @@ interface TelemetryEvent {
   ingestedBytes?: unknown;
   evictedSegments?: unknown;
   targetDuration?: unknown;
+  // S3/UND: the last structural fault that retired an upstream on this channel, and how many have been
+  // retired for one. Null/0 on a healthy channel; non-null means it has been hopping providers, which none
+  // of the byte counters above can express.
+  suspect?: unknown;
+  suspectRetires?: unknown;
   // S3/ORIGIN `ring` (process-wide). `ringBytes` is shared with `iop` but means something different here —
   // there it is one channel's window, here it is every window summed.
   origins?: unknown;
@@ -170,6 +175,8 @@ function applyEvent(e: TelemetryEvent): void {
         ingestedBytes: num(e.ingestedBytes),
         evictedSegments: num(e.evictedSegments),
         targetDuration: num(e.targetDuration),
+        suspect: typeof e.suspect === 'string' && e.suspect ? e.suspect.slice(0, 48) : null,
+        suspectRetires: num(e.suspectRetires),
         at: Date.now(),
       });
     }

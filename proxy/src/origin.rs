@@ -311,6 +311,12 @@ pub struct Origin {
     /// sees the track labelled as upstream labelled it), and `serve_ts` routes to the INTERLEAVING producer
     /// (`ts_ring_pair_producer` → `tsweave`), which folds the pair into one program on the way out.
     demuxed_audio: RwLock<Option<DemuxedMaster>>,
+    /// S3/UND — the last structural fault that retired an upstream on this channel, and how many upstreams
+    /// have been retired for one. Reported on the `iop` health frame so a channel quietly hopping providers
+    /// is visible in Active Streams, not only in the log. That invisibility is what let a false positive run
+    /// unnoticed until a viewer reported the symptom.
+    last_suspect: RwLock<Option<String>>,
+    suspect_retires: AtomicU32,
 }
 
 /// What a DEMUXED origin needs in order to author its own master over the pair.
@@ -348,6 +354,8 @@ impl Origin {
             disc_seq: AtomicU64::new(0),
             ineligible: RwLock::new(None),
             demuxed_audio: RwLock::new(None),
+            last_suspect: RwLock::new(None),
+            suspect_retires: AtomicU32::new(0),
         }
     }
 
@@ -1027,6 +1035,8 @@ async fn ingest(ctx: IngestCtx) {
                         suspect_run = None;
                         probe_segments = 0;
                         pending_reason = Some(s.slug());
+                        *ctx.origin.last_suspect.write_ok() = Some(s.slug().to_string());
+                        ctx.origin.suspect_retires.fetch_add(1, Ordering::Relaxed);
                         undecodable_bail = true;
                         break;
                     }
@@ -2387,6 +2397,10 @@ fn report_iop(ctx: &IngestCtx, status: &str) {
         "ingestedBytes": ctx.origin.ingested_bytes.load(Ordering::Relaxed),
         "evictedSegments": ctx.origin.evicted_segments.load(Ordering::Relaxed),
         "targetDuration": ctx.origin.target_duration(),
+        // S3/UND: null until an upstream is retired for a structural fault. Present ⇒ this channel has been
+        // hopping providers, which every byte-level metric here would otherwise show as perfectly healthy.
+        "suspect": ctx.origin.last_suspect.read_ok().clone(),
+        "suspectRetires": ctx.origin.suspect_retires.load(Ordering::Relaxed),
     }));
 }
 

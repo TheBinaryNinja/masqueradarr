@@ -210,6 +210,15 @@ watch(liveStreams, loadNowNext, { immediate: true });
 // Per-client display helpers.
 function rateKB(bps: number) { return (bps / 1024).toFixed(0); }
 function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; }
+// S3/UND: the data plane sends a stable slug (so it can also be recorded against the burnt provider); this
+// is the operator-facing wording. An unknown slug is shown verbatim rather than hidden — a newer sidecar
+// reporting a fault this SPA has not learned yet must not silently disappear from the row.
+function suspectLabel(slug: string): string {
+  return {
+    'undecodable-video': 'upstream video has no decoder parameter sets',
+    'not-transport-stream': 'upstream segments are not MPEG-TS',
+  }[slug] ?? slug;
+}
 </script>
 
 <template>
@@ -390,6 +399,19 @@ function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000
                   <div class="v mono">
                     {{ sel.ingest.ingestedSegments }} seg · {{ (sel.ingest.ingestedBytes / 1048576).toFixed(1) }} MiB
                   </div>
+                  <!-- S3/UND: the one ingest fact no byte counter can express. A provider that serves clean
+                       HTTP 200s whose media no decoder can use looks perfectly healthy in every row above —
+                       segments arrive, the ring fills, nothing errors — so a channel silently hopping
+                       providers was previously visible only in the log. Shown only once it has happened. -->
+                  <template v-if="sel.ingest.suspect">
+                    <div class="k">Upstream verdict</div>
+                    <div class="v mono" style="color: var(--warn);">
+                      {{ suspectLabel(sel.ingest.suspect) }}
+                      <template v-if="(sel.ingest.suspectRetires || 0) > 1">
+                        · {{ sel.ingest.suspectRetires }} provider(s) retired
+                      </template>
+                    </div>
+                  </template>
                 </template>
                 <!-- S3/CUE: ad breaks the ingest detected. Only appears once a break has actually been seen,
                      so a source with no cue tags and no declared ad-URI signature never shows this row. -->

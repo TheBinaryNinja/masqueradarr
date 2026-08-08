@@ -192,6 +192,8 @@ export interface ActiveStream {
     ringSegments: number; ringBytes: number;
     headSeq: number; generation: number;
     ingestedSegments: number; ingestedBytes: number; evictedSegments: number;
+    // S3/UND: non-null once an upstream has been retired for a structural fault the byte counters cannot see.
+    suspect?: string | null; suspectRetires?: number;
     targetDuration: number; at: number;
   } | null;
   // Failover attribution: non-null while a failover CHILD is serving under this (parent) channel's identity.

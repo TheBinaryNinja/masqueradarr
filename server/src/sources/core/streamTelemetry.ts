@@ -332,6 +332,11 @@ export interface IngestHealth {
   evictedSegments: number;
   targetDuration: number;
   at: number; // Date.now() of the last iop event — staleness tells you an ingest stopped reporting
+  /** S3/UND: slug of the last structural fault that retired an upstream (`undecodable-video`,
+   *  `not-transport-stream`), or null if none. Non-null means this channel has been hopping providers —
+   *  a state every other field here reports as healthy, because fetching IS working. */
+  suspect: string | null;
+  suspectRetires: number;
 }
 
 const ingestByChannel = new Map<string, IngestHealth>(); // channelKey → last ingest snapshot
