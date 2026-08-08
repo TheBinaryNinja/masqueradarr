@@ -319,15 +319,33 @@ pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Op
         .ok()
 }
 
-/// `GROUP-ID`s of `#EXT-X-MEDIA:TYPE=AUDIO` renditions that carry their OWN `URI=`, i.e. audio that lives in
-/// a separate playlist instead of inside the variant.
+/// One `#EXT-X-MEDIA:TYPE=AUDIO` rendition that carries its OWN `URI=` — audio living in a separate playlist
+/// instead of inside the variant.
+///
+/// The origin follows one of these ALONGSIDE the video variant and rings the pair (`origin::ingest`), so the
+/// labelling attributes are kept, not just the URL: our authored `#EXT-X-MEDIA` has to describe the track the
+/// same way upstream did or a client loses the language it was showing.
+#[derive(Clone, Debug)]
+pub(crate) struct AudioRendition {
+    /// The `GROUP-ID` a variant's `AUDIO=` attribute points at.
+    pub group: String,
+    /// The rendition playlist, resolved absolute against the master.
+    pub url: Url,
+    pub name: String,
+    /// `LANGUAGE`, empty when the master omits it.
+    pub language: String,
+    pub default: bool,
+    pub autoselect: bool,
+}
+
+/// Every `#EXT-X-MEDIA:TYPE=AUDIO` rendition in a master that carries its own `URI=`, resolved absolute.
 ///
 /// Per RFC 8216 §4.3.4.1 an `#EXT-X-MEDIA` WITHOUT a `URI` means that rendition is already present in the
 /// referencing variant's own playlist — so only the URI-bearing ones are actually demuxed, and a bare
 /// "does this master mention EXT-X-MEDIA" test would false-positive on every muxed stream that merely
 /// labels its audio track.
-fn demuxed_audio_groups(body: &str) -> HashSet<String> {
-    let mut out = HashSet::new();
+fn demuxed_audio_renditions(body: &str, base: &Url) -> Vec<AudioRendition> {
+    let mut out = Vec::new();
     for l in body.split('\n') {
         let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
         let attrs = split_attrs(attrs);
@@ -341,14 +359,30 @@ fn demuxed_audio_groups(body: &str) -> HashSet<String> {
             continue;
         }
         // No URI ⇒ muxed into the variant ⇒ following the variant alone still yields audio.
-        if val("URI").is_none_or(|u| u.is_empty()) {
-            continue;
-        }
-        if let Some(g) = val("GROUP-ID") {
-            out.insert(g);
-        }
+        let Some(uri) = val("URI").filter(|u| !u.is_empty()) else { continue };
+        let (Some(group), Ok(url)) = (val("GROUP-ID"), base.join(&uri)) else { continue };
+        let yes = |k: &str| val(k).is_some_and(|v| v.eq_ignore_ascii_case("YES"));
+        out.push(AudioRendition {
+            group,
+            url,
+            name: val("NAME").unwrap_or_default(),
+            language: val("LANGUAGE").unwrap_or_default(),
+            default: yes("DEFAULT"),
+            autoselect: yes("AUTOSELECT"),
+        });
     }
     out
+}
+
+/// Which rendition of a group to follow: `DEFAULT=YES` wins, else `AUTOSELECT=YES`, else the first the master
+/// listed. The same order a player would apply with no user preference expressed.
+fn pick_rendition(renditions: &[AudioRendition], group: &str) -> Option<AudioRendition> {
+    let in_group = || renditions.iter().filter(|r| r.group == group);
+    in_group()
+        .find(|r| r.default)
+        .or_else(|| in_group().find(|r| r.autoselect))
+        .or_else(|| in_group().next())
+        .cloned()
 }
 
 /// The variant the byte-paths will follow.
@@ -357,6 +391,15 @@ pub(crate) struct VariantPick {
     /// True when this variant's audio lives in a separate `#EXT-X-MEDIA` rendition playlist — i.e. following
     /// this playlist alone yields VIDEO ONLY.
     pub external_audio: bool,
+    /// The rendition to follow ALONGSIDE `url` when `external_audio`. `None` whenever the audio is muxed in.
+    ///
+    /// The raw-TS paths still DECLINE on `external_audio` — they concatenate one playlist and have no muxer.
+    /// The ORIGIN uses this instead: it rings the pair and republishes both, which is the only way a demuxed
+    /// source gets `tsnorm`'s pid remap at all (see `origin::ingest`).
+    pub audio: Option<AudioRendition>,
+    /// The picked variant's `BANDWIDTH` — the one `#EXT-X-STREAM-INF` attribute RFC 8216 makes REQUIRED, so
+    /// the origin needs it to author a master over the pair. 0 when the upstream omitted it.
+    pub bandwidth: i64,
 }
 
 /// Pick the variant to follow (the STREAM-INF URI is the next non-comment line), resolved absolute.
@@ -367,41 +410,50 @@ pub(crate) struct VariantPick {
 /// variant is served SILENT. Bandwidth is the wrong thing to maximise when the top rendition costs the
 /// audio track.
 ///
-/// Only when EVERY variant defers its audio does this report `external_audio = true`; the caller then falls
-/// back to the HLS rewrite, which passes the rendition through and lets the player fetch it.
+/// Only when EVERY variant defers its audio does this report `external_audio = true`, and then `audio` names
+/// the rendition to follow beside it. A raw-TS caller falls back to the HLS rewrite on that; the origin rings
+/// the pair.
 pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
-    let demuxed = demuxed_audio_groups(body);
+    let renditions = demuxed_audio_renditions(body, base);
+    let demuxed: HashSet<String> = renditions.iter().map(|r| r.group.clone()).collect();
     let mut best: Option<(i64, String)> = None; // audio-safe variants only
-    let mut best_any: Option<(i64, String)> = None; // any variant, whatever its audio
-    let mut pending: Option<(i64, bool)> = None; // (bandwidth, audio_is_external) awaiting its URI line
+    let mut best_any: Option<(i64, String, Option<String>)> = None; // any variant + its demuxed group
+    let mut pending: Option<(i64, Option<String>)> = None; // (bandwidth, demuxed group) awaiting its URI line
     for raw in body.split('\n') {
         let line = raw.strip_suffix('\r').unwrap_or(raw).trim();
         if line.is_empty() {
             continue;
         }
         if let Some(rest) = line.strip_prefix("#EXT-X-STREAM-INF:") {
+            // Keeping the GROUP-ID (rather than collapsing to a bool) is what lets the origin find the
+            // rendition afterwards. A group with no URI-bearing member is NOT demuxed — filtering here keeps
+            // the old `external` semantics exactly.
             let group = split_attrs(rest)
                 .into_iter()
                 .find(|(k, _)| k.eq_ignore_ascii_case("AUDIO"))
-                .map(|(_, v)| v.trim().trim_matches('"').to_string());
-            let external = group.is_some_and(|g| demuxed.contains(&g));
-            pending = Some((parse_bandwidth(rest), external));
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+                .filter(|g| demuxed.contains(g));
+            pending = Some((parse_bandwidth(rest), group));
         } else if !line.starts_with('#') {
-            if let Some((bw, external)) = pending.take() {
-                if !external && best.as_ref().is_none_or(|(b, _)| bw >= *b) {
+            if let Some((bw, group)) = pending.take() {
+                if group.is_none() && best.as_ref().is_none_or(|(b, _)| bw >= *b) {
                     best = Some((bw, line.to_string()));
                 }
-                if best_any.as_ref().is_none_or(|(b, _)| bw >= *b) {
-                    best_any = Some((bw, line.to_string()));
+                if best_any.as_ref().is_none_or(|(b, _, _)| bw >= *b) {
+                    best_any = Some((bw, line.to_string(), group));
                 }
             }
         }
     }
-    let (uri, external_audio) = match best {
-        Some((_, u)) => (u, false),
-        None => (best_any?.1, true),
+    let (uri, external_audio, group, bandwidth) = match best {
+        Some((bw, u)) => (u, false, None, bw),
+        None => {
+            let (bw, u, g) = best_any?;
+            (u, true, g, bw)
+        }
     };
-    base.join(&uri).ok().map(|url| VariantPick { url, external_audio })
+    let audio = group.as_deref().and_then(|g| pick_rendition(&renditions, g));
+    base.join(&uri).ok().map(|url| VariantPick { url, external_audio, audio, bandwidth: bandwidth.max(0) })
 }
 
 fn parse_bandwidth(attrs: &str) -> i64 {
@@ -959,6 +1011,39 @@ mod tests {
         let p = pick_variant(m, &base()).unwrap();
         assert!(!p.external_audio);
         assert_eq!(p.url.as_str(), "https://cdn.example.com/live/lo-muxed.m3u8");
+        assert!(p.audio.is_none(), "a muxed pick has no rendition to follow beside it");
+    }
+
+    #[test]
+    fn a_demuxed_master_names_the_rendition_the_origin_should_pair_with() {
+        // pluto's real shape: every variant defers, and the group offers a DEFAULT track plus an
+        // audio-description one. The origin follows the pair, so it needs the URL and the labelling.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English\",AUTOSELECT=YES,URI=\"audio/ad.m3u8\",CHARACTERISTICS=\"public.accessibility.describes-video\"\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\",LANGUAGE=\"en\",NAME=\"English [Original]\",AUTOSELECT=YES,DEFAULT=YES,URI=\"audio/en.m3u8\"\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=1042180,AUDIO=\"audio\"\n360p/playlist.m3u8\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=3321280,AUDIO=\"audio\"\n1080p/playlist.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(p.external_audio, "every variant defers its audio");
+        assert_eq!(p.url.as_str(), "https://cdn.example.com/live/1080p/playlist.m3u8", "highest bandwidth");
+        assert_eq!(p.bandwidth, 3_321_280, "carried so the origin can author a spec-legal master");
+        let a = p.audio.expect("the rendition to pair with");
+        // DEFAULT=YES wins even though the audio-description track was listed FIRST and is also AUTOSELECT.
+        assert_eq!(a.url.as_str(), "https://cdn.example.com/live/audio/en.m3u8");
+        assert_eq!(a.name, "English [Original]");
+        assert_eq!(a.language, "en");
+    }
+
+    #[test]
+    fn a_group_whose_renditions_carry_no_uri_yields_no_pairing_target() {
+        // RFC 8216 §4.3.4.1: a URI-less rendition is already inside the variant. The variant is muxed, so
+        // there is nothing to pair — and nothing to decline over either.
+        let m = "#EXTM3U\n\
+                 #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"aac\",NAME=\"English\",DEFAULT=YES\n\
+                 #EXT-X-STREAM-INF:BANDWIDTH=800000,AUDIO=\"aac\"\nmuxed.m3u8\n";
+        let p = pick_variant(m, &base()).unwrap();
+        assert!(!p.external_audio);
+        assert!(p.audio.is_none());
     }
 
     #[test]

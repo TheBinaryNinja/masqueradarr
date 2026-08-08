@@ -117,6 +117,18 @@ pub async fn serve_stream(
             None => return text(400, "bad request: malformed encoded url"),
         };
         let rid = log::rid(source, &entry);
+        // A DEMUXED origin also publishes its two authored media playlists here, for the same reason its
+        // segments live here: answered from the ring, no resolve, no Node round-trip, and never seen by
+        // buildGrant's stored-entry gate.
+        let lane = match file {
+            "v.m3u8" => Some(crate::origin::Lane::Video),
+            "a.m3u8" => Some(crate::origin::Lane::Audio),
+            _ => None,
+        };
+        if let Some(lane) = lane {
+            let (token, pl, _) = parse_query(query);
+            return crate::origin::serve_playlist(&state, mount_path, source, &entry, lane, token.as_deref(), pl.as_deref(), &id, &rid).await;
+        }
         return crate::origin::serve_segment(&state, source, &entry, file, &id, &rid).await;
     }
     // HOP if the segment after the source is the `h/` marker; else ENTRY.

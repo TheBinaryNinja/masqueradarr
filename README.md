@@ -801,7 +801,7 @@ shapes are then rendered from that ring:
 | | `originEnabled: false` | `originEnabled: true` |
 |---|---|---|
 | `outputFormat: 'hls'` | the upstream playlist, URI-rewritten | a playlist **we authored** + our own segment paths |
-| `outputFormat: 'ts'` | upstream segments concatenated per viewer | the same ring concatenated (decrypts) |
+| `outputFormat: 'ts'` | upstream segments concatenated per viewer | the same ring concatenated (decrypts); declines on a demuxed source |
 
 What a player receives in origin mode contains **no provider host, path, session id or query; no
 `#EXT-X-KEY`; no vendor tags; no proxy hop URLs** — only our own `#EXT-X-MEDIA-SEQUENCE`, `#EXTINF`, and
@@ -819,6 +819,29 @@ Three consequences worth knowing:
   leak — it says nothing about the origin — and every player handles it. The engine emits it only where the
   upstream tags one, or where a media-sequence gap proves segments were missed; it deliberately does *not*
   guess splices from URL shape (that was tried, and produced false positives on two different CDNs).
+
+**Demuxed sources (audio in its own `#EXT-X-MEDIA` rendition).** Some providers — pluto on every device
+cohort — offer no muxed variant at all: every `#EXT-X-STREAM-INF` defers its audio to a separate rendition
+playlist. Following the variant alone would ring, and serve, **video only**. The engine therefore rings the
+**pair**: one ring entry holds the video segment *and* its audio partner, matched on the upstream media
+sequence, and the entry URL answers with a small **master we author** over two media playlists of our own
+(`…/o/<entry>/v.m3u8` and `…/o/<entry>/a.m3u8`).
+
+Two properties make this safe, and both are load-bearing:
+
+- **One offset, both lanes.** A single affine shift is computed from the *video* lane's DTS and applied to
+  both renditions, so the source's authored A/V skew is translated rather than replaced. Computing an offset
+  per lane would manufacture a lip-sync error that was not in the source. A skew guard declines the pair
+  outright if the two renditions ever drift more than half a second apart, and a declined pair publishes
+  **both** lanes verbatim so they stay in sync with each other.
+- **Both lanes get the PID remap.** An ad creative is JIT-transmuxed into separate video and audio sources
+  with their own arbitrary PSI, so the pids churn on *both* sides of a pod edge — normalising only the video
+  would leave the audio track dying at every break.
+
+The two authored playlists are rendered from the same ring entries, so their media sequence, discontinuity
+sequence, `#EXTINF` ladder and `#EXT-X-PROGRAM-DATE-TIME` anchors are identical by construction. `outputFormat:
+'ts'` is **not** available for a demuxed source — flattening two elementary streams into one socket needs a
+real interleaver — and declines to the ordinary rewrite with a WARN naming the reason.
 
 **RAM, not disk.** The ring holds *decrypted* media and is never written to disk. It is bounded per channel
 by `originRingMb` (default 25 MiB ≈ a minute at 3.3 Mbps), oldest segment evicted first, with a hard floor of

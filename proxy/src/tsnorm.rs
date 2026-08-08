@@ -455,6 +455,31 @@ const OUT_AUDIO_BASE: u16 = 0x101;
 const OUT_PROGRAM: u16 = 1;
 /// Published audio tracks. Beyond this the segment is declined rather than silently losing a language.
 const MAX_AUDIO: usize = 4;
+/// PMT `PCR_PID` value meaning "this program carries no PCR" (ISO 13818-1: the null pid).
+const NO_PCR: u16 = 0x1FFF;
+
+/// Which SHAPE a `Layout` is locked for.
+///
+/// A demuxed source hands us two single-kind transport streams, and both would be declined by the muxed
+/// predicates — the video rendition carries no audio, the audio rendition no video. The fix is a separate
+/// mode, NOT a relaxation: `Muxed`'s predicates are load-bearing exactly as written (a video-only PMT locked
+/// as the muxed template nullifies the audio pid of every later segment — silent, total and permanent), so
+/// they are reproduced here unchanged and the new shapes get their own arms.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum LayoutMode {
+    /// One PMT carrying video AND audio — the single-playlist path.
+    Muxed,
+    /// The video lane of a demuxed pair: exactly one video, and any audio it happens to carry is DROPPED.
+    ///
+    /// Measured on live pluto: the video rendition is not reliably video-only — some segments (a muxed ad
+    /// spliced into a demuxed session) declare an audio track alongside the video. Dropping it is correct
+    /// *here and only here*: the pair's audio lane carries that same audio and is what the authored master
+    /// points a player at, so publishing it twice is the risk and discarding it loses nothing. On the muxed
+    /// path the identical situation IS a silent language loss, which is why that guard stays exactly as it is.
+    VideoOnly,
+    /// The audio lane of a demuxed pair: zero video, 1..=MAX_AUDIO audio.
+    AudioOnly,
+}
 
 /// Video types whose decoder configuration travels IN the elementary stream (parameter-set NALs), so a PMT
 /// carrying no descriptors still fully describes them. Republishing anything else would mean copying
@@ -506,11 +531,17 @@ struct Layout {
     pmt: Vec<u8>,
     /// `(stream_type, published pid)` in published order — the template every later segment matches against.
     streams: Vec<(u8, u16)>,
+    /// The published `PCR_PID`. `OUT_VIDEO_PID` wherever a video lane exists; on an audio-only lane the first
+    /// published audio pid, or `NO_PCR` when the rendition declares none. Locked with the table: a program
+    /// whose clock reference moved mid-session would be a reconfiguration, which is what this pass removes.
+    pcr_out: u16,
+    /// Which shape this table was locked for — the audio-surplus guard in `map` depends on it.
+    mode: LayoutMode,
 }
 
 impl Layout {
     /// Build the published program from the first segment that carries usable PSI.
-    fn lock(psi: &SegPsi) -> Option<Layout> {
+    fn lock(psi: &SegPsi, mode: LayoutMode) -> Option<Layout> {
         if !publishable(psi) {
             return None;
         }
@@ -518,30 +549,61 @@ impl Layout {
         // to variant selection upstream of here, not to a byte rewriter.
         let videos: Vec<u8> =
             psi.streams.iter().filter(|(_, t)| is_self_describing_video(*t)).map(|(_, t)| *t).collect();
-        if videos.len() != 1 {
-            return None;
-        }
         let audios: Vec<u8> =
             psi.streams.iter().filter(|(_, t)| is_self_describing_audio(*t)).map(|(_, t)| *t).collect();
-        if audios.len() > MAX_AUDIO {
-            return None;
+        // The `Muxed` arm is byte-for-byte the pre-existing predicate set. See `LayoutMode`: the other two
+        // arms are additional shapes, never a loosening of this one.
+        match mode {
+            // At least one audio. The published table is LOCKED and every later segment is mapped onto it, so
+            // locking a video-only program does not merely skip audio for one segment — it nullifies the audio
+            // pid of every segment for the rest of the session. Silent, total, and permanent. A segment whose
+            // PMT declares no audio (a slate, a bootstrap table, an ad with the audio pid not yet announced)
+            // must therefore be declined and served verbatim, never used as the template.
+            //
+            // Why this is reachable and not just theoretical: any decline calls `reset`, which clears the
+            // layout — so the session re-locks on whatever segment happens to come next, mid-stream, forever.
+            LayoutMode::Muxed => {
+                if videos.len() != 1 || audios.is_empty() || audios.len() > MAX_AUDIO {
+                    return None;
+                }
+            }
+            // A demuxed VIDEO rendition. Audio may be present (a muxed ad inside a demuxed session) and is
+            // deliberately not published — see `LayoutMode::VideoOnly`.
+            LayoutMode::VideoOnly => {
+                if videos.len() != 1 {
+                    return None;
+                }
+            }
+            LayoutMode::AudioOnly => {
+                if !videos.is_empty() || audios.is_empty() || audios.len() > MAX_AUDIO {
+                    return None;
+                }
+            }
         }
-        // At least one. The published table is LOCKED and every later segment is mapped onto it, so locking a
-        // video-only program does not merely skip audio for one segment — it nullifies the audio pid of every
-        // segment for the rest of the session. Silent, total, and permanent. A segment whose PMT declares no
-        // audio (a slate, a bootstrap table, an ad with the audio pid not yet announced) must therefore be
-        // declined and served verbatim, never used as the template.
-        //
-        // Why this is reachable and not just theoretical: any decline calls `Splicer::reset`, which clears the
-        // layout — so the session re-locks on whatever segment happens to come next, mid-stream, forever.
-        if audios.is_empty() {
-            return None;
+        let mut streams: Vec<(u8, u16)> = videos.iter().map(|&t| (t, OUT_VIDEO_PID)).collect();
+        // The video lane publishes NO audio even when a segment carries some: the pair's audio lane is the
+        // authoritative one, and `apply` turns an unpublished pid into padding.
+        if mode != LayoutMode::VideoOnly {
+            for (i, t) in audios.into_iter().enumerate() {
+                streams.push((t, OUT_AUDIO_BASE + i as u16));
+            }
         }
-        let mut streams = vec![(videos[0], OUT_VIDEO_PID)];
-        for (i, t) in audios.into_iter().enumerate() {
-            streams.push((t, OUT_AUDIO_BASE + i as u16));
-        }
-        Some(Layout { pat: build_pat(), pmt: build_pmt(&streams), streams })
+        // Where the clock reference lands. Hard-coded per mode rather than derived from this segment, so the
+        // `Muxed` behaviour is provably the old one: `map` below still demands PCR on the published video pid.
+        let pcr_out = match mode {
+            LayoutMode::Muxed | LayoutMode::VideoOnly => OUT_VIDEO_PID,
+            // An audio-only rendition may carry PCR on its audio pid or declare none at all. Both are legal;
+            // anything else (PCR on a pid we do not publish) is declined rather than guessed at.
+            LayoutMode::AudioOnly if psi.pcr_pid == NO_PCR => NO_PCR,
+            LayoutMode::AudioOnly => {
+                let first_audio = psi.streams.iter().find(|(_, t)| is_self_describing_audio(*t))?.0;
+                if psi.pcr_pid != first_audio {
+                    return None;
+                }
+                OUT_AUDIO_BASE
+            }
+        };
+        Some(Layout { pat: build_pat(), pmt: build_pmt(pcr_out, &streams), streams, pcr_out, mode })
     }
 
     /// Translate one segment's pids onto the published ones. `None` ⇒ this segment does not fit the locked
@@ -568,14 +630,33 @@ impl Layout {
         // leave the extras unmapped — and `apply` turns an unmapped pid into padding. That is exactly the
         // silent loss `publishable` refuses to allow for a track we cannot classify, so a track we CAN
         // classify must not be treated more cheaply. Decline and serve verbatim instead.
-        let carried = psi.streams.iter().filter(|(_, t)| is_self_describing_audio(*t)).count();
-        let published = self.streams.iter().filter(|(t, _)| is_self_describing_audio(*t)).count();
-        if carried > published {
+        // …EXCEPT on the video lane of a demuxed pair, where audio is dropped BY DESIGN and the pair's audio
+        // lane is carrying it. There the surplus is a muxed ad inside a demuxed session, not a lost language.
+        if self.mode != LayoutMode::VideoOnly {
+            let carried = psi.streams.iter().filter(|(_, t)| is_self_describing_audio(*t)).count();
+            let published = self.streams.iter().filter(|(t, _)| is_self_describing_audio(*t)).count();
+            if carried > published {
+                return None;
+            }
+        }
+        // The same rule on the VIDEO axis. It is a no-op for `Muxed`/`VideoOnly` (both publish exactly one
+        // video, so a surplus one already failed `lock`), but it is load-bearing for `AudioOnly`, where
+        // `published_v` is zero: without it a stray video pid appearing on the audio rendition would fall
+        // through to `apply`'s `nullify` arm and be dropped in silence.
+        let carried_v = psi.streams.iter().filter(|(_, t)| is_self_describing_video(*t)).count();
+        let published_v = self.streams.iter().filter(|(t, _)| is_self_describing_video(*t)).count();
+        if carried_v > published_v {
             return None;
         }
-        // The PCR must land on a pid we actually publish, or the output loses its clock reference entirely.
-        // In practice pluto carries PCR on the video pid; anything else is declined rather than guessed at.
-        if out.get(&psi.pcr_pid) != Some(&OUT_VIDEO_PID) {
+        // The PCR must land on the pid this layout publishes it on, or the output loses its clock reference
+        // entirely. For a muxed or video lane `pcr_out` is `OUT_VIDEO_PID`, so this is the original check;
+        // an audio-only lane that locked as `NO_PCR` must keep declaring none.
+        let pcr_ok = if self.pcr_out == NO_PCR {
+            psi.pcr_pid == NO_PCR
+        } else {
+            out.get(&psi.pcr_pid) == Some(&self.pcr_out)
+        };
+        if !pcr_ok {
             return None;
         }
         Some(out)
@@ -642,7 +723,7 @@ impl Splicer {
     fn publish(&mut self, bytes: &[u8]) -> Option<Vec<u8>> {
         let psi = read_psi(bytes)?;
         if self.layout.is_none() {
-            self.layout = Some(Layout::lock(&psi)?);
+            self.layout = Some(Layout::lock(&psi, LayoutMode::Muxed)?);
         }
         let layout = self.layout.as_ref()?;
         let pids = layout.map(&psi)?;
@@ -652,6 +733,202 @@ impl Splicer {
         let clock = &mut self.clock;
         clock.rewrite(bytes, Some(&remap), false)
     }
+}
+
+/// How far the audio lane's start may drift from the video lane's before the pair is declined, in 90 kHz
+/// ticks. 0.5 s — three orders of magnitude above one AAC frame (~1920 ticks at 48 kHz), so ordinary
+/// frame-grid jitter and a re-authored pod edge pass, while a rendition on an INDEPENDENT timebase (the one
+/// shape that would make a shared offset manufacture a lip-sync error) cannot.
+const SKEW_TOLERANCE: u64 = 45_000;
+
+/// The demuxed counterpart of `Splicer`: two renditions republished onto ONE timeline.
+///
+/// THE POINT. A demuxed source hands us video and audio as separate transport streams. Both need the pid
+/// remap — pluto JIT-transmuxes an ad creative into `video_600.mp4` AND `audio.mp4`, so the pids churn on
+/// BOTH lanes at a pod edge — but they must not be rebased independently: a per-lane offset would replace the
+/// stream's authored A/V skew with an arbitrary one, i.e. manufacture a lip-sync error that did not exist in
+/// the source. So exactly ONE offset is computed, from the VIDEO lane's DTS (the contract's reference clock),
+/// and applied to both.
+///
+/// ALL-OR-NOTHING. `normalize_pair` returns `None` unless both lanes rewrote, and a `None` leaves the
+/// timeline and both continuity-counter spaces exactly as they were. A half-committed pair would advance the
+/// clock past media nobody received; publishing both lanes verbatim instead keeps them in sync with each
+/// other (they still carry upstream's own skew) and signals the splice the old way.
+pub(crate) struct PairSplicer {
+    /// The ONE timeline, and the VIDEO lane's continuity counters.
+    clock: Normalizer,
+    video: Option<Layout>,
+    audio: Option<Layout>,
+    /// The audio lane's continuity counters. Separate because these are two distinct transport streams that
+    /// the player demuxes independently — sharing a counter space would report lost packets on both.
+    audio_cc: HashMap<u16, u8>,
+    /// `audio_first_pts − video_first_dts`, latched on the first pair and checked on every later one.
+    locked_skew: Option<u64>,
+    /// WHY the last `normalize_pair` returned `None`, including the offending lane's PSI shape.
+    ///
+    /// A decline that only says "declined" cannot distinguish a shape this pass genuinely cannot carry from a
+    /// bug in this pass — the same lesson that got the two URL-shape splice heuristics removed. Every early
+    /// return below names itself, and the layout ones print what they were actually handed.
+    last_decline: String,
+}
+
+/// A 33-bit clock delta read as a SIGNED millisecond offset — skews are small either side of zero, and
+/// printing 95443717 ms for "-3 ms" would make the log useless.
+fn signed_ms(ticks: u64) -> f64 {
+    let t = ticks & CLOCK_MASK;
+    let signed = if t > CLOCK_WRAP / 2 { t as i64 - CLOCK_WRAP as i64 } else { t as i64 };
+    signed as f64 / 90.0
+}
+
+/// A compact, loggable rendering of a segment's PSI: `pcr=0x100 streams=[0x100:0x1B 0x101:0x0F]`.
+fn describe_psi(psi: &SegPsi) -> String {
+    let streams: Vec<String> = psi.streams.iter().map(|(p, t)| format!("{p:#x}:{t:#04x}")).collect();
+    format!("pcr={:#x} streams=[{}]", psi.pcr_pid, streams.join(" "))
+}
+
+impl PairSplicer {
+    pub(crate) fn new() -> Self {
+        Self {
+            clock: Normalizer::new(),
+            video: None,
+            audio: None,
+            audio_cc: HashMap::new(),
+            locked_skew: None,
+            last_decline: String::new(),
+        }
+    }
+
+    /// Why the last pair was declined — for the `iop` log.
+    pub(crate) fn last_decline(&self) -> &str {
+        &self.last_decline
+    }
+
+    /// Forget the timeline, both layouts and the latched skew. Same contract as `Splicer::reset`.
+    pub(crate) fn reset(&mut self) {
+        self.clock.reset();
+        self.video = None;
+        self.audio = None;
+        self.audio_cc.clear();
+        self.locked_skew = None;
+    }
+
+    /// Whether a timeline is already running — read BEFORE `normalize_pair`, which is what changes the answer.
+    pub(crate) fn has_timeline(&self) -> bool {
+        self.clock.last_dts.is_some()
+    }
+
+    /// Rewrite one paired segment. `None` ⇒ NEITHER lane may be published rewritten.
+    pub(crate) fn normalize_pair(&mut self, video: &[u8], audio: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
+        // Every arm names itself, so the `iop` log can say WHICH stage refused this pair.
+        macro_rules! decline {
+            ($($why:tt)*) => {{
+                self.last_decline = format!($($why)*);
+                return None;
+            }};
+        }
+        macro_rules! need {
+            ($e:expr, $($why:tt)*) => {
+                match $e {
+                    Some(v) => v,
+                    None => decline!($($why)*),
+                }
+            };
+        }
+
+        // 1. The offset, from the video lane only. Computed but NOT committed — `advance` happens last.
+        let s = need!(scan(video), "video lane: no anchorable timestamps");
+        let offset = self.clock.offset_for(&s, false);
+
+        // 2. Lock or map both lanes. Each gets its own single-kind layout; neither predicate set is the
+        //    muxed one (see `LayoutMode`).
+        let vpsi = need!(read_psi(video), "video lane: no PSI");
+        if self.video.is_none() {
+            self.video = Some(need!(
+                Layout::lock(&vpsi, LayoutMode::VideoOnly),
+                "video lane: not a lockable video-only program ({})",
+                describe_psi(&vpsi)
+            ));
+        }
+        let vlayout = self.video.as_ref()?;
+        let vpids = need!(
+            vlayout.map(&vpsi),
+            "video lane: segment does not fit the published layout ({})",
+            describe_psi(&vpsi)
+        );
+
+        let apsi = need!(read_psi(audio), "audio lane: no PSI");
+        if self.audio.is_none() {
+            self.audio = Some(need!(
+                Layout::lock(&apsi, LayoutMode::AudioOnly),
+                "audio lane: not a lockable audio-only program ({})",
+                describe_psi(&apsi)
+            ));
+        }
+        let alayout = self.audio.as_ref()?;
+        let apids = need!(
+            alayout.map(&apsi),
+            "audio lane: segment does not fit the published layout ({})",
+            describe_psi(&apsi)
+        );
+
+        // 3. The skew guard. One shared offset is only sound while the two renditions share a timebase; this
+        //    is what proves it per pair instead of assuming it once.
+        let afirst = need!(first_audio_pts(audio, &apsi), "audio lane: no PES timestamps");
+        let skew = afirst.wrapping_sub(s.first_dts) & CLOCK_MASK;
+        if let Some(locked) = self.locked_skew {
+            let drift = forward_gap(locked, skew).min(forward_gap(skew, locked));
+            if drift > SKEW_TOLERANCE {
+                // The magnitude is the diagnosis: a drift near a whole segment duration means the two lanes
+                // were PAIRED wrong (the media-sequence key does not line them up), while a sub-second one
+                // means they really are on separate timebases. Print it rather than guessing later.
+                decline!(
+                    "the two renditions' clocks drifted apart by {:.0} ms (locked skew {:.0} ms, this pair {:.0} ms)",
+                    drift as f64 / 90.0,
+                    signed_ms(locked),
+                    signed_ms(skew)
+                );
+            }
+        }
+
+        // 4. Rewrite both with the SAME offset, onto CLONED counter state so a failure on the second lane
+        //    cannot leave the first one's counters advanced.
+        let mut vcc = self.clock.cc.clone();
+        let mut vout = video.to_vec();
+        let vremap = Remap { layout: vlayout, pids: vpids, in_pmt_pid: vpsi.pmt_pid };
+        need!(apply(&mut vout, offset, &mut vcc, Some(&vremap)), "video lane: rewrite failed");
+
+        let mut acc = self.audio_cc.clone();
+        let mut aout = audio.to_vec();
+        let aremap = Remap { layout: alayout, pids: apids, in_pmt_pid: apsi.pmt_pid };
+        need!(apply(&mut aout, offset, &mut acc, Some(&aremap)), "audio lane: rewrite failed");
+
+        // 5. Commit. Everything above succeeded, so the timeline may move.
+        self.clock.cc = vcc;
+        self.audio_cc = acc;
+        self.clock.advance(&s, offset);
+        self.locked_skew.get_or_insert(skew);
+        Some((vout, aout))
+    }
+}
+
+/// First PES PTS on the audio-only rendition's first published audio pid. Read-only, and deliberately not
+/// `scan`: `scan` anchors on the VIDEO pid's DTS and would decline an audio-only stream outright.
+fn first_audio_pts(bytes: &[u8], psi: &SegPsi) -> Option<u64> {
+    let want = psi.streams.iter().find(|(_, t)| is_self_describing_audio(*t))?.0;
+    for pkt in packets(bytes) {
+        if pkt[1] & 0x80 != 0 || pkt[3] & 0xC0 != 0 {
+            continue;
+        }
+        if pid_of(pkt) != want || pkt[1] & 0x40 == 0 {
+            continue;
+        }
+        // Audio carries no B-frames, so PTS is the decode order too; DTS is usually absent.
+        let (pts, dts) = pes_timestamps(pkt)?;
+        if let Some(t) = dts.or(pts) {
+            return Some(t);
+        }
+    }
+    None
 }
 
 /// Read a segment's PAT + PMT. `None` when either is absent — parameters are then unverifiable, which is a
@@ -716,11 +993,11 @@ fn build_pat() -> Vec<u8> {
 /// The published PMT. No ES descriptors are emitted: every accepted stream type carries its own
 /// configuration in-band (see `is_self_describing_*`), and copying descriptors forward from ONE segment
 /// would attach the first ad's metadata to the whole session.
-fn build_pmt(streams: &[(u8, u16)]) -> Vec<u8> {
+fn build_pmt(pcr_pid: u16, streams: &[(u8, u16)]) -> Vec<u8> {
     let mut s = vec![0x02, 0x00, 0x00];
     s.extend_from_slice(&OUT_PROGRAM.to_be_bytes());
     s.extend_from_slice(&[0xC1, 0x00, 0x00]); // version 0 + current_next, section 0 of 0
-    s.extend_from_slice(&(0xE000 | OUT_VIDEO_PID).to_be_bytes()); // PCR_PID
+    s.extend_from_slice(&(0xE000 | pcr_pid).to_be_bytes()); // PCR_PID
     s.extend_from_slice(&[0xF0, 0x00]); // program_info_length = 0
     for &(stream_type, pid) in streams {
         s.push(stream_type);
@@ -1085,6 +1362,173 @@ mod tests {
         assert!(Splicer::new().normalize(&s).is_none());
     }
 
+    // ── demuxed pairs ────────────────────────────────────────────────────────────────────────────────────
+
+    /// One side of a DEMUXED pair: video only, PCR on the video pid.
+    fn video_lane(vpid: u16, base: u64) -> Vec<u8> {
+        let f = HZ / 25;
+        let mut s = Vec::new();
+        s.extend(pat_for(PMTPID));
+        s.extend(pmt_for(PMTPID, vpid, &[(0x1B, vpid)]));
+        for i in 0..3u64 {
+            let dts = base + i * f;
+            s.extend(pkt(vpid, true, Some(dts), &pes(0xE0, dts + f, Some(dts))));
+        }
+        s
+    }
+
+    /// The other side: audio only, PCR on the audio pid.
+    fn audio_lane(apid: u16, base: u64) -> Vec<u8> {
+        let f = HZ / 25;
+        let mut s = Vec::new();
+        s.extend(pat_for(PMTPID));
+        s.extend(pmt_for(PMTPID, apid, &[(0x0F, apid)]));
+        for i in 0..3u64 {
+            let pts = base + i * f;
+            s.extend(pkt(apid, true, Some(pts), &pes(0xC0, pts, None)));
+        }
+        s
+    }
+
+    fn first_stamp(bytes: &[u8], pid: u16) -> (Option<u64>, Option<u64>) {
+        packets_on(bytes, pid)
+            .into_iter()
+            .find(|p| p[1] & 0x40 != 0)
+            .and_then(pes_timestamps)
+            .expect("a PES header on that pid")
+    }
+
+    #[test]
+    fn a_demuxed_pair_republishes_both_lanes_on_the_canonical_pids() {
+        // Both renditions churn their pids at a pod edge — one creative is JIT-transmuxed into `video_600.mp4`
+        // AND `audio.mp4`, each with its own arbitrary PSI — so the remap has to run on both lanes. Fixing
+        // only the video would leave the audio track dying at every break.
+        let mut ps = PairSplicer::new();
+        ps.normalize_pair(&video_lane(0x100, 0), &audio_lane(0x201, 0)).expect("program pair");
+        let (v, a) = ps
+            .normalize_pair(&video_lane(0x102, 5_000_000), &audio_lane(0x333, 5_000_000))
+            .expect("ad pair with both pids moved");
+        assert!(!packets_on(&v, OUT_VIDEO_PID).is_empty(), "video on the canonical pid…");
+        assert!(packets_on(&v, 0x102).is_empty(), "…and not on the ad's own");
+        assert!(!packets_on(&a, OUT_AUDIO_BASE).is_empty(), "audio on the canonical pid…");
+        assert!(packets_on(&a, 0x333).is_empty(), "…and not on the ad's own");
+    }
+
+    #[test]
+    fn a_demuxed_pair_shares_one_offset_so_the_av_skew_survives_bit_exactly() {
+        // THE claim the whole design rests on. One offset, computed from the video lane's DTS, applied to
+        // both — so the source's authored A/V relationship is translated, never replaced. A per-lane offset
+        // would manufacture a lip-sync error that was not in the source.
+        const SKEW: u64 = 3_000;
+        let mut ps = PairSplicer::new();
+        ps.normalize_pair(&video_lane(0x100, 1_000_000), &audio_lane(0x201, 1_000_000 + SKEW)).expect("anchor");
+        // The SECOND pair joins an existing timeline — which is exactly where an independent offset shows up.
+        let (v, a) = ps
+            .normalize_pair(&video_lane(0x102, 9_000_000), &audio_lane(0x203, 9_000_000 + SKEW))
+            .expect("joins the running timeline");
+        let vdts = first_stamp(&v, OUT_VIDEO_PID).1.expect("video DTS");
+        let apts = first_stamp(&a, OUT_AUDIO_BASE).0.expect("audio PTS");
+        assert_eq!(apts.wrapping_sub(vdts) & CLOCK_MASK, SKEW, "the authored skew is preserved exactly");
+    }
+
+    #[test]
+    fn a_declined_pair_leaves_the_timeline_and_both_counter_spaces_untouched() {
+        // All-or-nothing. A half-committed pair would advance the clock past media nobody received, so the
+        // next pair would be spaced against a phantom segment.
+        let mut ps = PairSplicer::new();
+        ps.normalize_pair(&video_lane(0x100, 1_000_000), &audio_lane(0x201, 1_000_000)).expect("anchor");
+        let before_dts = ps.clock.last_dts;
+        let before_vcc = ps.clock.cc.clone();
+        let before_acc = ps.audio_cc.clone();
+        // A lane carrying video where the audio layout expects none: `carried_v > published_v` declines it
+        // rather than letting `apply` nullify the video pid in silence.
+        let bad = seg_with(&[(0x1B, 0x400), (0x0F, 0x401)], 5_000_000);
+        assert!(ps.normalize_pair(&video_lane(0x100, 5_000_000), &bad).is_none(), "all-or-nothing");
+        assert_eq!(ps.clock.last_dts, before_dts, "the clock must not advance on a declined pair");
+        assert_eq!(ps.clock.cc, before_vcc, "nor may the video lane's continuity counters");
+        assert_eq!(ps.audio_cc, before_acc, "nor the audio lane's");
+    }
+
+    #[test]
+    fn a_rendition_on_an_independent_timebase_is_declined_rather_than_desynced() {
+        let mut ps = PairSplicer::new();
+        ps.normalize_pair(&video_lane(0x100, 1_000_000), &audio_lane(0x201, 1_003_000)).expect("latches skew");
+        // One AAC frame of grid jitter is ordinary and must pass.
+        assert!(
+            ps.normalize_pair(&video_lane(0x100, 2_000_000), &audio_lane(0x201, 2_004_920)).is_some(),
+            "frame-grid jitter is not drift"
+        );
+        // A full second apart is an independent timebase — one shared offset would be a lip-sync error.
+        assert!(
+            ps.normalize_pair(&video_lane(0x100, 3_000_000), &audio_lane(0x201, 3_093_000)).is_none(),
+            "declines rather than publishing a pair it cannot hold together"
+        );
+    }
+
+    #[test]
+    fn the_muxed_predicates_keep_their_original_blast_radius() {
+        // The demuxed lanes got their OWN modes precisely so these did not have to be loosened. A video-only
+        // PMT locked as the muxed template is permanent silence; an audio-only one has no clock to anchor on.
+        let vpsi = read_psi(&video_lane(0x100, 0)).unwrap();
+        assert!(Layout::lock(&vpsi, LayoutMode::Muxed).is_none(), "video-only is still not a muxed program");
+        assert!(Layout::lock(&vpsi, LayoutMode::AudioOnly).is_none());
+        assert!(Layout::lock(&vpsi, LayoutMode::VideoOnly).is_some());
+
+        let apsi = read_psi(&audio_lane(0x201, 0)).unwrap();
+        assert!(Layout::lock(&apsi, LayoutMode::Muxed).is_none(), "audio-only is not a muxed program either");
+        assert!(Layout::lock(&apsi, LayoutMode::VideoOnly).is_none());
+        assert!(Layout::lock(&apsi, LayoutMode::AudioOnly).is_some());
+
+        // And the muxed shape still locks as muxed, on the unchanged predicates.
+        let mpsi = read_psi(&seg_with(&[(0x1B, 0x100), (0x0F, 0x101)], 0)).unwrap();
+        assert!(Layout::lock(&mpsi, LayoutMode::Muxed).is_some());
+        assert!(Layout::lock(&mpsi, LayoutMode::AudioOnly).is_none());
+    }
+
+    #[test]
+    fn the_video_lane_drops_audio_a_muxed_ad_brought_with_it() {
+        // Measured live: pluto's VIDEO rendition is not reliably video-only — a muxed ad spliced into a
+        // demuxed session declares an audio track too. Declining there stopped absorption at the first pod
+        // edge and never recovered. Dropping that audio is right *only because* the pair's audio lane carries
+        // the same content and is what the authored master points the player at.
+        let mut ps = PairSplicer::new();
+        ps.normalize_pair(&video_lane(0x100, 0), &audio_lane(0x201, 0)).expect("program pair");
+
+        // The ad's video segment carries audio alongside the video.
+        let muxed_ad = seg_with(&[(0x1B, 0x140), (0x0F, 0x141)], 5_000_000);
+        let (v, a) = ps
+            .normalize_pair(&muxed_ad, &audio_lane(0x333, 5_000_000))
+            .expect("a muxed ad on the video lane must not decline the pair");
+        assert!(!packets_on(&v, OUT_VIDEO_PID).is_empty(), "the ad's video is republished");
+        assert!(packets_on(&v, OUT_AUDIO_BASE).is_empty(), "…and its duplicate audio is NOT on the video lane");
+        assert!(packets_on(&v, 0x141).is_empty(), "…nor left on the upstream pid");
+        assert!(!packets_on(&a, OUT_AUDIO_BASE).is_empty(), "the audio lane still carries the sound");
+        // Length invariance is the contract; the dropped track becomes padding, not absence.
+        assert_eq!(v.len(), muxed_ad.len(), "dropping a track must not resize the segment");
+    }
+
+    #[test]
+    fn an_audio_lane_that_declares_no_pcr_locks_and_keeps_declaring_none() {
+        // A locked table must not change shape mid-session, so a no-PCR lock refuses a later segment that
+        // suddenly carries one — and vice versa.
+        let f = HZ / 25;
+        let no_pcr = |base: u64| {
+            let mut s = Vec::new();
+            s.extend(pat_for(PMTPID));
+            s.extend(pmt_for(PMTPID, NO_PCR, &[(0x0F, 0x201)]));
+            for i in 0..3u64 {
+                let pts = base + i * f;
+                s.extend(pkt(0x201, true, None, &pes(0xC0, pts, None)));
+            }
+            s
+        };
+        let psi = read_psi(&no_pcr(0)).unwrap();
+        let layout = Layout::lock(&psi, LayoutMode::AudioOnly).expect("no PCR is a legal audio rendition");
+        assert!(layout.map(&psi).is_some());
+        let with_pcr = read_psi(&audio_lane(0x201, 0)).unwrap();
+        assert!(layout.map(&with_pcr).is_none(), "the published table's clock reference cannot move");
+    }
+
     #[test]
     fn reset_re_anchors_the_timeline_after_a_ring_skip() {
         let mut sp = Splicer::new();
@@ -1101,7 +1545,7 @@ mod tests {
     fn psi_sections_carry_a_valid_mpeg_crc() {
         // A section with a bad CRC is discarded outright by a conforming demuxer, which would leave the
         // output with no program at all.
-        for section in [build_pat(), build_pmt(&[(0x1B, OUT_VIDEO_PID), (0x0F, OUT_AUDIO_BASE)])] {
+        for section in [build_pat(), build_pmt(OUT_VIDEO_PID, &[(0x1B, OUT_VIDEO_PID), (0x0F, OUT_AUDIO_BASE)])] {
             let (body, crc) = section.split_at(section.len() - 4);
             assert_eq!(crc32_mpeg(body).to_be_bytes(), crc, "CRC-32/MPEG-2 over the section body");
             // section_length must describe exactly the bytes that follow it, CRC included.

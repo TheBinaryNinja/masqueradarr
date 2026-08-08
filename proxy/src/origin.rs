@@ -92,6 +92,19 @@ pub struct Segment {
     pub discontinuity: bool,
     /// Ingest wall-clock → the renderer's `#EXT-X-PROGRAM-DATE-TIME`.
     pub pdt: SystemTime,
+    /// The paired audio-rendition segment, on a DEMUXED origin only. `None` on a muxed one (the audio is
+    /// already inside `bytes`) and on every raw-TS cut.
+    ///
+    /// Held on the SAME ring entry rather than in a second deque on purpose: it makes the two published
+    /// windows identical by construction (same `#EXT-X-MEDIA-SEQUENCE`, same `#EXT-X-DISCONTINUITY-SEQUENCE`,
+    /// same PDT anchor), makes eviction inherently paired, and means a renderer can never serve half a pair.
+    ///
+    /// `duration` above is published for BOTH lanes. The rendition's own `#EXTINF` differs slightly — AAC
+    /// quantises to ~21.3 ms (1024 samples @ 48 kHz), so pluto states `5.013 / 4.992` against a flat video
+    /// `5` — but the difference OSCILLATES rather than accumulating (~2 ms over 25 s). Publishing one ladder
+    /// keeps the two playlists' computed timelines identical on paper; the media's own PTS, held together by
+    /// the shared offset, is what actually governs sync.
+    pub audio: Option<Bytes>,
 }
 
 /// Why a segment is a splice point. Named rather than a bare bool so the `iop` log says WHICH signal fired.
@@ -264,6 +277,28 @@ pub struct Origin {
     /// `resolve_media`; read by `wait_ready`, which is what lets `serve_entry`/`serve_ts` decline and hand the
     /// request back to the ordinary rewrite path.
     ineligible: RwLock<Option<String>>,
+    /// Set once the ingest learns this upstream is DEMUXED — the audio rendition it rings beside the video.
+    ///
+    /// Read by Side-2: the HLS renderer authors an `#EXT-X-MEDIA` from it (so the client still sees the track
+    /// labelled as upstream labelled it), and `serve_ts` declines on it — a paired ring cannot be flattened
+    /// into one socket without an interleaver, and RMX stays deferred.
+    demuxed_audio: RwLock<Option<DemuxedMaster>>,
+}
+
+/// What a DEMUXED origin needs in order to author its own master over the pair.
+#[derive(Clone)]
+pub struct DemuxedMaster {
+    pub audio: crate::tsmux::AudioRendition,
+    /// The picked variant's `BANDWIDTH` — RFC 8216 makes it the one required `#EXT-X-STREAM-INF` attribute.
+    pub bandwidth: i64,
+}
+
+/// Which rendition of a demuxed origin a request addresses. `Video` is also the whole of a muxed origin, so
+/// it is the shape every existing URL keeps.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Lane {
+    Video,
+    Audio,
 }
 
 impl Origin {
@@ -284,7 +319,20 @@ impl Origin {
             evicted_segments: AtomicU64::new(0),
             disc_seq: AtomicU64::new(0),
             ineligible: RwLock::new(None),
+            demuxed_audio: RwLock::new(None),
         }
+    }
+
+    /// The audio rendition this origin rings beside the video, if it is a demuxed one.
+    fn demuxed_audio(&self) -> Option<DemuxedMaster> {
+        self.demuxed_audio.read_ok().clone()
+    }
+
+    /// Refresh the idle clock without reading the ring. The authored MASTER is fetched once and carries no
+    /// segments, so it has no window to snapshot — but it is still a live client saying "I am here", and the
+    /// idle check is half `last_access`.
+    fn touch(&self) {
+        *self.last_access.lock_ok() = Instant::now();
     }
 
     /// Why this upstream can never be ringed, if it cannot be. `None` ⇒ still viable (or still warming up).
@@ -308,7 +356,10 @@ impl Origin {
     /// they are the number an operator reads to size `originRingMb` and to see the ring earning its keep
     /// (`ingest` vs `bandwidth` on the Active Streams row).
     fn push(&self, seg: Segment) -> usize {
-        let bytes = seg.bytes.len() as u64;
+        // Both lanes count. The cap is a RAM budget and the pair is what occupies the RAM; on pluto the audio
+        // rendition is ~3 % of the video's bitrate, so a given `originRingMb` holds a marginally shorter
+        // window than it did — the honest reading, and the one `floor_beat_cap` should be judging.
+        let bytes = seg.bytes.len() as u64 + seg.audio.as_ref().map_or(0, |a| a.len() as u64);
         let cap = self.ring_cap_bytes.load(Ordering::Relaxed);
         let mut evicted = 0usize;
         {
@@ -318,7 +369,7 @@ impl Origin {
             while total > cap && ring.len() > MIN_SEGMENTS {
                 match ring.pop_front() {
                     Some(old) => {
-                        total -= old.bytes.len() as u64;
+                        total -= old.bytes.len() as u64 + old.audio.as_ref().map_or(0, |a| a.len() as u64);
                         // THE INVARIANT: `disc_seq` counts discontinuity tags that have LEFT the published
                         // playlist. A tag rides on the segment it precedes, so evicting that segment is
                         // exactly when its tag stops being visible — and every segment still held is by
@@ -457,6 +508,15 @@ pub fn subscribe(state: &AppState, source: &str, entry: &str, pl: Option<&str>, 
     OriginLease { origin }
 }
 
+/// One poll's worth of playlists: the media playlist being followed, plus the paired audio rendition's on a
+/// DEMUXED source. Both are refreshed together — a stale audio window against a fresh video one would stop
+/// pairing, which is a re-resolve, not something to serve around.
+struct PollPlaylists {
+    url: Url,
+    body: String,
+    audio: Option<(Url, String)>,
+}
+
 struct IngestCtx {
     state: AppState,
     origin: Arc<Origin>,
@@ -481,8 +541,11 @@ async fn ingest(ctx: IngestCtx) {
     let mut next_upstream_seq: i64 = -1;
     let mut empty_polls: u32 = 0;
     let mut key_cache: Option<(String, [u8; 16])> = None;
+    // The audio rendition rotates its OWN keyfile on its own schedule, so it needs its own cache slot —
+    // sharing one would refetch on every alternation between the two lanes.
+    let mut audio_key_cache: Option<(String, [u8; 16])> = None;
     let mut warned_floor = false;
-    let mut media: Option<(Url, String)> = None;
+    let mut media: Option<PollPlaylists> = None;
     // S3/CUE: the ad break open right now (None = program), and the label counter for the next one. Per-ingest
     // like `prev` — a break id is a session-local grouping label, not a stable identity.
     let mut ad_break: Option<AdBreak> = None;
@@ -508,7 +571,12 @@ async fn ingest(ctx: IngestCtx) {
     let mut recent_uris: VecDeque<String> = VecDeque::new();
     let mut dedupe_by_uri = false;
     let mut splicer = crate::tsnorm::Splicer::new();
-    let mut warned_splice = false;
+    // The demuxed counterpart. Only one of the two ever runs for a given session — which one is decided by
+    // whether `resolve_media` found an audio rendition — but both are held so a re-resolve can change shape
+    // without rebuilding the task.
+    let mut pair_splicer = crate::tsnorm::PairSplicer::new();
+    let mut warned_splice: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut warned_pairing = false;
     // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
     let mut media_failures: u32 = 0;
     let mut last_idle_check = Instant::now();
@@ -532,8 +600,8 @@ async fn ingest(ctx: IngestCtx) {
         }
 
         // (Re)resolve whenever we have no media playlist to follow — first pass, or after a persistent failure.
-        let (media_url, media_body) = match media.take() {
-            Some(m) => m,
+        let (media_url, media_body, audio_pl) = match media.take() {
+            Some(m) => (m.url, m.body, m.audio),
             None => {
                 // Escalate once the pinned candidate has failed to produce a playable window MEDIA_FAIL_ESCALATE
                 // times running (~a few seconds at the 2 s retry cadence). Below that we re-resolve the same
@@ -591,6 +659,7 @@ async fn ingest(ctx: IngestCtx) {
                             // stops the new upstream's first segment being spaced against the dead one's clock.
                             ad_break = None;
                             splicer.reset();
+                            pair_splicer.reset();
                         }
                         // The new session renumbers regardless, so sequence-gap detection must re-anchor.
                         prev = PrevSeg::default();
@@ -602,7 +671,7 @@ async fn ingest(ctx: IngestCtx) {
                     renewing_session = false;
                 }
                 match resolved {
-                    Some(MediaSource::Hls(u, b)) => (u, b),
+                    Some(MediaSource::Hls(u, b, a)) => (u, b, a),
                     // A bare TS socket has nothing to poll: hand off to the local segmenter for the whole
                     // session, then fall back into this loop (which re-checks stop/idle and re-resolves).
                     Some(MediaSource::RawTs(stream, first)) => {
@@ -625,6 +694,8 @@ async fn ingest(ctx: IngestCtx) {
         };
 
         let mp = parse_media_playlist(&media_body);
+        // The paired audio window for this poll — parsed once here, indexed per segment below.
+        let ap = audio_pl.as_ref().map(|(u, b)| (u.clone(), parse_media_playlist(b)));
         if mp.target_duration > 0.0 {
             let ms = (mp.target_duration * 1000.0) as u64;
             ctx.origin.target_duration_ms.fetch_max(ms, Ordering::Relaxed);
@@ -660,6 +731,46 @@ async fn ingest(ctx: IngestCtx) {
             if upstream_seq < next_upstream_seq {
                 continue; // already ingested
             }
+
+            // ── PAIRING ──────────────────────────────────────────────────────────────────────────────────
+            // On a demuxed source the ring holds only COMPLETE pairs, so a video segment is not consumed
+            // until its audio partner exists. The key is the upstream MEDIA SEQUENCE, which pluto keeps
+            // exactly aligned across both renditions — verified live, including ACROSS a pod edge: one ad
+            // creative is JIT-transmuxed into `video_600.mp4` and `audio.mp4` and the stitcher advances both
+            // in lockstep.
+            //
+            // Deliberately NOT cumulative `#EXTINF`: AAC quantises to ~21.3 ms, so the two ladders differ per
+            // segment (`5.013 / 4.992` against a flat `5`) while describing the same window. That difference
+            // oscillates rather than accumulating, so it is never a pairing failure.
+            let audio_seg = match &ap {
+                None => None,
+                Some((aurl, apl)) => {
+                    let idx = upstream_seq - apl.media_sequence;
+                    if idx < 0 {
+                        // The audio window has rolled past this sequence, so the pair can never be completed.
+                        // Drop the video segment too: publishing it unpaired would put the two playlists on
+                        // different windows, and the next segment's sequence check reports the gap honestly.
+                        if !warned_pairing {
+                            warned_pairing = true;
+                            log::warn("iop", &rid, || {
+                                format!(
+                                    "audio rendition is ahead of the video (upstream seq={upstream_seq} < audio media-sequence {}) — dropping the pair to keep both playlists aligned",
+                                    apl.media_sequence
+                                )
+                            });
+                        }
+                        next_upstream_seq = upstream_seq + 1;
+                        continue;
+                    }
+                    match apl.segments.get(idx as usize) {
+                        Some(a) => Some((aurl.clone(), a.clone())),
+                        // The audio lane has not published this sequence yet. HOLD the video segment —
+                        // `next_upstream_seq` is deliberately NOT advanced — and retry on the next poll. A
+                        // lane that never catches up is caught by the existing MAX_EMPTY_POLLS re-resolve.
+                        None => break,
+                    }
+                }
+            };
             next_upstream_seq = upstream_seq + 1;
 
             // The renewed session re-offers the window we were already holding. Skipping by URI keeps the
@@ -703,6 +814,31 @@ async fn ingest(ctx: IngestCtx) {
             let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
                 Some(b) => b,
                 None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
+            };
+
+            // The audio half, against the RENDITION's own base url and key cache. The implicit-IV derivation
+            // (RFC 8216 §5.2) uses the same media sequence, which is exactly what pairing established.
+            let audio_plain = match &audio_seg {
+                None => None,
+                Some((aurl, aseg)) => {
+                    let aseg_url = match aurl.join(&aseg.uri) {
+                        Ok(u) => u,
+                        Err(_) => continue,
+                    };
+                    if let Some(h) = aseg_url.host_str() {
+                        if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                            log::warn("iop", &rid, || format!("audio segment host {h} private/blocked — skipping"));
+                            continue;
+                        }
+                        policy.hosts.write_ok().insert(h.to_lowercase());
+                    }
+                    match fetch_segment(&ctx, &rid, &client, &policy, aurl, aseg, &aseg_url, upstream_seq, read_timeout_ms, &mut audio_key_cache).await {
+                        Some(b) => Some(b),
+                        // No partner bytes ⇒ no pair. Dropping BOTH keeps the two published windows aligned;
+                        // the next segment's sequence check turns the hole into an honest splice.
+                        None => continue,
+                    }
+                }
             };
 
             // Snapshot what the boundary was decided AGAINST, before `prev` is overwritten — a splice log
@@ -793,34 +929,56 @@ async fn ingest(ctx: IngestCtx) {
             // behaviour, pid churn and all — so an operator can rule this pass in or out of a playback
             // complaint without a redeploy. Read per segment, not once per ingest, so a re-resolve flips it
             // live like every other knob.
+            // A DEMUXED source runs `PairSplicer` instead: same contract, but ONE offset computed from the
+            // video lane's DTS is applied to both renditions, so upstream's authored A/V skew survives
+            // bit-exactly. A per-lane offset would manufacture a lip-sync error that was not in the source.
             let normalize = policy.splice_normalize.load(Ordering::Relaxed);
-            if !normalize && splicer.has_timeline() {
-                splicer.reset(); // switched off mid-stream: the timeline it was keeping no longer applies
-            }
-            let joined = normalize && splicer.has_timeline();
-            let (plain, absorbed) = if !normalize {
-                (plain, false)
-            } else {
-                match splicer.normalize(&plain) {
-                    Some(b) => (Bytes::from(b), true),
-                    None => {
-                        // Declining is designed, not a failure: publish the bytes untouched and drop the
-                        // timeline so the next segment re-anchors on its own clock rather than being spaced
-                        // against one whose media nobody received. Upstream's splice is then signalled the
-                        // old way — a visible decoder reset beats a stream we mis-rewrote.
-                        if !warned_splice {
-                            warned_splice = true;
-                            log::warn("iop", &rid, || {
-                                "splice normalisation declined (no PSI, or a program shape the published \
-                                 layout cannot carry) — publishing verbatim and signalling the splice"
-                                    .to_string()
-                            });
-                        }
-                        splicer.reset();
-                        (plain, false)
-                    }
+            let demuxed = audio_plain.is_some();
+            if !normalize {
+                // switched off mid-stream: the timeline being kept no longer applies
+                if splicer.has_timeline() {
+                    splicer.reset();
                 }
+                if pair_splicer.has_timeline() {
+                    pair_splicer.reset();
+                }
+            }
+            let joined = normalize && if demuxed { pair_splicer.has_timeline() } else { splicer.has_timeline() };
+            // Declining is designed, not a failure: publish the bytes untouched and drop the timeline so the
+            // next segment re-anchors on its own clock rather than being spaced against one whose media
+            // nobody received. Upstream's splice is then signalled the old way — a visible decoder reset
+            // beats a stream we mis-rewrote. On the paired path it is all-or-nothing: both lanes go verbatim
+            // together, so they stay in sync with each other.
+            let mut declined: Option<String> = None;
+            let (plain, audio_out, absorbed) = match (normalize, audio_plain) {
+                (false, a) => (plain, a, false),
+                (true, Some(araw)) => match pair_splicer.normalize_pair(&plain, &araw) {
+                    Some((v, a)) => (Bytes::from(v), Some(Bytes::from(a)), true),
+                    None => {
+                        declined = Some(pair_splicer.last_decline().to_string());
+                        pair_splicer.reset();
+                        (plain, Some(araw), false)
+                    }
+                },
+                (true, None) => match splicer.normalize(&plain) {
+                    Some(b) => (Bytes::from(b), None, true),
+                    None => {
+                        declined = Some("no PSI, or a program shape the published layout cannot carry".to_string());
+                        splicer.reset();
+                        (plain, None, false)
+                    }
+                },
             };
+            // Latched per DISTINCT reason rather than once per ingest. One latch hid the thing that matters —
+            // whether a pod edge declines for the same cause every time (a shape to handle) or for a
+            // different one each time (a bug in this pass).
+            if let Some(why) = declined {
+                if warned_splice.insert(why.clone()) {
+                    log::warn("iop", &rid, || {
+                        format!("splice normalisation declined — {why}; publishing verbatim and signalling the splice")
+                    });
+                }
+            }
             // Drop the tag ONLY when the splice was genuinely absorbed — the segment was moved onto a clock
             // that already existed. A FRESH anchor leaves the timestamps exactly where upstream put them, so
             // upstream's own signal still governs and must still be published.
@@ -832,6 +990,7 @@ async fn ingest(ctx: IngestCtx) {
                 bytes: plain,
                 discontinuity,
                 pdt: SystemTime::now(),
+                audio: audio_out,
             });
             ingested_this_poll += 1;
             if pending.is_some() {
@@ -947,16 +1106,34 @@ async fn ingest(ctx: IngestCtx) {
 
         tokio::time::sleep(poll_interval(mp.target_duration)).await;
 
-        // Refresh the playlist for the next pass. A failed refresh clears `media` so the loop head re-resolves.
-        match fetch_with_retry(&client, media_url.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-playlist", MAX_UPSTREAM_RETRIES).await {
-            Ok(resp) if resp.status().is_success() => {
-                let url = resp.url().clone();
-                match resp.text().await {
-                    Ok(body) => media = Some((url, body)),
-                    Err(_) => media = None,
-                }
+        // Refresh the playlist(s) for the next pass. A failed refresh clears `media` so the loop head
+        // re-resolves. On a demuxed source BOTH lanes are refreshed together and a failure on either clears
+        // `media`: a stale audio window against a fresh video one would stop pairing, and re-resolving is
+        // the recovery that already exists.
+        let audio_url = audio_pl.as_ref().map(|(u, _)| u.clone());
+        let refreshed = async {
+            let vresp = fetch_with_retry(&client, media_url.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-playlist", MAX_UPSTREAM_RETRIES).await.ok()?;
+            if !vresp.status().is_success() {
+                return None;
             }
-            _ => {
+            let vurl = vresp.url().clone();
+            let vbody = vresp.text().await.ok()?;
+            let audio = match &audio_url {
+                None => None,
+                Some(u) => {
+                    let aresp = fetch_with_retry(&client, u.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-audio", MAX_UPSTREAM_RETRIES).await.ok()?;
+                    if !aresp.status().is_success() {
+                        return None;
+                    }
+                    Some((aresp.url().clone(), aresp.text().await.ok()?))
+                }
+            };
+            Some((vurl, vbody, audio))
+        }
+        .await;
+        match refreshed {
+            Some((url, body, audio)) => media = Some(PollPlaylists { url, body, audio }),
+            None => {
                 log::warn("iop", &rid, || "media playlist refresh failed — re-resolving".to_string());
                 media_failures = media_failures.saturating_add(1);
                 media = None;
@@ -1035,28 +1212,41 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<Med
         body.push_str(&String::from_utf8_lossy(&b));
     }
 
-    let (media_url, media_body) = if is_master(&body) {
+    let mut variant_bandwidth = 0i64;
+    let (media_url, media_body, rendition) = if is_master(&body) {
         let pick = pick_variant(&body, &url)?;
-        // The ring stores ONE playlist's segments and both renderers replay exactly those bytes, so a variant
-        // whose audio lives in a separate #EXT-X-MEDIA rendition would be ringed — and served — VIDEO ONLY.
-        // `pick_variant` already preferred a muxed variant if the master offered one; reaching here means none
-        // does. Decline structurally so the request falls back to the rewrite, which passes the rendition
-        // through for the player to fetch itself.
-        if pick.external_audio {
-            let why = "audio is a separate #EXT-X-MEDIA rendition — the ring cannot carry it";
-            log::warn("iop", rid, || format!("{}: {why} — origin ingest not eligible", ctx.source));
-            ctx.origin.mark_ineligible(why.to_string());
-            return None;
-        }
+        variant_bandwidth = pick.bandwidth;
+        // A variant whose audio lives in a separate #EXT-X-MEDIA rendition is followed as a PAIR: the ring
+        // holds one entry per (video, audio) segment pair and the HLS renderer authors a master over both.
+        // `pick_variant` still prefers a muxed variant when the master offers one — pairing is the fallback
+        // for a source that offers nothing muxed, never the preferred shape.
+        //
+        // Before this, reaching here declined the whole origin, which is what put pluto — the one source with
+        // ad pods, and so the whole reason `tsnorm` exists — permanently on the un-normalised rewrite path.
+        let rendition = if pick.external_audio {
+            match pick.audio.clone() {
+                Some(a) => Some(a),
+                // The master said every variant defers its audio but named no rendition we can follow. There
+                // is nothing to pair with, so this is still a structural decline.
+                None => {
+                    let why = "audio is deferred to an #EXT-X-MEDIA group that names no playable rendition";
+                    log::warn("iop", rid, || format!("{}: {why} — origin ingest not eligible", ctx.source));
+                    ctx.origin.mark_ineligible(why.to_string());
+                    return None;
+                }
+            }
+        } else {
+            None
+        };
         let vresp = fetch_with_retry(&client, pick.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
             return None;
         }
-        (vresp.url().clone(), vresp.text().await.ok()?)
+        (vresp.url().clone(), vresp.text().await.ok()?, rendition)
     } else {
-        (url, body)
+        (url, body, None)
     };
 
     // The same eligibility guards the raw-TS producer applies. fMP4 is not concatenable and SAMPLE-AES is not
@@ -1071,13 +1261,53 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool) -> Option<Med
         ctx.origin.mark_ineligible(format!("unsupported encryption METHOD={method}"));
         return None;
     }
-    Some(MediaSource::Hls(media_url, media_body))
+
+    // The audio lane, when there is one. Fetched here so the SAME guards run over it — a rendition that is
+    // fMP4 or SAMPLE-AES is exactly as unringable as a variant that is.
+    let audio = match &rendition {
+        None => None,
+        Some(r) => {
+            let aresp = fetch_with_retry(&client, r.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-audio", MAX_UPSTREAM_RETRIES)
+                .await
+                .ok()?;
+            if !aresp.status().is_success() {
+                return None;
+            }
+            let aurl = aresp.url().clone();
+            let abody = aresp.text().await.ok()?;
+            if has_map(&abody) {
+                log::warn("iop", rid, || format!("{}: audio rendition is fMP4 (#EXT-X-MAP) — origin ingest not eligible", ctx.source));
+                ctx.origin.mark_ineligible("audio rendition is fMP4 (#EXT-X-MAP)".to_string());
+                return None;
+            }
+            if let Some(method) = unsupported_encryption(&abody) {
+                log::warn("iop", rid, || format!("{}: audio rendition METHOD={method} — origin ingest not eligible", ctx.source));
+                ctx.origin.mark_ineligible(format!("audio rendition unsupported encryption METHOD={method}"));
+                return None;
+            }
+            log::info("iop", rid, || {
+                format!(
+                    "{}: demuxed master — ringing the video variant plus audio rendition \"{}\"{} as pairs",
+                    ctx.source,
+                    r.name,
+                    if r.language.is_empty() { String::new() } else { format!(" ({})", r.language) }
+                )
+            });
+            Some((aurl, abody))
+        }
+    };
+    // Re-recorded on every resolve, so a session renewal that re-mints the master picks up a moved rendition
+    // URL without any renewal-specific code.
+    *ctx.origin.demuxed_audio.write_ok() =
+        rendition.map(|audio| DemuxedMaster { audio, bandwidth: variant_bandwidth });
+    Some(MediaSource::Hls(media_url, media_body, audio))
 }
 
 /// What an upstream turned out to BE. Both shapes feed the same ring; only the way boundaries are discovered
 /// differs — an HLS playlist states them, a bare socket has to be segmented locally (tsseg.rs).
 enum MediaSource {
-    Hls(Url, String),
+    /// The media playlist to follow, plus the paired audio rendition's playlist on a DEMUXED source.
+    Hls(Url, String, Option<(Url, String)>),
     /// The live byte stream plus the chunk already consumed to identify it.
     RawTs(std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>>, Bytes),
 }
@@ -1143,12 +1373,14 @@ async fn ingest_raw_ts(
 /// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate.
 fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment) {
     let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
+    // A bare TS socket is one muxed stream, so there is never a second lane to pair with.
     ctx.origin.push(Segment {
         seq: our_seq,
         duration: cut.duration,
         bytes: Bytes::from(cut.bytes),
         discontinuity: false,
         pdt: SystemTime::now(),
+        audio: None,
     });
 }
 
@@ -1288,6 +1520,7 @@ fn render_media_playlist(
     token: Option<&str>,
     pl: Option<&str>,
     disc_seq: u64,
+    lane: Lane,
 ) -> String {
     // TARGETDURATION must be an integer >= the longest #EXTINF, or players reject the playlist.
     let longest = window.iter().fold(target_duration, |m, s| if s.duration > m { s.duration } else { m });
@@ -1317,8 +1550,18 @@ fn render_media_playlist(
         if i == 0 || seg.discontinuity {
             out.push_str(&format!("#EXT-X-PROGRAM-DATE-TIME:{}\n", fmt_rfc3339(seg.pdt)));
         }
+        // ONE `#EXTINF` ladder for both lanes. The audio rendition states its own, marginally different
+        // durations upstream (AAC quantises to ~21.3 ms), but that difference oscillates rather than
+        // accumulating — so publishing one ladder keeps the two playlists' computed timelines identical,
+        // while the media's own PTS, held together by the shared offset, is what governs sync.
         out.push_str(&format!("#EXTINF:{:.3},\n", seg.duration));
-        out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{}.ts", seg.seq));
+        // Only the segment URI differs between lanes. The video shape is unchanged, so a muxed origin's
+        // output is byte-identical to what it was before pairing existed.
+        let l = match lane {
+            Lane::Video => "",
+            Lane::Audio => "a",
+        };
+        out.push_str(&format!("{mount_path}/{source}/o/{enc_entry}/{generation}-{l}{}.ts", seg.seq));
         // The token MUST ride on every segment URI: our paths are guessable by construction, so this is what
         // keeps per-account governance (streamGate) meaningful. `pl` rides along for config resolution.
         if let Some(t) = token {
@@ -1331,6 +1574,51 @@ fn render_media_playlist(
         }
         out.push('\n');
     }
+    out
+}
+
+/// Render the AUTHORED MASTER a demuxed origin publishes at its entry: one variant plus one audio rendition,
+/// both pointing back into our own `o/` namespace.
+///
+/// The two media-playlist URIs deliberately carry NO generation. A client fetches this master ONCE and then
+/// polls the media playlists for the rest of the session, so a generation in those paths would make a
+/// failover ring reset 404 the live session permanently. Segments keep it — that guard is what makes a stale
+/// SEGMENT url fail cleanly — and each playlist poll re-renders under the current generation.
+///
+/// `streamInfRedux` does not apply here: it is a post-transform over a PROXIED master (proxy.rs), and this
+/// one is authored, under 1 KiB, with the `#EXT-X-STREAM-INF` already inside any player's manifest peek.
+fn render_master(
+    mount_path: &str,
+    source: &str,
+    entry: &str,
+    m: &DemuxedMaster,
+    token: Option<&str>,
+    pl: Option<&str>,
+) -> String {
+    let enc_entry = crate::manifest::enc(entry);
+    let q = match (token, pl) {
+        (Some(t), Some(p)) => format!("?token={t}&pl={p}"),
+        (Some(t), None) => format!("?token={t}"),
+        (None, Some(p)) => format!("?pl={p}"),
+        (None, None) => String::new(),
+    };
+    let base = format!("{mount_path}/{source}/o/{enc_entry}");
+    // VERSION 4: `#EXT-X-MEDIA` is a version-4 tag. The media playlists stay at 3.
+    let mut out = String::from("#EXTM3U\n#EXT-X-VERSION:4\n");
+    out.push_str("#EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID=\"audio\"");
+    // Carry upstream's own labelling so a client still names the track the way it did before.
+    if !m.audio.name.is_empty() {
+        out.push_str(&format!(",NAME=\"{}\"", m.audio.name.replace('"', "")));
+    } else {
+        out.push_str(",NAME=\"Audio\"");
+    }
+    if !m.audio.language.is_empty() {
+        out.push_str(&format!(",LANGUAGE=\"{}\"", m.audio.language.replace('"', "")));
+    }
+    out.push_str(&format!(",DEFAULT=YES,AUTOSELECT=YES,URI=\"{base}/a.m3u8{q}\"\n"));
+    let bw = if m.bandwidth > 0 { m.bandwidth } else { 1_000_000 };
+    out.push_str(&format!("#EXT-X-STREAM-INF:BANDWIDTH={bw},AUDIO=\"audio\"\n"));
+    out.push_str(&format!("{base}/v.m3u8{q}\n"));
     out
 }
 
@@ -1402,6 +1690,22 @@ pub async fn serve_entry(
     // between them leaves a one-poll skew either way — but this order makes it an UNDER-count, where the tag
     // is still in the window and the client counts it itself. The other order double-counts it. (Monotonicity
     // holds regardless: the counter only ever rises.)
+    // A DEMUXED origin answers the entry with an authored MASTER over the two lanes; a muxed one answers
+    // with the single media playlist, byte-identically to before pairing existed.
+    if let Some(m) = origin.demuxed_audio() {
+        origin.touch(); // the master itself carries no segments, but it is still a live client
+        let body = render_master(mount_path, source, entry, &m, token, pl);
+        log::info("oop", rid, || {
+            format!("origin master served (1 variant + audio rendition \"{}\", {} bytes)", m.audio.name, body.len())
+        });
+        state.report(serde_json::json!({
+            "kind": "viewer", "source": source, "entryUrl": entry,
+            "ip": id.ip, "ua": id.ua, "username": id.username,
+            "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
+            "bytes": body.len() as u64,
+        }));
+        return Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()));
+    }
     let disc_seq = origin.disc_seq();
     let window = origin.window();
     let body = render_media_playlist(
@@ -1414,6 +1718,7 @@ pub async fn serve_entry(
         token,
         pl,
         disc_seq,
+        Lane::Video,
     );
     log::info("oop", rid, || {
         format!("origin manifest served ({} segment(s), {} bytes)", window.len(), body.len())
@@ -1427,6 +1732,63 @@ pub async fn serve_entry(
         "bytes": body.len() as u64,
     }));
     Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()))
+}
+
+/// SIDE-2 PLAYLIST: one lane's authored media playlist, for a demuxed origin's authored master.
+///
+/// Answered straight from the registry like `serve_segment` — no resolve, no Node round-trip. It does NOT
+/// `subscribe`: the ingest already exists (the master could not have been served otherwise), and `window()`
+/// refreshes `last_access`, which is the half of the idle check that a lease-less reader can keep alive. That
+/// matters because the master is fetched ONCE — if the heartbeat stayed only on the entry, every demuxed
+/// channel would look idle after `IDLE_GRACE` and be reaped out from under a watching client.
+#[allow(clippy::too_many_arguments)]
+pub async fn serve_playlist(
+    state: &AppState,
+    mount_path: &str,
+    source: &str,
+    entry: &str,
+    lane: Lane,
+    token: Option<&str>,
+    pl: Option<&str>,
+    id: &crate::proxy::Identity,
+    rid: &str,
+) -> axum::response::Response {
+    let key = crate::state::target_key(source, entry);
+    let origin = match state.origins().lock_ok().get(&key) {
+        Some(o) => o.clone(),
+        None => {
+            log::warn("oop", rid, || format!("playlist {lane:?}: no live ingest for {source}"));
+            return crate::proxy::text(404, "not found: no live ingest");
+        }
+    };
+    // Same ordering rule as `serve_entry`: read the counter BEFORE the window so a concurrent eviction
+    // under-counts rather than double-counts.
+    let disc_seq = origin.disc_seq();
+    let window = origin.window();
+    let body = render_media_playlist(
+        &window,
+        origin.target_duration(),
+        mount_path,
+        source,
+        entry,
+        origin.generation(),
+        token,
+        pl,
+        disc_seq,
+        lane,
+    );
+    log::info("oop", rid, || {
+        format!("origin manifest served ({lane:?} lane, {} segment(s), {} bytes)", window.len(), body.len())
+    });
+    // The viewer heartbeat. `noteViewer` keys on (ip, ua, username, channel), so the two lanes' polls
+    // collapse to ONE viewer rather than double-counting the client.
+    state.report(serde_json::json!({
+        "kind": "viewer", "source": source, "entryUrl": entry,
+        "ip": id.ip, "ua": id.ua, "username": id.username,
+        "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
+        "bytes": body.len() as u64,
+    }));
+    crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes())
 }
 
 /// SIDE-2 SEGMENT: serve one ring segment from RAM.
@@ -1445,6 +1807,11 @@ pub async fn serve_segment(
     let (gen_s, seq_s) = match stem.split_once('-') {
         Some(p) => p,
         None => return crate::proxy::text(400, "bad request: malformed segment name"),
+    };
+    // `<gen>-<seq>.ts` is the video/primary lane (unchanged); `<gen>-a<seq>.ts` is the demuxed audio lane.
+    let (lane, seq_s) = match seq_s.strip_prefix('a') {
+        Some(rest) => (Lane::Audio, rest),
+        None => (Lane::Video, seq_s),
     };
     let (want_gen, want_seq) = match (gen_s.parse::<u64>(), seq_s.parse::<u64>()) {
         (Ok(g), Ok(s)) => (g, s),
@@ -1472,15 +1839,27 @@ pub async fn serve_segment(
             return crate::proxy::text(404, "not found: segment evicted");
         }
     };
-    let n = seg.bytes.len() as u64;
-    log::trace("oop", rid, || format!("segment seq={want_seq} served from ring ({n} bytes)"));
+    let bytes = match lane {
+        Lane::Video => seg.bytes.clone(),
+        Lane::Audio => match seg.audio.clone() {
+            Some(b) => b,
+            // A muxed origin carries no second lane. Only a stale URL from a previous, demuxed session can
+            // ask for one, so this is the same class of miss as a stale generation.
+            None => {
+                log::trace("oop", rid, || format!("segment {file}: this origin carries no audio lane — 404"));
+                return crate::proxy::text(404, "not found: lane not carried");
+            }
+        },
+    };
+    let n = bytes.len() as u64;
+    log::trace("oop", rid, || format!("segment seq={want_seq} lane={lane:?} served from ring ({n} bytes)"));
     // Egress accounting. Ingest bytes are reported separately under kind:"iop" and must never be folded in
     // here — one upstream byte can serve N viewers, so conflating them would over-count by a factor of N.
     state.report(serde_json::json!({
         "kind": "bytes", "source": source, "entryUrl": entry,
         "ip": id.ip, "ua": id.ua, "username": id.username, "bytes": n,
     }));
-    crate::proxy::raw(200, "video/mp2t", seg.bytes.to_vec())
+    crate::proxy::raw(200, "video/mp2t", bytes.to_vec())
 }
 
 /// SIDE-2 RAW TS: one continuous `video/mp2t` socket concatenated from the ring.
@@ -1506,6 +1885,19 @@ pub async fn serve_ts(
         Ready::Yes => {}
         Ready::Ineligible => return None,
         Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
+    }
+    // A demuxed ring holds two elementary streams as two separate transport streams, and flattening them into
+    // ONE socket needs a real interleaver with its own PCR scheduling — RMX stays deferred. Decline here
+    // rather than in `resolve_media`: ineligibility is a property of (shape, OUTPUT format), not of the
+    // upstream, and the same ring is serving HLS viewers perfectly. The caller falls through to the rewrite,
+    // which is byte-for-byte the raw-TS behaviour this source had before pairing existed.
+    if lease.origin().demuxed_audio().is_some() {
+        log::warn("oop", rid, || {
+            "outputFormat=ts is not available for a demuxed source — the ring carries two renditions and \
+             there is no interleaving muxer (RMX is deferred); falling back to the manifest rewrite"
+                .to_string()
+        });
+        return None;
     }
     let buffer_size_kb = policy.buffer_size_kb.load(Ordering::Relaxed);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(crate::stream::channel_capacity(buffer_size_kb));
@@ -1740,6 +2132,7 @@ mod tests {
             bytes: Bytes::from(vec![0x47u8; bytes]),
             discontinuity: false,
             pdt: SystemTime::UNIX_EPOCH,
+            audio: None,
         }
     }
 
@@ -2036,6 +2429,7 @@ mod tests {
                     bytes: Bytes::from(vec![0x47u8; 10]),
                     discontinuity: disc_at.contains(&i),
                     pdt: SystemTime::UNIX_EPOCH + Duration::from_millis(1_785_931_853_433),
+                    audio: None,
                 })
             })
             .collect()
@@ -2052,6 +2446,7 @@ mod tests {
             Some("tok123"),
             Some("testplaylist"),
             0,
+            Lane::Video,
         )
     }
 
@@ -2088,6 +2483,66 @@ mod tests {
         let uris: Vec<&str> = m.lines().filter(|l| l.contains("/o/")).collect();
         assert_eq!(uris.len(), 4);
         assert!(uris.iter().all(|u| u.contains("token=tok123")), "no segment may be servable without the token");
+    }
+
+    // ── demuxed rendering ────────────────────────────────────────────────────────────────────────────────
+
+    fn render_lane(w: &[Arc<Segment>], lane: Lane) -> String {
+        render_media_playlist(w, 5.0, "/api/ext/v1", "pluto", "pluto://us_east/abc", 3, Some("tok123"), Some("pl1"), 9, lane)
+    }
+
+    /// THE rendering invariant: one window, two renderings. hls.js aligns renditions by (media sequence,
+    /// discontinuity sequence) and interpolates within a PDT anchor, so any disagreement between the two
+    /// documents would place the audio on a different timeline from the video.
+    #[test]
+    fn both_lanes_render_identically_apart_from_the_segment_uris() {
+        let w = window(4, &[2]);
+        let strip = |m: String| {
+            m.lines().filter(|l| !l.contains("/o/")).map(|l| l.to_string()).collect::<Vec<_>>().join("\n")
+        };
+        assert_eq!(
+            strip(render_lane(&w, Lane::Video)),
+            strip(render_lane(&w, Lane::Audio)),
+            "sequence, discontinuity positions, PDT anchors and #EXTINF must be identical"
+        );
+        let v: Vec<String> = render_lane(&w, Lane::Video).lines().filter(|l| l.contains("/o/")).map(String::from).collect();
+        let a: Vec<String> = render_lane(&w, Lane::Audio).lines().filter(|l| l.contains("/o/")).map(String::from).collect();
+        assert_eq!(v.len(), a.len());
+        assert!(v[0].contains("/o/") && v[0].contains("/3-100.ts"), "the video lane's shape is unchanged: {}", v[0]);
+        assert!(a[0].contains("/3-a100.ts"), "the audio lane carries the `a` marker: {}", a[0]);
+    }
+
+    #[test]
+    fn the_authored_master_points_only_at_our_own_playlists() {
+        let m = render_master(
+            "/api/ext/v1",
+            "pluto",
+            "pluto://us_east/abc",
+            &DemuxedMaster {
+                audio: crate::tsmux::AudioRendition {
+                    group: "audio".into(),
+                    url: Url::parse("https://siloh-ns1.plutotv.net/live/audio/audio.m3u8").unwrap(),
+                    name: "English [Original]".into(),
+                    language: "en".into(),
+                    default: true,
+                    autoselect: true,
+                },
+                bandwidth: 3_321_280,
+            },
+            Some("tok123"),
+            Some("pl1"),
+        );
+        // The same "clean" contract the media playlists are held to: no upstream host, no vendor tag, no hop.
+        assert!(!m.contains("plutotv.net"), "no upstream host may leak into the authored master:\n{m}");
+        assert!(!m.contains("/h/"), "no hop URIs");
+        assert!(m.contains("#EXT-X-VERSION:4"), "#EXT-X-MEDIA is a version-4 tag");
+        assert!(m.contains("BANDWIDTH=3321280"), "RFC 8216 makes BANDWIDTH required");
+        assert!(m.contains("LANGUAGE=\"en\""), "upstream's own labelling is carried through");
+        assert!(m.contains("/o/") && m.contains("/a.m3u8?token=tok123&pl=pl1"), "audio rendition is ours:\n{m}");
+        assert!(m.contains("/v.m3u8?token=tok123&pl=pl1"), "so is the variant:\n{m}");
+        // The generation must NOT appear: the master is fetched once and the playlists polled forever, so a
+        // ring reset would otherwise 404 the live session permanently.
+        assert!(!m.contains("/3-"), "no generation in a playlist path:\n{m}");
     }
 
     #[test]
@@ -2172,7 +2627,7 @@ mod tests {
     fn the_discontinuity_sequence_tag_is_always_present() {
         // Omitting it is not "0 by default": it pins the published value at 0 while the true count climbs.
         assert!(render(&window(3, &[])).contains("#EXT-X-DISCONTINUITY-SEQUENCE:0"));
-        let m = render_media_playlist(&window(2, &[]), 5.0, "/api/ext/v1", "s", "e", 0, None, None, 42);
+        let m = render_media_playlist(&window(2, &[]), 5.0, "/api/ext/v1", "s", "e", 0, None, None, 42, Lane::Video);
         assert!(m.contains("#EXT-X-DISCONTINUITY-SEQUENCE:42"));
     }
 
@@ -2181,13 +2636,13 @@ mod tests {
         // A playlist whose TARGETDURATION is below any #EXTINF is rejected by players.
         let mut w = window(2, &[]);
         w[1] = Arc::new(Segment { duration: 5.005, ..(*w[1]).clone() });
-        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None, 0);
+        let m = render_media_playlist(&w, 5.0, "/api/ext/v1", "s", "e", 0, None, None, 0, Lane::Video);
         assert!(m.contains("#EXT-X-TARGETDURATION:6"), "must ceil above the longest EXTINF");
     }
 
     #[test]
     fn generation_appears_in_segment_paths_so_stale_urls_can_404() {
-        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None, 0);
+        let m = render_media_playlist(&window(1, &[]), 5.0, "/api/ext/v1", "s", "e", 7, None, None, 0, Lane::Video);
         assert!(m.contains("/7-100.ts"), "generation is part of the path");
     }
 
