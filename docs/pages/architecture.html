@@ -125,7 +125,7 @@
             <li><strong>Channel model</strong> — a pristine <code>sourcechannels</code> reference projected into an editable <code>playlistchannels</code>; edits survive re-syncs. Channels can be grouped into <a href="failover.html">failover groups</a> — one parent, ordered backups. See <a href="playlists.html">Playlists</a>.</li>
             <li><strong>EPG + scheduler</strong> — multiple ingesters behind one sync path, driven by a <code>croner</code> scheduler over <code>cronjobs</code>. See <a href="epg.html">EPG</a>.</li>
             <li><strong>Video proxy engine</strong> — the remux-free Rust data plane. See <a href="proxy-engine.html">Video proxy engine</a>.</li>
-            <li><strong>Local origin</strong> — an opt-in inversion of the data plane: one shared ingest per channel fills an in-memory ring and masqueradarr publishes a playlist it authored itself. See <a href="local-origin.html">Local origin</a>.</li>
+            <li><strong>Local origin</strong> — an opt-in inversion of the data plane: one shared ingest per channel fills a RAM ring and masqueradarr publishes a playlist it authored itself. On a demuxed source each ring entry carries both the video and its audio partner, and raw TS is woven from the pair. See <a href="local-origin.html">Local origin</a>.</li>
           </ul>
         </div>
       </section>

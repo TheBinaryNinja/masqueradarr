@@ -64,7 +64,7 @@
         <p class="lede">The old always-on ffmpeg engine is gone, replaced by a durable Rust sidecar (<code>masq-proxy</code>) that resolves each stream on demand and pipes it — with retry, mirror rotation, failover groups and read-ahead buffering — to the player. Node stays the brains; Rust moves the muscle.</p>
         <div class="aha" style="margin-top:18px;">
           <div class="lbl">one word of this page has changed meaning</div>
-          <p><strong>Remux-free is still true; “passthrough” no longer is.</strong> Nothing is ever re-encoded — but with <a href="local-origin.html"><strong>local origin</strong></a> switched on, the engine stops forwarding the provider's playlist and publishes one it wrote itself, from segments it ingested, decrypted and cached in RAM. Everything on this page describes the <em>rewriting proxy</em> — the default, and still the whole story with <code>originEnabled</code> off. Where origin mode changes an answer below, it is called out inline.</p>
+          <p><strong>Remux-free is still true; “passthrough” no longer is.</strong> Nothing is ever re-encoded — but with <a href="local-origin.html"><strong>local origin</strong></a> switched on, the engine stops forwarding the provider's playlist and publishes one it wrote itself, from segments it ingested, decrypted, normalized and cached in RAM. Everything on this page describes the <em>rewriting proxy</em> — the default, and still the whole story with <code>originEnabled</code> off. Where origin mode changes an answer below, it is called out inline.</p>
         </div>
       </header>
 
@@ -208,7 +208,7 @@
               <tr><td>Adaptive bitrate</td><td>Yes — player picks a quality</td><td>No — server fixes the top variant</td></tr>
               <tr><td>Which mount</td><td><code>/api/v1</code> <b>and</b> <code>/api/ext/v1</code></td><td><code>/api/ext/v1</code> only</td></tr>
               <tr><td>Telemetry model</td><td>Poll-recency (each poll = heartbeat)</td><td>Socket (open · sbytes · close)</td></tr>
-              <tr><td>Upstream limits</td><td>Handles fMP4 &amp; AES too</td><td>MPEG-TS, incl. AES-128 <span style="color:var(--text-3)">(fMP4 / <code>SAMPLE-AES</code> fall back to HLS)</span></td></tr>
+              <tr><td>Upstream limits</td><td>Handles fMP4 &amp; AES too</td><td>MPEG-TS, incl. AES-128 <span style="color:var(--text-3)">(fMP4 / <code>SAMPLE-AES</code> fall back to HLS; a <a href="local-origin.html#pairs">demuxed</a> source is <a href="local-origin.html#weave">woven</a> into one program under origin)</span></td></tr>
               <tr><td>Best for</td><td>Browsers, the in-app player, modern apps</td><td>Set-top / legacy clients that want one URL</td></tr>
             </tbody>
           </table>
@@ -221,13 +221,13 @@
         <h2>Keeping a stream alive on flaky upstreams</h2>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
           <div class="tile"><div class="ic">● retry</div><h3>Transient failures</h3><p>Transport errors and <code>502</code>/<code>503</code>/<code>504</code> retry with bounded backoff; definitive <code>4xx</code>/<code>5xx</code> are forwarded verbatim (unless <code>failoverOnDefiniteError</code> routes them into the walk).</p></div>
-          <div class="tile"><div class="ic">● mirror rotation</div><h3>Rotate within one provider</h3><p>A dead resolved master forces a <strong>fresh resolve</strong>, driving dlhd / dami to re-probe and rotate to a live mirror without dropping the viewer. Same channel, same provider.</p></div>
+          <div class="tile"><div class="ic">● mirror rotation</div><h3>Rotate within one provider</h3><p>A dead resolved master forces a <strong>fresh resolve</strong>, driving dlhd to re-probe and rotate to a live mirror without dropping the viewer. Same channel, same provider.</p></div>
           <div class="tile ts"><div class="ic">● failover groups</div><h3>Fall through to a backup</h3><p>When a channel has configured <strong>backups</strong> and still won't establish, the engine walks its ordered children (<code>attempt=1,2,…</code> against the resolve seam) and serves the first live one <strong>under the parent's identity</strong>, then sticks to it for the session. Backups may be on other providers. See <a href="failover.html">Playlist Failover</a>.</p></div>
           <div class="tile"><div class="ic">● stall detection</div><h3>Clean truncation</h3><p>An idle read timeout (<code>readTimeoutMs</code>) turns a silent upstream into a clean end instead of a hang.</p></div>
           <div class="tile"><div class="ic">● read-ahead buffer</div><h3>Smooth jitter</h3><p>A bounded in-memory buffer (<code>bufferSizeKb</code>) smooths jitter and fixes the chunked / no-Content-Length byte undercount that used to fake buffering.</p></div>
           <div class="tile"><div class="ic">● batched telemetry</div><h3>Off the hot path</h3><p>Events are coalesced and posted off the byte path, so reporting never blocks the stream.</p></div>
-          <div class="tile"><div class="ic">● raw MPEG-TS</div><h3>Flat TS pipe</h3><p>With <code>outputFormat: 'ts'</code>, the external mount serves one continuous <code>video/mp2t</code> (no remux). AES-128 is decrypted in-engine; only fMP4 and <code>SAMPLE-AES</code> fall back to HLS.</p></div>
-          <div class="tile ts"><div class="ic">● local origin</div><h3>Republish from RAM</h3><p>Opt-in per playlist. One shared ingest per channel fills an in-memory ring and both output shapes are rendered from it, so a second viewer costs no extra upstream. See <a href="local-origin.html">Local origin</a>.</p></div>
+          <div class="tile"><div class="ic">● raw MPEG-TS</div><h3>Flat TS pipe</h3><p>With <code>outputFormat: 'ts'</code>, the external mount serves one continuous <code>video/mp2t</code> (no remux). AES-128 is decrypted in-engine; only fMP4 and <code>SAMPLE-AES</code> fall back to HLS. A <a href="local-origin.html#pairs">demuxed</a> source needs more than concatenation — origin mode <a href="local-origin.html#weave">interleaves the pair</a> into one program rather than declining.</p></div>
+          <div class="tile ts"><div class="ic">● local origin</div><h3>Republish from RAM</h3><p>Opt-in per playlist. One shared ingest per channel fills a RAM ring — whose entries carry <a href="local-origin.html#pairs">both lanes</a> on a demuxed source — and both output shapes are rendered from it, so a second viewer costs no extra upstream. See <a href="local-origin.html">Local origin</a>.</p></div>
         </div>
       </section>
 
@@ -235,7 +235,7 @@
       <section id="tuning">
         <div class="sec-tag"><span class="n">06</span> Tuning knobs · <code style="font-size:0.8em">proxyconfigs</code></div>
         <h2>Two tiers, doc-level fallback</h2>
-        <p class="col">The engine's knobs live in the <code>proxyconfigs</code> collection, edited in the UI and resolved by Node into each grant — <strong>Rust never reads MongoDB</strong>. A per-install <strong>(Default)</strong> (<code>_id:'app'</code>, Settings → Advanced) and an optional per-playlist <strong>(Custom)</strong> (<code>_id:'app_&lt;playlistId&gt;'</code>, the playlist drawer) that fully replaces the Default for that playlist.</p>
+        <p class="col">The engine's knobs live in the <code>proxyconfigs</code> collection, edited in the UI and resolved by Node into each grant — <strong>Rust never reads MongoDB</strong>. A per-install <strong>(Default)</strong> (<code>_id:'app'</code>, Settings → Video Config) and an optional per-playlist <strong>(Custom)</strong> (<code>_id:'app_&lt;playlistId&gt;'</code>, the playlist drawer) that fully replaces the Default for that playlist.</p>
         <div class="panel scroll">
           <table>
             <thead><tr><th>Knob</th><th>Status</th><th class="h-accent">Effect</th></tr></thead>
@@ -245,7 +245,8 @@
               <tr><td>readTimeoutMs, bufferSizeKb</td><td><span class="em-ts">live</span></td><td>Per-stream stall timeout + read-ahead buffer size.</td></tr>
               <tr><td>outputFormat (<code>hls</code> | <code>ts</code>)</td><td><span class="em-ts">live</span></td><td>Distribution shape (<code>ts</code> = continuous MPEG-TS, external mount only).</td></tr>
               <tr><td>originEnabled</td><td><span class="em-ts">live</span></td><td><a href="local-origin.html">Local origin</a>: republish from our own ring instead of proxying the upstream playlist. Default <strong>off</strong> — off is today's output byte-for-byte.</td></tr>
-              <tr><td>originRingMb</td><td><span class="em-ts">live</span></td><td>Per-channel ring cap in MiB (default <strong>25</strong>, range <strong>1–4096</strong>); a 3-segment floor still wins over it. Applies only while <code>originEnabled</code> is on.</td></tr>
+              <tr><td>originRingMb</td><td><span class="em-ts">live</span></td><td>Per-channel ring cap in MiB (default <strong>25</strong>, range <strong>1–4096</strong>); a 3-segment floor still wins over it, and on a demuxed source <strong>both lanes count</strong>. Applies only while <code>originEnabled</code> is on.</td></tr>
+              <tr><td>spliceNormalize</td><td><span class="em-ts">live</span></td><td><a href="local-origin.html#normalize">Splice normalization</a> — “Smooth ad transitions” in the UI. Republishes every ingested segment onto one timeline with canonical pids, so a provider that moves its video pid between ads cannot make a demuxer stop rendering. A <strong>kill switch, not an opt-in</strong>: default <strong>on</strong>, and an older config document that lacks the field reads as on. Applies only while <code>originEnabled</code> is on.</td></tr>
               <tr><td>streamInfRedux</td><td><span class="em-ts">live</span></td><td>Opt-in (default <strong>off</strong>) non-destructive reorder of the HLS master so the first <code>#EXT-X-STREAM-INF</code> lands inside a strict player's manifest probe window. External mount only; off = byte-identical output.</td></tr>
               <tr><td>failoverEnabled</td><td><span class="em-ts">live</span></td><td>Walk a channel's ordered failover children on an establish failure. Default <strong>on</strong> — configuring a group is the real opt-in.</td></tr>
               <tr><td>failoverOnDefiniteError</td><td><span class="em-ts">live</span></td><td>Also treat a definitive upstream <code>4xx</code>/<code>5xx</code> as a failover trigger. Default <strong>off</strong> — it changes forward-verbatim semantics.</td></tr>
@@ -273,7 +274,7 @@
           <div class="fcard ts">
             <span class="badge">● opt-in · originEnabled on</span>
             <h3>Publish our own</h3>
-            <p><strong>One ingest per channel</strong> decrypts segments into an in-memory ring, and both output shapes are rendered from it. A second viewer costs no extra upstream, and the manifest is one we wrote.</p>
+            <p><strong>One ingest per channel</strong> decrypts and normalizes segments into a RAM ring, and both output shapes are rendered from it. A second viewer costs no extra upstream, and the manifest is one we wrote.</p>
           </div>
         </div>
         <div class="aha">
@@ -317,11 +318,11 @@
         </div>
         <div class="note-block">
           <div class="lbl">honest scope</div>
-          <p>Playback is <strong>live</strong> over the Rust engine (HLS + raw-TS). There is still no <code>ffmpeg</code> and no <strong>remux / transcode</strong> — but that no longer implies what it used to. <strong>AES-128 is decrypted in-engine</strong>, and a bare MPEG-TS socket is now <strong>segmented in-engine</strong> (PAT → PMT → cut at a random-access point, durations from the stream's own 90&nbsp;kHz PCR clock), so a <code>direct</code> / <code>hdhomerun</code> upstream can be republished as ordinary HLS — with <a href="local-origin.html"><code>originEnabled</code></a> on. That path is opt-in and newer than the rest of the engine; the honest caveat is that it has had far less live mileage than the HLS proxy path. fMP4 and <code>SAMPLE-AES</code> / FairPlay genuinely still decline. The <code>?fmt=ts</code> per-request override and the HDHomeRun-tuner / Xtream-panel consumers are on the roadmap; <code>segmentCacheTtlSec</code> ships in the grant but isn't enforced yet. Edge mode is build- and unit-verified; a full live-stack E2E pass is still pending — treat it as an opt-in scale topology.</p>
+          <p>Playback is <strong>live</strong> over the Rust engine (HLS + raw-TS). There is still no <code>ffmpeg</code> and no <strong>remux / transcode</strong> — but that no longer implies what it used to. <strong>AES-128 is decrypted in-engine</strong>, and a bare MPEG-TS socket is now <strong>segmented in-engine</strong> (PAT → PMT → cut at a random-access point, durations from the stream's own 90&nbsp;kHz PCR clock), so a <code>direct</code> / <code>hdhomerun</code> upstream can be republished as ordinary HLS — with <a href="local-origin.html"><code>originEnabled</code></a> on. That path is opt-in and newer than the rest of the engine; the honest caveat is that it has had far less live mileage than the HLS proxy path. fMP4 and <code>SAMPLE-AES</code> / FairPlay genuinely still decline — though a declining channel now drops back to the rewriting path rather than failing. The <code>?fmt=ts</code> per-request override and the HDHomeRun-tuner / Xtream-panel consumers are on the roadmap; <code>segmentCacheTtlSec</code> ships in the grant but isn't enforced yet. Edge mode is build- and unit-verified; a full live-stack E2E pass is still pending — treat it as an opt-in scale topology.</p>
         </div>
         <div class="refs">
           <span class="ref"><b>README</b> · Video Proxy Engine</span>
-          <span class="ref"><b>proxy/</b> crate · <code>masq-proxy</code> · proxy.rs · tsmux.rs · origin.rs · tsseg.rs</span>
+          <span class="ref"><b>proxy/</b> crate · <code>masq-proxy</code> · proxy.rs · tsmux.rs · origin.rs · tsnorm.rs · tsweave.rs · tsseg.rs</span>
           <span class="ref"><b>.claude/artifacts</b> · HLS vs Raw TS explainer</span>
           <span class="ref">next → <b>Local origin</b></span>
         </div>

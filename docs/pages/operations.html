@@ -77,8 +77,13 @@
           <p>A <strong>healthy</strong> session shows a steady bitrate and climbing uptime. A session flagged <strong>failing</strong> is one the server couldn't keep fed — worth investigating, and it drives the live pulse dot next to Active Streams in the sidebar. An <strong>empty screen is normal</strong> when nobody is watching. To investigate: note the channel + source, open <strong>View logs</strong> filtered to that source, and cross-check the channel on its Playlist detail.</p>
         </div>
         <div class="aha">
+          <div class="lbl">the detail panel is a pipeline, not a list</div>
+          <p>Opening a session gives you four tabs that follow the bytes in order — <strong><code>SOURCE // FEED</code></strong> (which provider answered, in what wire format, and what was <em>requested</em> versus what is being <em>served</em>), <strong><code>INGEST // RING</code></strong> (the shared ingest and what it is holding), <strong><code>PLAYLIST // MANIFEST</code></strong> (the published window, its discontinuities, any ad break) and <strong><code>OUTPUT // FEED</code></strong> (what viewers actually received, and the amplification between the two). Arrow keys, Home and End move between them.</p>
+          <p>Empty values are written to be read, not guessed at: <em>“passthrough — no local ring”</em>, <em>“no reading yet — needs two distinct ingest frames”</em>, <em>“the rewrite path is serving this channel, not the ring”</em>. A missing number tells you which stage isn't running.</p>
+        </div>
+        <div class="aha">
           <div class="lbl">a session served from a ring</div>
-          <p>A stream running under <a href="local-origin.html">local origin</a> grows three extra rows in its detail card, next to the existing <strong>Delivery</strong> row: <strong>Ingest</strong> (<code>&lt;status&gt; · N viewer(s) sharing</code>, tinted amber when the status isn't <code>ok</code>), <strong>Ring</strong> (<code>N seg · N.N MiB</code>, plus <code>· N evicted</code> once eviction starts) and <strong>Upstream pulled</strong> (<code>N seg · N.N MiB</code>). Their <em>absence</em> is itself the signal that a stream is on the ordinary rewriting path. Do not read <strong>Upstream pulled</strong> against the bitrate chart above it — one is a single shared ingest, the other is egress across every viewer, so with N viewers they diverge by roughly N×. <strong>That divergence is the feature working.</strong></p>
+          <p>A stream running under <a href="local-origin.html">local origin</a> grows three extra rows in its detail card, next to the existing <strong>Delivery</strong> row: <strong>Ingest</strong> (<code>&lt;status&gt; · N viewer(s) sharing</code>, tinted amber when the status isn't <code>ok</code>), <strong>Ring</strong> (<code>N seg · N.N MiB</code> against that channel's own cap, plus <code>· N evicted</code> once eviction starts) and <strong>Upstream pulled</strong> (<code>N seg · N.N MiB</code>). Their <em>absence</em> is itself the signal that a stream is on the ordinary rewriting path. Do not read <strong>Upstream pulled</strong> against the bitrate chart above it — one is a single shared ingest, the other is egress across every viewer, so with N viewers they diverge by roughly N×. <strong>That divergence is the feature working.</strong></p>
         </div>
         <div class="aha">
           <div class="lbl">a session carried by a backup</div>
@@ -106,7 +111,7 @@
       <section id="system">
         <div class="sec-tag"><span class="n">03</span> System stats</div>
         <h2>Live CPU &amp; memory on the Dashboard</h2>
-        <p class="col">The admin Dashboard pushes live <strong>system-performance</strong> stats over a WebSocket, alongside the stat cards (Playlists, Channels, Channels live/down, EPG sources, Unmatched) and the Activity panel (live Active Sessions + recent History). Glance at <strong>Channels live vs down</strong> to spot a source problem, and <strong>Unmatched</strong> to know when to head to Channel Mapping.</p>
+        <p class="col">The admin Dashboard pushes live <strong>system-performance</strong> stats over a WebSocket, alongside the stat cards (Playlists, Channels, Channels live/down, EPG sources, Unmatched) and the Activity panel (live Active Sessions + recent History). Glance at <strong>Channels live vs down</strong> to spot a source problem, and <strong>Unmatched</strong> to know when to head to Channel Mapping. The Playlists and EPG Sources panels beneath list <strong>alphabetically</strong>, so a name stays where you last saw it as the install grows.</p>
         <h3>Memory pressure — the one tile whose colour is the reading</h3>
         <p class="col">The performance strip carries six tiles: CPU, Memory, <strong>Memory pressure</strong>, Disk I/O, Network, DB connections. Memory pressure is the only visibility you have into the <em>Rust sidecar's</em> RAM — Node's own memory figure is the Node process and can never see the <a href="local-origin.html#ring">origin rings</a>. Its big number is the total ring bytes across every channel, and the <strong>colour is the verdict</strong>: green below 15% of the box's total memory, amber at 15%, red at 30%. That 30% mark is sized against a real case — roughly 50 origins at the 25&nbsp;MiB default is about 1.2&nbsp;GiB, which is where a 4&nbsp;GB Pi starts to hurt.</p>
         <div class="panel scroll" style="margin-top:14px;">
@@ -151,6 +156,16 @@
           <div class="lbl">the two cross-boundary categories</div>
           <p><code>proxy</code> holds the Rust data-plane's full resolve→fetch→rewrite→serve lineage, ingested over the log seam (<code>POST /api/internal/log</code>) — persisted without a console re-print, since the sidecar already printed to its inherited stdout. <code>failover</code> is the newest, and the other one written from <em>both</em> planes: Node records group saves, EPG cascades, auto-disbands and exhausted chains (naming the parent and its playlist); Rust records the walk itself (carrying the session id). See <a href="failover.html">Playlist Failover</a>. The single <code>logLevel</code> (1|2|3) knob on Settings gates verbosity for every subsystem, Node and Rust alike, live with no restart.</p>
         </div>
+        <div class="panel scroll" style="margin-top:16px;">
+          <table>
+            <thead><tr><th>Log level</th><th class="h-accent">You get</th><th>Use it when</th></tr></thead>
+            <tbody>
+              <tr><td><strong>1</strong> — lifecycle + issues</td><td>Warnings and errors only. These are never gated: whatever the level, a real problem is written.</td><td>A quiet, steady install. Nothing you need is lost — only the narration.</td></tr>
+              <tr><td><strong>2</strong> — <em>and</em> milestones</td><td>Plus the checkpoints: a sync started and finished, a stream established, a group was walked.</td><td>The default. Enough to reconstruct what happened without reading every hop.</td></tr>
+              <tr><td><strong>3</strong> — <em>and</em> full lineage</td><td>Plus every step: each resolve hop, each poll, each ring push and evict.</td><td>Diagnosing one channel. Verbose enough that you want to turn it back down afterwards.</td></tr>
+            </tbody>
+          </table>
+        </div>
         <div class="aha">
           <div class="lbl">iop and oop are tags, not categories</div>
           <p>There are still <strong>14 categories</strong>. <a href="local-origin.html#observe"><code>iop</code></a> (input operation — resolve, poll, fetch, decrypt, ring push/evict) and <code>oop</code> (output operation — manifest render, segment serve, TS concat) are <em>tags</em> that both resolve to <code>proxy</code>. The split is attribution <em>within</em> the engine, not a new bucket: once one ingest feeds many viewers, “the channel is stuttering” has two possible causes, and the tag says which side to look at. Filter to <code>proxy</code> as before, then read the tag.</p>
@@ -176,9 +191,44 @@
         </div>
       </section>
 
+      <!-- SETTINGS ─────────────────────────────────────────────────────── -->
+      <section id="settings">
+        <div class="sec-tag"><span class="n">06</span> Settings, at a glance</div>
+        <h2>Three tabs, and what lives on each</h2>
+        <p class="col">Settings is split into <strong>General</strong>, <strong>Video Config</strong> and <strong>Advanced</strong>. Knowing which is which saves a hunt — in particular, the <a href="proxy-engine.html#tuning">video engine's <strong>(Default)</strong> config</a> is on <strong>Video Config</strong>, not Advanced.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
+          <div class="tile"><div class="ic">● General</div><h3>The install itself</h3><p><strong>Domain</strong> — the load-bearing one, woven into every published playlist URL — plus the global <strong>log level</strong>, outbound DNS nameservers, and backup / restore / maintenance.</p></div>
+          <div class="tile ts"><div class="ic">● Video Config</div><h3>How video is served and watched</h3><p>The <strong>Video Proxy Engine (Default)</strong> panel — every knob on the <a href="proxy-engine.html#tuning">tuning table</a>, including <a href="local-origin.html#tuning">Local origin</a>, <strong>Ring size</strong> and <strong>Smooth ad transitions</strong> — and the <strong>Video player</strong> choice below.</p></div>
+          <div class="tile"><div class="ic">● Advanced</div><h3>Per-provider and workspace-wide</h3><p><strong>DaddyLive Player Source</strong> (the <a href="sources.html#dlhd-players">default provider</a> for dlhd channels), Geolocation, the dulo login capture panel, and the <strong>Custom Tags</strong> registry.</p></div>
+        </div>
+
+        <h3 id="player" style="margin-top:26px;">The Video player choice</h3>
+        <p class="col"><strong>Settings → Video Config → Video player</strong> decides what the channel slide-out gives you. It has three positions:</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Player</th><th class="h-accent">What the channel drawer shows</th><th>Best for</th></tr></thead>
+            <tbody>
+              <tr><td><strong>In-app video player</strong> <span style="color:var(--text-3)">(default)</span></td><td>An embedded player plus a live bitrate chart, inline in the drawer.</td><td>Glancing at a channel while you work — checking it plays at all.</td></tr>
+              <tr><td><strong>Ultimate video player</strong></td><td>Those two are replaced by a single <strong>Launch Ultimate Video Player</strong> button that opens a dedicated player window.</td><td>Actually <em>watching</em> a channel rather than glancing at it.</td></tr>
+              <tr><td><strong>Debug video player</strong></td><td>A diagnostic player with a live HLS status readout and an event log.</td><td>Troubleshooting a playback problem on one channel.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="col" style="margin-top:16px;">The <strong>Ultimate</strong> window is a full-size picture with the launching playlist's channel list pulled out from the right edge and a <em>what's on now / next</em> strip under the video. Keyboard: <strong>F</strong> full screen, <strong>M</strong> mute, <strong>C</strong> channels. Your volume and mute choice are remembered between channels and windows.</p>
+        <div class="note-block">
+          <div class="lbl">two things that will bite you once</div>
+          <p><strong>Allow pop-ups for this site, or the window can't open.</strong> A blocked launch reports <em>“Pop-up blocked — allow pop-ups for this site to open the Ultimate Video Player.”</em></p>
+          <p><strong>Browsers block audio until you interact with the page.</strong> When that happens the picture says so, and one click on the banner — or the <strong>M</strong> key — turns sound on. The window opens without a tab strip, toolbar or bookmarks bar, but the thin strip showing the site address is forced on by the browser itself and cannot be turned off from the app; use <strong>Full screen</strong> for a completely bare window.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">the Ultimate window always uses the Default engine config</div>
+          <p>It requests streams without a playlist qualifier, exactly as the in-app player does — so it resolves against the <strong>(Default)</strong> proxy config every time. Enabling <a href="local-origin.html">local origin</a> on one playlist's <em>Custom</em> override does not change what you see in the Ultimate player; only the Default does.</p>
+        </div>
+      </section>
+
       <!-- BACKUP ───────────────────────────────────────────────────────── -->
       <section id="backup">
-        <div class="sec-tag"><span class="n">06</span> Backup, restore &amp; maintenance</div>
+        <div class="sec-tag"><span class="n">07</span> Backup, restore &amp; maintenance</div>
         <h2>One-click snapshots of the whole system</h2>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
           <div class="tile"><div class="ic">● backup</div><h3>Full-system gzip</h3><p>A gzipped snapshot of every collection — downloaded, or written to a configured backup directory on a schedule.</p></div>

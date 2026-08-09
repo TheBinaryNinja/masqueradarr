@@ -374,17 +374,24 @@
    viewers" — is a claim about two DIFFERENT RATES, and a rate is the one thing
    a still picture cannot draw. So the left lane runs exactly ONE ingest cursor
    per cycle (upstream → follow+fetch → decrypt, where its hatch clears and ●
-   becomes ○: the ciphertext→plaintext instant) and lands exactly ONE segment at
-   the ring's head, while the right lane fires FOUR reads over the same cycle
-   and flares a viewer dot under every one. The left cadence never accelerates
-   when the right gets busy — that non-coupling IS the bandwidth claim, and it
-   is only legible watching both sides at once.
+   becomes ○: the ciphertext→plaintext instant → normalize, where it parks) and
+   lands exactly ONE entry at the ring's head, while the right lane fires FOUR
+   reads over the same cycle and flares a viewer dot under every one. The left
+   cadence never accelerates when the right gets busy — that non-coupling IS the
+   bandwidth claim, and it is only legible watching both sides at once.
+
+   The ring slot is drawn as TWO bands, not one: on a demuxed source a single
+   entry carries the video segment AND its audio partner (Segment.audio), and
+   the whole point of holding them on one entry is that they are pushed, served
+   and evicted together. Same green — the audio band is a denser tone of the
+   ring colour, never a fifth hue — because it is not a different ROLE, it is
+   the same ring entry seen in section.
 
    Two mechanics worth not re-inventing:
 
-   · The cursor is THREE per-card tokens cross-faded with a downward nudge, not
+   · The cursor is FOUR per-card tokens cross-faded with a downward nudge, not
      one token sliding down a rail (the .fowalk idiom). A rail would have to
-     stop at each card's centre in percentages of the lane, and the three cards
+     stop at each card's centre in percentages of the lane, and the four cards
      are NOT equal height — their sub-lines wrap differently at every column
      width, so a percentage rail drifts up to ~16px off. Anchoring a token to
      each card is exact at any width, in either layout.
@@ -424,9 +431,13 @@
 .omap-c-up   { --omap-rail: var(--text-3); }
 .omap-c-fet  { --omap-rail: var(--cfg); }
 .omap-c-dec  { --omap-rail: var(--cfg); }
+.omap-c-norm { --omap-rail: var(--cfg); }
 .omap-c-man  { --omap-rail: var(--accent); }
 .omap-c-ts   { --omap-rail: var(--accent); }
 .omap-c-view { --omap-rail: var(--text-3); }
+/* four cards on the left against three on the right: trim the ingest cards'
+   floor so the lane that sets the row height doesn't leave the serve lane airy */
+.omap-in .omap-card { min-height: 74px; }
 
 /* — the ingest cursor: a dashed guide down the lane + one token per card — */
 .omap-rail { position: absolute; left: -10px; top: 8px; bottom: 8px; width: 2px; transform: translateX(-50%); border-radius: 2px; background: repeating-linear-gradient(180deg, var(--cfg-line) 0 6px, transparent 6px 11px); }
@@ -434,6 +445,9 @@
 .omap-hatch { position: absolute; inset: 0; border-radius: 50%; background: repeating-linear-gradient(45deg, var(--cfg-line) 0 2px, transparent 2px 4px); }
 .omap-g { grid-area: 1 / 1; font-family: var(--mono); font-size: 10px; line-height: 1; color: var(--cfg); }
 .omap-g-open { opacity: 0; }
+/* the fourth token carries no lock and no hatch: past decrypt the bytes ARE
+   plaintext, and re-drawing the padlock there would un-tell the story */
+.omap-tk4 .omap-g-open { opacity: 1; }
 
 /* — connectors: a dashed wire with an opaque pill sitting ON it, so the line
      never runs through the type. The pill names the operation; the tag under it
@@ -458,7 +472,16 @@
 .omap-q-row { display: flex; align-items: center; justify-content: center; }
 .omap-seg { position: relative; flex: 0 0 auto; overflow: hidden; width: 16px; height: 26px; margin-right: 4px; border-radius: 3px; background: var(--ts-soft); border: 1px solid var(--ts-line); }
 .omap-seg::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--ts); opacity: 0.7; }
+/* the audio lane of a paired entry. A BAND inside the same slot, not a second
+   slot and not a second row — the whole design claim is that these two blobs
+   are one ring entry with one seq, one PDT and one eviction. */
+.omap-seg::after { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; background: var(--ts); opacity: 0.3; }
 .omap-seg-head { width: 0; margin-right: 0; border-width: 0; opacity: 0; }
+.omap-q-key { display: flex; justify-content: center; gap: 12px; margin-top: 7px; font-family: var(--mono); font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-2); }
+.omap-q-kv, .omap-q-ka { display: inline-flex; align-items: center; gap: 5px; }
+.omap-q-kv::before, .omap-q-ka::before { content: ""; flex: none; width: 8px; border-radius: 2px; }
+.omap-q-kv::before { height: 8px; background: var(--ts-soft); border: 1px solid var(--ts-line); }
+.omap-q-ka::before { height: 4px; background: var(--ts); opacity: 0.3; }
 .omap-q-cap { text-align: center; margin-top: 7px; font-family: var(--mono); font-size: 8.5px; letter-spacing: 0.02em; color: var(--text-2); }
 
 /* — clients: one dot per concurrent viewer, flared by the read that served it — */
@@ -484,12 +507,14 @@
 .omap-tk1 { animation: omap-tk1 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
 .omap-tk2 { animation: omap-tk2 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
 .omap-tk3 { animation: omap-tk3 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
+.omap-tk4 { animation: omap-tk4 var(--omap-dur) cubic-bezier(.4,0,.3,1) infinite; }
 .omap-tk3 .omap-hatch  { animation: omap-hatchout var(--omap-dur) linear infinite; }
 .omap-tk3 .omap-g-lock { animation: omap-lockg    var(--omap-dur) linear infinite; }
 .omap-tk3 .omap-g-open { animation: omap-openg    var(--omap-dur) linear infinite; }
-.omap-c-up  { animation: omap-upcard  var(--omap-dur) ease infinite; }
-.omap-c-fet { animation: omap-fetcard var(--omap-dur) ease infinite; }
-.omap-c-dec { animation: omap-deccard var(--omap-dur) ease infinite; }
+.omap-c-up   { animation: omap-upcard   var(--omap-dur) ease infinite; }
+.omap-c-fet  { animation: omap-fetcard  var(--omap-dur) ease infinite; }
+.omap-c-dec  { animation: omap-deccard  var(--omap-dur) ease infinite; }
+.omap-c-norm { animation: omap-normcard var(--omap-dur) ease infinite; }
 .omap-ptok  { animation: omap-push var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
 .omap-r1 { animation: omap-rd1 var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
 .omap-r2 { animation: omap-rd2 var(--omap-dur) cubic-bezier(.45,0,.5,1) infinite; }
@@ -505,44 +530,57 @@
 .omap-e4 { animation: omap-eye4 var(--omap-dur) ease-out infinite; }
 
 /* ONE descent per cycle. Each token enters from above and leaves downward, so
-   the hand-off reads as a single cursor stepping down the lane; the third one
+   the hand-off reads as a single cursor stepping down the lane; the FOURTH one
    then PARKS for half the cycle — that park is the resting beat the freeze
-   pins, and the reset happens under opacity 0 so nothing ever flies back up. */
+   pins, and the reset happens under opacity 0 so nothing ever flies back up.
+   The park sits on `normalize` rather than `decrypt` because normalize is the
+   last thing that touches the bytes before push_back, so the parked cursor and
+   the push token below it are describing the same instant. */
 @keyframes omap-tk1 {
   0%       { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
-  4%,13%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  19%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
+  3%,10%   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  15%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
 }
 @keyframes omap-tk2 {
-  0%,15%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
-  20%,33%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
-  39%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
+  0%,11%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
+  15%,23%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  28%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
 }
 @keyframes omap-tk3 {
-  0%,33%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
-  38%,94%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  0%,24%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
+  28%,37%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+  42%,100% { opacity: 0; transform: translate(-50%, -50%) translateY(11px) scale(.7); }
+}
+@keyframes omap-tk4 {
+  0%,38%   { opacity: 0; transform: translate(-50%, -50%) translateY(-11px) scale(.6); }
+  42%,94%  { opacity: 1; transform: translate(-50%, -50%) scale(1); }
   99%,100% { opacity: 0; transform: translate(-50%, -50%) scale(1); }
 }
 /* the ciphertext→plaintext instant: the hatch clears and ● becomes ○ */
-@keyframes omap-hatchout { 0%,44%{opacity:1} 49%,100%{opacity:0} }
-@keyframes omap-lockg    { 0%,44%{opacity:1} 48%,100%{opacity:0} }
-@keyframes omap-openg    { 0%,44%{opacity:0} 48%,100%{opacity:1} }
+@keyframes omap-hatchout { 0%,31%{opacity:1} 35%,100%{opacity:0} }
+@keyframes omap-lockg    { 0%,31%{opacity:1} 34%,100%{opacity:0} }
+@keyframes omap-openg    { 0%,31%{opacity:0} 34%,100%{opacity:1} }
 
-/* upstream stays NEUTRAL when touched — it is not ours; the two amber cards
-   light amber, and decrypt holds its lit state right through the park. */
+/* upstream stays NEUTRAL when touched — it is not ours; the three amber cards
+   light amber, and normalize holds its lit state right through the park. */
 @keyframes omap-upcard {
-  0%,3%    { background: var(--bg-1); border-color: var(--hairline); }
-  6%,12%   { background: var(--bg-2); border-color: var(--hairline-strong); }
-  18%,100% { background: var(--bg-1); border-color: var(--hairline); }
+  0%,2%    { background: var(--bg-1); border-color: var(--hairline); }
+  5%,10%   { background: var(--bg-2); border-color: var(--hairline-strong); }
+  15%,100% { background: var(--bg-1); border-color: var(--hairline); }
 }
 @keyframes omap-fetcard {
-  0%,19%   { background: var(--bg-1); border-color: var(--hairline); }
-  22%,33%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
-  38%,100% { background: var(--bg-1); border-color: var(--hairline); }
+  0%,14%   { background: var(--bg-1); border-color: var(--hairline); }
+  17%,23%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  28%,100% { background: var(--bg-1); border-color: var(--hairline); }
 }
 @keyframes omap-deccard {
-  0%,37%   { background: var(--bg-1); border-color: var(--hairline); }
-  41%,94%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  0%,26%   { background: var(--bg-1); border-color: var(--hairline); }
+  29%,37%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  42%,100% { background: var(--bg-1); border-color: var(--hairline); }
+}
+@keyframes omap-normcard {
+  0%,40%   { background: var(--bg-1); border-color: var(--hairline); }
+  43%,94%  { background: var(--cfg-soft); border-color: var(--cfg-line); }
   99%,100% { background: var(--bg-1); border-color: var(--hairline); }
 }
 
@@ -621,17 +659,18 @@
 
 /* ── reduced motion — freeze on the STEADY STATE, never a mid-transition ────
    ring full with the oldest slot caught mid-eviction; the cursor parked on
-   decrypt in its UNLOCKED state with the decrypt card still lit; ONE push in
-   flight against THREE reads — the rate asymmetry, held still; both renderers
-   lit off the same bytes; every viewer dot on. */
+   normalize, already past the padlock, with the normalize card still lit; ONE
+   push in flight against THREE reads — the rate asymmetry, held still; both
+   renderers lit off the same bytes; every viewer dot on.
+   The decrypt token is hidden here, so the ciphertext→plaintext instant is the
+   one beat this frame cannot carry — §"Encryption" states it in prose, which is
+   where a reader who cannot see motion is going to find it anyway. */
 @media (prefers-reduced-motion: reduce) {
   .omap *, .omap *::before, .omap *::after { animation: none !important; }
 
-  .omap-tk1, .omap-tk2 { opacity: 0; }
-  .omap-tk3 { opacity: 1; transform: translate(-50%, -50%); }
-  .omap-tk3 .omap-hatch, .omap-tk3 .omap-g-lock { opacity: 0; }
-  .omap-tk3 .omap-g-open { opacity: 1; }
-  .omap-c-dec { background: var(--cfg-soft); border-color: var(--cfg-line); }
+  .omap-tk1, .omap-tk2, .omap-tk3 { opacity: 0; }
+  .omap-tk4 { opacity: 1; transform: translate(-50%, -50%); }
+  .omap-c-norm { background: var(--cfg-soft); border-color: var(--cfg-line); }
 
   .omap-seg-tail { width: 7px; margin-right: 4px; border-width: 1px; opacity: 0.32; }
   .omap-seg-head { width: 16px; margin-right: 4px; border-width: 1px; opacity: 1; box-shadow: 0 0 9px 1px var(--ts); }
@@ -1921,12 +1960,322 @@
 
 
 
+/* ═══ NEW · .pairing — matching a demuxed source's two renditions ══════════
+   A demuxed provider (pluto, every device cohort) publishes audio on its own
+   #EXT-X-MEDIA rendition, so a video segment is NEVER ingested alone: the
+   ingest looks up its audio partner and the ring entry only exists if both
+   halves do. The lookup has exactly three outcomes, and picking the wrong one
+   is not a cosmetic error — an unpaired video segment puts the two published
+   playlists on different windows for the rest of the session.
+
+   Why this earns motion. Two of the three outcomes are STATES; the third —
+   NotYet — is a WAIT, and a wait cannot be drawn. The interesting frame is not
+   "here are three outcomes", it is poll 2 declining to advance and poll 3
+   ringing the very same upstream sequence once its partner turns up. So the
+   component is one timeline of FOUR consecutive polls, and 1042 deliberately
+   appears twice: held, then found. A taxonomy diagram would have shown the
+   same three labels and taught none of that.
+
+   Four grid columns, one row per fact (poll · video · window · audio ·
+   verdict), so every cell is anchored by grid-column rather than by percentage
+   — the columns stay aligned at any width, in either layout, exactly as
+   .cutdec's annotation strip does.
+
+   Colour: AMBER throughout, because all of this is Side-1 (iop). GREEN only
+   where an entry actually reaches the ring. --risk is spent on ONE thing, the
+   dropped pair — dropping a lane is the refusal this component exists to
+   explain, and nothing else here is a refusal. The "not published yet" gap is
+   NEUTRAL on purpose: it is not an error, it is the normal state of a lane
+   that is a few hundred milliseconds behind.
+
+   One shared timeline (--pr-dur), every track percentage-driven, no delay
+   chains. Reduced motion then shows all four verdicts at once — the sequence
+   is what the motion adds, and the taxonomy is what survives without it. */
+.pairing { --pr-dur: 15s; padding: 6px 14px 14px; }
+
+/* — header: what is matched, how wide the window is, and the live skew — */
+.pr-head { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; padding: 10px 2px 14px; }
+.pr-hk { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.pr-head code { font-family: var(--mono); font-size: 11px; color: var(--cfg-hi); background: var(--cfg-soft); border: 1px solid var(--cfg-line); border-radius: 5px; padding: 2px 7px; }
+.pr-tolchip { font-family: var(--mono); font-size: 10px; letter-spacing: 0.04em; color: var(--text-2); border: 1px dashed var(--hairline-strong); border-radius: 999px; padding: 2px 9px; }
+.pr-skew { display: inline-flex; align-items: baseline; gap: 7px; margin-left: auto; font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); }
+/* digit-reel idiom (.fo-odo / .rc-reel): absolutely-stacked strings, opacity-keyed */
+.pr-reel { position: relative; display: inline-block; min-width: 11ch; height: 1.35em; text-transform: none; letter-spacing: 0.02em; }
+.pr-sd { position: absolute; inset: 0; display: flex; align-items: center; font-size: 12px; font-weight: 500; opacity: 0; white-space: nowrap; }
+.pr-sd-ok   { color: var(--ts); }
+.pr-sd-wait { color: var(--text-2); }
+.pr-sd-bad  { color: var(--risk); }
+
+/* — four poll COLUMNS beside one label gutter. Column-per-poll rather than a
+     grid with an overlay: the "which poll is live" wash is then the column's
+     own background, with nothing stacked over the cells and nothing to keep in
+     z-order. Every row is height-locked so the gutter labels stay on their
+     rows at any width. — */
+.pr-grid { display: flex; align-items: stretch; gap: 8px; min-width: 560px; }
+.pr-labels { flex: 0 0 62px; display: flex; flex-direction: column; gap: 7px; padding: 5px 0 6px; }
+.pr-col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; gap: 7px; padding: 5px 7px 6px; border-radius: var(--radius-m); background: transparent; }
+.pr-rl { display: flex; align-items: center; justify-content: flex-end; font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); }
+.pr-poll { display: flex; align-items: center; justify-content: center; font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); }
+/* the five row heights, shared by the gutter and every column */
+.pr-rl-h, .pr-poll { height: 14px; }
+.pr-rl-c, .pr-cell { height: 30px; }
+.pr-rl-w, .pr-win  { height: 15px; }
+.pr-rl-v, .pr-vd   { height: 34px; }
+
+/* a cell is a fixed-height stage; the visible box inside it may be shorter */
+.pr-cell { position: relative; display: grid; place-items: center; }
+.pr-blk { width: 100%; height: 100%; display: grid; place-items: center; border-radius: var(--radius-s); border: 1px solid var(--hairline); background: var(--bg-1); }
+.pr-blk i { font-style: normal; font-family: var(--mono); font-size: 10px; color: var(--text-2); }
+.pr-v { border-color: var(--cfg-line); background: var(--cfg-soft); }
+.pr-v i { color: var(--cfg-hi); }
+/* the audio lane is the SAME amber, shorter — a lane difference, not a role */
+.pr-a { height: 21px; border-color: var(--cfg-line); background: transparent; }
+.pr-gap { height: 21px; border-style: dashed; border-color: var(--hairline-strong); background: transparent; }
+.pr-gap i { color: var(--text-3); font-size: 8.5px; }
+.pr-stale { height: 21px; border-color: var(--risk-line); background: var(--risk-soft); }
+.pr-stale i { color: var(--risk); }
+
+/* the tolerance window — a bracket under the video block being looked up */
+.pr-win { position: relative; border: 1px dashed var(--cfg-line); border-top: 0; border-radius: 0 0 5px 5px; }
+.pr-win::after { content: "±½ seg"; position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); background: var(--bg-1); padding: 0 5px; font-family: var(--mono); font-size: 8px; letter-spacing: 0.06em; color: var(--text-3); white-space: nowrap; }
+
+/* verdicts — hidden until their beat, then latched for the rest of the cycle */
+.pr-vd { display: flex; align-items: center; justify-content: center; padding: 3px 7px; border-radius: var(--radius-s); border: 1px solid transparent; font-family: var(--mono); font-size: 9px; line-height: 1.35; letter-spacing: 0.01em; text-align: center; opacity: 0; }
+.pr-vd-ok   { color: var(--ts);     background: var(--ts-soft);   border-color: var(--ts-line); }
+.pr-vd-wait { color: var(--text-2); background: var(--bg-2);      border-color: var(--hairline-strong); }
+.pr-vd-bad  { color: var(--risk);   background: var(--risk-soft); border-color: var(--risk-line); }
+
+/* what actually reached the ring — 4 polls in, 2 entries out */
+.pr-out { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--hairline); }
+.pr-outk { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.pr-ent { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 10px; color: var(--ts); background: var(--ts-soft); border: 1px solid var(--ts-line); border-radius: 999px; padding: 3px 11px; opacity: 0; }
+.pr-ent::before { content: ""; width: 9px; height: 13px; border-radius: 2px; flex: none; background: linear-gradient(to bottom, var(--ts-soft) 0 62%, var(--ts) 62% 100%); border: 1px solid var(--ts-line); }
+.pr-outn { margin-left: auto; font-family: var(--mono); font-size: 10px; color: var(--text-3); }
+
+/* the global ul bullet is a 6px square — reset it to a glyph, as .cd-caps does */
+.pr-caps { display: flex; flex-direction: column; gap: 6px; margin: 12px 0 0; padding: 0; list-style: none; }
+.pr-caps li { position: relative; margin: 0; padding-left: 15px; font-size: 11.5px; line-height: 1.5; color: var(--text-2); }
+.pr-caps li::before { content: "·"; position: absolute; left: 4px; top: 0; width: auto; height: auto; background: none; border-radius: 0; color: var(--cfg); opacity: 1; }
+
+/* ── animation wiring — one shared timeline, every track percentage-driven ── */
+.pr-scan1 { animation: pr-scan1 var(--pr-dur) ease infinite; }
+.pr-scan2 { animation: pr-scan2 var(--pr-dur) ease infinite; }
+.pr-scan3 { animation: pr-scan3 var(--pr-dur) ease infinite; }
+.pr-scan4 { animation: pr-scan4 var(--pr-dur) ease infinite; }
+.pr-vd1 { animation: pr-vd1 var(--pr-dur) linear infinite; }
+.pr-vd2 { animation: pr-vd2 var(--pr-dur) linear infinite; }
+.pr-vd3 { animation: pr-vd3 var(--pr-dur) linear infinite; }
+.pr-vd4 { animation: pr-vd4 var(--pr-dur) linear infinite; }
+.pr-s1 { animation: pr-s1 var(--pr-dur) linear infinite; }
+.pr-s2 { animation: pr-s2 var(--pr-dur) linear infinite; }
+.pr-s3 { animation: pr-s3 var(--pr-dur) linear infinite; }
+.pr-s4 { animation: pr-s4 var(--pr-dur) linear infinite; }
+.pr-e1 { animation: pr-e1 var(--pr-dur) cubic-bezier(.5,-0.35,.3,1.6) infinite; }
+.pr-e2 { animation: pr-e2 var(--pr-dur) cubic-bezier(.5,-0.35,.3,1.6) infinite; }
+
+/* four polls across the cycle; each column's wash rises, holds while its
+   lookup resolves, and clears as the next one takes over */
+@keyframes pr-scan1 { 0%,2%{background:transparent} 5%,20%{background:var(--cfg-soft)} 24%,100%{background:transparent} }
+@keyframes pr-scan2 { 0%,26%{background:transparent} 29%,44%{background:var(--cfg-soft)} 48%,100%{background:transparent} }
+@keyframes pr-scan3 { 0%,50%{background:transparent} 53%,68%{background:var(--cfg-soft)} 72%,100%{background:transparent} }
+@keyframes pr-scan4 { 0%,74%{background:transparent} 77%,93%{background:var(--cfg-soft)} 97%,100%{background:transparent} }
+
+/* verdicts latch: once a poll has answered, its answer stays on screen to the
+   end of the cycle, so the final frame is the whole story rather than one beat */
+@keyframes pr-vd1 { 0%,11%{opacity:0;transform:translateY(3px)} 15%,96%{opacity:1;transform:none} 99%,100%{opacity:0;transform:translateY(3px)} }
+@keyframes pr-vd2 { 0%,35%{opacity:0;transform:translateY(3px)} 39%,96%{opacity:1;transform:none} 99%,100%{opacity:0;transform:translateY(3px)} }
+@keyframes pr-vd3 { 0%,59%{opacity:0;transform:translateY(3px)} 63%,96%{opacity:1;transform:none} 99%,100%{opacity:0;transform:translateY(3px)} }
+@keyframes pr-vd4 { 0%,83%{opacity:0;transform:translateY(3px)} 87%,96%{opacity:1;transform:none} 99%,100%{opacity:0;transform:translateY(3px)} }
+
+/* the skew readout tracks whichever poll is being resolved */
+@keyframes pr-s1 { 0%,10%{opacity:0} 14%,23%{opacity:1} 26%,100%{opacity:0} }
+@keyframes pr-s2 { 0%,34%{opacity:0} 38%,47%{opacity:1} 50%,100%{opacity:0} }
+@keyframes pr-s3 { 0%,58%{opacity:0} 62%,71%{opacity:1} 74%,100%{opacity:0} }
+@keyframes pr-s4 { 0%,82%{opacity:0} 86%,96%{opacity:1} 99%,100%{opacity:0} }
+
+/* two entries out of four polls — they pop in on the poll that produced them */
+@keyframes pr-e1 { 0%,14%{opacity:0;transform:scale(.8)} 19%,96%{opacity:1;transform:none} 99%,100%{opacity:0;transform:scale(.8)} }
+@keyframes pr-e2 { 0%,62%{opacity:0;transform:scale(.8)} 67%,96%{opacity:1;transform:none} 99%,100%{opacity:0;transform:scale(.8)} }
+
+/* ── narrow: the grid's own min-width keeps it honest inside .scroll, but the
+      row labels are dead weight once the columns get tight ─────────────────── */
+@media (max-width: 720px) {
+  .pairing { padding: 4px 8px 12px; }
+  .pr-skew { margin-left: 0; }
+}
+
+/* ── reduced motion — freeze on the LAST beat, where all four polls have
+      answered: the sequence is what the motion adds, the taxonomy is what
+      survives without it. No wash on any column — a frame that highlighted one
+      poll while showing all four verdicts would be claiming a "now" the still
+      picture does not have. ─────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .pairing *, .pairing *::before, .pairing *::after { animation: none !important; }
+  .pr-col { background: transparent; }
+  .pr-vd { opacity: 1; transform: none; }
+  .pr-sd { opacity: 0; }
+  .pr-sd-bad { opacity: 1; }
+  .pr-ent { opacity: 1; transform: none; }
+}
+
+
+/* ═══ NEW · .weave — two renditions folded into ONE MPEG-TS program ════════
+   HLS can publish a pair as two playlists. Raw TS is ONE socket, and two
+   transport streams do not concatenate — so outputFormat:'ts' on a demuxed
+   source used to decline, which meant the one source shape local origin exists
+   for was exactly the shape raw TS could not serve. tsweave.rs folds the two
+   lanes into one authored program on the way out instead.
+
+   Why this earns motion. The claim is "transport layer only — no decode, no
+   re-encode, no timestamp rewriting", and the way to show that is to let the
+   reader watch every packet ARRIVE and LEAVE unchanged while only its ORDER and
+   its surrounding tables change. A static before/after would have to be
+   believed; here you can follow one access unit across.
+
+   The order is the whole trick, so the merge is drawn as a merge: two input
+   lanes converge on one output lane, and the output's sequence is legibly
+   interleaved by DECODE ORDER rather than lane-by-lane. What gets dropped
+   (each lane's own PSI, and the null padding) fades to neutral and falls out
+   rather than vanishing, because "dropped" is a fact worth seeing happen.
+
+   Colour. This component lives on Side-2, so TEAL is the authored output — the
+   one PAT and one PMT we emit are ours, and they are the only teal things here.
+   GREEN is what came out of the ring. Dropped packets go NEUTRAL. --risk is
+   spent once, on the declined pair, and the decline is drawn as a STATIC rule
+   under the belt rather than an event: a pair that tsweave cannot carry is
+   skipped, and three in a row end the socket. Drawing that as something that
+   happens mid-loop would imply it is routine, which is the opposite of true.
+
+   One shared timeline (--wv-dur), percentage-driven, no delay chains. */
+.weave { --wv-dur: 16s; padding: 6px 14px 14px; }
+
+/* — the belt: two lanes in, one lane out, with the merge rule between — */
+.wv-belt { display: grid; grid-template-columns: 92px minmax(0, 1fr); gap: 9px 10px; align-items: center; min-width: 580px; }
+.wv-lk { font-family: var(--mono); font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-3); text-align: right; line-height: 1.35; }
+.wv-lk b { display: block; font-weight: 500; color: var(--text-2); letter-spacing: 0.02em; text-transform: none; font-size: 9.5px; }
+.wv-lane { display: flex; align-items: center; gap: 3px; min-width: 0; }
+
+/* a packet. 188 bytes, drawn once, reused in every lane — the sync-byte rail is
+   the same idiom as .cd-pk so the two TS components read as one vocabulary */
+.wv-pk { position: relative; flex: 0 0 auto; width: 30px; height: 26px; border-radius: 4px; background: var(--bg-2); border: 1px solid var(--hairline); display: grid; place-items: center; }
+.wv-pk::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; border-radius: 3px 0 0 3px; background: var(--text-3); opacity: 0.55; }
+.wv-pl { font-family: var(--mono); font-size: 8px; letter-spacing: 0.02em; color: var(--text-3); }
+/* video = full height, audio = short: a LANE difference, drawn as a size
+   difference, so the pair never needs a colour it has not earned */
+.wv-vid { background: var(--ts-soft); border-color: var(--ts-line); }
+.wv-vid::before { background: var(--ts); opacity: 1; }
+.wv-vid .wv-pl { color: var(--ts); }
+.wv-aud { height: 17px; background: var(--ts-soft); border-color: var(--ts-line); }
+.wv-aud::before { background: var(--ts); opacity: .55; }
+.wv-aud .wv-pl { color: var(--ts); }
+/* ours: the one PAT and the one PMT we author */
+.wv-psi { background: var(--accent-soft); border-color: var(--accent-line); }
+.wv-psi::before { background: var(--accent); opacity: 1; }
+.wv-psi .wv-pl { color: var(--accent-hi); }
+
+.wv-rule { grid-column: 2; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 8px 0 2px; }
+.wv-rk { font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--text-3); }
+.wv-chip { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.02em; color: var(--text-2); background: var(--bg-2); border: 1px solid var(--hairline); border-radius: 999px; padding: 2px 9px; }
+.wv-chip-ts { color: var(--accent-hi); background: var(--accent-soft); border-color: var(--accent-line); }
+/* the arrows sit over the packets, not over the whole column — they mark where
+   the two lanes converge, and centring them in the column reads as decoration */
+.wv-arrows { grid-column: 2; display: flex; justify-content: flex-start; gap: 84px; padding: 3px 0 3px 34px; color: var(--ts); opacity: .7; font-size: 13px; line-height: 1; }
+
+/* the output socket: one continuous video/mp2t */
+.wv-out { grid-column: 2; position: relative; }
+.wv-sock { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin-top: 12px; padding-top: 11px; border-top: 1px solid var(--hairline); }
+.wv-sk { font-family: var(--mono); font-size: 9.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--text-3); }
+.wv-mime { font-family: var(--mono); font-size: 10.5px; color: var(--accent-hi); background: var(--accent-soft); border: 1px solid var(--accent-line); border-radius: 999px; padding: 3px 11px; }
+.wv-cad { margin-left: auto; font-family: var(--mono); font-size: 9.5px; color: var(--text-3); }
+
+/* the decline rule — STATIC, because a skipped pair is not the normal path */
+.wv-decl { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 10px; margin-top: 12px; padding: 10px 12px; border-radius: var(--radius-m); border: 1px solid var(--risk-line); background: var(--risk-soft); }
+.wv-decl-k { font-family: var(--mono); font-size: 9px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--risk); }
+.wv-decl-t { flex: 1 1 260px; min-width: 0; font-size: 11.5px; line-height: 1.5; color: var(--text-2); }
+.wv-strikes { display: inline-flex; gap: 4px; }
+.wv-strike { width: 9px; height: 9px; border-radius: 2px; background: transparent; border: 1px solid var(--risk-line); }
+.wv-strike-on { background: var(--risk); opacity: .55; border-color: transparent; }
+
+/* the global ul bullet is a 6px square — reset it to a glyph, as .cd-caps does */
+.wv-caps { display: flex; flex-direction: column; gap: 7px; margin: 12px 0 0; padding: 0; list-style: none; }
+.wv-caps li { position: relative; margin: 0; padding-left: 15px; font-size: 11.5px; line-height: 1.55; color: var(--text-2); }
+.wv-caps li::before { content: "·"; position: absolute; left: 4px; top: 0; width: auto; height: auto; background: none; border-radius: 0; color: var(--accent); opacity: 1; }
+
+/* ── animation wiring ─────────────────────────────────────────────────────
+   Every input packet fades in on its own beat and the output packet that
+   carries it lights a beat later, in DECODE order — which is why the output
+   track's beats are not the concatenation of the two input tracks'. */
+.wv-i1 { animation: wv-in1 var(--wv-dur) ease infinite; }
+.wv-i2 { animation: wv-in2 var(--wv-dur) ease infinite; }
+.wv-i3 { animation: wv-in3 var(--wv-dur) ease infinite; }
+.wv-i4 { animation: wv-in4 var(--wv-dur) ease infinite; }
+.wv-i5 { animation: wv-in5 var(--wv-dur) ease infinite; }
+.wv-i6 { animation: wv-in6 var(--wv-dur) ease infinite; }
+.wv-o1 { animation: wv-o1 var(--wv-dur) ease infinite; }
+.wv-o2 { animation: wv-o2 var(--wv-dur) ease infinite; }
+.wv-o3 { animation: wv-o3 var(--wv-dur) ease infinite; }
+.wv-o4 { animation: wv-o4 var(--wv-dur) ease infinite; }
+.wv-o5 { animation: wv-o5 var(--wv-dur) ease infinite; }
+.wv-o6 { animation: wv-o6 var(--wv-dur) ease infinite; }
+.wv-o7 { animation: wv-o7 var(--wv-dur) ease infinite; }
+.wv-o8 { animation: wv-o8 var(--wv-dur) ease infinite; }
+.wv-dp { animation: wv-dropout var(--wv-dur) ease infinite; }
+
+/* inputs arrive across the first half and stay lit */
+@keyframes wv-in1 { 0%,3%{opacity:.25} 8%,94%{opacity:1} 98%,100%{opacity:.25} }
+@keyframes wv-in2 { 0%,8%{opacity:.25} 13%,94%{opacity:1} 98%,100%{opacity:.25} }
+@keyframes wv-in3 { 0%,13%{opacity:.25} 18%,94%{opacity:1} 98%,100%{opacity:.25} }
+@keyframes wv-in4 { 0%,5%{opacity:.25} 10%,94%{opacity:1} 98%,100%{opacity:.25} }
+@keyframes wv-in5 { 0%,15%{opacity:.25} 20%,94%{opacity:1} 98%,100%{opacity:.25} }
+@keyframes wv-in6 { 0%,22%{opacity:.25} 27%,94%{opacity:1} 98%,100%{opacity:.25} }
+
+/* the dropped packets go neutral and sink out — "dropped" as an event */
+@keyframes wv-dropout {
+  0%,30%   { opacity: 1; transform: none; filter: none; }
+  38%      { opacity: .35; transform: translateY(3px); }
+  44%,94%  { opacity: .18; transform: translateY(6px); }
+  98%,100% { opacity: 1; transform: none; }
+}
+
+/* the authored program, then the merge in decode order — PAT and PMT first,
+   then v · a · v · v · a interleaved by DTS, not lane by lane */
+@keyframes wv-o1 { 0%,40%{opacity:0;transform:scale(.7)} 45%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o2 { 0%,43%{opacity:0;transform:scale(.7)} 48%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o3 { 0%,50%{opacity:0;transform:scale(.7)} 55%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o4 { 0%,56%{opacity:0;transform:scale(.7)} 61%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o5 { 0%,62%{opacity:0;transform:scale(.7)} 67%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o6 { 0%,68%{opacity:0;transform:scale(.7)} 73%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o7 { 0%,74%{opacity:0;transform:scale(.7)} 79%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+@keyframes wv-o8 { 0%,80%{opacity:0;transform:scale(.7)} 85%,94%{opacity:1;transform:none} 98%,100%{opacity:0;transform:scale(.7)} }
+
+@media (max-width: 720px) {
+  .weave { padding: 4px 8px 12px; }
+  .wv-cad { margin-left: 0; }
+  /* trim the label gutter rather than let the belt overflow its .scroll by a
+     couple of pixels — a 2px scroll reads as a bug, not as a wide diagram */
+  .wv-belt { grid-template-columns: 74px minmax(0, 1fr); min-width: 540px; }
+  .wv-arrows { padding-left: 26px; gap: 74px; }
+}
+
+/* ── reduced motion — freeze one beat after the last output packet lands:
+      both input lanes complete, the dropped packets already sunk, the whole
+      authored program on the output lane. That is the component's thesis in a
+      single frame — same packets, new order, new tables. ───────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .weave *, .weave *::before, .weave *::after { animation: none !important; }
+  .wv-i1, .wv-i2, .wv-i3, .wv-i4, .wv-i5, .wv-i6 { opacity: 1; }
+  .wv-dp { opacity: .18; transform: translateY(6px); }
+  .wv-o1, .wv-o2, .wv-o3, .wv-o4, .wv-o5, .wv-o6, .wv-o7, .wv-o8 { opacity: 1; transform: none; }
+}
+
+
 /* ── the new origin diagrams lean on their .lane-meta intro sentence ────────
    masq-docs.css hides `.lane-meta .desc` below 640px, which was right when the
    sentence merely garnished a lane. Here it carries the framing each component
    is built to prove ("watch the two cadences", "watch the deque hit a hard
-   stop"), so on these four it stays. */
+   stop"), so on these six it stays. */
 @media (max-width: 640px) {
   .omap .lane-meta .desc, .ringcap .lane-meta .desc,
-  .ioop .lane-meta .desc, .genbump .lane-meta .desc { display: block; }
+  .ioop .lane-meta .desc, .genbump .lane-meta .desc,
+  .pairing .lane-meta .desc, .weave .lane-meta .desc { display: block; }
 }

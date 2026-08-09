@@ -136,6 +136,10 @@
           <div class="tile"><div class="ic">● 2-factor link</div><h3>Guide id + its source</h3><p>Linking saves a persisted two-factor pair immediately. The channel then shows program data in the published guide and its <strong>Unmatched</strong> count on the Dashboard drops.</p></div>
           <div class="tile"><div class="ic">● many-to-one</div><h3>Shared networks</h3><p>Several playlist channels can point at the same EPG channel — useful when the same network appears in multiple playlists.</p></div>
         </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">finding what still needs a link</div>
+          <p>A playlist's channel table carries a segmented <strong>All / Matched / Unmatched</strong> filter, so you can work through the backlog without scrolling past everything you have already done. It is a <strong>view filter only</strong> — it changes what the table shows, never the channels — and <strong>Unmatched</strong> deliberately includes channels that have <em>never been evaluated</em> for a match, not just ones that were evaluated and missed.</p>
+        </div>
         <div class="shots" style="margin-top:16px;">
           <figure class="shot"><img src="../img/screenshots/v2-epg-sources-01.png" alt="EPG Sources list" loading="lazy"><figcaption><span class="dot"></span> EPG Sources · guide providers</figcaption></figure>
           <figure class="shot"><img src="../img/screenshots/v2-epg-sources-02.png" alt="EPG Source detail" loading="lazy"><figcaption><span class="dot"></span> Detail · channels &amp; programs</figcaption></figure>
@@ -146,9 +150,21 @@
         </div>
       </section>
 
+      <!-- EDITOR ───────────────────────────────────────────────────────── -->
+      <section id="editor">
+        <div class="sec-tag"><span class="n">05</span> Editing a source</div>
+        <h2>The slide-out that saves as you type</h2>
+        <p class="col">A source's <strong>Edit</strong> panel folds its name, its sync schedule and its <a href="playlists.html#tags-search">tags</a> into one slide-out. There is <strong>no Save button</strong> — the footer reads <em>“Changes save automatically”</em> and <strong>Done</strong> simply closes the panel. Rows can also be dragged into the order you want to see them in.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+          <div class="tile"><div class="ic">● at a glance</div><h3>Status, then identity</h3><p>Each row carries a live status dot, a <code>built-in</code> badge where it applies, <code>SOURCE</code> / <code>LINEUPID</code> chips, and a <strong>Playlist-bound</strong> badge when the source belongs to one playlist rather than the whole install.</p></div>
+          <div class="tile ts"><div class="ic">● capability-aware menu</div><h3>Only what this source supports</h3><p>The row menu offers what the kind can actually do: a built-in or playlist-bound source shows <strong>Edit</strong> only, and an XML-upload source shows <strong>Upload XML</strong> where a remote source would show <strong>Sync</strong>.</p></div>
+          <div class="tile"><div class="ic">● tags travel</div><h3>Same registry as everything else</h3><p>Tags assigned here are the same workspace-wide labels used on playlists and channels, so one search finds a guide source and the channels that depend on it together.</p></div>
+        </div>
+      </section>
+
       <!-- COMPOSE #4 ───────────────────────────────────────────────────── -->
       <section id="compose">
-        <div class="sec-tag"><span class="n">05</span> The compose pipeline</div>
+        <div class="sec-tag"><span class="n">06</span> The compose pipeline</div>
         <h2>How a guide reaches a downstream client</h2>
         <p class="col">Guide data only reaches a client at <strong>compose</strong> time, and composition is <strong>playlist-scoped</strong>: a guide is written as a <em>sibling</em> of the M3U by <code>composeGuide()</code>, which runs off the <em>same</em> Active channel set <code>composeM3u()</code> just wrote — so a guide can never drift from its M3U.</p>
         <div class="panel">

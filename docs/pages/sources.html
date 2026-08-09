@@ -127,8 +127,7 @@
               <div class="tx-branch fam-scrape">
                 <div class="tx-branch-head"><span class="name">Scrape-based</span><span class="chip">html / mirror</span><span class="meta">catalog from a rotating mirror · multi-hop resolve</span></div>
                 <div class="tx-leaves">
-                  <div class="tx-leaf"><div class="id">dlhd</div><div class="nm">DaddyLive</div><div class="d">Scraped rotating-mirror HTML directory; <code>watch.php?id</code> → 3-hop Referer-gated scrape. Segments disguised as image/pdf. EPG: crosswalk + self-EPG.</div></div>
-                  <div class="tx-leaf"><div class="id">dami</div><div class="nm">Dami.TV</div><div class="d">dlhd-derived — reuses dlhd's resolve + mirror; own ~878-channel catalog with logos + ISO country grouping.</div></div>
+                  <div class="tx-leaf"><div class="id">dlhd</div><div class="nm">DaddyLive</div><div class="d">Scraped rotating-mirror HTML directory; <code>watch.php?id</code> → 3-hop Referer-gated scrape. Segments disguised as image/pdf. <strong>Six independent embed providers per channel</strong> — see <a href="#dlhd-players">Player 1..6</a>. EPG: crosswalk + self-EPG.</div></div>
                 </div>
               </div>
 
@@ -183,8 +182,7 @@
               <tr><td>hdhomerun</td><td>—</td><td>Catalog import (playback via <a href="local-origin.html">local origin</a>)</td><td>—</td><td>—</td></tr>
               <tr><td>local</td><td>—</td><td>Sentinel → rotating CDN</td><td>—</td><td>—</td></tr>
               <tr><td>dulo</td><td><span class="em-accent">session</span></td><td><code>dulo://</code> → playbackUrl</td><td>—</td><td>yes</td></tr>
-              <tr><td>dlhd</td><td>—</td><td><code>watch.php</code> → 3-hop scrape</td><td>yes</td><td>yes</td></tr>
-              <tr><td>dami</td><td>—</td><td>dlhd resolveStream (shared)</td><td>yes</td><td>yes</td></tr>
+              <tr><td>dlhd</td><td>—</td><td><code>watch.php</code> → 3-hop scrape, <a href="#dlhd-players">6 providers</a></td><td>yes</td><td>yes</td></tr>
               <tr><td>tubi</td><td>—</td><td><code>tubi://</code> → Tubi API</td><td>yes (inline)</td><td>—</td></tr>
               <tr><td>xumo</td><td>—</td><td>broadcast.json → 3-hop API</td><td>yes</td><td>—</td></tr>
               <tr><td>stirr</td><td>—</td><td><code>/playable</code> → 1-hop POST</td><td>yes</td><td>—</td></tr>
@@ -217,9 +215,32 @@
         </div>
       </section>
 
+      <!-- DLHD PLAYERS ─────────────────────────────────────────────────── -->
+      <section id="dlhd-players">
+        <div class="sec-tag"><span class="n">05</span> DaddyLive players</div>
+        <h2>Six buttons, six different companies</h2>
+        <p class="col">A DaddyLive channel page offers <strong>PLAYER 1..6</strong>. It is tempting to read those as redundant embeds of one feed. They are not: each button loads a <strong>different third-party provider</strong>, and they do <strong>not</strong> all carry the same channels.</p>
+        <div class="note-block">
+          <div class="lbl">one channel, verified live</div>
+          <p>Ch&nbsp;648 (Boomerang USA): Player&nbsp;1's own CDN <code>404</code>s it. Players 2, 3, 5 and 6 are Cloudflare-gated, dead or NXDOMAIN. Only <strong>Player&nbsp;4</strong> — an entirely separate operator — actually carries it. Picking a player picks a <em>provider</em>, and which provider works varies per channel and drifts over time.</p>
+        </div>
+        <p class="col">The resolver is built around that fact rather than around a fixed player number:</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
+          <div class="tile"><div class="ic">● provider-agnostic hop 2</div><h3>Any iframe is a candidate</h3><p>The <code>/premiumtv/</code> embed is simply tried first. The signed playlist URL is then read by an <strong>ordered chain of extractors</strong> — base64/<code>atob</code>, plaintext, an XOR-array <code>eval</code> blob, a packed payload, hex escapes — each recovering whatever constants the page carries instead of hardcoding them, so a key rotation self-heals.</p></div>
+          <div class="tile"><div class="ic">● both shapes are valid</div><h3>Master or media playlist</h3><p>Providers return either a master (<code>#EXT-X-STREAM-INF</code>) or a media playlist (<code>#EXTINF</code>); both are accepted. An <code>#EXTM3U</code> with <em>neither</em> is now rejected outright rather than served as an empty stream.</p></div>
+          <div class="tile ts"><div class="ic">● learned + sticky</div><h3>The winner is remembered</h3><p>A winning player is cached per channel for about 30 minutes and a failing one is burnt for about 5, so the common case stays a <strong>single</strong> hop-1 fetch even when the winner isn't Player&nbsp;1. Your pick always leads; the rest are the fallback order.</p></div>
+          <div class="tile warn"><div class="ic">● bounded</div><h3>A hang can't outlast the player</h3><p>Every hop has an 8-second timeout and the whole walk a 20-second deadline, so a wedged provider cannot outlast a media player's own manifest timeout.</p></div>
+        </div>
+        <p class="col" style="margin-top:18px;">Where you set it: <strong>Settings → Advanced → DaddyLive Player Source</strong> picks the source-wide default (<code>Auto</code> leads with Player&nbsp;1), and the channel drawer carries a per-channel override. At play time the data plane's <em>first</em> failover attempt re-resolves the same channel through a <strong>different provider</strong> — burning the one that was serving — and only then starts walking any configured <a href="failover.html">failover-group children</a>. Active Streams badges the result <code>failover → Player 4</code>.</p>
+        <div class="aha">
+          <div class="lbl">expect this layer to churn</div>
+          <p>These providers are third parties that rotate, so this is the most churn-prone part of the adapter <em>by design</em> — the extractor chain exists so a new obfuscation is a small addition rather than a rewrite. When DaddyLive stops carrying a channel on <strong>every</strong> player, no amount of player-walking helps: <a href="failover.html">failover groups</a> are the durable answer.</p>
+        </div>
+      </section>
+
       <!-- LOCAL NOW ────────────────────────────────────────────────────── -->
       <section id="local-now">
-        <div class="sec-tag"><span class="n">05</span> Local Now — a deep dive</div>
+        <div class="sec-tag"><span class="n">06</span> Local Now — a deep dive</div>
         <h2>A fully-managed, market-scoped custom playlist</h2>
         <p class="col"><a href="https://localnow.com" target="_blank" rel="noopener">Local Now</a> is a US FAST service that delivers a <strong>market-specific</strong> lineup — local broadcast stations, regional news, and national FAST networks — curated by geographic TV market. masqueradarr integrates it as a re-syncable custom playlist with a bundled EPG guide.</p>
         <div class="note-block">

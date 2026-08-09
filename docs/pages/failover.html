@@ -222,7 +222,7 @@
       <section id="playtime">
         <div class="sec-tag"><span class="n">06</span> At play time</div>
         <h2>What happens when the parent dies</h2>
-        <p class="col">Failover is an <strong>establish-time</strong> mechanism. It fires when a stream <em>fails to start</em>, not mid-picture. The Rust data plane keeps a per-stream cursor — an <em>attempt</em> number — and asks Node's resolve seam for that attempt's candidate. Attempt <code>0</code> is the channel itself; attempt <code>N</code> is its Nth <strong>Active</strong> child.</p>
+        <p class="col">Failover is an <strong>establish-time</strong> mechanism. It fires when a stream <em>fails to start</em>, not mid-picture. The Rust data plane keeps a per-stream cursor — an <em>attempt</em> number — and asks Node's resolve seam for that attempt's candidate. Attempt <code>0</code> is the channel itself; the attempts after it are its <strong>Active</strong> children in order — except on a source that offers <a href="sources.html#dlhd-players">several providers per channel</a>, where the first extra attempt re-resolves the <em>same</em> channel through a different provider before any configured backup is considered.</p>
         <!-- ANIMATED · the cursor walk (overview) — the numbered .seq below carries the detail -->
         <div class="panel">
           <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the cursor walk — attempt 0 → 1 → 2 <span class="rt">rust cursor ⇄ node resolve seam</span></div>
@@ -230,7 +230,7 @@
 
             <div class="lane-meta" style="padding:2px 0 4px;">
               <span class="tag">the walk</span>
-              <span class="desc">the per-stream cursor steps down the candidates — one question to the seam per attempt, answered 200 / 502 / 410.</span>
+              <span class="desc">the per-stream cursor steps down the candidates — one question to the seam per attempt, answered 200 / 502 / 410. Shown for an ordinary source; on dlhd an alternate-provider rung comes first.</span>
             </div>
 
             <!-- hero: the attempt cursor + the seam's three answers -->
@@ -304,7 +304,7 @@
             <div class="fo-serve"><span class="fo-g" aria-hidden="true">▼</span> served under the parent's URL · name · guide</div>
 
             <div class="fo-caps">
-              <span class="loopflag">wraps to the parent once · capped at 8 attempts</span>
+              <span class="loopflag">wraps to the parent once · capped at 12 attempts</span>
               <span class="fo-cap-note">the cursor pins on the winner for the session — only a 2xx keeps the pin; the next play starts from the parent again.</span>
             </div>
 
@@ -322,7 +322,7 @@
           <div class="seq" style="padding:14px 16px 6px;">
             <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">attempt = 0</div><div class="act">Try the channel itself</div><div class="note">Byte-for-byte the ordinary path — the parent's own adapter resolves the stream, with the full retry-and-backoff budget. <span class="branch ts">identical to an ungrouped channel · no extra database work</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">establish fails</div><div class="act">Decide whether to walk</div><div class="note"><span class="branch risk">resolve failed — dead scrape, expired token</span> <span class="branch risk">transport failure after the retry budget</span> <span class="branch warn">a definitive 4xx / 5xx — only if you opt in</span></div></div></div>
-            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">attempt = 1, 2, …</div><div class="act">Walk the children in order</div><div class="note">Each candidate is resolved through <strong>its own provider's adapter</strong> — its own headers, its own SSRF allow-set. Backups get <strong>one shot, no backoff</strong>, so a three-deep group still establishes inside a player's manifest timeout.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">attempt = 1, 2, …</div><div class="act">Walk the children in order</div><div class="note">Each candidate is resolved through <strong>its own provider's adapter</strong> — its own headers, its own SSRF allow-set. Backups get <strong>one shot, no backoff</strong>, so a three-deep group still establishes inside a player's manifest timeout. <span class="branch warn">on dlhd, attempt 1 is an alternate provider for the same channel — children start at attempt 2</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">the seam replies</div><div class="act">Three possible answers</div><div class="note"><span class="branch ts">200 · a grant — serve it</span> <span class="branch warn">502 · this one died, try the next</span> <span class="branch risk">410 · nothing left, stop walking</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">first candidate to answer 2xx</div><div class="act">Serve it under the parent's identity</div><div class="note">Same URL, same channel name, same guide. Active Streams badges the session <strong>failover → &lt;child&gt;</strong> so <em>you</em> know, even though the viewer doesn't.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">stick on the winner</div><div class="act">Pin the cursor for the session</div><div class="note">The stream never walks back to the dead parent mid-play. The pin releases only after the stream sits idle — playback stopped — for about five minutes, and the next play starts from the parent again. <span class="branch">only a 2xx keeps the pin; every other exit resets it</span></div></div></div>
@@ -334,14 +334,14 @@
         </div>
         <div class="note-block">
           <div class="lbl">bounded on purpose</div>
-          <p>The walk is capped at <strong>8 attempts</strong> and wraps back to the parent <strong>once</strong> — so a stale pin can never spin. An ungrouped channel costs exactly one extra question to the seam (answered <code>410</code> immediately, from a partial index) before it fails the way it always has.</p>
+          <p>The walk is capped at <strong>12 attempts</strong> and wraps back to the parent <strong>once</strong> — so a stale pin can never spin. The cap was raised from 8 to clear dlhd's six providers <em>plus</em> a configured group <em>plus</em> the wrap. An ungrouped channel on an ordinary source costs exactly one extra question to the seam (answered <code>410</code> immediately, from a partial index) before it fails the way it always has; on dlhd it first spends its alternate-provider attempts, which is usually the one that saves the stream.</p>
         </div>
       </section>
 
       <!-- KNOBS ────────────────────────────────────────────────────────── -->
       <section id="knobs">
         <div class="sec-tag"><span class="n">07</span> The two switches</div>
-        <h2>Settings → Advanced → Video proxy engine</h2>
+        <h2>Settings → Video Config → Video Proxy Engine</h2>
         <p class="col">Both live in the <code>proxyconfigs</code> subsystem alongside the rest of the engine's knobs, so both can be set globally <em>or</em> overridden for a single playlist from its drawer. The panel auto-saves — there is no Save button. (Full detail on the two tiers is on the <a href="proxy-engine.html#tuning">Video proxy engine</a> page.)</p>
         <div class="pair">
           <div class="tile ts">
@@ -446,7 +446,7 @@
         </div>
         <div class="aha">
           <div class="lbl">watching it work</div>
-          <p>Two places tell you a group is earning its keep: <strong>Active Streams</strong> badges a failed-over session <code>failover → &lt;child&gt;</code> with the backup's position, and the dedicated <strong><code>failover</code></strong> log category records the whole lineage — Node names the parent and playlist, the Rust engine carries the session id. Both are gated by the single <strong>log level</strong> on Settings. See <a href="operations.html#logs">Operations</a>.</p>
+          <p>Two places tell you a group is earning its keep: <strong>Active Streams</strong> badges a failed-over session <code>failover → &lt;child&gt;</code> with the backup's position — or <code>failover → Player 4</code> where the rescue was an <a href="sources.html#dlhd-players">alternate provider</a> for the same channel rather than a configured backup — and the dedicated <strong><code>failover</code></strong> log category records the whole lineage — Node names the parent and playlist, the Rust engine carries the session id. Both are gated by the single <strong>log level</strong> on Settings. See <a href="operations.html#logs">Operations</a>.</p>
         </div>
         <div class="refs">
           <span class="ref"><b>README</b> · Failover groups (channel backups)</span>

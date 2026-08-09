@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <title>Local origin — masqueradarr docs</title>
-<meta name="description" content="Local origin: masqueradarr stops forwarding the provider's playlist and publishes one it wrote itself. One shared ingest per channel, an in-memory ring, two renderers, and the iop/oop observability split.">
+<meta name="description" content="Local origin: masqueradarr stops forwarding the provider's playlist and publishes one it wrote itself. One shared ingest per channel, a RAM ring of paired entries, two renderers, the interleaving muxer, and the iop/oop observability split.">
 <link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
 <link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Local origin — masqueradarr">
-<meta property="og:description" content="One ingest per channel, a RAM-only ring, and a playlist we author ourselves.">
+<meta property="og:description" content="One ingest per channel, a RAM-only ring of paired entries, and a playlist we author ourselves.">
 <meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -61,7 +61,7 @@
       <header class="page-head">
         <div class="eyebrow"><b>local origin</b> · 08 <span class="rule"></span> republishing the stream</div>
         <h1>masqueradarr becomes the <span class="em">origin</span></h1>
-        <p class="lede">Turn one switch on and the engine stops forwarding the provider's playlist. Instead, <strong>one ingest per channel</strong> — not per viewer — follows the upstream, decrypts each segment into an in-memory ring, and both output shapes are rendered from that ring. What reaches your player is a stream <em>we authored</em>.</p>
+        <p class="lede">Turn one switch on and the engine stops forwarding the provider's playlist. Instead, <strong>one ingest per channel</strong> — not per viewer — follows the upstream, decrypts and normalizes each segment into an in-memory ring, and both output shapes are rendered from that ring. What reaches your player is a stream <em>we authored</em>.</p>
         <div class="aha" style="margin-top:18px;">
           <div class="lbl">the one-line version</div>
           <p><strong>Remux-free is still true; “passthrough” no longer is.</strong> Nothing is ever re-encoded — but with <code>originEnabled</code> on, the bytes a player sees come out of our RAM, under our numbering, with the provider erased from every line of the manifest.</p>
@@ -84,7 +84,7 @@
           <div class="fcard ts">
             <span class="badge">● originEnabled: true</span>
             <h3>Publish our own</h3>
-            <p>One shared ingest follows the upstream, decrypts each segment, and pushes the plaintext into an in-memory <strong>ring</strong>. Every client is served from that ring.</p>
+            <p>One shared ingest follows the upstream, decrypts each segment, normalizes it onto one timeline, and pushes the plaintext into an in-memory <strong>ring</strong>. Every client is served from that ring.</p>
             <p>One upstream fetch <strong>per channel</strong>. The manifest is a document we wrote: our sequence numbers, our segment paths, <strong>no key line at all</strong>.</p>
           </div>
         </div>
@@ -97,8 +97,9 @@
       <!-- THE MAP ──────────────────────────────────────────────────────── -->
       <section id="map">
         <div class="sec-tag"><span class="n">02</span> The shape of it</div>
-        <h2>One ingest, one ring, two renderers</h2>
+        <h2>One ingest, a ring of pairs, two renderers</h2>
         <p class="col">The design has a left half and a right half that run at <em>different rates</em>, and that is the whole claim. Everything on the left happens <strong>once per channel</strong>. Everything on the right reads the same cached bytes, as many times as there are viewers. The engine names them <strong>Side-1</strong> (ingest, tagged <code>iop</code>) and <strong>Side-2</strong> (serve, tagged <code>oop</code>) — and it tags every log line and every telemetry frame with which side it came from.</p>
+        <p class="col">There is still exactly <strong>one</strong> ring. What changed is what an entry <em>holds</em>: on a <a href="#pairs">demuxed source</a> a single entry carries the video segment <em>and</em> its audio partner, so the two published playlists are identical by construction and a renderer can never serve half a pair.</p>
         <div class="panel">
           <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> local origin — one ingest, two renderers <span class="rt">iop · ring · oop</span></div>
           <div class="scroll">
@@ -124,8 +125,8 @@
                         <span class="omap-g omap-g-open">○</span>
                       </span>
                       <div class="omap-t">Upstream</div>
-                      <div class="omap-s">HLS playlist, or a</div>
-                      <div class="omap-s">bare TS socket</div>
+                      <div class="omap-s">HLS — muxed or demuxed</div>
+                      <div class="omap-s">or a bare TS socket</div>
                     </div>
 
                     <div class="omap-card omap-c-fet">
@@ -135,7 +136,7 @@
                         <span class="omap-g omap-g-open">○</span>
                       </span>
                       <div class="omap-t">follow + fetch</div>
-                      <div class="omap-s">poll · retry · failover</div>
+                      <div class="omap-s">poll · retry · pair the lanes</div>
                       <div class="omap-s">bare TS → PAT/PMT → cut at RAI</div>
                     </div>
 
@@ -148,6 +149,15 @@
                       <div class="omap-t">decrypt AES-128</div>
                       <div class="omap-s">key cached per rotation</div>
                       <div class="omap-s">ciphertext never enters the ring</div>
+                    </div>
+
+                    <div class="omap-card omap-c-norm">
+                      <span class="omap-tok omap-tk4" aria-hidden="true">
+                        <span class="omap-g omap-g-open">○</span>
+                      </span>
+                      <div class="omap-t">normalize</div>
+                      <div class="omap-s">canonical pids · one clock</div>
+                      <div class="omap-s">both lanes, or neither</div>
                     </div>
 
                   </div>
@@ -180,7 +190,11 @@
                         <span class="omap-seg"></span>
                         <span class="omap-seg omap-seg-head"></span>
                       </div>
-                      <div class="omap-q-cap">oldest out · newest in</div>
+                      <div class="omap-q-key" aria-hidden="true">
+                        <span class="omap-q-kv">video</span>
+                        <span class="omap-q-ka">+ audio</span>
+                      </div>
+                      <div class="omap-q-cap">one entry · both lanes · evicted together</div>
                     </div>
                   </div>
                 </div>
@@ -205,12 +219,12 @@
                     <div class="omap-card omap-c-man">
                       <div class="omap-t">authored manifest</div>
                       <div class="omap-s">our MEDIA-SEQUENCE / EXTINF</div>
-                      <div class="omap-s">no keys · no vendor tags · no hops</div>
+                      <div class="omap-s">demuxed → master + v/a.m3u8</div>
                     </div>
                     <div class="omap-card omap-c-ts">
-                      <div class="omap-t">raw TS concat</div>
+                      <div class="omap-t">raw TS · concat or weave</div>
                       <div class="omap-s">one continuous video/mp2t</div>
-                      <div class="omap-s">segment boundary = keyframe</div>
+                      <div class="omap-s">demuxed → woven into one program</div>
                     </div>
                     <div class="omap-card omap-c-view">
                       <div class="omap-t">N viewers</div>
@@ -232,7 +246,7 @@
               <div class="omap-notes">
                 <p class="omap-note"><span class="omap-n omap-n-never" aria-hidden="true">1</span> Ingress and egress are now INDEPENDENT: one ingest feeds N viewers, so ingest bytes are reported separately (kind:"iop") and never folded into egress counts.</p>
                 <p class="omap-note"><span class="omap-n" aria-hidden="true">2</span> Off by default — with originEnabled false the engine proxies the upstream playlist exactly as before and this whole path is skipped.</p>
-                <p class="omap-note"><span class="omap-n omap-n-never" aria-hidden="true">3</span> Discontinuity is emitted only where the upstream tags one, or a media-sequence gap proves segments were missed — never guessed from URL shape.</p>
+                <p class="omap-note"><span class="omap-n omap-n-never" aria-hidden="true">3</span> Discontinuity comes from three signals only — the upstream's own tag, a media-sequence gap, or a provider session renewal. Never guessed from URL shape, and often absorbed rather than published.</p>
               </div>
 
               <ul class="omap-legend">
@@ -248,7 +262,7 @@
         </div>
         <div class="aha">
           <div class="lbl">why the ring sits in its own column</div>
-          <p>It is the seam. <strong>One writer, two readers.</strong> The ingest never knows how many viewers there are, and neither renderer ever knows whether the upstream was a playlist or a socket, or whether it was encrypted. All either side shares is a queue of decrypted segments in RAM — which is exactly why adding a viewer costs nothing upstream, and why a second output shape cost almost no new code.</p>
+          <p>It is the seam. <strong>One writer, two readers.</strong> The ingest never knows how many viewers there are, and neither renderer ever knows whether the upstream was a playlist or a socket, whether it was encrypted, or how many renditions it arrived on. All either side shares is a queue of decrypted, normalized entries in RAM — which is exactly why adding a viewer costs nothing upstream, and why every hard problem on this page is solved <em>once</em>, on the left, for both output shapes at the same time.</p>
         </div>
       </section>
 
@@ -262,7 +276,7 @@
             <thead><tr><th></th><th>originEnabled: <strong>false</strong></th><th class="h-ts">originEnabled: <strong>true</strong></th></tr></thead>
             <tbody>
               <tr><td>outputFormat: <code>hls</code></td><td>the upstream playlist, URI-rewritten</td><td>a playlist <strong>we authored</strong> + our own segment paths</td></tr>
-              <tr><td>outputFormat: <code>ts</code></td><td>upstream segments concatenated <em>per viewer</em></td><td>the same ring concatenated (decrypts)</td></tr>
+              <tr><td>outputFormat: <code>ts</code></td><td>upstream segments concatenated <em>per viewer</em></td><td>the same ring concatenated (decrypts); a <a href="#pairs">demuxed</a> source is <strong><a href="#weave">woven</a></strong> into one program</td></tr>
             </tbody>
           </table>
         </div>
@@ -278,7 +292,8 @@
 #EXTM3U
 #EXT-X-VERSION:3
 #EXT-X-TARGETDURATION:<span class="em">6</span>          <span class="cmt"># ceil() of the longest EXTINF in the window, min 1</span>
-#EXT-X-MEDIA-SEQUENCE:<span class="em">1042</span>     <span class="cmt"># the seq of the ring's oldest held segment</span>
+#EXT-X-MEDIA-SEQUENCE:<span class="em">1042</span>     <span class="cmt"># the seq of the ring's oldest held entry</span>
+#EXT-X-DISCONTINUITY-SEQUENCE:<span class="em">3</span> <span class="cmt"># splices that have already left the window</span>
 #EXT-X-PROGRAM-DATE-TIME:2026-08-05T20:14:07.812Z
 #EXTINF:5.005,
 /api/ext/v1/pluto/o/&lt;enc-entry&gt;/<span class="em">0</span>-<span class="em">1042</span>.ts?token=…&amp;pl=…
@@ -292,7 +307,8 @@
           <li><strong>No <code>#EXT-X-ENDLIST</code> and no <code>#EXT-X-PLAYLIST-TYPE</code></strong>, so any standard player treats it as a live sliding window.</li>
           <li><strong>The window <em>is</em> the ring.</strong> There is no separate window length — the playlist lists whatever the ring currently holds. That means <code>originRingMb</code> is simultaneously the RAM budget <em>and</em> the advertised live-window length.</li>
           <li><strong>Every segment line carries the token.</strong> These paths are guessable by construction — a source, an entry, and two integers — so the token on each line is what keeps per-account governance meaningful. It is not a separate gate.</li>
-          <li><strong><code>#EXT-X-PROGRAM-DATE-TIME</code> is a real timestamp</strong>, emitted once in the header from the first segment's ingest wall-clock. It discloses <em>when we ingested</em>, not who we ingested from — but it is not nothing, and it is the only field in the document that isn't a counter.</li>
+          <li><strong><code>#EXT-X-PROGRAM-DATE-TIME</code> is a real timestamp</strong>, emitted at the head of the window from that entry's ingest wall-clock — and again after <em>every</em> discontinuity, so a player never has to carry one anchor across a splice. It discloses <em>when we ingested</em>, not who we ingested from — but it is not nothing, and it is the only field in the document that isn't a counter.</li>
+          <li><strong>On a <a href="#pairs">demuxed</a> source this is not what the entry URL returns.</strong> It answers with a small master we author instead, over two playlists of exactly this shape — one for video, one for audio, identical apart from the segment URIs.</li>
           <li><strong>Two numbers in the path.</strong> <code>&lt;generation&gt;-&lt;seq&gt;</code> is not redundant. That is <a href="#generation">its own section</a>.</li>
         </ul>
       </section>
@@ -309,8 +325,10 @@
             <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">resolve</div><div class="act">Ask Node for the upstream, freshly</div><div class="note">The ingest performs its own resolve rather than reusing the request's — deliberately <strong>bypassing the target cache</strong>, so mirror rotation and <a href="failover.html">failover</a> keep working, and a mid-session re-resolve stays on the failover-pinned candidate instead of snapping back to a dead parent.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">peek the first chunk</div><div class="act">Playlist, or a bare socket?</div><div class="note">The response body is <em>peeked</em>, never buffered — the first 16 bytes decide. <span class="branch"><code>#EXTM3U</code> → follow the playlist</span> <span class="branch warn">anything else → <a href="#bare-ts">segment it locally</a></span> Reading a bare TS socket to the end would never return, which is exactly why the peek exists.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">poll</div><div class="act">Follow the live edge</div><div class="note">Cadence is <strong>half the target duration, clamped to 1–10&nbsp;s</strong> (3&nbsp;s if the playlist declares none). The first poll joins at the upstream's live edge rather than replaying its whole window. A master playlist is walked once and the <strong>highest-bandwidth</strong> variant is taken — an origin ingest is single-bitrate.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">fetch + decrypt</div><div class="act">Pull each new segment</div><div class="note">Whole-segment fetch, then <a href="#crypto">AES-128 decrypt</a> if the source is encrypted. Every hop — segment and key alike — passes the same SSRF gate and grows the same allow-set. A failed fetch drops that one segment and leaves a gap the next one <a href="#disc">splices</a>.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">push</div><div class="act">Into the ring, plaintext</div><div class="note">The segment is stamped with <strong>our</strong> sequence number, its duration, its wall-clock, and whether it opens a discontinuity — then appended, and the oldest evicted if the ring is over its cap. <span class="branch ts">ciphertext never enters the ring</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">pair</div><div class="act">Find the audio partner</div><div class="note">On a <a href="#pairs">demuxed</a> source both playlists are refreshed on the same poll, and each video segment is matched to its audio partner on <code>#EXT-X-PROGRAM-DATE-TIME</code>. <span class="branch ts">found → ring the pair</span> <span class="branch">not published yet → hold, retry next poll</span> <span class="branch warn">already rolled past → drop both lanes</span> A muxed source skips this step entirely.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">fetch + decrypt</div><div class="act">Pull each new segment</div><div class="note">Whole-segment fetch, then <a href="#crypto">AES-128 decrypt</a> if the source is encrypted. Every hop — segment and key alike — passes the same SSRF gate and grows the same allow-set. A failed fetch drops that one segment and leaves a gap the next one <a href="#disc">splices</a>.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">normalize</div><div class="act">One timeline, canonical pids</div><div class="note">With <code>spliceNormalize</code> on (the default), the plaintext is rewritten <a href="#normalize">in place</a> onto our own timeline: pids remapped, one clock offset applied to every stream, continuity counters repaired. <span class="branch">any doubt → publish verbatim and signal the splice instead</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">8</div></div><div class="body"><div class="who">push</div><div class="act">Into the ring, plaintext</div><div class="note">The entry is stamped with <strong>our</strong> sequence number, its duration, its wall-clock, and whether it opens a discontinuity — then appended, and the oldest evicted if the ring is over its cap. <span class="branch ts">ciphertext never enters the ring</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">nothing new, five polls running</div><div class="act">Declare a stall and re-resolve</div><div class="note">Five consecutive polls that ingest nothing logs <code>iop</code> WARN <em>“5 empty polls — re-resolving”</em>, reports status <code>stalled</code>, and forces a fresh resolve. A dead-but-still-<code>200</code> playlist is escaped in five polls instead of spinning forever.</div></div></div>
           </div>
         </div>
@@ -329,12 +347,148 @@
         </div>
       </section>
 
+      <!-- THE PAIR ─────────────────────────────────────────────────────── -->
+      <section id="pairs">
+        <div class="sec-tag"><span class="n">05</span> Demuxed sources</div>
+        <h2>When the audio arrives on a rendition of its own</h2>
+        <p class="col">Some providers — <strong>pluto on every device cohort</strong> — publish no muxed variant at all. Every <code>#EXT-X-STREAM-INF</code> defers its audio to a separate <code>#EXT-X-MEDIA</code> rendition with its own <code>URI=</code>. Following the variant alone would ring, and serve, <strong>video only</strong>: a picture with no sound. The engine prefers a variant whose audio is muxed in wherever one exists, and only calls a source <em>demuxed</em> when every variant defers.</p>
+        <p class="col">On such a source the ingest rings the <strong>pair</strong>. One ring entry holds the video segment <em>and</em> its audio partner — not a second queue alongside the first. Holding both on one entry is what makes the two published playlists identical by construction: same <code>#EXT-X-MEDIA-SEQUENCE</code>, same discontinuity sequence, same <code>#EXT-X-PROGRAM-DATE-TIME</code> anchors, one eviction. A renderer <strong>cannot</strong> serve half a pair, because half a pair is not a thing the ring can hold.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> pairing the two renditions <span class="rt">origin.rs · pair_audio() · Found / NotYet / RolledPast</span></div>
+          <div class="scroll">
+            <div class="pairing">
+
+              <div class="lane-meta" style="padding:2px 0 4px;">
+                <span class="tag">one entry, two lanes</span>
+                <span class="desc">four consecutive polls — watch <em>1042</em> appear twice: held once because its partner hadn't been published yet, then ringed when it was.</span>
+              </div>
+
+              <div class="pr-head">
+                <span class="pr-hk">match on</span>
+                <code>#EXT-X-PROGRAM-DATE-TIME</code>
+                <span class="pr-tolchip">window · ±½ segment</span>
+                <span class="pr-skew">skew
+                  <span class="pr-reel" aria-hidden="true">
+                    <span class="pr-sd pr-sd-ok   pr-s1">+14 ms</span>
+                    <span class="pr-sd pr-sd-wait pr-s2">no partner</span>
+                    <span class="pr-sd pr-sd-ok   pr-s3">+9 ms</span>
+                    <span class="pr-sd pr-sd-bad  pr-s4">−5 004 ms</span>
+                  </span></span>
+              </div>
+
+              <div class="pr-grid">
+                <div class="pr-labels" aria-hidden="true">
+                  <span class="pr-rl pr-rl-h"></span>
+                  <span class="pr-rl pr-rl-c">video</span>
+                  <span class="pr-rl pr-rl-w"></span>
+                  <span class="pr-rl pr-rl-c">audio</span>
+                  <span class="pr-rl pr-rl-v"></span>
+                </div>
+
+                <div class="pr-col pr-scan1">
+                  <span class="pr-poll">poll 1</span>
+                  <span class="pr-cell"><span class="pr-blk pr-v"><i>1041</i></span></span>
+                  <span class="pr-win" aria-hidden="true"></span>
+                  <span class="pr-cell"><span class="pr-blk pr-a"><i>1041</i></span></span>
+                  <span class="pr-vd pr-vd-ok pr-vd1">Found<br>→ one ring entry</span>
+                </div>
+
+                <div class="pr-col pr-scan2">
+                  <span class="pr-poll">poll 2</span>
+                  <span class="pr-cell"><span class="pr-blk pr-v"><i>1042</i></span></span>
+                  <span class="pr-win" aria-hidden="true"></span>
+                  <span class="pr-cell"><span class="pr-blk pr-gap"><i>not published yet</i></span></span>
+                  <span class="pr-vd pr-vd-wait pr-vd2">NotYet<br>→ hold, retry next poll</span>
+                </div>
+
+                <div class="pr-col pr-scan3">
+                  <span class="pr-poll">poll 3</span>
+                  <span class="pr-cell"><span class="pr-blk pr-v"><i>1042</i></span></span>
+                  <span class="pr-win" aria-hidden="true"></span>
+                  <span class="pr-cell"><span class="pr-blk pr-a"><i>1042</i></span></span>
+                  <span class="pr-vd pr-vd-ok pr-vd3">Found<br>→ one ring entry</span>
+                </div>
+
+                <div class="pr-col pr-scan4">
+                  <span class="pr-poll">poll 4</span>
+                  <span class="pr-cell"><span class="pr-blk pr-v"><i>1043</i></span></span>
+                  <span class="pr-win" aria-hidden="true"></span>
+                  <span class="pr-cell"><span class="pr-blk pr-stale"><i>rolled past</i></span></span>
+                  <span class="pr-vd pr-vd-bad pr-vd4">RolledPast<br>→ drop BOTH lanes</span>
+                </div>
+              </div>
+
+              <div class="pr-out">
+                <span class="pr-outk">→ ring</span>
+                <span class="pr-ent pr-e1">1041 · v + a</span>
+                <span class="pr-ent pr-e2">1042 · v + a</span>
+                <span class="pr-outn">4 polls in · 2 entries out</span>
+              </div>
+
+              <ul class="pr-caps">
+                <li>the pairing key is the wall-clock both lanes publish, not their sequence numbers — a session renewal can renumber either lane independently, and does</li>
+                <li>where one lane carries no <code>#EXT-X-PROGRAM-DATE-TIME</code> the lookup falls back to the media-sequence index, and says so once in the <code>iop</code> log</li>
+                <li>a correctly-paired source agrees to within ~11–20&nbsp;ms; a mispair is a whole segment out, which is why half a segment is a safe window</li>
+              </ul>
+
+            </div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">why dropping the video too is the conservative choice</div>
+          <p>When the audio partner is already gone, publishing the video segment on its own would be the <em>tempting</em> move — you'd keep the picture. But the two playlists are rendered from the same entries, so an unpaired entry puts them on <strong>different windows for the rest of the session</strong>, and every subsequent segment inherits the skew. Dropping both costs one segment. Keeping one costs the channel.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">what a demuxed channel actually publishes</div>
+          <p>The entry URL stops answering with a media playlist and answers with a small <strong>master we author</strong> — one <code>#EXT-X-MEDIA</code> naming the audio group, one <code>#EXT-X-STREAM-INF</code> naming the video — over two media playlists of our own, <code>…/o/&lt;entry&gt;/v.m3u8</code> and <code>…/o/&lt;entry&gt;/a.m3u8</code>. Those two URIs deliberately carry <strong>no generation</strong>: a ring reset would otherwise 404 the live session permanently. The segments still do.</p>
+          <p>One affine offset is computed from the <strong>video</strong> lane's DTS and applied to <em>both</em> renditions, so the source's own A/V skew is translated rather than replaced — computing an offset per lane would manufacture a lip-sync error that was never in the source. A skew guard declines the pair outright if the two lanes ever drift more than half a second apart, and a declined pair publishes <strong>both</strong> lanes verbatim so they at least stay in sync with each other.</p>
+        </div>
+      </section>
+
+      <!-- NORMALIZE ────────────────────────────────────────────────────── -->
+      <section id="normalize">
+        <div class="sec-tag"><span class="n">06</span> Splice normalization</div>
+        <h2>The pid that moves, and the demuxer that doesn't follow</h2>
+        <p class="col">An ad creative is transmuxed just-in-time, by different machinery than the programme around it, and it arrives with <strong>its own arbitrary PSI</strong>. On live pluto the video PID itself moves across a single pod — <code>258 → 256 → 258</code>. A demuxer does not follow an elementary stream to a new PID: it keeps rendering the one it latched onto and registers the new one as a stream nothing is displaying. The picture freezes until the PID happens to come back.</p>
+        <p class="col">This is worth being precise about, because it is <em>not</em> the problem <code>#EXT-X-DISCONTINUITY</code> solves. That tag describes a <strong>timeline</strong> break. This is a <strong>stream identity</strong> break, and the only fix is to stop the identity from changing. So every ingested segment is republished onto one timeline with canonical pids:</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> what normalization rewrites <span class="rt">proxy/src/tsnorm.rs · Splicer · PairSplicer</span></div>
+          <div class="scroll">
+            <table>
+              <thead><tr><th>Field</th><th>Rewritten to</th><th class="h-accent">Why it is safe</th></tr></thead>
+              <tbody>
+                <tr><td>PMT PID</td><td><code>0x1000</code></td><td rowspan="3">The pids are the identity the demuxer latches onto. Fixing them is the entire point: a pod edge can change everything else about the creative and the player still sees one unbroken set of streams.</td></tr>
+                <tr><td>video PID</td><td><code>0x100</code></td></tr>
+                <tr><td>audio PIDs</td><td><code>0x101</code>…<span style="color:var(--text-3)">(max 4)</span></td></tr>
+                <tr><td>PTS · DTS · PCR · OPCR</td><td>shifted by <strong>one offset</strong></td><td>One affine shift per segment, taken from the <strong>video lane's DTS</strong> and applied identically on <em>every</em> pid. A per-pid offset would invent an A/V skew that was not in the source.</td></tr>
+                <tr><td>continuity counters</td><td>repaired per pid</td><td>The remap merges pids that were distinct upstream, so their counters have to be re-derived or every player logs a discontinuity per packet.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));margin-top:16px;">
+          <div class="tile ts"><div class="ic">● length-invariant</div><h3>Nothing is inserted or dropped</h3><p>Fields are overwritten <strong>in place</strong>. A normalized segment is byte-for-byte the same size as the one that arrived, so ring accounting, the cap and the eviction loop are all untouched by it.</p></div>
+          <div class="tile ts"><div class="ic">● bail on doubt</div><h3>Uncertain means verbatim</h3><p>Anything the rewriter is not sure of returns nothing at all, and the segment is published exactly as it arrived — with the splice <a href="#disc">signalled</a> the old way. A stream we passed through beats a stream we mis-rewrote.</p></div>
+          <div class="tile warn"><div class="ic">● all or nothing</div><h3>Both lanes, or neither</h3><p>On a <a href="#pairs">demuxed</a> source the pair is rewritten together and declined together. Normalizing only the video would leave the audio track dying at every pod edge — the pids churn on <em>both</em> sides.</p></div>
+          <div class="tile"><div class="ic">● the visible payoff</div><h3>The tag stops appearing</h3><p>Where a splice is genuinely absorbed onto the existing timeline, no <code>#EXT-X-DISCONTINUITY</code> is published at all: there is no longer a break to describe. The <code>iop</code> log says <code>splice ABSORBED</code> rather than <code>discontinuity</code>.</p></div>
+        </div>
+        <div class="aha">
+          <div class="lbl">the switch is a kill switch, not an opt-in</div>
+          <p><code>spliceNormalize</code> ships <strong>on</strong>, and it is labelled <strong>Smooth ad transitions</strong> in the UI. The un-normalized alternative is the bug it fixes, and <code>originEnabled</code> is already the opt-in above it — so a config document that predates the field reads as <strong>on</strong>, not off. Turn it off to test whether it is involved in a playback problem; that is the only reason to.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">it does not gate the interleaving muxer</div>
+          <p>Turning <code>spliceNormalize</code> off stops splice <em>absorption</em>. It does not stop the <a href="#weave">weave</a>: authoring one program out of two renditions requires the pid remap and the shared clock to exist at all, so raw TS on a demuxed source keeps applying them and logs that it has. If you want the two renditions published untouched, set <code>outputFormat</code> to <code>hls</code>.</p>
+        </div>
+      </section>
+
       <!-- THE RING ─────────────────────────────────────────────────────── -->
       <section id="ring">
-        <div class="sec-tag"><span class="n">05</span> The ring</div>
+        <div class="sec-tag"><span class="n">07</span> The ring</div>
         <h2>RAM, not disk — and a cap that can be overruled</h2>
-        <p class="col">The ring is a queue of decrypted segments in memory, oldest first. It is <strong>never written to disk</strong>. Each entry holds five things: our sequence number, the duration, the plaintext bytes, whether a discontinuity opens before it, and the wall-clock at ingest. That is all a renderer ever needs — which is why neither renderer has to know anything about the upstream.</p>
-        <p class="col">It is bounded <strong>per channel</strong> by <code>originRingMb</code> (default <strong>25&nbsp;MiB</strong>, roughly a minute at 3.3&nbsp;Mbps). On each push, the oldest segments are evicted until the total is back under the cap — <em>unless</em> doing so would leave fewer than three segments. The floor always wins.</p>
+        <p class="col">The ring is a queue of decrypted entries in memory, oldest first. It is <strong>never written to disk</strong>. Each entry holds six things: our sequence number, the duration, the plaintext video bytes, the paired <a href="#pairs">audio bytes</a> (on a demuxed source), whether a discontinuity opens before it, and the wall-clock at ingest. That is all a renderer ever needs — which is why neither renderer has to know anything about the upstream.</p>
+        <p class="col">It is bounded <strong>per channel</strong> by <code>originRingMb</code> (default <strong>25&nbsp;MiB</strong>, roughly a minute at 3.3&nbsp;Mbps). On each push, the oldest entries are evicted until the total is back under the cap — <em>unless</em> doing so would leave fewer than three. The floor always wins.</p>
+        <p class="col"><strong>Both lanes count against the cap.</strong> The cap is a RAM budget and the pair is what occupies the RAM, so on a demuxed source a given <code>originRingMb</code> buys a marginally shorter window than it does on a muxed one — on pluto the audio rendition runs about 3&nbsp;% of the video's bitrate, so the difference is small but real. It is the honest reading, and the one the floor-beats-cap warning below is judging.</p>
         <div class="panel">
                   <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> the ring — 25 MiB cap vs the 3-segment floor <span class="rt">proxy/src/origin.rs · push_back → evict loop</span></div>
                   <div class="scroll">
@@ -454,7 +608,7 @@
 
       <!-- GENERATION ───────────────────────────────────────────────────── -->
       <section id="generation">
-        <div class="sec-tag"><span class="n">06</span> Two numbers in a path</div>
+        <div class="sec-tag"><span class="n">08</span> Two numbers in a path</div>
         <h2>Why <code>&lt;generation&gt;-&lt;seq&gt;</code> and not just a sequence</h2>
         <p class="col">Our sequence number counts segments and never goes backwards for the life of an ingest — not across a mirror rotation, not across a failover. That matters because a <strong>backwards <code>#EXT-X-MEDIA-SEQUENCE</code> stalls players</strong>. But a failover onto a different upstream <em>does</em> invalidate the ring: those bytes came from somewhere else. So the ring gets a second counter.</p>
         <div class="panel">
@@ -534,9 +688,93 @@
         </div>
       </section>
 
+      <!-- THE WEAVE ────────────────────────────────────────────────────── -->
+      <section id="weave">
+        <div class="sec-tag"><span class="n">09</span> Raw TS from a pair</div>
+        <h2>Two renditions do not concatenate — so they are woven</h2>
+        <p class="col">HLS can publish a pair as two playlists. <strong>Raw TS is one socket</strong>, and two transport streams cannot simply be glued end to end. So <code>outputFormat: 'ts'</code> on a demuxed source used to decline — which meant the one source shape local origin exists for was exactly the shape raw TS could not serve.</p>
+        <p class="col">It is now folded into <strong>one authored program</strong> on the way out, off the same ring entries the two HLS playlists are rendered from. The muxer is small because <a href="#pairs">pairing</a> and <a href="#normalize">normalization</a> already did the hard part — one shared clock, disjoint canonical pids, correct per-pid continuity counters — so the weave is <strong>transport-layer only: no decode, no re-encode, no timestamp rewriting</strong>.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> the interleaving muxer <span class="rt">proxy/src/tsweave.rs · PairWeaver::weave()</span></div>
+          <div class="scroll">
+            <div class="weave">
+
+              <div class="lane-meta" style="padding:2px 0 6px;">
+                <span class="tag">same packets, new order</span>
+                <span class="desc">follow one access unit across — nothing is re-encoded, and nothing is re-stamped. Only the <em>order</em> changes, and the tables around it.</span>
+              </div>
+
+              <div class="wv-belt">
+                <span class="wv-lk">from the ring<b>video lane</b></span>
+                <div class="wv-lane" aria-hidden="true">
+                  <span class="wv-pk wv-dp"><span class="wv-pl">PAT</span></span>
+                  <span class="wv-pk wv-dp"><span class="wv-pl">PMT</span></span>
+                  <span class="wv-pk wv-vid wv-i1"><span class="wv-pl">v1</span></span>
+                  <span class="wv-pk wv-vid wv-i2"><span class="wv-pl">v2</span></span>
+                  <span class="wv-pk wv-vid wv-i3"><span class="wv-pl">v3</span></span>
+                  <span class="wv-pk wv-dp"><span class="wv-pl">null</span></span>
+                </div>
+
+                <span class="wv-lk">from the ring<b>audio lane</b></span>
+                <div class="wv-lane" aria-hidden="true">
+                  <span class="wv-pk wv-dp"><span class="wv-pl">PAT</span></span>
+                  <span class="wv-pk wv-dp"><span class="wv-pl">PMT</span></span>
+                  <span class="wv-pk wv-aud wv-i4"><span class="wv-pl">a1</span></span>
+                  <span class="wv-pk wv-aud wv-i5"><span class="wv-pl">a2</span></span>
+                  <span class="wv-pk wv-aud wv-i6"><span class="wv-pl">a3</span></span>
+                  <span class="wv-pk wv-dp"><span class="wv-pl">null</span></span>
+                </div>
+
+                <div class="wv-rule">
+                  <span class="wv-rk">weave</span>
+                  <span class="wv-chip">drop each lane's PSI + null padding</span>
+                  <span class="wv-chip">split into PES access units</span>
+                  <span class="wv-chip">merge in decode order · video DTS, audio PTS</span>
+                  <span class="wv-chip wv-chip-ts">emit ONE PAT + ONE PMT</span>
+                </div>
+
+                <div class="wv-arrows" aria-hidden="true"><span>↓</span><span>↓</span></div>
+
+                <span class="wv-lk">one socket<b>authored program</b></span>
+                <div class="wv-lane" aria-hidden="true">
+                  <span class="wv-pk wv-psi wv-o1"><span class="wv-pl">PAT</span></span>
+                  <span class="wv-pk wv-psi wv-o2"><span class="wv-pl">PMT</span></span>
+                  <span class="wv-pk wv-vid wv-o3"><span class="wv-pl">v1</span></span>
+                  <span class="wv-pk wv-aud wv-o4"><span class="wv-pl">a1</span></span>
+                  <span class="wv-pk wv-vid wv-o5"><span class="wv-pl">v2</span></span>
+                  <span class="wv-pk wv-vid wv-o6"><span class="wv-pl">v3</span></span>
+                  <span class="wv-pk wv-aud wv-o7"><span class="wv-pl">a2</span></span>
+                  <span class="wv-pk wv-aud wv-o8"><span class="wv-pl">a3</span></span>
+                </div>
+              </div>
+
+              <div class="wv-sock">
+                <span class="wv-sk">→ client</span>
+                <span class="wv-mime">one continuous video/mp2t</span>
+                <span class="wv-cad">PAT + PMT re-emitted every 250 packets · ≈110 ms</span>
+              </div>
+
+              <div class="wv-decl">
+                <span class="wv-decl-k">decline</span>
+                <span class="wv-decl-t">A pair the weaver cannot carry is <strong>skipped</strong> — there is no verbatim option when the output is one socket. The reason is logged under <code>oop</code>, latched per distinct cause, and <strong>three consecutive declines end the socket cleanly</strong> so the client reconnects instead of watching a stream that is open but frozen.</span>
+                <span class="wv-strikes" aria-hidden="true"><span class="wv-strike wv-strike-on"></span><span class="wv-strike wv-strike-on"></span><span class="wv-strike wv-strike-on"></span></span>
+              </div>
+
+              <ul class="wv-caps">
+                <li><strong>No PCR is generated.</strong> The video lane's clock references were already shifted by the shared offset and the merge keeps that lane's relative order, so PCR stays monotonic and its spacing in stream time is unchanged. The published PMT names the video pid as <code>PCR_PID</code>.</li>
+                <li><strong>The program is locked on the first woven pair</strong> and re-emitted byte-identically thereafter, on a ~110&nbsp;ms cadence so a demuxer that resyncs finds it again quickly. A later pair whose stream set differs is declined rather than republished under a changed table — a PMT that changes shape mid-socket is itself a reconfiguration event.</li>
+                <li><strong>Per-pid packet order survives by construction</strong>, because an access unit is contiguous within its pid. The merge only has to interleave whole units; it never reorders inside one.</li>
+                <li>The weave runs on <strong>egress, once per client socket</strong> — never at ingest. Weaving on the way in would put a third copy of every segment in the ring for the benefit of raw-TS viewers alone.</li>
+              </ul>
+
+            </div>
+          </div>
+        </div>
+      </section>
+
       <!-- BARE TS ──────────────────────────────────────────────────────── -->
       <section id="bare-ts">
-        <div class="sec-tag"><span class="n">07</span> Bare MPEG-TS</div>
+        <div class="sec-tag"><span class="n">10</span> Bare MPEG-TS</div>
         <h2>Cutting a socket that has no playlist</h2>
         <p class="col">A <code>direct</code> or <code>hdhomerun</code> upstream arrives as one endless socket with no playlist at all. There is nothing to poll and nothing that says where a segment ends. So the engine finds the boundaries itself — <strong>without an <code>ffmpeg</code>, and without decoding a single frame</strong>.</p>
         <p class="col">This is a content decision, not a per-adapter one: the engine sniffs what the entry actually returned. Anything that doesn't start <code>#EXTM3U</code> is segmented locally, whatever source it came from.</p>
@@ -687,7 +925,7 @@
         </div>
         <div class="aha">
           <div class="lbl">what this actually unlocks</div>
-          <p>Those locally-cut segments join the same ring as everything else, so <strong>a tuner republishes as ordinary HLS</strong>. HDHomeRun playback is no longer waiting on a TS→HLS remux — it is waiting on nothing; it needs <code>originEnabled</code> on for that playlist. Be aware this path is newer and has had far less live mileage than the HLS side, and it emits no <code>#EXT-X-DISCONTINUITY</code> ever: a bare socket is one continuous encode and carries no splice signal that could be honestly propagated.</p>
+          <p>Those locally-cut segments join the same ring as everything else, so <strong>a tuner republishes as ordinary HLS</strong>. They are the one shape that is never <a href="#pairs">paired</a> and never <a href="#normalize">normalized</a> — a bare socket already carries its audio inside the same program, and there is no upstream splice to absorb. HDHomeRun playback is no longer waiting on a TS→HLS remux — it is waiting on nothing; it needs <code>originEnabled</code> on for that playlist. Be aware this path is newer and has had far less live mileage than the HLS side, and it emits no <code>#EXT-X-DISCONTINUITY</code> ever: a bare socket is one continuous encode and carries no splice signal that could be honestly propagated.</p>
         </div>
         <div class="note-block">
           <div class="lbl">the boundaries of the parser</div>
@@ -697,7 +935,7 @@
 
       <!-- CRYPTO ───────────────────────────────────────────────────────── -->
       <section id="crypto">
-        <div class="sec-tag"><span class="n">08</span> Encryption</div>
+        <div class="sec-tag"><span class="n">11</span> Encryption</div>
         <h2>AES-128 is decrypted at ingest — and what still declines</h2>
         <p class="col">On the rewriting path, an encrypted source is relayed still encrypted: the player fetches the key through us and does the work. Under local origin the engine decrypts at ingest instead, so the ring holds plaintext and <strong>the authored manifest has no key line at all</strong>. It is pure Rust (no system OpenSSL), using hardware AES where the CPU has it.</p>
         <div class="pair">
@@ -707,16 +945,17 @@
             <p>Full-segment AES-128-CBC with PKCS7. The key is fetched through the same SSRF gate as any segment, and cached <strong>per ingest</strong> in a single slot keyed by the full key URL — so a source that rotates its keyfile mid-clip costs <strong>one fetch per rotation</strong>, shared by every viewer.</p>
             <p>The IV is the explicit <code>IV=0x…</code> attribute when the playlist carries one; otherwise it is derived per RFC 8216 §5.2 from the segment's <strong>upstream</strong> media sequence. Using ours would decrypt to noise.</p>
           </div>
-          <div class="fcard risk">
+          <div class="fcard warn">
             <span class="badge">● declines</span>
             <h3>fMP4 and <code>SAMPLE-AES</code></h3>
-            <p>An <code>#EXT-X-MAP</code> init segment, or any <code>METHOD</code> other than <code>NONE</code>/<code>AES-128</code> (<code>SAMPLE-AES</code>, FairPlay), makes the channel ineligible for origin ingest. Each is refused with a WARN naming which one fired.</p>
-            <p><strong>There is no fallback.</strong> Once <code>originEnabled</code> is on, an ineligible channel does not quietly revert to the rewriting proxy — it retries every 2 seconds while client requests time out. Read the next block before switching origin on for a playlist you haven't checked.</p>
+            <p>An <code>#EXT-X-MAP</code> init segment, or any <code>METHOD</code> other than <code>NONE</code>/<code>AES-128</code> (<code>SAMPLE-AES</code>, FairPlay), makes the channel <strong>ineligible</strong> for origin ingest. So does an <code>#EXT-X-MEDIA</code> audio group that names no playable rendition. Each is refused with a WARN naming which one fired.</p>
+            <p><strong>A decline is not a dead channel.</strong> The origin marks itself ineligible, the renderer answers nothing, and the request falls straight through to the ordinary <a href="proxy-engine.html">rewriting path</a> — which passes <code>#EXT-X-MEDIA</code> renditions through, so even a demuxed channel still plays, with sound, where the ring could only have served it silent.</p>
           </div>
         </div>
         <div class="note-block">
-          <div class="lbl">the failure you will actually see</div>
-          <p>An fMP4 or <code>SAMPLE-AES</code> channel with origin enabled looks like this: the player waits, then gets <strong><code>503 · stream warming up: no playable window yet</code></strong> after 20 seconds, and keeps getting it. The explanation is a single <code>iop</code> WARN — <em>“fMP4 (#EXT-X-MAP) — origin ingest not eligible”</em> or <em>“unsupported encryption METHOD=SAMPLE-AES — origin ingest not eligible”</em>. If a channel goes dead the moment you flip the switch, that log line is the first place to look, and turning <code>originEnabled</code> back off is the fix.</p>
+          <div class="lbl">this used to be a 503, and it is worth knowing why it no longer is</div>
+          <p>Before the origin could distinguish <em>ineligible</em> from <em>still warming up</em>, a shape mismatch was indistinguishable from a slow start: the renderer burned its full 20-second readiness timeout and then answered <strong><code>503 · stream warming up: no playable window yet</code></strong>, over and over. Flipping <code>originEnabled</code> on for a playlist containing one fMP4 channel killed that channel outright.</p>
+          <p>An ineligible channel now degrades to the rewriting proxy on the first request instead. The explanation is still a single <code>iop</code> WARN — <em>“fMP4 (#EXT-X-MAP) is not concatenable”</em>, <em>“unsupported encryption METHOD=SAMPLE-AES”</em> — and Active Streams shows the reason under <strong>Rendering</strong> with the note that <em>the rewrite path is serving this channel, not the ring</em>. What you lose is the origin's benefits on that channel, not the channel.</p>
         </div>
         <div class="aha">
           <div class="lbl">a bad segment is a gap, not a failure</div>
@@ -726,31 +965,29 @@
 
       <!-- DISCONTINUITY ────────────────────────────────────────────────── -->
       <section id="disc">
-        <div class="sec-tag"><span class="n">09</span> Discontinuity</div>
-        <h2>Two triggers, and a third that was deleted</h2>
-        <p class="col">Ad-stitched sources splice. When they do, the authored playlist emits <code>#EXT-X-DISCONTINUITY</code> — and that is <strong>in-spec output, not a leak</strong>. It says nothing about where the stream came from, and every player handles it. “Clean” here means no visible origin, no encryption and no hop URLs; it does not mean one unbroken timeline.</p>
-        <p class="col">The rule is exactly two triggers, each independently sufficient:</p>
-        <div class="pair">
-          <div class="fcard accent">
-            <span class="badge">● trigger 1</span>
-            <h3>The upstream tagged one</h3>
-            <p>The source's own <code>#EXT-X-DISCONTINUITY</code>, carried through positionally onto the segment that follows it. (The parser explicitly steps over <code>#EXT-X-DISCONTINUITY-SEQUENCE</code>, which is a playlist header, not a splice — without that guard, every playlist carrying one would splice its first segment on every poll.)</p>
-          </div>
-          <div class="fcard accent">
-            <span class="badge">● trigger 2</span>
-            <h3>A sequence gap proves it</h3>
-            <p>The upstream's sequence jumped: this segment is not the previous one plus one. Something was missed — a failed fetch, a dropped key, a playlist that skipped — so the bytes on either side are not contiguous, whether or not anyone tagged it.</p>
-          </div>
+        <div class="sec-tag"><span class="n">12</span> Discontinuity</div>
+        <h2>Three triggers, and a fourth that was deleted</h2>
+        <p class="col">Ad-stitched sources splice. Where the engine cannot <a href="#normalize">absorb</a> the splice, the authored playlist emits <code>#EXT-X-DISCONTINUITY</code> — and that is <strong>in-spec output, not a leak</strong>. It says nothing about where the stream came from, and every player handles it. “Clean” here means no visible origin, no encryption and no hop URLs; it does not mean one unbroken timeline.</p>
+        <p class="col">Detection and publication are two separate decisions, and it is worth keeping them apart. <strong>Detection</strong> has exactly three triggers, each independently sufficient:</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
+          <div class="tile accent"><div class="ic">● trigger 1</div><h3>The upstream tagged one</h3><p>The source's own <code>#EXT-X-DISCONTINUITY</code>, carried through positionally onto the segment that follows it. The parser explicitly steps over <code>#EXT-X-DISCONTINUITY-SEQUENCE</code>, which is a playlist header, not a splice — without that guard, every playlist carrying one would splice its first segment on every poll.</p></div>
+          <div class="tile accent"><div class="ic">● trigger 2</div><h3>A sequence gap proves it</h3><p>The upstream's sequence jumped: this segment is not the previous one plus one. Something was missed — a failed fetch, a dropped key, a playlist that skipped — so the bytes on either side are not contiguous, whether or not anyone tagged it.</p></div>
+          <div class="tile accent"><div class="ic">● trigger 3</div><h3>The session was renewed</h3><p>The provider ended <em>our</em> playlist with <code>#EXT-X-ENDLIST</code> and we re-resolved onto a new session on the same channel. Whether the bytes either side join cleanly is unknowable from here, so the join is <strong>signalled rather than assumed</strong>. This is the one boundary the engine introduces itself.</p></div>
         </div>
+        <div class="note-block" style="margin-top:16px;">
+          <div class="lbl">an ENDLIST is not always the end</div>
+          <p>Pluto's stitcher ends the playlist roughly every 25 seconds as a session artefact, not because the channel finished. Treating that literally would tear down a perfectly live ingest twice a minute. So the tag is checked against reality: the engine compares the segment URI list either side of it. An <strong>unchanged</strong> list means the stream genuinely finished; a <strong>different</strong> list means the session was renewed — keep the ring, dedupe the re-offered window, and mark the join as a splice. An <em>empty</em> list is excluded by name, because it is evidence of nothing.</p>
+        </div>
+        <p class="col" style="margin-top:18px;"><strong>Publication</strong> is the second decision, and with <code>spliceNormalize</code> on it usually goes the other way. Where the splice was genuinely absorbed onto an existing timeline, no tag is emitted at all — there is no longer a break to describe. Where normalization declined, or the segment opened a fresh anchor, the upstream's signal is published as before. The <code>iop</code> log names which happened — a published splice logs <code>discontinuity (Tag)</code>, an absorbed one logs <code>splice ABSORBED (Tag)</code> and says why: <em>rebased onto one timeline, no tag published</em>.</p>
         <div class="note-block">
           <div class="lbl">the heuristic that was tried and removed</div>
-          <p>A third signal was implemented and then deleted: <em>the segment URL's directory changed</em>. It seemed obvious — ad clips live somewhere else. In practice it produced <strong>~9 spurious splices per window and never once a true positive the upstream tag had missed</strong>, from two independent false-positive classes on live Pluto: a keyfile rotating <em>within</em> a clip (<code>…keyfile_5 → _6 → _7</code>, same directory), and CDN paths carrying a per-segment opaque token. Every false positive forces a needless decoder reset in the client. Boundary detection now looks at <strong>nothing but the tag and the sequence</strong> — and the splice log prints what the decision was made <em>against</em>, so a future detector bug is visible rather than inferred.</p>
+          <p>A fourth signal was implemented and then deleted: <em>the segment URL's directory changed</em>. It seemed obvious — ad clips live somewhere else. In practice it produced <strong>~9 spurious splices per window and never once a true positive the upstream tag had missed</strong>, from two independent false-positive classes on live Pluto: a keyfile rotating <em>within</em> a clip (<code>…keyfile_5 → _6 → _7</code>, same directory), and CDN paths carrying a per-segment opaque token. Every false positive forces a needless decoder reset in the client. RFC 8216 requires the source to emit <code>#EXT-X-DISCONTINUITY</code> itself, and pluto does — so guessing from URL shape buys nothing and cannot be made reliable across CDNs. The state carried between segments is now <strong>a single field</strong>, the previous upstream sequence number: directory and key are not tracked at all, and two regression tests pin the two false-positive classes so the heuristic cannot come back by accident.</p>
         </div>
       </section>
 
       <!-- OBSERVABILITY ────────────────────────────────────────────────── -->
       <section id="observe">
-        <div class="sec-tag"><span class="n">10</span> Observability · <code style="font-size:0.8em">iop</code> vs <code style="font-size:0.8em">oop</code></div>
+        <div class="sec-tag"><span class="n">13</span> Observability · <code style="font-size:0.8em">iop</code> vs <code style="font-size:0.8em">oop</code></div>
         <h2>Ingress and egress stopped being the same number</h2>
         <p class="col">This is the part that changes how you read every existing screen. Once one ingest feeds N viewers, <strong>“the channel is stuttering” has two possible causes</strong> — the ingest can't keep up, or serving can't keep up — and they need telling apart. So every log line and every telemetry frame is tagged with which side produced it: <code>iop</code> for input operations (resolve, poll, fetch, decrypt, ring push and evict), <code>oop</code> for output ones (manifest render, segment serve, TS concat).</p>
         <div class="panel">
@@ -877,6 +1114,15 @@
           <p>Both resolve to the existing <code>proxy</code> log category — the split is attribution <em>within</em> the engine, not a new bucket in the Logs drawer. Filter to <code>proxy</code> as you always did, then read the tag. One quirk worth knowing: the retry/backoff lines for origin's upstream hops are emitted under the <code>proxy</code> tag rather than <code>iop</code>, with labels like <code>iop-segment</code> and <code>iop-key</code> in the message body — so filtering strictly on the tag will miss them.</p>
         </div>
 
+        <h3 style="margin-top:24px;">What the <code>iop</code> frame now carries</h3>
+        <p class="col">The per-channel ingest frame grew well past “how many bytes”. Four of its fields answer questions the earlier ones could not:</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
+          <div class="tile ts"><div class="ic">● a denominator</div><h3><code>channelRingCapBytes</code></h3><p>This channel's own cap, alongside its ring bytes — so “24.2&nbsp;MiB” finally reads as a proportion rather than a number you have to remember a setting to interpret. <code>ringSeconds</code> sums the real <code>#EXTINF</code>s beside it, and <code>floorBeatsCap</code> says outright when the <a href="#ring">3-segment floor</a> is winning.</p></div>
+          <div class="tile"><div class="ic">● two counts, never added</div><h3><code>discSeq</code> / <code>discInWindow</code></h3><p>Splices that have already <em>left</em> the window, and splices currently <em>in</em> it. They are disjoint — summing them double-counts nothing but means nothing either.</p></div>
+          <div class="tile"><div class="ic">● what this channel is</div><h3><code>demuxed</code> · <code>upstreamShape</code> · <code>encryption</code></h3><p>Whether the ring is holding <a href="#pairs">pairs</a>; whether the upstream arrived as <code>ts</code>, an HLS master or an HLS media playlist; and which encryption fired. Three facts that used to require reading the log to recover.</p></div>
+          <div class="tile warn"><div class="ic">● why the ring isn't serving</div><h3><code>ineligible</code></h3><p>Null in the ordinary case; otherwise the reason the origin <a href="#crypto">declined</a> and the rewrite path took over. <code>suspect</code> and <code>suspectRetires</code> sit beside it for a provider that returns clean <code>200</code>s no decoder can render.</p></div>
+        </div>
+
         <h3 style="margin-top:24px;">Where the two sides show up in the app</h3>
         <div class="panel scroll">
           <table>
@@ -884,8 +1130,10 @@
             <tbody>
               <tr><td>Active Streams</td><td><strong>Delivery</strong> — <code>HLS</code> / <code>Raw TS</code> / <code>Mixed</code></td><td><span class="em-accent">Side-2</span> — what viewers receive</td></tr>
               <tr><td>Active Streams</td><td><strong>Ingest</strong> — <code>&lt;status&gt; · N viewer(s) sharing</code></td><td><span style="color:var(--cfg)">Side-1</span> — amber when the status isn't <code>ok</code></td></tr>
-              <tr><td>Active Streams</td><td><strong>Ring</strong> — <code>N seg · N.N MiB</code> <span style="color:var(--text-3)">(+ <code>· N evicted</code>)</span></td><td><span class="em-ts">the ring</span> — directly comparable to your <code>originRingMb</code></td></tr>
+              <tr><td>Active Streams</td><td><strong>Ring</strong> — <code>N seg · N.N MiB</code> <span style="color:var(--text-3)">(+ <code>· N evicted</code>)</span></td><td><span class="em-ts">the ring</span> — now carries its own cap, so the number reads against a denominator</td></tr>
               <tr><td>Active Streams</td><td><strong>Upstream pulled</strong> — <code>N seg · N.N MiB</code></td><td><span style="color:var(--cfg)">Side-1</span> — one shared pull, <em>not</em> the bandwidth chart</td></tr>
+              <tr><td>Active Streams</td><td><strong>Rendering</strong> — or the reason the ring isn't serving</td><td>the <a href="#crypto">ineligible</a> case, named in place</td></tr>
+              <tr><td>Active Streams</td><td><strong>Ad break</strong> · <strong>Breaks seen</strong></td><td>the <code>cue</code> frames — reported, never acted on</td></tr>
               <tr><td>Dashboard</td><td><strong>Memory pressure</strong> — total ring bytes, colour-coded</td><td>process-wide — every ring, including idle-grace ones</td></tr>
               <tr><td>Logs → <code>proxy</code></td><td>tag <code>iop</code> / tag <code>oop</code></td><td>which side a line came from</td></tr>
             </tbody>
@@ -903,15 +1151,16 @@
 
       <!-- TUNING ───────────────────────────────────────────────────────── -->
       <section id="tuning">
-        <div class="sec-tag"><span class="n">11</span> Turning it on</div>
-        <h2>Two controls, Default or per playlist</h2>
-        <p class="col">Both knobs live in the <code>proxyconfigs</code> subsystem alongside the rest of the engine's settings, so both can be set globally <em>or</em> overridden for a single playlist. They sit deliberately <strong>directly above Output format</strong>, because local origin changes what that setting means.</p>
+        <div class="sec-tag"><span class="n">14</span> Turning it on</div>
+        <h2>Three controls, Default or per playlist</h2>
+        <p class="col">All three knobs live in the <code>proxyconfigs</code> subsystem alongside the rest of the engine's settings, so each can be set globally <em>or</em> overridden for a single playlist. They sit deliberately <strong>directly above Output format</strong>, because local origin changes what that setting means. The two beneath <strong>Local origin</strong> are greyed out while it is off.</p>
         <div class="panel scroll">
           <table>
             <thead><tr><th>Knob</th><th>Default</th><th class="h-accent">Effect</th></tr></thead>
             <tbody>
               <tr><td>originEnabled</td><td><strong>off</strong></td><td>“Re-publish streams from masqueradarr instead of passing the provider's playlist through. One ingest per channel decrypts and caches segments in memory, and players receive a stream we authored — our own numbering, no encryption keys, no provider URLs. Extra viewers of the same channel then cost <strong>no additional upstream bandwidth</strong>. Off is exactly today's behaviour.”</td></tr>
               <tr><td>originRingMb</td><td><strong>25</strong> <span style="color:var(--text-3)">(1–4096)</span></td><td>“How much memory one channel's live window may hold — bigger means a longer buffer against upstream hiccups. 25&nbsp;MiB is roughly a minute at 3.3&nbsp;Mbps. A minimum of 3 segments is always kept even if that exceeds the cap, and the engine logs a warning when it has to.” Inert while <code>originEnabled</code> is off.</td></tr>
+              <tr><td>spliceNormalize<br><span style="color:var(--text-3);font-size:0.9em;">“Smooth ad transitions”</span></td><td><strong>on</strong></td><td>“Republishes the channel as one continuous stream, so a provider that switches encoder between ads cannot stall the player. Some providers change the stream's internal layout at every ad boundary, which many players cannot follow — they freeze until the layout happens to change back. Leave this <strong>on</strong>; turn it off only to check whether it is involved in a playback problem.” Inert while <code>originEnabled</code> is off, and it does <a href="#normalize">not gate the weave</a>.</td></tr>
             </tbody>
           </table>
         </div>
@@ -941,23 +1190,24 @@
 
       <!-- SCOPE ────────────────────────────────────────────────────────── -->
       <section id="scope">
-        <div class="sec-tag"><span class="n">12</span> Honest scope</div>
+        <div class="sec-tag"><span class="n">15</span> Honest scope</div>
         <h2>What to know before you switch it on</h2>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(260px,1fr));">
           <div class="tile ts"><div class="ic">● off by default</div><h3>Nothing changed until you act</h3><p>With <code>originEnabled</code> false the engine proxies the upstream playlist exactly as before — the same output, byte for byte. Every behaviour on this page is opt-in, per playlist.</p></div>
           <div class="tile warn"><div class="ic">● first play is slower</div><h3>Up to a 20-second warm-up</h3><p>A cold ring will not be served. The first request waits for three segments and then answers <code>503 · stream warming up</code> if they haven't arrived within 20&nbsp;s. On a bare-TS source at the 5-second default that first play is around 15&nbsp;s — uncomfortably close to the ceiling.</p></div>
           <div class="tile warn"><div class="ic">● no global RAM ceiling</div><h3>You are the admission control</h3><p><code>originRingMb</code> bounds one channel. The sum across channels is unbounded, and the 3-segment floor can push any single channel over its own cap. Watch the memory-pressure tile.</p></div>
-          <div class="tile risk"><div class="ic">● ineligible sources break</div><h3>No fallback to the proxy path</h3><p>fMP4 and <code>SAMPLE-AES</code> channels do not degrade gracefully once origin is on — they 503. Check a playlist's sources before enabling it wholesale.</p></div>
+          <div class="tile"><div class="ic">● ineligible sources degrade</div><h3>They fall back, they don't die</h3><p>fMP4 and <code>SAMPLE-AES</code> channels can't be ingested, but they now <a href="#crypto">drop to the rewriting path</a> on the first request instead of 503-ing. You lose the origin's benefits on that channel, not the channel.</p></div>
           <div class="tile"><div class="ic">● reconnect after 30 s</div><h3>Sequence restarts at zero</h3><p>Past the idle grace the ingest is gone and a new one starts numbering from scratch. Players handle it as a new session, which it is — but it is not a continued timeline.</p></div>
+          <div class="tile warn"><div class="ic">● demuxed costs a little more</div><h3>Both lanes share one cap</h3><p>On a <a href="#pairs">demuxed</a> source the ring holds pairs, and the audio counts. The same <code>originRingMb</code> buys a slightly shorter window — and a raw-TS viewer of such a channel runs a <a href="#weave">weaver</a> per socket, which is the one piece of per-viewer work on Side-2.</p></div>
           <div class="tile"><div class="ic">● first play costs two resolves</div><h3>A little extra load on Node</h3><p>The request path resolves once to learn the policy, and the ingest then resolves again for itself. Only on a cold channel, and only once — but worth knowing if you are watching resolve load.</p></div>
         </div>
         <div class="aha">
           <div class="lbl">the honest summary</div>
-          <p>Local origin is the newest part of the data plane and it is doing genuinely more than the path beside it — holding decrypted media in RAM, parsing transport streams, authoring manifests. The HLS ingest is the well-trodden half; the <a href="#bare-ts">bare-TS segmenter</a> is the newer one. Turn it on for one playlist, watch the <code>iop</code> lines and the memory-pressure tile for an evening, and expand from there. Turning it back off is a single toggle and returns you to the previous behaviour immediately.</p>
+          <p>Local origin is the newest part of the data plane and it is doing genuinely more than the path beside it — holding decrypted media in RAM, parsing and rewriting transport streams, authoring manifests, and folding two renditions into one program. The HLS ingest is the well-trodden half; the <a href="#bare-ts">bare-TS segmenter</a> and the <a href="#weave">interleaving muxer</a> are the newer ones. Turn it on for one playlist, watch the <code>iop</code> lines and the memory-pressure tile for an evening, and expand from there. Turning it back off is a single toggle and returns you to the previous behaviour immediately.</p>
         </div>
         <div class="refs">
           <span class="ref"><b>README</b> · Local origin — republishing the stream</span>
-          <span class="ref"><b>proxy/</b> crate · <code>origin.rs</code> · <code>tsseg.rs</code> · <code>tsmux.rs</code></span>
+          <span class="ref"><b>proxy/</b> crate · <code>origin.rs</code> · <code>tsnorm.rs</code> · <code>tsweave.rs</code> · <code>tsseg.rs</code> · <code>tsmux.rs</code></span>
           <span class="ref"><b>Settings</b> · Video Config → Video Proxy Engine</span>
           <span class="ref">next → <b>Users &amp; access</b></span>
         </div>
@@ -965,7 +1215,7 @@
 
       <footer class="doc-foot">
         <span>masqueradarr · local origin</span>
-        <span>one ingest · one ring · two renderers</span>
+        <span>one ingest · a ring of pairs · two renderers</span>
       </footer>
 
     </div>

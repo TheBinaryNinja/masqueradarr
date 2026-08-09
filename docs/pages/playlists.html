@@ -161,8 +161,45 @@
       </section>
 
       <!-- FAILOVER ─────────────────────────────────────────────────────── -->
+      <!-- ORGANIZING ───────────────────────────────────────────────────── -->
+      <section id="organizing">
+        <div class="sec-tag"><span class="n">05</span> The channel workbench</div>
+        <h2>Category groups, bulk edits, and deletes that stick</h2>
+        <div class="note-block">
+          <div class="lbl">two different things are called a group</div>
+          <p>A <strong>category group</strong> is the folder a channel is filed under in the playlist — the <code>group-title</code> your IPTV player shows in its category list. A <strong><a href="#failover">failover group</a></strong> is a channel plus one or more silent backups that take over if it stops working. They are unrelated, and the next section is about the other one.</p>
+        </div>
+        <p class="col">Open a playlist and you land on its channel table: one row per channel, sortable by name, number or group, narrowed by the group dropdown, the search box, and a segmented <strong>All / Matched / Unmatched</strong> guide-match filter. That filter is a <em>view</em> only — it changes what you see, not the channels — and <strong>Unmatched</strong> also includes channels that have never been evaluated for a match.</p>
+        <p class="col">Check one or more rows and a selection toolbar appears — an <strong>{n} selected</strong> pill, then <strong>Group</strong>, <strong>Create</strong> / <strong>Append</strong>, <strong>Edit</strong> and <strong>Clear</strong>. The header checkbox toggles everything in view; <strong>Ctrl/Cmd + Shift</strong> on a second row selects the whole range between it and your last click.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● category groups</span>
+            <h3>First-class, and they survive a sync</h3>
+            <p>A group is a real persisted object, not a label that exists because some channel happens to use it. That means you can <strong>create an empty group up front</strong> and file channels into it later — the next sync won't wipe the folder out, and the playlist header's <strong>Groups</strong> count includes empty ones.</p>
+            <p>The <strong>Manage groups</strong> panel appears in both the single-channel drawer and the bulk editor, sharing one registry. Each row shows a live member count and offers <strong>Rename</strong> (relabels every channel at once), <strong>Delete group</strong> (removes the folder, <em>keeps</em> the channels) and <strong>Add an empty group</strong>.</p>
+          </div>
+          <div class="fcard accent">
+            <span class="badge">● bulk editor</span>
+            <h3>Change many at once, safely</h3>
+            <p><strong>Set status</strong>, <strong>Assign to a group</strong>, <strong>Remove EPG match</strong>, <strong>Tags</strong> and — on DaddyLive channels — <strong>Player source</strong>, then <strong>Apply to N channels</strong>.</p>
+            <p>Mixed selections say so rather than flattening the difference: a mixed status reads <em>“mixed — leave unchanged”</em>, and the tag chips are <strong>tri-state</strong> — solid on every selected channel, dashed on some, plain on none, cycling add-to-all → remove-from-all → leave.</p>
+          </div>
+        </div>
+        <div class="note-block">
+          <div class="lbl">deleting a channel is permanent — and tombstoned</div>
+          <p>Deleting a channel, singly or in bulk, does not just remove it: its identity is <strong>remembered</strong>, so a later <strong>Sync</strong> will <em>not</em> bring it back even though it is still there upstream. That is what makes a delete stick.</p>
+          <p>The only undo is the playlist's <strong>Restore Defaults</strong> (also labelled <strong>Reset</strong>), which forgets every tombstone — and <strong>discards every edit you have made</strong>, re-fetching from scratch. It is a clean slate, not a gentle un-delete.</p>
+          <p>Three actions that are easy to confuse: <strong>Disabled</strong> hides a channel from the published playlist but keeps it and survives every sync, fully reversible. <strong>Delete</strong> removes and tombstones it. <strong>Restore Defaults</strong> is the nuclear reset.</p>
+        </div>
+        <div class="aha">
+          <div class="lbl">group order is yours, not the player's</div>
+          <p>The published playlist lists categories <strong>alphabetically</strong>. The order groups appear in the Manage panel is for your convenience while you work — it does not change the order players show them in.</p>
+        </div>
+      </section>
+
+      <!-- FAILOVER ─────────────────────────────────────────────────────── -->
       <section id="failover">
-        <div class="sec-tag"><span class="n">05</span> Grouped channels</div>
+        <div class="sec-tag"><span class="n">06</span> Failover groups</div>
         <h2>A channel can have backups</h2>
         <p class="col">Any playlist's channels can be gathered into a <strong>failover group</strong>: one <strong>parent</strong> plus an ordered line of <strong>children</strong> — silent backups for the same real-world channel, often from entirely different providers. Select the channels on the playlist detail screen, hit <strong>Group</strong>, pick the parent, drag the rest into priority order.</p>
         <p class="col">Only the parent is exported: the composed <code>.m3u</code> and its guide carry <em>one</em> line for the group, and the children inherit the parent's guide link. When the parent's stream won't start, the engine walks the children in order and serves the first one that answers — under the parent's URL and identity, so the viewer never notices.</p>
@@ -174,18 +211,51 @@
 
       <!-- ON SCREEN ────────────────────────────────────────────────────── -->
       <section id="on-screen">
-        <div class="sec-tag"><span class="n">06</span> On screen</div>
+        <div class="sec-tag"><span class="n">07</span> On screen</div>
         <h2>List view and detail view</h2>
         <p class="col">The <strong>list view</strong> shows every playlist as a row — name, source/type, status, channel count, schedule chips — built-in and custom side by side. The <strong>detail view</strong> is the channels inside one playlist, where you edit individual channels and run syncs.</p>
         <div class="shots">
           <figure class="shot"><img src="../img/screenshots/v2-playlists-01.png" alt="Playlists list view" loading="lazy"><figcaption><span class="dot"></span> List view · every playlist as a row</figcaption></figure>
           <figure class="shot"><img src="../img/screenshots/v2-playlists-02.png" alt="Playlist detail view" loading="lazy"><figcaption><span class="dot"></span> Detail view · the editable channel store</figcaption></figure>
         </div>
+        <h3 style="margin-top:24px;">Putting the list in your own order</h3>
+        <p class="col">Once you run more than a handful of playlists, the list itself needs organizing. Three controls do it, and they interact:</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
+          <div class="tile"><div class="ic">● pin</div><h3>A PINNED section on top</h3><p>Pinning lifts a playlist into its own section above the kind groups, in its own order. The ones you touch daily stop being buried under the ones you set up once.</p></div>
+          <div class="tile"><div class="ic">● drag</div><h3>Reorder within a section</h3><p>Drag a row to place it. A playlist you have never dragged sorts last, so adding a new one never disturbs an order you have already built.</p></div>
+          <div class="tile ts"><div class="ic">● A–Z</div><h3>A toggle that yields</h3><p>The toolbar's <strong>A–Z</strong> switch sorts alphabetically instead — and <strong>turns itself off the moment you drag a row</strong>, because the two intentions cannot both be honoured. Reordering also pauses while a search filter is active.</p></div>
+        </div>
+      </section>
+
+      <!-- TAGS &amp; SEARCH ─────────────────────────────────────────────── -->
+      <section id="tags-search">
+        <div class="sec-tag"><span class="n">08</span> Tags &amp; search</div>
+        <h2>Finding things your own way</h2>
+        <p class="col"><strong>Tags</strong> are free-form labels you attach to playlists, EPG sources and individual channels — by provider, region, quality, “kids”, “needs review”, whatever suits you. They are purely for your benefit as an operator, and they render as a small magenta pill wherever the thing they are on appears.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● one shared registry</span>
+            <h3>Rename once, everywhere</h3>
+            <p>There is <strong>one tag registry for the whole workspace</strong>, so the same tag can sit on a playlist, an EPG source and a channel at the same time. A tag is referenced by a stable id rather than by its text — so <strong>renaming updates it everywhere at once</strong>, and <strong>deleting removes it from everything</strong> it was on. No stray copies to clean up.</p>
+            <p>Create, rename and delete them on <strong>Settings → Advanced → Custom Tags</strong>, which lists each with a live usage count. You assign them from the editor of whatever you are tagging: the playlist Edit drawer, the single-channel drawer, the bulk-channel editor, and the EPG-source Edit panel.</p>
+          </div>
+          <div class="fcard accent">
+            <span class="badge">● global search</span>
+            <h3>One box across four stores</h3>
+            <p>The admin top-bar search spans <strong>playlists, playlist channels, EPG sources and EPG channels</strong> at once, grouping hits under their parent with a <strong>“+N more”</strong> overflow line. Picking a channel jumps to it and briefly highlights its row.</p>
+            <p>It also <strong>matches tag names</strong> — which is the quickest way to make an ad-hoc set of things findable: tag them, then type the tag.</p>
+          </div>
+        </div>
+        <div class="note-block">
+          <div class="lbl">tags are not a category axis</div>
+          <p>Tags are for finding and organizing <strong>inside the app</strong>. They <strong>never appear in your published M3U or XMLTV</strong>, and they are not what your IPTV player groups channels by — that is what <a href="#organizing">category groups</a> are for.</p>
+          <p>One exception worth knowing: the playlist Edit drawer carries an <strong>Apply to all channels</strong> toggle beside its Tags field. Turn it on and the playlist's tags are added onto every channel in it — additive, so each channel keeps its own — and it re-applies whenever you change the playlist's tags.</p>
+        </div>
       </section>
 
       <!-- ENDPOINTS ────────────────────────────────────────────────────── -->
       <section id="endpoints">
-        <div class="sec-tag"><span class="n">07</span> Endpoint modes</div>
+        <div class="sec-tag"><span class="n">09</span> Endpoint modes</div>
         <h2>Global vs. Custom — where a playlist is served</h2>
         <p class="col">The <code>endpoint</code> mode decides how a playlist is exposed. Built-in defaults are <strong>Global</strong> by default; the custom kinds are <strong>Custom</strong>.</p>
         <div class="pair">
@@ -209,7 +279,7 @@
 
       <!-- EPG BINDING ──────────────────────────────────────────────────── -->
       <section id="epg">
-        <div class="sec-tag"><span class="n">08</span> How guide data binds</div>
+        <div class="sec-tag"><span class="n">10</span> How guide data binds</div>
         <h2>Two mechanisms — keep them separate</h2>
         <p class="col">Guide data reaches a playlist two distinct ways. (The full EPG story — providers, the shared sync path, the compose pipeline — is the <a href="epg.html">EPG &amp; guide data</a> page.)</p>
         <div class="pair">
@@ -228,7 +298,7 @@
 
       <!-- ACCESS ───────────────────────────────────────────────────────── -->
       <section id="access">
-        <div class="sec-tag"><span class="n">09</span> Per-user access</div>
+        <div class="sec-tag"><span class="n">11</span> Per-user access</div>
         <h2>Who can use which playlist</h2>
         <p class="col">Access is a <strong>per-user allow-list</strong>, split to mirror the endpoint modes: <code>allowedPlaylists</code> (Global-endpoint) and <code>allowedCustomPlaylists</code> (Custom-endpoint). You assign membership on the <strong>Playlists screen</strong>, per playlist — not by editing the user. (Full auth &amp; token detail is on the <a href="users.html">Users &amp; access</a> page.)</p>
         <ul class="col">
