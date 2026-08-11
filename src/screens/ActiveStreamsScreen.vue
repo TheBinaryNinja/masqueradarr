@@ -821,7 +821,9 @@ function onRailKey(e: KeyboardEvent): void {
                   <!-- 'NONE' is a measured reading, so it renders as "cleartext" rather than vanishing —
                        an absent row and a channel proven unencrypted are different facts. -->
                   <template v-if="sel.encryption">
-                    <span :style="sel.encryption !== 'NONE' ? 'color: var(--accent-hi);' : ''">· {{ sel.encryption === 'NONE' ? 'cleartext' : sel.encryption }}</span>
+                    <!-- Three states, not two: 'UNKNOWN' means a key tag was present but unreadable, which is
+                         evidence OF encryption, not of its absence — so it reads as encrypted here. -->
+                    <span :style="sel.encryption !== 'NONE' ? 'color: var(--accent-hi);' : ''">· {{ sel.encryption === 'NONE' ? 'cleartext' : sel.encryption === 'UNKNOWN' ? 'encrypted (method unreadable)' : sel.encryption }}</span>
                   </template>
                   <span class="asd-sub">· serving {{ deliveryLabel(sel.delivery) }}</span>
                   <!-- The row's payoff: it names WHICH of the three possible causes made a Raw-TS request come
@@ -1010,7 +1012,8 @@ function onRailKey(e: KeyboardEvent): void {
                          Before register #11 this row could only ever list all three possibilities. -->
                     <span v-if="sel.requested.outputFormat === 'ts' && sel.delivery === 'hls'" class="asd-sub" style="color: var(--warn);">
                       · fell back to HLS —
-                      <template v-if="sel.encryption && sel.encryption !== 'NONE'">the upstream is {{ sel.encryption }} encrypted</template>
+                      <template v-if="sel.encryption === 'UNKNOWN'">the upstream declares a key we could not read</template>
+                      <template v-else-if="sel.encryption && sel.encryption !== 'NONE'">the upstream is {{ sel.encryption }} encrypted</template>
                       <template v-else-if="sel.container === 'fMP4'">the upstream is fMP4</template>
                       <template v-else>the upstream is AES/fMP4 or unreachable as raw TS</template>
                     </span>

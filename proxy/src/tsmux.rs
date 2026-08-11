@@ -395,7 +395,11 @@ pub(crate) fn unsupported_encryption(body: &str) -> Option<String> {
 /// is most of pluto and dlhd) reads as unencrypted.
 ///
 /// Returns the literal `"NONE"` rather than an Option so a consumer can distinguish MEASURED cleartext from
-/// an absent reading — on this panel those mean opposite things.
+/// an absent reading — on this panel those mean opposite things. Three states, then: `"NONE"` (we read the
+/// playlist and it is in the clear), a METHOD we read (`"AES-128"`, `"SAMPLE-AES"`, …), and `"UNKNOWN"` (a
+/// key tag IS present but its METHOD could not be read, so the content is encrypted by something we cannot
+/// name). A caller gating on `!= "NONE"` therefore treats an unreadable key as encrypted, which is the safe
+/// direction: the tag's presence is itself the evidence.
 ///
 /// Last key wins: a KEY applies until the next one replaces it, so what the window ENDS on is the current
 /// state. Only meaningful on a MEDIA playlist; a master carries no `#EXT-X-KEY` and would always answer NONE.
@@ -408,7 +412,11 @@ pub(crate) fn encryption_method(body: &str) -> String {
                 .find(|(k, _)| k.eq_ignore_ascii_case("METHOD"))
                 .map(|(_, v)| v.trim().trim_matches('"').to_ascii_uppercase())
                 .unwrap_or_default();
-            method = if m.is_empty() { "NONE".to_string() } else { m };
+            // A key tag we cannot READ is not a reading of cleartext. RFC 8216 makes METHOD mandatory, so an
+            // empty one means a malformed upstream — but `NONE` is this function's word for MEASURED
+            // cleartext, and answering it here would tell the operator the exact opposite of what the tag's
+            // presence proves. `UNKNOWN` is the third state the doc above promises consumers.
+            method = if m.is_empty() { "UNKNOWN".to_string() } else { m };
         }
     }
     method
@@ -450,14 +458,36 @@ pub(crate) struct AudioRendition {
     pub describes_video: bool,
 }
 
-/// Every `#EXT-X-MEDIA:TYPE=AUDIO` rendition in a master that carries its own `URI=`, resolved absolute.
+/// ONE pass over a master's `#EXT-X-MEDIA:TYPE=AUDIO` lines, answering both questions the caller has:
+/// which renditions are actually demuxed, and which GROUPS are already muxed into their variant.
 ///
 /// Per RFC 8216 §4.3.4.1 an `#EXT-X-MEDIA` WITHOUT a `URI` means that rendition is already present in the
 /// referencing variant's own playlist — so only the URI-bearing ones are actually demuxed, and a bare
 /// "does this master mention EXT-X-MEDIA" test would false-positive on every muxed stream that merely
 /// labels its audio track.
-fn demuxed_audio_renditions(body: &str, base: &Url) -> Vec<AudioRendition> {
+///
+/// THE GROUP VERDICT IS NOT THE MEMBER VERDICT, which is why both come out of the same pass. The
+/// per-rendition rule is right on its own but says nothing about the group, and a group can hold both kinds.
+/// Live pluto does exactly that:
+///
+/// ```text
+/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original",DEFAULT=YES,CHANNELS="2"       ← no URI
+/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",AUTOSELECT=YES,URI="…",
+///              CHARACTERISTICS="public.accessibility.describes-video"
+/// ```
+///
+/// The programme audio is the URI-less `DEFAULT` one — muxed into the variant — and the only URI-bearing
+/// member is an audio-description track. Judging the group by its URI-bearing members alone made this look
+/// demuxed, so the origin ringed the video against the DESCRIPTION and the viewer got a narrator instead of
+/// the programme. One URI-less member is proof the variant is self-sufficient.
+///
+/// These two verdicts USED to be two functions, each re-deriving the same line filter, `split_attrs` call,
+/// quote-stripping `val` closure and TYPE=AUDIO gate over the same body. Keeping one copy is what stops a
+/// future fix to attribute handling landing on one scan and not the other — which would skew exactly the
+/// demuxed-vs-muxed verdict the pluto case above shows the cost of getting wrong.
+fn audio_media(body: &str, base: &Url) -> (Vec<AudioRendition>, HashSet<String>) {
     let mut out = Vec::new();
+    let mut muxed = HashSet::new();
     for l in body.split('\n') {
         let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
         let attrs = split_attrs(attrs);
@@ -470,8 +500,16 @@ fn demuxed_audio_renditions(body: &str, base: &Url) -> Vec<AudioRendition> {
         if !val("TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
             continue;
         }
-        // No URI ⇒ muxed into the variant ⇒ following the variant alone still yields audio.
-        let Some(uri) = val("URI").filter(|u| !u.is_empty()) else { continue };
+        // No URI ⇒ muxed into the variant ⇒ following the variant alone still yields audio. That is the
+        // GROUP's verdict, not just this member's: one URI-less rendition makes the whole group playable
+        // from the variant, so it is collected here rather than by a second scan that would have to
+        // re-derive the same attribute rules and stay in lockstep with them.
+        let Some(uri) = val("URI").filter(|u| !u.is_empty()) else {
+            if let Some(g) = val("GROUP-ID") {
+                muxed.insert(g);
+            }
+            continue;
+        };
         let (Some(group), Ok(url)) = (val("GROUP-ID"), base.join(&uri)) else { continue };
         let yes = |k: &str| val(k).is_some_and(|v| v.eq_ignore_ascii_case("YES"));
         out.push(AudioRendition {
@@ -486,49 +524,9 @@ fn demuxed_audio_renditions(body: &str, base: &Url) -> Vec<AudioRendition> {
                 .is_some_and(|c| c.to_ascii_lowercase().contains("public.accessibility.describes-video")),
         });
     }
-    out
+    (out, muxed)
 }
 
-/// Audio groups that contain at least one rendition WITHOUT a `URI` — i.e. groups whose audio is already
-/// inside the referencing variant.
-///
-/// The per-rendition rule (`demuxed_audio_renditions` skips URI-less entries) is right on its own but says
-/// nothing about the GROUP, and a group can hold both kinds. Live pluto does exactly that:
-///
-/// ```text
-/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="Original",DEFAULT=YES,CHANNELS="2"       ← no URI
-/// #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",AUTOSELECT=YES,URI="…",
-///              CHARACTERISTICS="public.accessibility.describes-video"
-/// ```
-///
-/// The programme audio is the URI-less `DEFAULT` one — muxed into the variant — and the only URI-bearing
-/// member is an audio-description track. Judging the group by its URI-bearing members alone made this look
-/// demuxed, so the origin ringed the video against the DESCRIPTION and the viewer got a narrator instead of
-/// the programme. RFC 8216 §4.3.4.1 is unambiguous that a URI-less rendition is present in the variant, so
-/// one such member is proof the variant is self-sufficient.
-fn muxed_audio_groups(body: &str) -> HashSet<String> {
-    let mut out = HashSet::new();
-    for l in body.split('\n') {
-        let Some(attrs) = l.trim_start().strip_prefix("#EXT-X-MEDIA:") else { continue };
-        let attrs = split_attrs(attrs);
-        let val = |k: &str| {
-            attrs
-                .iter()
-                .find(|(a, _)| a.eq_ignore_ascii_case(k))
-                .map(|(_, v)| v.trim().trim_matches('"').to_string())
-        };
-        if !val("TYPE").is_some_and(|t| t.eq_ignore_ascii_case("AUDIO")) {
-            continue;
-        }
-        if val("URI").is_some_and(|u| !u.is_empty()) {
-            continue; // a demuxed member says nothing about the group
-        }
-        if let Some(g) = val("GROUP-ID") {
-            out.insert(g);
-        }
-    }
-    out
-}
 
 /// Which rendition of a group to follow: `DEFAULT=YES` wins, else `AUTOSELECT=YES`, else the first the master
 /// listed. The same order a player would apply with no user preference expressed.
@@ -596,10 +594,10 @@ struct VariantAttrs {
 /// the rendition to follow beside it. A passthrough raw-TS caller falls back to the HLS rewrite on that; the
 /// origin rings the pair, and its raw-TS renderer interleaves it (`tsweave`) rather than declining.
 pub(crate) fn pick_variant(body: &str, base: &Url) -> Option<VariantPick> {
-    let renditions = demuxed_audio_renditions(body, base);
     // A group holding even ONE URI-less rendition has its audio inside the variant, so the variant is
-    // playable on its own and must not be treated as demuxed — see `muxed_audio_groups`.
-    let muxed = muxed_audio_groups(body);
+    // playable on its own and must not be treated as demuxed — see `audio_media`, which decides both in
+    // one pass so the two verdicts can never drift apart.
+    let (renditions, muxed) = audio_media(body, base);
     let demuxed: HashSet<String> =
         renditions.iter().map(|r| r.group.clone()).filter(|g| !muxed.contains(g)).collect();
     let mut best: Option<(i64, String, VariantAttrs)> = None; // audio-safe variants only
@@ -1234,6 +1232,16 @@ mod tests {
         // at all are both genuinely cleartext.
         assert_eq!(encryption_method("#EXTM3U\n#EXT-X-KEY:METHOD=NONE\n#EXTINF:6.0,\nseg0.ts\n"), "NONE");
         assert_eq!(encryption_method("#EXTM3U\n#EXTINF:6.0,\nseg0.ts\n"), "NONE");
+
+        // …and a key tag whose METHOD is missing or empty is NEITHER. RFC 8216 requires the attribute, so
+        // this is a malformed packager — but the tag's presence proves the content is encrypted by SOMETHING,
+        // and reporting the measurement for cleartext would state the opposite of the only fact available.
+        let no_method = "#EXTM3U\n#EXT-X-KEY:URI=\"k.key\",IV=0x0123\n#EXTINF:6.0,\nseg0.ts\n";
+        assert_eq!(encryption_method(no_method), "UNKNOWN", "an unreadable key tag is not cleartext");
+        let empty_method = "#EXTM3U\n#EXT-X-KEY:METHOD=,URI=\"k.key\"\n#EXTINF:6.0,\nseg0.ts\n";
+        assert_eq!(encryption_method(empty_method), "UNKNOWN");
+        // The gate every consumer uses must read both as encrypted.
+        assert_ne!(encryption_method(no_method), "NONE");
     }
 
     #[test]

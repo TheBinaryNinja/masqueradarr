@@ -50,18 +50,31 @@ const NULL_PID: u16 = 0x1FFF;
 /// also forced at the head of every woven pair, so a client never waits a whole interval to find the program.
 const PSI_INTERVAL_PKTS: usize = 250;
 
-/// How far BEFORE the video lane's first timestamp the merge's sort origin sits, in 90 kHz ticks (2 s).
+/// How far before the video lane's first timestamp the merge's sort origin sits AT MINIMUM, in 90 kHz ticks
+/// (2 s).
 ///
 /// The sort compares `forward_gap(anchor, key)`, which is wrap-safe but one-directional: a key that sits
 /// *before* the anchor reads as almost a full wrap ahead and would sort last. Audio may legitimately lead
-/// video (a negative skew) and carried-over audio may precede the next pair's first frame, but `PairSplicer`'s
-/// `SKEW_TOLERANCE` already bounds both at 0.5 s — so 2 s is four times the headroom that guard allows, and
-/// still six orders of magnitude inside the 33-bit wrap.
+/// video (a negative skew) and carried-over audio may precede the next pair's first frame.
+///
+/// A FLOOR, not a bound — and it was written as a bound. The justification used to be that `PairSplicer`'s
+/// `SKEW_TOLERANCE` caps the lead at 0.5 s, so 2 s was "four times the headroom". That reading is wrong:
+/// `SKEW_TOLERANCE` bounds how far one pair's skew may DRIFT from the LOCKED skew, never the locked skew's
+/// own magnitude, and the first pair latches whatever it finds unconditionally. Pairing on
+/// `#EXT-X-PROGRAM-DATE-TIME` accepts a partner up to HALF A SEGMENT away (2.5 s on pluto's 5 s ladder), so a
+/// locked lead past 2 s is reachable — and then EVERY audio key sat before the anchor, so every audio unit
+/// sorted after every video unit and the socket stepped ~2.5 s backwards at each pair seam.
+///
+/// `weave` now widens the anchor to whatever actually leads within the block. This constant only keeps the
+/// ordinary case byte-identical to what it was.
 const ANCHOR_BACKSTOP: u64 = 2 * 90_000;
 
-/// Ceiling on the audio held back for the next pair (see `weave` step 5). A trailing run bounded by the 0.5 s
-/// skew guard is a few KiB; anything approaching this cap means the lanes are not shaped the way the guard
-/// implies, so the carry is abandoned and that audio is emitted in place rather than growing without bound.
+/// Ceiling on the audio held back for the next pair (see `weave` step 5). A trailing run is a few KiB on any
+/// normally-shaped pair; anything approaching this cap means the lanes are not shaped like a pair at all, so
+/// the carry is abandoned and that audio is emitted in place rather than growing without bound.
+///
+/// Deliberately NOT justified by `SKEW_TOLERANCE` — see `ANCHOR_BACKSTOP` for why that guard bounds drift
+/// rather than lead, and why a bound derived from it would be a bound on nothing.
 const MAX_CARRY_BYTES: usize = 256 * 1024;
 
 /// Which buffer a `Unit`'s bytes live in. Indices, not references, so the emit step can hold `&mut self`.
@@ -245,7 +258,20 @@ impl PairWeaver {
         // 5. Merge. `forward_gap` from an anchor placed safely before the video lane's first stamp, so the
         //    comparison is wrap-safe; the sort is STABLE, which is what keeps each pid's packets in order when
         //    a fragment unit inherits its predecessor's key.
-        let anchor = vfirst.wrapping_sub(ANCHOR_BACKSTOP) & CLOCK_MASK;
+        //    The origin is placed before the EARLIEST key actually present, not before a fixed guess: the
+        //    locked A/V skew has no bounded magnitude (see `ANCHOR_BACKSTOP`), so a lead past the backstop
+        //    used to put every audio key behind the origin, where `forward_gap` reads it as nearly a full
+        //    wrap and sorts it last. Keyless units are skipped deliberately — `key_or_zero` gives them 0,
+        //    which is not a timestamp, and they keep sorting last exactly as before.
+        let mut back = ANCHOR_BACKSTOP;
+        for u in carry_units.iter().chain(vunits.iter()).chain(aunits[..split].iter()) {
+            let Some(k) = u.key else { continue };
+            let lead = forward_gap(k, vfirst); // how far this key sits BEFORE the video lane's first
+            if lead < CLOCK_WRAP / 2 && lead > back {
+                back = lead;
+            }
+        }
+        let anchor = vfirst.wrapping_sub(back) & CLOCK_MASK;
         let mut all: Vec<Unit> = Vec::with_capacity(carry_units.len() + vunits.len() + aunits.len());
         all.extend_from_slice(&carry_units);
         all.extend_from_slice(&vunits);
@@ -762,6 +788,43 @@ mod tests {
             );
         }
         // …and the two lanes really do alternate rather than one lane being emitted after the other.
+        let pids: Vec<u16> = keys.iter().map(|(p, _)| *p).collect();
+        assert!(
+            pids.windows(2).filter(|w| w[0] != w[1]).count() >= 8,
+            "the lanes interleave rather than concatenate: {pids:?}"
+        );
+    }
+
+    /// THE REGRESSION the fixed anchor caused: an audio lane leading video by more than `ANCHOR_BACKSTOP`.
+    ///
+    /// Reachable because `SKEW_TOLERANCE` bounds DRIFT from the locked skew, not the locked skew itself, and
+    /// PDT pairing accepts a partner up to half a segment away. With a fixed origin every audio key landed
+    /// before it, read as almost a full wrap, and sorted after ALL video — the socket stepped backwards at
+    /// every seam while HLS off the same ring played fine.
+    #[test]
+    fn an_audio_lane_leading_past_the_backstop_still_leaves_in_timestamp_order() {
+        const LEAD: u64 = 225_000; // 2.5 s at 90 kHz — beyond the 2 s backstop
+        let vbase: u64 = 2_000_000;
+        // The audio lane is LONGER as well as earlier, so its run actually spans the video's — a lane that
+        // both starts and ends before the video would be segregated by any correct merge, and would test
+        // nothing about the anchor.
+        let v = video_lane(vbase, 6);
+        let a = audio_lane(vbase.wrapping_sub(LEAD) & CLOCK_MASK, 70);
+        let mut w = PairWeaver::new();
+        let out = w.weave(&v, &a).expect("a leading audio lane is still a publishable pair");
+
+        let keys = keys_in_order(&out);
+        assert!(keys.len() >= 10, "both lanes are represented ({} units)", keys.len());
+        for w2 in keys.windows(2) {
+            assert!(
+                forward_gap(w2[0].1, w2[1].1) < CLOCK_WRAP / 2,
+                "units never step backwards: {:?} then {:?}",
+                w2[0],
+                w2[1]
+            );
+        }
+        // The failure mode was total segregation — every audio unit after every video unit — so assert the
+        // lanes actually interleave rather than merely being monotonic.
         let pids: Vec<u16> = keys.iter().map(|(p, _)| *p).collect();
         assert!(
             pids.windows(2).filter(|w| w[0] != w[1]).count() >= 8,
