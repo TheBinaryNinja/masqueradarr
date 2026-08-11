@@ -626,21 +626,33 @@ impl AppState {
     /// entry record falls back to the mount source's policy (today's behavior). Touches last_access so an
     /// actively-polling session (hops only — HLS players rarely re-request the ENTRY) keeps its cursor.
     pub fn hop_policy(&self, source: &str, entry: &str) -> Option<Arc<SourcePolicy>> {
-        if !entry.is_empty() {
-            let policy_key = {
-                let mut m = self.targets.lock_ok();
-                m.get_mut(&target_key(source, entry)).map(|e| {
-                    e.last_access = Instant::now();
-                    e.policy_key.clone()
-                })
-            };
-            if let Some(pk) = policy_key {
-                if let Some(p) = self.get(&pk) {
-                    return Some(p);
-                }
-            }
+        self.resolved_target_policy(source, entry).or_else(|| self.get(source))
+    }
+
+    /// The policy for a target this process has ACTUALLY resolved — `hop_policy`'s strict half, with no
+    /// mount-source fallback.
+    ///
+    /// The distinction is a gate, not an optimisation. Falling back to the source's policy answers "is this
+    /// a source we know", which is true of every source that ever served anything; requiring the target
+    /// record answers "is this an entry we have resolved", which is what a caller needs before it may act on
+    /// an entry string a client supplied. `origin::serve_playlist` uses it for exactly that: a lane poll may
+    /// restart a dead ingest for a channel we were serving, and must not start one for an arbitrary URL.
+    ///
+    /// A record is written on every resolve and never swept (`expires` only governs REUSE), so this reads as
+    /// "resolved at some point in this process" — which is what makes it a usable gate rather than a race
+    /// against `TARGET_TTL`.
+    pub fn resolved_target_policy(&self, source: &str, entry: &str) -> Option<Arc<SourcePolicy>> {
+        if entry.is_empty() {
+            return None;
         }
-        self.get(source)
+        let policy_key = {
+            let mut m = self.targets.lock_ok();
+            m.get_mut(&target_key(source, entry)).map(|e| {
+                e.last_access = Instant::now();
+                e.policy_key.clone()
+            })
+        };
+        self.get(&policy_key?)
     }
 
     pub fn get(&self, source: &str) -> Option<Arc<SourcePolicy>> {

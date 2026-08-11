@@ -2259,11 +2259,14 @@ pub async fn serve_playlist(
     id: &crate::proxy::Identity,
     rid: &str,
 ) -> axum::response::Response {
-    // No cached policy means nothing in this process has ever resolved this source, so there is nothing to
-    // start an ingest FROM — and no origin either, since creating one requires the same policy. Answering 404
-    // is what this did in every case before it could respawn.
-    let Some(policy) = state.hop_policy(source, entry) else {
-        log::warn("oop", rid, || format!("playlist {lane:?}: no cached policy for {source} — cannot start an ingest"));
+    // The gate on restarting an ingest from a LANE poll: this (source, entry) must be one we have actually
+    // resolved. `hop_policy` would answer here too, but its fallback is the mount SOURCE's policy, which
+    // exists for any source that ever served anything — so it would let a client spawn an ingest, and the
+    // Node resolve round-trips behind it, for any entry string it cared to encode into an `o/` URL. These
+    // routes are otherwise side-effect-free by design. A session that legitimately needs the restart always
+    // has the record: its entry was resolved to serve the master it is polling the lanes of.
+    let Some(policy) = state.resolved_target_policy(source, entry) else {
+        log::warn("oop", rid, || format!("playlist {lane:?}: {source} entry was never resolved here — not starting an ingest"));
         return crate::proxy::text(404, "not found: no live ingest");
     };
     let lease = subscribe(state, source, entry, pl, &policy);
@@ -2837,8 +2840,17 @@ pub(crate) struct RingFootprint {
 /// would mean cloning the `Arc`s out and DROPPING the registry guard before any `ring.read_ok()`.
 pub(crate) fn ring_footprint(origins: &Mutex<HashMap<String, Arc<Origin>>>) -> RingFootprint {
     let map = origins.lock_ok();
-    let mut f = RingFootprint { origins: map.len(), subscribed: 0, bytes: 0, cap_bytes: 0 };
+    let mut f = RingFootprint { origins: 0, subscribed: 0, bytes: 0, cap_bytes: 0 };
     for o in map.values() {
+        // A STOPPING entry is not a live channel and must not be counted as one. The registry keeps a
+        // declined origin as the memo that stops its verdict being re-derived on every poll — the ring is
+        // dropped, so it costs no media, but counting it would overstate both the origin count and the
+        // headroom this number exists to size an eviction budget against. An ordinary teardown removes its
+        // entry outright, so in practice a declined origin is the only thing this skips.
+        if o.stopping.load(Ordering::Relaxed) {
+            continue;
+        }
+        f.origins += 1;
         if o.subscribers.load(Ordering::Relaxed) > 0 {
             f.subscribed += 1;
         }
@@ -3080,14 +3092,23 @@ mod tests {
         // `idle` keeps zero subscribers: it is inside its IDLE_GRACE window, still holding RAM. Counting it in
         // `bytes` but not in `subscribed` is the whole point — a footprint that only saw watched channels
         // would under-report exactly when a burst of just-closed channels is what filled memory.
+        // A DECLINED origin is retained in the registry as a memo, with its ring dropped and `stopping` set.
+        // It is not a live channel and must not appear in either count, or the number this metric exists to
+        // size an eviction budget against would include channels that can never ingest again.
+        let declined = Arc::new(Origin::new(7_000));
+        declined.mark_ineligible("fMP4 (#EXT-X-MAP) is not concatenable".to_string());
+        declined.stopping.store(true, Ordering::Relaxed);
+
         let map: HashMap<String, Arc<Origin>> =
-            [("a".to_string(), watched), ("b".to_string(), idle)].into_iter().collect();
+            [("a".to_string(), watched), ("b".to_string(), idle), ("c".to_string(), declined)]
+                .into_iter()
+                .collect();
         let f = ring_footprint(&Mutex::new(map));
 
-        assert_eq!(f.origins, 2);
+        assert_eq!(f.origins, 2, "the retained decline is not a live origin");
         assert_eq!(f.subscribed, 1, "the idle origin still costs RAM but has no viewer");
         assert_eq!(f.bytes, 2_100, "1500 + 600 — every ring, watched or not");
-        assert_eq!(f.cap_bytes, 14_000, "Σ per-channel caps: headroom, not a global ceiling");
+        assert_eq!(f.cap_bytes, 14_000, "Σ per-channel caps: headroom, not a global ceiling — and not the decline's 7000");
     }
 
     #[test]
