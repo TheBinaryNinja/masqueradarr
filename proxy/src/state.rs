@@ -146,6 +146,14 @@ pub struct SourcePolicy {
     pub relabel_segment: RwLock<Option<String>>,
     /// Permit private/loopback upstream IPs (LAN sources); false for public-CDN sources.
     pub allow_private: AtomicBool,
+    /// Whether the SERVING adapter has alternate upstreams to walk to — Node's `adapter.playerSelectable`.
+    ///
+    /// The undecodable-upstream detector (S3/UND, `origin.rs`) is scoped to it: retiring a provider is only
+    /// useful where there is another one to retire it FOR, and on a single-upstream source the retirement
+    /// would just re-resolve the same dead provider on a 2 s loop. It rides the grant because that capability
+    /// is the adapter's, and the adapter lives in Node — the data plane used to test `source == "dlhd"`,
+    /// which was the crate's only hardcoded provider id and silently excluded the next such adapter.
+    pub player_selectable: AtomicBool,
     /// The growing SSRF allowlist (lowercased hosts): seed = resolved master host, grown from manifest children.
     pub hosts: RwLock<HashSet<String>>,
     /// PXY-2: the resolved proxy-config CLIENT knobs for this source's streams (from the grant). proxy.rs
@@ -200,6 +208,7 @@ impl SourcePolicy {
             headers: RwLock::new(Vec::new()),
             relabel_segment: RwLock::new(None),
             allow_private: AtomicBool::new(false),
+            player_selectable: AtomicBool::new(false),
             hosts: RwLock::new(HashSet::new()),
             connect_timeout_ms: AtomicU64::new(15000),
             max_redirects: AtomicU32::new(10),
@@ -227,6 +236,10 @@ pub struct Grant {
     pub relabel_segment: Option<String>,
     #[serde(rename = "allowPrivate")]
     pub allow_private: bool,
+    /// S3/UND: does the serving adapter have alternate upstreams? `default` → false → an older Node degrades
+    /// to "no undecodable detection", which is the safe direction: the detector only ever RETIRES an upstream.
+    #[serde(rename = "playerSelectable", default)]
+    pub player_selectable: bool,
     // PXY-2: the resolved (Custom→Default→env) proxy config. Node already merged headerOverrides into
     // upstreamHeaders, so this struct declares the knobs Rust applies: connectTimeoutMs + maxRedirects (P2,
     // client-level), readTimeoutMs + bufferSizeKb (P3.1/RSL, per-stream) and outputFormat (hls|ts, P3.2/DST).
@@ -691,6 +704,7 @@ impl AppState {
         *policy.headers.write_ok() = grant.upstream_headers.into_iter().collect();
         *policy.relabel_segment.write_ok() = grant.relabel_segment;
         policy.allow_private.store(grant.allow_private, Ordering::Relaxed);
+        policy.player_selectable.store(grant.player_selectable, Ordering::Relaxed);
         // PXY-2: record the resolved client knobs so proxy.rs selects the matching upstream client per hop.
         policy.connect_timeout_ms.store(grant.proxy_config.connect_timeout_ms, Ordering::Relaxed);
         policy.max_redirects.store(grant.proxy_config.max_redirects, Ordering::Relaxed);

@@ -123,6 +123,10 @@ pub(crate) struct PairWeaver {
     /// `PairSplicer::last_decline` — a decline that only says "declined" cannot distinguish a shape this pass
     /// genuinely cannot carry from a bug in this pass.
     last_decline: String,
+    /// The stable CAUSE of that decline — the format string, before its measurements are filled in. Callers
+    /// latch their per-reason warning on this; see `PairSplicer::last_slug` for why the message itself cannot
+    /// serve as the key.
+    last_slug: &'static str,
 }
 
 impl PairWeaver {
@@ -136,12 +140,19 @@ impl PairWeaver {
             carry_units: Vec::new(),
             since_psi: 0,
             last_decline: String::new(),
+            last_slug: "",
         }
     }
 
     /// Why the last pair was declined — the splicer's reason, or this module's own.
     pub(crate) fn last_decline(&self) -> &str {
         &self.last_decline
+    }
+
+    /// The stable cause behind it, for a per-reason log latch. Forwarded unchanged when the decline came from
+    /// the splicer, so one key names one cause across both layers.
+    pub(crate) fn last_decline_slug(&self) -> &'static str {
+        self.last_slug
     }
 
     /// Forget the timeline and the seam carry-over. Same contract as `PairSplicer::reset`, and it MUST be
@@ -160,9 +171,12 @@ impl PairWeaver {
     /// the caller must `reset()` and skip it. There is deliberately no "serve verbatim" fallback here — the
     /// muxed path has one because a single transport stream concatenates, and two do not.
     pub(crate) fn weave(&mut self, video: &[u8], audio: &[u8]) -> Option<Vec<u8>> {
+        // The format string is the cause key; the interpolated values are the measurement. See the twin macro
+        // in `PairSplicer::normalize_pair`.
         macro_rules! decline {
-            ($($why:tt)*) => {{
-                self.last_decline = format!($($why)*);
+            ($fmt:literal $(, $arg:expr)* $(,)?) => {{
+                self.last_slug = $fmt;
+                self.last_decline = format!($fmt $(, $arg)*);
                 return None;
             }};
         }
@@ -170,7 +184,13 @@ impl PairWeaver {
         // 1. One clock, canonical pids, skew-guarded — all of it `PairSplicer`'s, none of it ours.
         let (vout, aout) = match self.pair.normalize_pair(video, audio) {
             Some(p) => p,
-            None => decline!("{}", self.pair.last_decline()),
+            // Forwarded by hand rather than through `decline!`: the reason is already formatted, and its slug
+            // belongs to the splicer. Passing it through the macro would key the latch on "{}".
+            None => {
+                self.last_slug = self.pair.last_decline_slug();
+                self.last_decline = self.pair.last_decline().to_string();
+                return None;
+            }
         };
 
         // The carry belongs to the PREVIOUS pair's buffers, so take it now: from here on `self` must be free

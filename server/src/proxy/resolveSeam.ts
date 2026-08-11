@@ -40,6 +40,16 @@ export interface ResolveGrant {
   allowPrivate: boolean;
   /** Whether the request URL needed server-side resolution (vs a direct passthrough entry). */
   isEntry: boolean;
+  /**
+   * Does the SERVING adapter have alternate upstreams to walk to (`adapter.playerSelectable`)?
+   *
+   * S3/UND: the local origin's undecodable-upstream detector is scoped to this. Retiring an upstream only
+   * helps where another one can take over — on a single-upstream source the retirement just re-resolves the
+   * same dead provider on a 2 s loop. It rides the grant because the capability belongs to the adapter, and
+   * the data plane must not know adapter names: it used to test `source === 'dlhd'` in Rust, which silently
+   * excluded the next playerSelectable adapter from detection until someone edited and redeployed the crate.
+   */
+  playerSelectable: boolean;
   /** The resolved (Default/Custom) data-plane config for this stream — Rust applies the LIVE knobs, carries the rest. */
   proxyConfig: RuntimeProxyConfig;
   /**
@@ -84,7 +94,8 @@ function mergeUpstreamHeaders(
   return out;
 }
 
-// Read a channel's per-channel player OVERRIDE (for playerSelectable sources — dlhd/dami). Returns the 1-based
+// Read a channel's per-channel player OVERRIDE (for playerSelectable sources — dlhd today, and any adapter
+// that sets the flag; dami was the second one until dami.tv was taken down). Returns the 1-based
 // preference, or 0 when unset (the adapter's resolveStream then falls back to the cached source-wide default).
 // Mirrors buildFailoverGrant's reverse lookup: exact by (streamEntryUrl, pl) when the composed M3U stamped ?pl,
 // else a DETERMINISTIC no-pl fallback (canonical source-playlist doc, then the lexically-first clone copy). One
@@ -265,6 +276,7 @@ export async function buildGrant(
     relabelSegment,
     allowPrivate: false,
     isEntry,
+    playerSelectable: !!adapter.playerSelectable,
     proxyConfig,
     adSignature: adapter.proxy.adSignature ?? null,
     policySource: source,
@@ -414,6 +426,9 @@ async function buildFailoverGrant(
     relabelSegment,
     allowPrivate: false,
     isEntry,
+    // The CHILD's capability, for the same reason as its signature below: a failover onto a single-upstream
+    // provider must not keep the parent's alternates-exist promise, and vice versa.
+    playerSelectable: !!candAdapter.playerSelectable,
     proxyConfig,
     // The CHILD's own signature, like its headers/relabel — a cross-provider backup must not inherit the
     // parent provider's ad shape (same reason policySource names candSource).

@@ -770,6 +770,14 @@ pub(crate) struct PairSplicer {
     /// bug in this pass — the same lesson that got the two URL-shape splice heuristics removed. Every early
     /// return below names itself, and the layout ones print what they were actually handed.
     last_decline: String,
+    /// The CAUSE of that decline, as a stable key — the format string the message was built from, with the
+    /// per-occurrence measurements still to be filled in.
+    ///
+    /// The two are not interchangeable. Callers latch a "warn once per distinct reason" set on this, and
+    /// keying that on `last_decline` instead defeats it completely: every message here interpolates live
+    /// numbers (a drift in ms, a pid dump), so on the churning sources this pass exists for, every single
+    /// decline mints a new key — a warn per segment forever, and a set that only grows.
+    last_slug: &'static str,
 }
 
 /// A 33-bit clock delta read as a SIGNED millisecond offset — skews are small either side of zero, and
@@ -795,12 +803,18 @@ impl PairSplicer {
             audio_cc: HashMap::new(),
             locked_skew: None,
             last_decline: String::new(),
+            last_slug: "",
         }
     }
 
     /// Why the last pair was declined — for the `iop` log.
     pub(crate) fn last_decline(&self) -> &str {
         &self.last_decline
+    }
+
+    /// The stable cause behind `last_decline` — what a per-reason log latch must key on. See `last_slug`.
+    pub(crate) fn last_decline_slug(&self) -> &'static str {
+        self.last_slug
     }
 
     /// Forget the timeline, both layouts and the latched skew. Same contract as `Splicer::reset`.
@@ -820,17 +834,23 @@ impl PairSplicer {
     /// Rewrite one paired segment. `None` ⇒ NEITHER lane may be published rewritten.
     pub(crate) fn normalize_pair(&mut self, video: &[u8], audio: &[u8]) -> Option<(Vec<u8>, Vec<u8>)> {
         // Every arm names itself, so the `iop` log can say WHICH stage refused this pair.
+        //
+        // The FORMAT STRING doubles as the cause key: it is a `&'static str` that is constant per site, while
+        // everything that varies between occurrences lives in the interpolated arguments. That split is what
+        // lets a caller latch one warning per cause without either losing the measurements from the message or
+        // minting a new key for every drift value. A new decline site gets a distinct key for free.
         macro_rules! decline {
-            ($($why:tt)*) => {{
-                self.last_decline = format!($($why)*);
+            ($fmt:literal $(, $arg:expr)* $(,)?) => {{
+                self.last_slug = $fmt;
+                self.last_decline = format!($fmt $(, $arg)*);
                 return None;
             }};
         }
         macro_rules! need {
-            ($e:expr, $($why:tt)*) => {
+            ($e:expr, $fmt:literal $(, $arg:expr)* $(,)?) => {
                 match $e {
                     Some(v) => v,
-                    None => decline!($($why)*),
+                    None => decline!($fmt $(, $arg)*),
                 }
             };
         }
