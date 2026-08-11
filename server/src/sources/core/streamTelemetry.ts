@@ -270,6 +270,35 @@ export interface MediaInfo {
 // channelKey → merged decode metadata. Bounded by the CHANNEL AGGREGATE's lifetime: the tick that drops a
 // cold aggregate drops this with it (see the `channels.delete` site). Deliberately NOT in statsHub's
 // activeKeys prune block with the display-only maps — the reasons are spelled out at that delete.
+/** Every DISPLAY-ONLY per-channel map, registered on creation so one sweep prunes them all.
+ *
+ * The pattern this replaces was a hand-written `prune<Name>(activeKeys)` per map plus a matching call in
+ * statsHub — six of each by the end. Nothing enforced the pairing: a new map whose prune or whose call site
+ * was forgotten grew without bound, keyed by every channel ever played, and nothing would ever say so.
+ * Registering at declaration makes the omission unrepresentable.
+ *
+ * DISPLAY-ONLY is the entry requirement, not a description. `activeKeys` is built by statsHub and pruned
+ * only while an admin socket is open, so a map that any DETECTION path reads must not be in here — see
+ * `mediaByChannel`, which is deliberately kept out and torn down with the channel aggregate instead. */
+const displayMaps: Map<string, unknown>[] = [];
+
+function displayMap<V>(): Map<string, V> {
+  const m = new Map<string, V>();
+  displayMaps.push(m as Map<string, unknown>);
+  return m;
+}
+
+/** Drop every display-only map's entries for channels that are no longer active. One sweep, all maps. */
+export function pruneChannelDisplayMaps(activeKeys: Set<string>): void {
+  for (const m of displayMaps) {
+    for (const key of m.keys()) if (!activeKeys.has(key)) m.delete(key);
+  }
+}
+
+// NOT a `displayMap`, deliberately: the client-shortfall heuristic reads this one's `bandwidth`, so pruning
+// it from `activeKeys` would make buffering DETECTION depend on whether an admin has the screen open. It is
+// torn down with the channel aggregate instead — see the long note at its delete site for the two reasons
+// and for why a sweep over this map is not equivalent.
 const mediaByChannel = new Map<string, MediaInfo>();
 
 /**
@@ -319,7 +348,7 @@ export interface FailoverServing {
   candidateName: string; // the serving child's tvg_name (display)
 }
 
-const failoverByChannel = new Map<string, FailoverServing>(); // channelKey → serving candidate
+const failoverByChannel = displayMap<FailoverServing>(); // channelKey → serving candidate
 
 /** Record (or clear, with null) which failover candidate a channel's grants currently target. */
 export function noteFailoverServing(source: string, entryUrl: string, f: FailoverServing | null): void {
@@ -334,17 +363,13 @@ export function failoverFor(channelKey: string): FailoverServing | null {
 }
 
 /** Drop failover attribution for channels no longer active (statsHub calls this with the live key set). */
-export function pruneFailoverServing(activeKeys: Set<string>): void {
-  for (const key of failoverByChannel.keys()) if (!activeKeys.has(key)) failoverByChannel.delete(key);
-}
-
 // ── Upstream attribution: which HOST is actually carrying this channel ─────────────────────────────────
 // The channel row names a SOURCE (`dlhd`), which for a multi-provider source says nothing about which of its
 // interchangeable providers is on air right now. The resolve seam knows — it just discarded it. Same
 // in-memory idiom and the same (parent source, parent entry) key as the failover map above, so a child
 // serving under its parent's identity files its host under the parent, where statsHub can join it.
 
-const hostByChannel = new Map<string, string>(); // channelKey → entry-hop host
+const hostByChannel = displayMap<string>(); // channelKey → entry-hop host
 
 /** Record the host a channel's grant currently resolves to. Callers MUST pass the caller's own (source,
  *  entryUrl), never a resolved candidate's — see noteFailoverServing for why. */
@@ -360,10 +385,6 @@ export function upstreamHostFor(channelKey: string): string | null {
 }
 
 /** Drop host attribution for channels no longer active (statsHub calls this with the live key set). */
-export function pruneUpstreamHost(activeKeys: Set<string>): void {
-  for (const key of hostByChannel.keys()) if (!activeKeys.has(key)) hostByChannel.delete(key);
-}
-
 // ── The proxy config a stream was actually GRANTED ──────────────────────────────────────────────────────
 // Answers the one question the panel could not: "I set Raw-TS and I am still being served HLS — why?" The
 // served half is `delivery`; this is the requested half, captured where it is resolved rather than re-read
@@ -380,7 +401,7 @@ export interface RequestedConfig {
   spliceNormalize: boolean;
 }
 
-const requestedByChannel = new Map<string, RequestedConfig>(); // channelKey → config resolved into the grant
+const requestedByChannel = displayMap<RequestedConfig>(); // channelKey → config resolved into the grant
 
 /** Record the proxy config resolved into a channel's grant. */
 export function noteRequestedConfig(source: string, entryUrl: string, c: RequestedConfig): void {
@@ -393,10 +414,6 @@ export function requestedConfigFor(channelKey: string): RequestedConfig | null {
 }
 
 /** Drop requested config for channels no longer active (statsHub calls this with the live key set). */
-export function pruneRequestedConfig(activeKeys: Set<string>): void {
-  for (const key of requestedByChannel.keys()) if (!activeKeys.has(key)) requestedByChannel.delete(key);
-}
-
 // ── How this channel's last viewer session ENDED ───────────────────────────────────────────────────────
 // A closed session leaves the `clients` map by definition, so nothing about it survives into the live
 // snapshot — `closeSession` feeds ClosedSession → ViewSession, which is History, not Active Streams. This map
@@ -417,7 +434,7 @@ export interface LastClose {
   socketBound: boolean;
 }
 
-const lastCloseByChannel = new Map<string, LastClose>(); // channelKey → how the last session ended
+const lastCloseByChannel = displayMap<LastClose>(); // channelKey → how the last session ended
 
 /** The last session end for a channel (null = no session has ended on it yet). */
 export function lastCloseFor(channelKey: string): LastClose | null {
@@ -425,10 +442,6 @@ export function lastCloseFor(channelKey: string): LastClose | null {
 }
 
 /** Drop close attribution for channels no longer active (statsHub calls this with the live key set). */
-export function pruneLastClose(activeKeys: Set<string>): void {
-  for (const key of lastCloseByChannel.keys()) if (!activeKeys.has(key)) lastCloseByChannel.delete(key);
-}
-
 // ── S3/ORIGIN ingest health (the `iop` side) ───────────────────────────────────────────────────────────
 // Everything else in this file measures EGRESS — bytes we sent to a viewer. Origin mode adds a second,
 // independent quantity: what ONE ingest pulled from upstream on behalf of N viewers. Conflating them would
@@ -444,29 +457,33 @@ export interface IngestHealth {
   /** THIS channel's live applied cap in bytes — the denominator `ringBytes` needs to mean anything. NOT the
    *  configured `originRingMb` (a shrink is applied lazily) and NOT the process-wide Σ that
    *  `noteRingFootprint` carries; all three legitimately differ at the same instant. */
-  channelRingCapBytes: number;
+  /** UNDEFINED means "this sidecar did not report it" — a distinct state from any value, and the reason
+   *  these fields are not plain numbers/booleans. An older sidecar (mid-upgrade, or the aio image's split
+   *  rebuild) omits the keys this release added; coercing them to 0/false/null at the ingest seam would
+   *  state a measurement nobody took, and the panel's version-skew branches all test `undefined`. */
+  channelRingCapBytes: number | undefined;
   /** Σ of the held segments' own durations — the real window length, as opposed to
    *  `ringSegments × targetDuration`, which over-reads by each segment's gap below the window max. */
-  ringSeconds: number;
+  ringSeconds: number | undefined;
   /** The byte cap could not be honored because the MIN_SEGMENTS floor won: this channel's bitrate does not
    *  fit its ring budget. While true, `ringBytes` legitimately exceeds `channelRingCapBytes`. */
   floorBeatsCap: boolean;
   headSeq: number; // our next sequence — monotonic for the life of the ingest
   generation: number; // bumped on a failover ring reset
   /** RFC 8216's EXT-X-DISCONTINUITY-SEQUENCE: discontinuity tags that have already LEFT the window. */
-  discSeq: number;
+  discSeq: number | undefined;
   /** Discontinuity tags still INSIDE the window. Disjoint from `discSeq` — never sum the two. */
-  discInWindow: number;
+  discInWindow: number | undefined;
   ingestedSegments: number;
   ingestedBytes: number; // UPSTREAM bytes — distinct from egress; one of these can serve N viewers
   evictedSegments: number;
   targetDuration: number;
   /** True when the origin paired a separate audio rendition into every segment (a DEMUXED upstream). */
-  demuxed: boolean;
+  demuxed: boolean | undefined;
   /** Non-null ⇒ the origin DECLINED this upstream (fMP4 / SAMPLE-AES / unpairable audio) and the rewrite
    *  path is serving the client instead. The ingest keeps reporting either way, so without this field a
    *  declined channel is indistinguishable from a healthy ring-backed one. */
-  ineligible: string | null;
+  ineligible: string | null | undefined;
   /** What the ORIGIN's upstream turned out to be — 'ts' | 'hls-master' | 'hls-media'. The authoritative
    *  reading for a ring-backed channel; the passthrough rewriter reports the same idea onto MediaInfo, and a
    *  channel with an INELIGIBLE origin legitimately has both. */
@@ -478,11 +495,11 @@ export interface IngestHealth {
   /** S3/UND: slug of the last structural fault that retired an upstream (`undecodable-video`,
    *  `not-transport-stream`), or null if none. Non-null means this channel has been hopping providers —
    *  a state every other field here reports as healthy, because fetching IS working. */
-  suspect: string | null;
+  suspect: string | null | undefined;
   suspectRetires: number;
 }
 
-const ingestByChannel = new Map<string, IngestHealth>(); // channelKey → last ingest snapshot
+const ingestByChannel = displayMap<IngestHealth>(); // channelKey → last ingest snapshot
 
 /** Record the data plane's latest `iop` snapshot for a channel. */
 export function noteIngest(source: string, entryUrl: string, h: IngestHealth): void {
@@ -495,10 +512,6 @@ export function ingestFor(channelKey: string): IngestHealth | null {
 }
 
 /** Drop ingest health for channels no longer active (statsHub calls this with the live key set). */
-export function pruneIngest(activeKeys: Set<string>): void {
-  for (const key of ingestByChannel.keys()) if (!activeKeys.has(key)) ingestByChannel.delete(key);
-}
-
 // ── S3/CUE: ad-break state (per channel) ────────────────────────────────────────────────────────────────
 // An EVENT stream, not a health snapshot: the sidecar sends exactly two frames per break (open/close), so
 // this map holds "what is happening on this channel right now" plus a small rolling tally the operator can
@@ -526,7 +539,7 @@ export interface AdBreakState {
   at: number; // Date.now() of the last cue event
 }
 
-const adBreakByChannel = new Map<string, AdBreakState>();
+const adBreakByChannel = displayMap<AdBreakState>();
 
 /** Record an ad-break edge from the data plane. `state` is 'open' or 'close'. */
 export function noteAdBreak(
@@ -554,10 +567,6 @@ export function adBreakFor(channelKey: string): AdBreakState | null {
 }
 
 /** Drop ad-break state for channels no longer active (statsHub calls this with the live key set). */
-export function pruneAdBreaks(activeKeys: Set<string>): void {
-  for (const key of adBreakByChannel.keys()) if (!activeKeys.has(key)) adBreakByChannel.delete(key);
-}
-
 // ── S3/ORIGIN aggregate ring footprint (process-wide) ──────────────────────────────────────────────────
 // The map above is PER-CHANNEL and is pruned against the active-stream set, so it cannot answer "how much RAM
 // are the rings holding" — an origin inside its 30s idle grace still owns its bytes with no active row to hang

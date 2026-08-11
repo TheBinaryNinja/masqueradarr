@@ -15,7 +15,7 @@ export interface FailoverEpgSnapshot {
 }
 
 // A grouped child's epgState is NEVER null: the fill-only sync writers (epg/fastSelfEpg.ts,
-// sources/epgCrosswalk.ts, the dlhd/dami/tubi/local afterSync self-links) all match
+// sources/epgCrosswalk.ts, the dlhd/tubi/local afterSync self-links) all match
 // { epg: null, epgState: null } as "untouched" — a child inheriting an unlinked parent's nulls would be
 // independently re-linked to its OWN guide id on the next sync, silently diverging from the parent.
 export function inheritedEpgState(snap: FailoverEpgSnapshot): 'matched' | 'unmatched' {

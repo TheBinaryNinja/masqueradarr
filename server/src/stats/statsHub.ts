@@ -16,7 +16,7 @@
 
 import { WebSocket } from 'ws';
 import { logger } from '../sources/core/logger.js';
-import { snapshotRaw, mediaFor, failoverFor, pruneFailoverServing, ingestFor, pruneIngest, adBreakFor, pruneAdBreaks, upstreamHostFor, pruneUpstreamHost, requestedConfigFor, pruneRequestedConfig, lastCloseFor, pruneLastClose, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState, type RequestedConfig, type LastClose } from '../sources/core/streamTelemetry.js';
+import { snapshotRaw, mediaFor, failoverFor, ingestFor, adBreakFor, upstreamHostFor, requestedConfigFor, lastCloseFor, pruneChannelDisplayMaps, onSessionClose, onBufferEvent, type ClosedSession, type MediaInfo, type FailoverServing, type IngestHealth, type AdBreakState, type RequestedConfig, type LastClose } from '../sources/core/streamTelemetry.js';
 import { humanVideoCodec, humanAudioCodec, humanContainer, humanResolution, parseFps } from '../sources/core/decodeLabels.js';
 import { streamKey, phaseFor, type StreamPhase } from '../sources/core/streamState.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -238,12 +238,9 @@ export async function buildDisplaySnapshot(): Promise<DisplayStream[]> {
   }
   // Drop debounce state for channels no longer active (keeps the map bounded to live channels).
   for (const key of bufferDebounce.keys()) if (!activeKeys.has(key)) bufferDebounce.delete(key);
-  pruneFailoverServing(activeKeys);
-  pruneIngest(activeKeys);
-  pruneAdBreaks(activeKeys);
-  pruneUpstreamHost(activeKeys);
-  pruneRequestedConfig(activeKeys);
-  pruneLastClose(activeKeys);
+  // One sweep over every display-only per-channel map. This used to be one call per map, which meant a new
+  // map needed a new call remembered HERE as well as a prune written there — see `pruneChannelDisplayMaps`.
+  pruneChannelDisplayMaps(activeKeys);
   return out;
 }
 
@@ -317,7 +314,13 @@ function broadcast(payload: unknown): void {
 }
 
 async function pushSnapshot(only?: WebSocket): Promise<void> {
-  const text = JSON.stringify({ type: 'active-streams', streams: await buildDisplaySnapshot() });
+  // `at` is THIS process's clock at send time, and it is load-bearing rather than informational. Every
+  // timestamp in the payload below — `lastSeen`, `connectedAt`, `ingest.at`, `lastClose.at` — is stamped with
+  // the same Date.now(), so a client that ages them against ITS OWN clock is subtracting two different
+  // clocks: a few seconds of skew is enough to pin a channel permanently live or permanently dead, and the
+  // browser reading is worst exactly when the stream dies. Sending our clock alongside lets the SPA turn all
+  // of them back into same-clock subtractions (see `serverNow` in useStreamStats).
+  const text = JSON.stringify({ type: 'active-streams', at: Date.now(), streams: await buildDisplaySnapshot() });
   if (only) send(only, text);
   else for (const ws of sockets) send(ws, text);
 }

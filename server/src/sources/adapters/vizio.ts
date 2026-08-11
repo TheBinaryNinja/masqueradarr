@@ -88,7 +88,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 // Build the vizio self-EPG from the airings schedule grid (the same `raw` catalog rows buildSource consumed),
 // upsert the 'vizio' EpgSource, and self-link the still-untouched channels onto it. Live-only (the caller guards
 // on `live` so a snapshot fallback never overwrites a good guide). FILL-ONLY-IF-UNTOUCHED — same posture as
-// dlhd/dami/samsung.
+// dlhd/samsung.
 async function applyVizioSelfEpg(sourceId: string, raw: VizioRow[]): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);

@@ -826,17 +826,26 @@ Three consequences worth knowing:
 **Audio in its own `#EXT-X-MEDIA` rendition.** Some providers — pluto on every device
 cohort — offer no muxed variant at all: every `#EXT-X-STREAM-INF` defers its audio to a separate rendition
 playlist. Following the variant alone would ring, and serve, **video only**. The engine therefore rings the
-**pair**: one ring entry holds the video segment *and* its audio partner, matched on the upstream media
-sequence, and the entry URL answers with a small **master we author** over two media playlists of our own
-(`…/o/<entry>/v.m3u8` and `…/o/<entry>/a.m3u8`).
+**pair**: one ring entry holds the video segment *and* its audio partner, and the entry URL answers with a
+small **master we author** over two media playlists of our own (`…/o/<entry>/v.m3u8` and
+`…/o/<entry>/a.m3u8`).
 
-Two properties make this safe, and both are load-bearing:
+Three properties make this safe, and all three are load-bearing:
 
+- **The pair is matched on the wall clock, not the sequence number.** `#EXT-X-PROGRAM-DATE-TIME` dates the
+  media itself, so it survives a renumbering; the media sequence only *looks* like a cross-rendition identity.
+  Pluto renumbers the two renditions independently across a session renewal — its stitcher ends the playlist
+  every ~25 s — so a fresh video playlist can open at sequence 10 against the audio's 11 **for the same
+  media**, and index pairing then puts every pair of that session about one segment out. The sequence index
+  remains the fallback for a source that publishes no PDT, where an aligned pair resolves to the same segment
+  either way. Each lane's *own* sequence still matters once a partner is picked: an absent `#EXT-X-KEY` IV is
+  derived from it (RFC 8216 §5.2), and the two lanes' numbers are exactly what diverge.
 - **One offset, both lanes.** A single affine shift is computed from the *video* lane's DTS and applied to
   both renditions, so the source's authored A/V skew is translated rather than replaced. Computing an offset
   per lane would manufacture a lip-sync error that was not in the source. A skew guard declines the pair
-  outright if the two renditions ever drift more than half a second apart, and a declined pair publishes
-  **both** lanes verbatim so they stay in sync with each other.
+  outright if the lanes' offset ever moves more than half a second from the skew locked on the first pair —
+  it bounds the DRIFT, not the skew's own magnitude, which a source is free to author as large as it likes —
+  and a declined pair publishes **both** lanes verbatim so they stay in sync with each other.
 - **Both lanes get the PID remap.** An ad creative is JIT-transmuxed into separate video and audio sources
   with their own arbitrary PSI, so the pids churn on *both* sides of a pod edge — normalising only the video
   would leave the audio track dying at every break.

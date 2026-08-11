@@ -33,7 +33,7 @@ import { Schema, model } from 'mongoose';
 //                    log). Global operator toggle, edited on the Settings screen; consumed only by the SPA.
 //                    Legacy rows hold only 'inapp'/'debug' and stay valid — settings/translate.ts coerces
 //                    anything unrecognized back to 'inapp', so no migration is needed.
-//   - dlhdPlayer   — source-wide DEFAULT upstream player for DaddyLive (dlhd/dami) channels that expose several
+//   - dlhdPlayer   — source-wide DEFAULT upstream player for DaddyLive (dlhd) channels that expose several
 //                    (0 = Auto/first; 1..N = a specific player). A per-channel override (PlaylistChannel.playerPref)
 //                    wins over it. Cached into the dlhd resolver at boot + on every save (settings/applyDlhdPlayer.ts)
 //                    so the hot resolve path reads it with no DB hit.
@@ -53,7 +53,7 @@ export interface SettingsDoc {
   offset: string; // DST-aware UTC offset ('±HHMM') derived from `timezone` on save; stamped onto programs + emitted in the guide
   darkMode: boolean;
   videoPlayer: 'inapp' | 'ultimate' | 'debug'; // which player the slide-out renders ('inapp' default; 'ultimate' = popup player window; 'debug' = diagnostic HUD)
-  dlhdPlayer: number; // source-wide default DaddyLive player (0 = Auto/first; 1..N) for dlhd/dami channels without a per-channel override
+  dlhdPlayer: number; // source-wide default DaddyLive player (0 = Auto/first; 1..N) for dlhd channels without a per-channel override
   nameservers: string | null; // comma-separated outbound-fetch resolver IP(s); null/blank = OS resolver (DEFAULT_NAMESERVERS 8.8.8.8,8.8.4.4 seeds first boot)
   logLevel: number; // GLOBAL 1|2|3 log verbosity — app + Rust proxy engine (default 2; formerly dnsLogLevel)
   maxmindAccountId: string | null; // MaxMind GeoLite2 web-service account id (null = geo disabled)

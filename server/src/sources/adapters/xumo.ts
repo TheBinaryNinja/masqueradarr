@@ -101,7 +101,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 // Build the xumo self-EPG from the SEPARATE paginated market guide (the asset metadata rides along in each page
 // response, so no per-program asset fetch), upsert the 'xumo' EpgSource, and self-link the still-untouched
 // channels onto it. Live-only (the caller guards on `live` so a snapshot fallback never overwrites a good guide).
-// FILL-ONLY-IF-UNTOUCHED — same posture as dlhd/dami/samsung/vizio/lg/vidaa/whale.
+// FILL-ONLY-IF-UNTOUCHED — same posture as dlhd/samsung/vizio/lg/vidaa/whale.
 async function applyXumoSelfEpg(sourceId: string, raw: XumoRow[]): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);

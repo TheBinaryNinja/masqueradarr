@@ -71,7 +71,7 @@ export const UA =
 // or renames). Index i (0-based) here == "Player i+1" in the UI.
 export const PLAYER_PREFIXES = ['stream', 'cast', 'watch', 'plus', 'casting', 'player'] as const;
 
-// The source-wide DEFAULT player (0 = Auto/first; 1..N = a specific player) for every dlhd/dami channel that
+// The source-wide DEFAULT player (0 = Auto/first; 1..N = a specific player) for every dlhd channel that
 // carries no per-channel override. Cached module-level (like _base) so the hot resolve path reads it with NO
 // DB hit; refreshed from the Settings singleton at boot + on every settings save (settings/applyDlhdPlayer.ts).
 let _playerDefault = 0;

@@ -299,7 +299,7 @@ mod tests {
     #[test]
     fn classifies_stream_mounts() {
         assert_eq!(stream_source("/api/v1/dlhd/aHR0cA"), Some("dlhd"));
-        assert_eq!(stream_source("/api/ext/v1/dami/h/aHR0cA"), Some("dami"));
+        assert_eq!(stream_source("/api/ext/v1/pluto/h/aHR0cA"), Some("pluto"));
         assert_eq!(stream_source("/api/v1/dulo/x"), Some("dulo"));
     }
 

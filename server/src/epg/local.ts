@@ -1,4 +1,4 @@
-// Local Now playlist-bound self-EPG. Unlike a registry source (dlhd/dami) whose afterSync hook writes its
+// Local Now playlist-bound self-EPG. Unlike a registry source (dlhd) whose afterSync hook writes its
 // guide, a Local Now playlist is a CUSTOM playlist (one per market) so its guide is written INSIDE the
 // playlist's own sync (../sources/adapters/local/import.ts → syncLocalPlaylist). This module owns the guide
 // shapes + the per-source replace + the EpgSource upsert, shared by that sync AND the standalone EPG sync
@@ -7,7 +7,7 @@
 // ⚠️ Per-playlist namespacing: every Local playlist has its OWN EpgSource (id === the playlist id), and its
 // epgchannels/programs are scoped by `source === <playlistId>`. The composite guide key is
 // "<playlistId>:<video_id>" (EpgChannel._id == Program.channelId), joined to a PlaylistChannel by
-// `${epg}:${tvg_id}` — exactly the dlhd/dami convention, just keyed by the playlist instead of a source id.
+// `${epg}:${tvg_id}` — exactly the dlhd convention, just keyed by the playlist instead of a source id.
 // Programs come INLINE with the catalog (~5 per channel), so the guide refreshes on every market fetch.
 
 import { EpgSource } from '../models/EpgSource.js';
@@ -115,7 +115,7 @@ export async function writeLocalEpg(
     }
   }
 
-  // Per-source (per-playlist) replace — the same pattern dlhd/dami/tubi use.
+  // Per-source (per-playlist) replace — the same pattern dlhd/tubi use.
   await EpgChannel.deleteMany({ source: playlistId });
   if (channelDocs.length) await EpgChannel.insertMany(channelDocs, { ordered: false });
   await Program.deleteMany({ source: playlistId });

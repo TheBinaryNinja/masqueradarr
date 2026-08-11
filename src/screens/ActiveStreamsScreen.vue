@@ -9,7 +9,7 @@ import Segmented from '../components/Segmented.vue';
 import ChannelLogo from '../components/ChannelLogo.vue';
 import LivelineChart from '../components/LivelineChart.vue';
 import { ACTIVE_STREAMS, CHANNELS, EPG_PROGRAMS, fetchProgramsFor, flagEmoji, type ActiveStream, type Program, type StreamClient } from '../data';
-import { useStreamStats } from '../composables/useStreamStats';
+import { useStreamStats, serverNow } from '../composables/useStreamStats';
 
 // Live snapshot over the /api/stream-stats WebSocket (updates ACTIVE_STREAMS in place). Only show streams
 // whose channelId resolves to a real channel in the global list.
@@ -213,7 +213,8 @@ watch(liveStreams, loadNowNext, { immediate: true });
 
 // Per-client display helpers.
 function rateKB(bps: number) { return (bps / 1024).toFixed(0); }
-function sinceLabel(ts: number) { const m = Math.floor((Date.now() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; }
+// `ts` is a SERVER stamp (a viewer's `connectedAt`), so it ages against the server's clock, not ours.
+function sinceLabel(ts: number) { const m = Math.floor((serverNow() - ts) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m}m` : `${Math.floor(m / 60)}h ${m % 60}m`; }
 // S3/UND: the data plane sends a stable slug (so it can also be recorded against the burnt provider); this
 // is the operator-facing wording. An unknown slug is shown verbatim rather than hidden — a newer sidecar
 // reporting a fault this SPA has not learned yet must not silently disappear from the row.
@@ -263,7 +264,9 @@ function staleMs(ing: ActiveStream['ingest']): number {
 }
 function ageLabel(ms: number): string {
   if (!Number.isFinite(ms)) return '—';
-  const s = Math.round(ms / 1000);
+  // Clamped: an age is never negative, and `s < 90` below would happily render one verbatim ("-42s ago").
+  // Callers now pass a same-clock difference, so this is a backstop against the next caller that does not.
+  const s = Math.max(0, Math.round(ms / 1000));
   return s < 90 ? `${s}s` : `${Math.round(s / 60)}m`;
 }
 function mib(bytes: number): string { return (bytes / 1048576).toFixed(1); }
@@ -326,7 +329,13 @@ function breakAge(s: ActiveStream): number {
   const b = s.adBreak;
   if (!b) return 0;
   const cur = breakSeen[s.channelId];
-  if (!cur || cur.at !== b.at) { breakSeen[s.channelId] = { at: b.at, recvAt: Date.now() }; return 0; }
+  if (!cur || cur.at !== b.at) {
+    // Back-dated by the break's own age for the same reason the ingest seed is: a break that opened before
+    // this screen did must not read as brand new. A genuinely new break still ages to ~0.
+    const age = Math.max(0, serverNow() - b.at);
+    breakSeen[s.channelId] = { at: b.at, recvAt: Date.now() - age };
+    return age;
+  }
   return Date.now() - cur.recvAt;
 }
 
@@ -507,7 +516,10 @@ function stateManifest(): StageState {
 function stateOutput(): StageState {
   const s = sel.value;
   if (!s) return { tone: 'na', text: '—', title: 'No stream selected.' };
-  const now = Date.now();
+  // `lastSeen` / `connectedAt` are stamped by NODE. Aging them against the browser clock made a machine even
+  // ten seconds fast read EVERY row as stale — so this stage, the default-open one, said "draining" forever
+  // while viewers were demonstrably streaming, and the `no egress` fault below could never fire.
+  const now = serverNow();
   // Only a list KNOWN to describe this channel may drive a verdict — see `clientsOf`.
   const rows = selClients.value;
   if (!rows) return { tone: 'unknown', text: 'no reading', title: 'Session list not loaded for this channel yet.' };
@@ -821,7 +833,9 @@ function onRailKey(e: KeyboardEvent): void {
                   <!-- 'NONE' is a measured reading, so it renders as "cleartext" rather than vanishing —
                        an absent row and a channel proven unencrypted are different facts. -->
                   <template v-if="sel.encryption">
-                    <span :style="sel.encryption !== 'NONE' ? 'color: var(--accent-hi);' : ''">· {{ sel.encryption === 'NONE' ? 'cleartext' : sel.encryption }}</span>
+                    <!-- Three states, not two: 'UNKNOWN' means a key tag was present but unreadable, which is
+                         evidence OF encryption, not of its absence — so it reads as encrypted here. -->
+                    <span :style="sel.encryption !== 'NONE' ? 'color: var(--accent-hi);' : ''">· {{ sel.encryption === 'NONE' ? 'cleartext' : sel.encryption === 'UNKNOWN' ? 'encrypted (method unreadable)' : sel.encryption }}</span>
                   </template>
                   <span class="asd-sub">· serving {{ deliveryLabel(sel.delivery) }}</span>
                   <!-- The row's payoff: it names WHICH of the three possible causes made a Raw-TS request come
@@ -1010,7 +1024,8 @@ function onRailKey(e: KeyboardEvent): void {
                          Before register #11 this row could only ever list all three possibilities. -->
                     <span v-if="sel.requested.outputFormat === 'ts' && sel.delivery === 'hls'" class="asd-sub" style="color: var(--warn);">
                       · fell back to HLS —
-                      <template v-if="sel.encryption && sel.encryption !== 'NONE'">the upstream is {{ sel.encryption }} encrypted</template>
+                      <template v-if="sel.encryption === 'UNKNOWN'">the upstream declares a key we could not read</template>
+                      <template v-else-if="sel.encryption && sel.encryption !== 'NONE'">the upstream is {{ sel.encryption }} encrypted</template>
                       <template v-else-if="sel.container === 'fMP4'">the upstream is fMP4</template>
                       <template v-else>the upstream is AES/fMP4 or unreachable as raw TS</template>
                     </span>
@@ -1084,7 +1099,7 @@ function onRailKey(e: KeyboardEvent): void {
               <div class="v mono">
                 <template v-if="sel.lastClose">
                   {{ closeReasonLabel(sel.lastClose.reason) }}
-                  <span class="asd-sub">· {{ ageLabel(Date.now() - sel.lastClose.at) }} ago</span>
+                  <span class="asd-sub">· {{ ageLabel(serverNow() - sel.lastClose.at) }} ago</span>
                   <span v-if="!sel.lastClose.socketBound" class="asd-sub">· HLS sessions never announce a departure, so this is how we noticed, not why it ended</span>
                 </template>
                 <!-- Not "not measured": nothing has ended yet, which is a real state. -->

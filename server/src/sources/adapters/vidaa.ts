@@ -87,7 +87,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 // Build the vidaa self-EPG from the separate /epg/grid schedule (keyed off the same `raw` catalog rows buildSource
 // consumed), upsert the 'vidaa' EpgSource, and self-link the still-untouched channels onto it. Live-only (the
 // caller guards on `live` so a snapshot fallback never overwrites a good guide). FILL-ONLY-IF-UNTOUCHED — same
-// posture as dlhd/dami/samsung/vizio/lg.
+// posture as dlhd/samsung/vizio/lg.
 async function applyVidaaSelfEpg(sourceId: string, raw: VidaaRow[]): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);

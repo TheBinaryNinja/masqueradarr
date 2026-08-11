@@ -99,7 +99,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 // Build the distro self-EPG from the separate epg/query.php schedule (keyed off the same `raw` catalog rows
 // buildSource consumed), upsert the 'distro' EpgSource, and self-link the still-untouched channels onto it.
 // Live-only (the caller guards on `live` so a snapshot fallback never overwrites a good guide). FILL-ONLY-IF-
-// UNTOUCHED — same posture as dlhd/dami/samsung/vizio/lg/vidaa/whale/xumo/freelivesports.
+// UNTOUCHED — same posture as dlhd/samsung/vizio/lg/vidaa/whale/xumo/freelivesports.
 async function applyDistroSelfEpg(sourceId: string, raw: DistroRow[]): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);

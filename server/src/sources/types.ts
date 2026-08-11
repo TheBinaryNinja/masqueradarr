@@ -152,7 +152,7 @@ export interface SourceAdapter {
   /**
    * Opt-in: this source exposes multiple interchangeable upstream "players" per channel that the operator can
    * PREFER (a source-wide default + per-channel override, honored + failed-over by resolveStream via opts.player).
-   * dlhd/dami set this (DaddyLive's Player 1..N). Absent/false ⇒ the resolve seam never reads a player pref and
+   * dlhd sets this (DaddyLive's Player 1..N). Absent/false ⇒ the resolve seam never reads a player pref and
    * the SPA hides the picker. Purely a capability flag; the resolution logic lives in the adapter.
    */
   playerSelectable?: boolean;

@@ -13,15 +13,15 @@ import { logMilestone, logTrace } from '../logs/tier.js';
 // churn-prone provider logic in TypeScript; Rust just fetches + rewrites + pipes.
 //
 // Faithfulness notes (verified against the adapters):
-//  · upstreamHeaders is per-stream CONSTANT — snapshot once here (for dlhd/dami this captures the rotating
+//  · upstreamHeaders is per-stream CONSTANT — snapshot once here (for dlhd this captures the rotating
 //    playerReferer per stream, which is MORE correct than the shared module global the old proxy replayed).
 //    The (Default)/(Custom) proxy-config `headerOverrides` are merged ON TOP here (operator wins), so Rust
 //    replays the final header set unchanged — the one proxy-config knob applied Node-side (see CFG/PXY-2).
 //  · The SSRF allowlist is OBSERVATIONAL: Rust seeds it from the resolved target host and grows it from the
-//    hosts it rewrites out of each manifest (all of dulo/dlhd/dami enable dynamic-allow), so the grant needs
+//    hosts it rewrites out of each manifest (all of dulo/dlhd enable dynamic-allow), so the grant needs
 //    NO host list — only `allowPrivate` (false for these public-CDN sources; a future LAN source flips it).
 //  · relabelSegment is derived by PROBING the adapter's relabel rule with a sentinel content-type, so the
-//    core stays generic (no per-source branch): dulo passes the sentinel through → null; dlhd/dami force
+//    core stays generic (no per-source branch): dulo passes the sentinel through → null; dlhd forces
 //    'video/mp2t' on segments → 'video/mp2t'.
 //  · proxyConfig is the resolved (Custom app_<pl> → Default app → env) knob set (proxyconfig/resolve.ts). Rust
 //    applies connectTimeoutMs + maxRedirects (P2 → its upstream client), readTimeoutMs + bufferSizeKb (P3.1/RSL
@@ -36,10 +36,20 @@ export interface ResolveGrant {
   upstreamHeaders: Record<string, string>;
   /** Force this content-type on non-manifest (segment) responses; null = pass upstream through. */
   relabelSegment: string | null;
-  /** Permit private/loopback upstream IPs (LAN sources). false for the public-CDN sources (dulo/dlhd/dami). */
+  /** Permit private/loopback upstream IPs (LAN sources). false for the public-CDN sources (dulo/dlhd). */
   allowPrivate: boolean;
   /** Whether the request URL needed server-side resolution (vs a direct passthrough entry). */
   isEntry: boolean;
+  /**
+   * Does the SERVING adapter have alternate upstreams to walk to (`adapter.playerSelectable`)?
+   *
+   * S3/UND: the local origin's undecodable-upstream detector is scoped to this. Retiring an upstream only
+   * helps where another one can take over — on a single-upstream source the retirement just re-resolves the
+   * same dead provider on a 2 s loop. It rides the grant because the capability belongs to the adapter, and
+   * the data plane must not know adapter names: it used to test `source === 'dlhd'` in Rust, which silently
+   * excluded the next playerSelectable adapter from detection until someone edited and redeployed the crate.
+   */
+  playerSelectable: boolean;
   /** The resolved (Default/Custom) data-plane config for this stream — Rust applies the LIVE knobs, carries the rest. */
   proxyConfig: RuntimeProxyConfig;
   /**
@@ -84,7 +94,8 @@ function mergeUpstreamHeaders(
   return out;
 }
 
-// Read a channel's per-channel player OVERRIDE (for playerSelectable sources — dlhd/dami). Returns the 1-based
+// Read a channel's per-channel player OVERRIDE (for playerSelectable sources — dlhd today, and any
+// adapter that sets the flag). Returns the 1-based
 // preference, or 0 when unset (the adapter's resolveStream then falls back to the cached source-wide default).
 // Mirrors buildFailoverGrant's reverse lookup: exact by (streamEntryUrl, pl) when the composed M3U stamped ?pl,
 // else a DETERMINISTIC no-pl fallback (canonical source-playlist doc, then the lexically-first clone copy). One
@@ -197,7 +208,7 @@ export async function buildGrant(
   // m3u/serialize.ts). The in-app appPlayer path carries no ?pl → the Default applies (CFG/PXY-2).
   const proxyConfig = await resolveProxyConfig(pl);
 
-  // Snapshot the per-stream upstream headers against the resolved target (dlhd/dami: the CDN-host branch →
+  // Snapshot the per-stream upstream headers against the resolved target (dlhd: the CDN-host branch →
   // { Referer: playerReferer(), UA }; dulo: a constant map — it ignores the url arg), then merge the operator
   // headerOverrides ON TOP (operator wins, CASE-INSENSITIVELY — HTTP header names are case-insensitive and Rust
   // normalizes them, so a `referer` override must beat the adapter's `Referer`, not race it). This is the one
@@ -265,6 +276,7 @@ export async function buildGrant(
     relabelSegment,
     allowPrivate: false,
     isEntry,
+    playerSelectable: !!adapter.playerSelectable,
     proxyConfig,
     adSignature: adapter.proxy.adSignature ?? null,
     policySource: source,
@@ -414,6 +426,9 @@ async function buildFailoverGrant(
     relabelSegment,
     allowPrivate: false,
     isEntry,
+    // The CHILD's capability, for the same reason as its signature below: a failover onto a single-upstream
+    // provider must not keep the parent's alternates-exist promise, and vice versa.
+    playerSelectable: !!candAdapter.playerSelectable,
     proxyConfig,
     // The CHILD's own signature, like its headers/relabel — a cross-provider backup must not inherit the
     // parent provider's ad shape (same reason policySource names candSource).

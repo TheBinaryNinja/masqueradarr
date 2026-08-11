@@ -57,6 +57,26 @@ let ws: WebSocket | null = null;
 let refCount = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
+// ── THE SERVER'S CLOCK, as observed from here ───────────────────────────────────────────────────────────
+// Every timestamp the backend sends is stamped with ITS `Date.now()`, so measuring one against OURS
+// subtracts two different clocks — see the note above, which is the same trap `recvAt` exists to dodge. Where
+// a same-clock stamp is available (a frame's arrival) that remains the better tool. This is for the
+// timestamps where none is: a viewer's `connectedAt`, a session's `lastClose.at`, the age of the FIRST
+// ingest frame we ever see. One offset, re-estimated every snapshot, turns all of those into same-clock
+// subtractions. The round trip inflates it by the network delay (single-digit ms), which is nothing against
+// the 10s liveness gate and the 30-90s staleness window it feeds.
+let serverOffset = 0;
+
+function noteServerClock(at: number): void {
+  if (Number.isFinite(at)) serverOffset = at - Date.now();
+}
+
+/** The current time on the SERVER's clock. Use for any timestamp the backend stamped; never for measuring
+ *  something this browser observed (that is what a local `recvAt` is for). */
+export function serverNow(): number {
+  return Date.now() + serverOffset;
+}
+
 function ingest(streams: ActiveStream[]): void {
   ACTIVE_STREAMS.value = streams;
   const present = new Set<string>();
@@ -73,7 +93,15 @@ function ingest(streams: ActiveStream[]): void {
     if (!ing) continue;
     const prev = ingestMeta[s.channelId];
     if (!prev) {
-      ingestMeta[s.channelId] = { lastAt: ing.at, recvAt: now, lastBytes: ing.ingestedBytes, mbps: null };
+      // FIRST SIGHT is the one case with no previous frame to compare against, and stamping it `now` asserts
+      // a freshness we have not observed: Node re-broadcasts the last `iop` snapshot for as long as viewers
+      // remain, so an ingest that died ten minutes ago arrives looking exactly like one that reported a
+      // moment ago — and the panel would paint green for the whole staleness window at precisely the moment
+      // an operator opened it to find out why the stream is frozen. Back-date our arrival stamp by the
+      // frame's OWN age, measured server-clock to server-clock, so `ingestAge` tells the truth on the first
+      // render. Clamped at 0: a small negative is offset noise, never evidence of a frame from the future.
+      const age = Math.max(0, serverNow() - ing.at);
+      ingestMeta[s.channelId] = { lastAt: ing.at, recvAt: now - age, lastBytes: ing.ingestedBytes, mbps: null };
     } else if (ing.at !== prev.lastAt) {
       const dtMs = ing.at - prev.lastAt;
       const dBytes = ing.ingestedBytes - prev.lastBytes;
@@ -136,6 +164,9 @@ function connect(): void {
         at?: number;
         side?: 'upstream' | 'client';
       };
+      // Re-estimated on EVERY snapshot, before the payload is read: the frame's own `at` is the only
+      // observation of the server's clock we get, and everything downstream ages against it.
+      if (typeof msg.at === 'number' && msg.type === 'active-streams') noteServerClock(msg.at);
       if (msg.type === 'active-streams' && Array.isArray(msg.streams)) ingest(msg.streams);
       else if (msg.type === 'view-session' && msg.session) ingestSession(msg.session);
       else if (msg.type === 'buffer-event' && msg.channelKey) ingestBufferEvent(msg);

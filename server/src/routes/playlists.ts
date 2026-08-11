@@ -462,7 +462,7 @@ async function cascadeDeleteBuiltinPlaylist(p: {
     );
   }
 
-  // 2. The playlist-bound self-EPG source (tubi/dlhd/dami self-EPG; id === src, playlistBinding:true), if any.
+  // 2. The playlist-bound self-EPG source (tubi/dlhd self-EPG; id === src, playlistBinding:true), if any.
   //    cascadeDeleteEpgSource unlinks every playlistchannel linked to it — INCLUDING this built-in's own
   //    channels — and drops its programs/epgchannels/cronjob. dulo has none (crosswalk-only) → no-op.
   const bound = (await EpgSource.findOne(
@@ -704,7 +704,7 @@ playlistsRouter.put('/:id/channels/:channelId', requireAdmin, async (req, res, n
         $set[key] = body[key];
       }
     }
-    // playerPref: preferred upstream player for playerSelectable sources (dlhd/dami). A 1-based integer, or
+    // playerPref: preferred upstream player for playerSelectable sources (dlhd). A 1-based integer, or
     // null to clear it (inherit the source-wide default). Numeric, so it can't ride the string loop above. An
     // out-of-range pick is accepted but clamps to the lead player at resolve time (resolveStream.ts).
     if (body.playerPref !== undefined) {

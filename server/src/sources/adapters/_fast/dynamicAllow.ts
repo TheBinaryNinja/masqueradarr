@@ -2,9 +2,9 @@
 // dlhd's allowlist (adapters/dlhd/config.ts UPSTREAM_ALLOW / isAllowedHost / allowHost): a Set seeded with a
 // source's known CDN domain suffixes that the source GROWS at runtime — `allow()` for a host learned by
 // resolveStream (the resolved master CDN), `onPlaylistChildHost()` for a host seen inside a resolved playlist.
-// Each FAST source gets its OWN instance (no shared module state, unlike dlhd↔dami which intentionally share an
-// upstream). Private/loopback/link-local targets are ALWAYS blocked via the shared core/ssrf.ts guard — the
-// dynamic set only ever widens to public CDN hosts.
+// Each FAST source gets its OWN instance: the allow-set widens only from that source's own resolves, so one
+// source's CDN can never authorise another's. Private/loopback/link-local targets are ALWAYS blocked via the
+// shared core/ssrf.ts guard — the dynamic set only ever widens to public CDN hosts.
 
 import { isPrivateHost } from '../../core/ssrf.js';
 

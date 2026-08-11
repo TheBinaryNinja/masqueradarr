@@ -167,6 +167,26 @@ function num(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
 }
 
+// ── ABSENT ≠ ZERO, for the fields a sidecar may not have ────────────────────────────────────────────────
+// The reasoning above holds for a counter every sidecar has always sent. It does NOT hold for a field this
+// release added: an older Rust sidecar (mid-upgrade, or the aio image's split rebuild) simply omits those
+// keys, and `num()` would turn the omission into 0 — a MEASUREMENT we never took. The panel is built for the
+// difference: its version-skew branches read `undefined` as "not reported by this sidecar" and anything else
+// as authoritative, so coercing here silently makes those branches unreachable and replaces "unknown" with a
+// confident, wrong number. These three keep the omission intact.
+function optNum(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+function optBool(v: unknown): boolean | undefined {
+  return typeof v === 'boolean' ? v : undefined;
+}
+/** A tri-state string: the reason, `null` for "reported, and there is none", `undefined` for "not reported".
+ *  The middle state is load-bearing — for `ineligible`, `null` is an authoritative "this upstream is fine". */
+function optTri(v: unknown): string | null | undefined {
+  if (v === undefined) return undefined;
+  return typeof v === 'string' && v ? v.slice(0, 48) : null;
+}
+
 function applyEvent(e: TelemetryEvent): void {
   if (!e || typeof e !== 'object') return;
   const ip = str(e.ip);
@@ -225,26 +245,26 @@ function applyEvent(e: TelemetryEvent): void {
         subscribers: num(e.subscribers),
         ringSegments: num(e.ringSegments),
         ringBytes: num(e.ringBytes),
-        channelRingCapBytes: num(e.channelRingCapBytes),
-        ringSeconds: num(e.ringSeconds),
+        channelRingCapBytes: optNum(e.channelRingCapBytes),
+        ringSeconds: optNum(e.ringSeconds),
         // Booleans go through `=== true`, NEVER num() — num() tests `typeof v === 'number'` and would map
         // `true` to 0, i.e. permanently false. Same shape as the cue branch's `profileChanged` below.
         floorBeatsCap: e.floorBeatsCap === true,
         headSeq: num(e.headSeq),
         generation: num(e.generation),
-        discSeq: num(e.discSeq),
-        discInWindow: num(e.discInWindow),
+        discSeq: optNum(e.discSeq),
+        discInWindow: optNum(e.discInWindow),
         ingestedSegments: num(e.ingestedSegments),
         ingestedBytes: num(e.ingestedBytes),
         evictedSegments: num(e.evictedSegments),
         targetDuration: num(e.targetDuration),
-        demuxed: e.demuxed === true,
+        demuxed: optBool(e.demuxed),
         upstreamShape: optStr(e.upstreamShape) ?? null,
         encryption: optStr(e.encryption) ?? null,
         // Tri-state, so it takes the `suspect` shape rather than str(): str() coerces null to '' and the
         // difference between "eligible" and "declined, reason unknown" would be lost.
-        ineligible: typeof e.ineligible === 'string' && e.ineligible ? e.ineligible.slice(0, 48) : null,
-        suspect: typeof e.suspect === 'string' && e.suspect ? e.suspect.slice(0, 48) : null,
+        ineligible: optTri(e.ineligible),
+        suspect: optTri(e.suspect),
         suspectRetires: num(e.suspectRetires),
         at: Date.now(),
       });

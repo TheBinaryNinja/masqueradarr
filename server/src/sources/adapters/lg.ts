@@ -92,7 +92,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 
 // Build the lg self-EPG from the inline programs (the same `raw` catalog rows buildSource consumed), upsert the
 // 'lg' EpgSource, and self-link the still-untouched channels onto it. Live-only (the caller guards on `live` so a
-// snapshot fallback never overwrites a good guide). FILL-ONLY-IF-UNTOUCHED — same posture as dlhd/dami/samsung/vizio.
+// snapshot fallback never overwrites a good guide). FILL-ONLY-IF-UNTOUCHED — same posture as dlhd/samsung/vizio.
 async function applyLgSelfEpg(sourceId: string, raw: LgRow[]): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);
