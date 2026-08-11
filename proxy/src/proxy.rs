@@ -118,8 +118,11 @@ pub async fn serve_stream(
         };
         let rid = log::rid(source, &entry);
         // A DEMUXED origin also publishes its two authored media playlists here, for the same reason its
-        // segments live here: answered from the ring, no resolve, no Node round-trip, and never seen by
-        // buildGrant's stored-entry gate.
+        // segments live here: answered from the ring, and never seen by buildGrant's stored-entry gate.
+        // The bytes are still RAM-only — the policy comes from the cache — but unlike `o/` segments this
+        // SUBSCRIBES, so a poll that finds no live ingest restarts one (which does resolve). That is what
+        // lets a demuxed session survive an ingest death: its client fetched the master once and has no
+        // other subscribing endpoint to poll.
         let lane = match file {
             "v.m3u8" => Some(crate::origin::Lane::Video),
             "a.m3u8" => Some(crate::origin::Lane::Audio),

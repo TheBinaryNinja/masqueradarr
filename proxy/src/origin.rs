@@ -701,7 +701,15 @@ impl Drop for IngestGuard {
         // retires it. Everything else is removed — but only if the key still holds THIS origin. `subscribe`
         // replaces a stopping entry, so a slow teardown could otherwise delete a healthy successor that has
         // already taken the key.
-        if self.ctx.origin.ineligible().is_none() {
+        if self.ctx.origin.ineligible().is_some() {
+            // The memo is the VERDICT, never the media. A decline can land on a re-resolve long after the
+            // ring filled (an upstream that turns fMP4 mid-session), and a retained ring is served, not just
+            // held: `wait_ready` tests `ring_depth` BEFORE `ineligible`, so a full window answers `Ready::Yes`
+            // and the channel plays a frozen loop until the memo ages out — while the ring's RAM is pinned for
+            // as long as the entry survives, which is unbounded because nothing sweeps it. Dropping the window
+            // frees the bytes AND lets `wait_ready` fall through to the decline, which is the whole point.
+            self.ctx.origin.reset_ring();
+        } else {
             let mut map = self.ctx.state.origins().lock_ok();
             if map.get(&self.ctx.key).is_some_and(|o| Arc::ptr_eq(o, &self.ctx.origin)) {
                 map.remove(&self.ctx.key);
@@ -929,9 +937,14 @@ async fn ingest(ctx: IngestCtx) {
         };
         // S3/UND — the undecodable-upstream detector. Scoped to sources that HAVE alternates to walk to:
         // retiring an upstream is only useful where another one can take over, and on a single-upstream
-        // source the retirement would just re-resolve the same dead provider on a 2 s loop. Read off the
-        // grant per poll, like every other policy knob, so a re-resolve onto a different serving adapter
-        // flips it live — it used to be `ctx.source == "dlhd"`, the crate's only hardcoded provider id.
+        // source the retirement would just re-resolve the same dead provider on a 2 s loop. It used to be
+        // `ctx.source == "dlhd"`, the crate's only hardcoded provider id.
+        //
+        // Read per poll off the MOUNT source's policy, exactly like this loop's other knobs (headers,
+        // timeouts, allow_private) — not off the serving candidate's. The two differ only after a failover
+        // onto another provider, whose grant files its policy under its own `policySource`; for attempt 0
+        // they are the same object. Worth knowing when reading this: a child's capability does not flip the
+        // parent's watch, which is the existing behaviour of every knob here rather than a rule of this one.
         let undecodable_watch = policy.player_selectable.load(Ordering::Relaxed);
         let client = ctx.state.client_for(
             policy.connect_timeout_ms.load(Ordering::Relaxed),
