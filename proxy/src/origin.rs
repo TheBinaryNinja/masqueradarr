@@ -311,6 +311,15 @@ pub struct Origin {
     /// sees the track labelled as upstream labelled it), and `serve_ts` routes to the INTERLEAVING producer
     /// (`ts_ring_pair_producer` → `tsweave`), which folds the pair into one program on the way out.
     demuxed_audio: RwLock<Option<DemuxedMaster>>,
+    /// Which KIND of playlist the entry was last answered with — `true` master, `false` media playlist.
+    ///
+    /// Diagnostic only, and deliberately so. `serve_entry` re-decides the kind from `demuxed_audio` on every
+    /// poll, so a mid-session flip changes what one URL *is*, and RFC 8216 gives a client no reload semantics
+    /// for a media playlist that has become a master — players fail the load. There is no in-session repair
+    /// (after the flip, EITHER shape describes a ring the client's session cannot use), and pinning the kind
+    /// would only trade a failed reload for silent video. So the transition is recorded and named instead:
+    /// without it, "the stream just stopped" is indistinguishable from a stall in every log we keep.
+    last_entry_master: RwLock<Option<bool>>,
     /// S3/UND — the last structural fault that retired an upstream on this channel, and how many upstreams
     /// have been retired for one. Reported on the `iop` health frame so a channel quietly hopping providers
     /// is visible in Active Streams, not only in the log. That invisibility is what let a false positive run
@@ -369,6 +378,7 @@ impl Origin {
             disc_seq: AtomicU64::new(0),
             ineligible: RwLock::new(None),
             demuxed_audio: RwLock::new(None),
+            last_entry_master: RwLock::new(None),
             last_suspect: RwLock::new(None),
             suspect_retires: AtomicU32::new(0),
             upstream_shape: RwLock::new(None),
@@ -859,7 +869,7 @@ async fn ingest(ctx: IngestCtx) {
             let audio_seg = match &ap {
                 None => None,
                 Some((aurl, apl)) => match pair_audio(seg, upstream_seq, apl) {
-                    PairPick::Found(a) => Some((aurl.clone(), a.clone())),
+                    PairPick::Found(a, aseq) => Some((aurl.clone(), a.clone(), aseq)),
                     // The audio partner is already gone, so this pair can never be completed. Drop the video
                     // segment too: publishing it unpaired would put the two playlists on different windows,
                     // and the next segment's sequence check reports the gap honestly.
@@ -941,11 +951,14 @@ async fn ingest(ctx: IngestCtx) {
                 None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
             };
 
-            // The audio half, against the RENDITION's own base url and key cache. The implicit-IV derivation
-            // (RFC 8216 §5.2) uses the same media sequence, which is exactly what pairing established.
+            // The audio half, against the RENDITION's own base url, own key cache and — the part PDT pairing
+            // changed — its OWN media sequence. RFC 8216 §5.2 derives an absent IV from the segment's media
+            // sequence, and pairing on the wall clock exists precisely because the two lanes' sequences
+            // diverge: handing the video's number to a renumbered audio lane decrypts its first CBC block
+            // (the leading TS packet, usually the PAT) against the wrong IV.
             let audio_plain = match &audio_seg {
                 None => None,
-                Some((aurl, aseg)) => {
+                Some((aurl, aseg, aseq)) => {
                     let aseg_url = match aurl.join(&aseg.uri) {
                         Ok(u) => u,
                         Err(_) => continue,
@@ -957,7 +970,7 @@ async fn ingest(ctx: IngestCtx) {
                         }
                         policy.hosts.write_ok().insert(h.to_lowercase());
                     }
-                    match fetch_segment(&ctx, &rid, &client, &policy, aurl, aseg, &aseg_url, upstream_seq, read_timeout_ms, &mut audio_key_cache).await {
+                    match fetch_segment(&ctx, &rid, &client, &policy, aurl, aseg, &aseg_url, *aseq, read_timeout_ms, &mut audio_key_cache).await {
                         Some(b) => Some(b),
                         // No partner bytes ⇒ no pair. Dropping BOTH keeps the two published windows aligned;
                         // the next segment's sequence check turns the hole into an honest splice.
@@ -1339,7 +1352,14 @@ async fn ingest(ctx: IngestCtx) {
 
 /// Which audio segment partners a video one — the outcome of the pairing lookup.
 enum PairPick<'a> {
-    Found(&'a SegRef),
+    /// The partner segment, plus **its own** absolute media sequence.
+    ///
+    /// The sequence has to travel with the pick because the whole point of PDT pairing is that the two lanes
+    /// renumber independently — so the video lane's number is not a stand-in for the audio lane's, and RFC
+    /// 8216 §5.2 derives an absent `#EXT-X-KEY` IV from the segment's OWN media sequence. On the index
+    /// fallback the two are equal by construction, which is why passing the video's was correct until PDT
+    /// pairing existed.
+    Found(&'a SegRef, i64),
     /// The audio window has already rolled past this video segment; the pair can never complete.
     RolledPast,
     /// The audio lane has not published this far yet — HOLD the video segment and retry next poll.
@@ -1385,19 +1405,21 @@ fn pair_tolerance_ms(video_duration: f64, target_duration: f64) -> i64 {
 /// today changes behaviour: an aligned pair resolves to the same segment either way.
 fn pair_audio<'a>(video: &SegRef, upstream_seq: i64, apl: &'a crate::tsmux::MediaPlaylist) -> PairPick<'a> {
     if let Some(vt) = video.pdt_ms {
-        let mut best: Option<(&SegRef, i64)> = None;
-        for a in &apl.segments {
+        // The INDEX rides along with the pick: the audio lane's own sequence is `media_sequence + index`, and
+        // this is the only path that can land on an index the video's sequence does not name.
+        let mut best: Option<(&SegRef, i64, usize)> = None;
+        for (i, a) in apl.segments.iter().enumerate() {
             let Some(at) = a.pdt_ms else { continue };
             let d = (at - vt).abs();
-            if best.is_none_or(|(_, bd)| d < bd) {
-                best = Some((a, d));
+            if best.is_none_or(|(_, bd, _)| d < bd) {
+                best = Some((a, d, i));
             }
         }
         // Only trust this path when the audio lane actually dates itself; a lane with no PDT at all falls
         // through to the index rather than being declared "rolled past".
-        if let Some((a, d)) = best {
+        if let Some((a, d, i)) = best {
             if d <= pair_tolerance_ms(video.duration, apl.target_duration) {
-                return PairPick::Found(a);
+                return PairPick::Found(a, apl.media_sequence + i as i64);
             }
             // Out of tolerance: which SIDE decides hold-vs-drop. Before the window ⇒ the partner is already
             // gone; after it ⇒ it has not been published yet.
@@ -1411,7 +1433,9 @@ fn pair_audio<'a>(video: &SegRef, upstream_seq: i64, apl: &'a crate::tsmux::Medi
         return PairPick::RolledPast;
     }
     match apl.segments.get(idx as usize) {
-        Some(a) => PairPick::Found(a),
+        // `media_sequence + idx` IS `upstream_seq` here, by the line above — written out rather than reusing
+        // the video's number so the two arms state the same rule.
+        Some(a) => PairPick::Found(a, apl.media_sequence + idx),
         None => PairPick::NotYet,
     }
 }
@@ -1464,6 +1488,13 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
         });
         // Its own write site: this arm returns before the manifest handling below ever runs.
         *ctx.origin.upstream_shape.write_ok() = Some("ts".to_string());
+        // …and so does the `demuxed_audio` write, which is why it has to be repeated here. A bare TS socket
+        // is ONE muxed stream (`push_cut` pushes `audio: None`), so leaving a previous demuxed resolve's
+        // rendition in place outlives the upstream that justified it — and every reader of the flag then
+        // describes a ring that no longer exists: `serve_entry` keeps authoring a master, `serve_playlist`
+        // keeps listing an audio lane whose segments 404, and `serve_ts` keeps dispatching to the pair
+        // producer, which declines to its cap and ends the socket on a flag the reconnect re-reads unchanged.
+        *ctx.origin.demuxed_audio.write_ok() = None;
         return Some(MediaSource::RawTs(Box::pin(stream), first));
     }
     // A manifest: drain the (small) remainder into text.
@@ -2002,6 +2033,28 @@ async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> Ready {
     }
 }
 
+/// Name the moment the entry's playlist KIND changes, once per change.
+///
+/// A client that fetched a media playlist reloads that same URL for the rest of its session; getting a master
+/// back is not a shape it has any handling for. The flip itself is unavoidable — a NEW client must be told the
+/// truth about the ring it is joining — so what this buys is the ability to read a session that died at
+/// exactly this instant as what it was, rather than as an unexplained stall. See `Origin::last_entry_master`.
+fn note_entry_shape(origin: &Origin, is_master: bool, rid: &str) {
+    // ONE lock acquisition: swap the current shape in and judge what was there. `Some(!is_master)` is the
+    // whole "it changed" test — the field is a bool, so the only other populated value IS the other shape.
+    if origin.last_entry_master.write_ok().replace(is_master) == Some(!is_master) {
+        let name = |m: bool| if m { "master" } else { "media playlist" };
+        log::warn("oop", rid, || {
+            format!(
+                "entry shape changed {} → {} mid-session (the upstream re-resolved to the other lane shape) — \
+                 clients already polling this URL will fail their next reload and have to start a new session",
+                name(!is_master),
+                name(is_master)
+            )
+        });
+    }
+}
+
 /// SIDE-2 ENTRY: subscribe, wait for a playable window, and serve OUR manifest.
 ///
 /// The lease is dropped when this returns — a polling client renews it on every poll, and the ingest's idle
@@ -2037,7 +2090,9 @@ pub async fn serve_entry(
     // holds regardless: the counter only ever rises.)
     // A DEMUXED origin answers the entry with an authored MASTER over the two lanes; a muxed one answers
     // with the single media playlist, byte-identically to before pairing existed.
-    if let Some(m) = origin.demuxed_audio() {
+    let demuxed = origin.demuxed_audio();
+    note_entry_shape(&origin, demuxed.is_some(), rid);
+    if let Some(m) = demuxed {
         origin.touch(); // the master itself carries no segments, but it is still a live client
         let body = render_master(mount_path, source, entry, &m, token, pl);
         log::info("oop", rid, || {
@@ -2110,6 +2165,17 @@ pub async fn serve_playlist(
     // under-counts rather than double-counts.
     let disc_seq = origin.disc_seq();
     let window = origin.window();
+    // The audio lane is rendered off the SAME ladder as the video one, so nothing downstream checks that the
+    // entries actually carry a second lane — a ring holding muxed segments would publish a full ladder of
+    // `-a` URIs and 404 every one of them at `serve_segment`. Fail the playlist instead: one honest 404 the
+    // client can act on beats a valid-looking rendition whose every segment misses. (A non-empty window is
+    // required so a ring caught mid-reset reads as "not yet", which is what the empty ladder already says.)
+    if matches!(lane, Lane::Audio) && !window.is_empty() && window.iter().all(|s| s.audio.is_none()) {
+        log::warn("oop", rid, || {
+            format!("playlist {lane:?}: the ring holds no audio lane ({} segment(s)) — 404", window.len())
+        });
+        return crate::proxy::text(404, "not found: lane not carried");
+    }
     let body = render_media_playlist(
         &window,
         origin.target_duration(),
@@ -2312,8 +2378,11 @@ async fn ts_ring_producer(
     // viewer joins the ring at a different point and therefore sits on its own timeline.
     let mut splicer = crate::tsnorm::Splicer::new();
     let mut warned_splice = false;
+    // Two paths reach the close emit now — the ingest-stopping `break` and the lane-changed `break 'outer`
+    // — so the reason has to be threaded, exactly as the pair producer threads its own.
+    let mut close_reason = "ingest_stopped";
 
-    loop {
+    'outer: loop {
         let window = origin.window();
         // Fell off the back of the ring — the client reads slower than the ingest writes, or the ring is too
         // small for this bitrate. Skipping forward drops video, so say so plainly rather than silently gapping.
@@ -2339,22 +2408,47 @@ async fn ts_ring_producer(
         let from = next_seq; // snapshot: the filter closure borrows it, the body reassigns it
         for seg in window.iter().filter(|s| s.seq >= from) {
             next_seq = seg.seq + 1;
+            // THE RING TURNED DEMUXED under this socket. `demuxed` was sampled once, at open (`serve_ts`), so
+            // a re-resolve onto a master with a separate audio rendition leaves this producer emitting
+            // `seg.bytes` — which is now the VIDEO lane alone. Silent video, for the rest of the session.
+            //
+            // End the socket, which is the same recovery the pair producer takes on the opposite flip: the
+            // client reconnects, `serve_ts` re-reads the flag, and dispatches to `ts_ring_pair_producer`.
+            // Unlike a weave decline this needs no cap — an entry carrying an audio lane is not a transient
+            // shape, it is the ingest having changed what the ring holds.
+            if seg.audio.is_some() {
+                log::warn("oop", &ctx.rid, || {
+                    format!("ring turned demuxed at seq={} — ending the muxed socket so the client reconnects into the interleaving producer", seg.seq)
+                });
+                close_reason = "lane_changed";
+                break 'outer;
+            }
             // Declining is a designed outcome: a segment carrying no PSI, or a program shape the published
             // layout cannot express, is served verbatim. That reinstates the upstream splice for that one
             // segment — a visible glitch — which still beats emitting a stream we mis-rewrote.
             let body = match normalize.then(|| splicer.normalize(&seg.bytes)).flatten() {
                 Some(bytes) => Bytes::from(bytes),
                 None => {
-                    // Only a genuine DECLINE is worth a warning. With the switch off there is nothing to
-                    // decline — serving verbatim is the requested behaviour, and saying otherwise would send
-                    // an operator hunting a stream shape that was never the problem.
-                    if normalize && !warned_splice {
-                        warned_splice = true;
-                        log::warn("oop", &ctx.rid, || {
-                            "splice normalisation declined (no PSI, or a program shape the published layout \
-                             cannot carry) — serving upstream timestamps as-is"
-                                .to_string()
-                        });
+                    // Only a genuine DECLINE is worth acting on. With the switch off there is nothing to
+                    // decline — serving verbatim is the requested behaviour, the guard above already dropped
+                    // the timeline once, and warning would send an operator hunting a stream shape that was
+                    // never the problem.
+                    if normalize {
+                        // DROP THE TIMELINE, same as the ingest's identical arm and this producer's own
+                        // ring-skip path. The client is about to receive this segment on UPSTREAM timestamps,
+                        // so anchoring the NEXT one against the published clock would stamp it behind media
+                        // the client already holds — a backwards jump, on a bare TS socket that has no
+                        // `#EXT-X-DISCONTINUITY` to explain it. Re-anchoring instead keeps the output
+                        // contiguous with what actually went out.
+                        splicer.reset();
+                        if !warned_splice {
+                            warned_splice = true;
+                            log::warn("oop", &ctx.rid, || {
+                                "splice normalisation declined (no PSI, or a program shape the published \
+                                 layout cannot carry) — serving upstream timestamps as-is"
+                                    .to_string()
+                            });
+                        }
                     }
                     seg.bytes.clone()
                 }
@@ -2389,9 +2483,8 @@ async fn ts_ring_producer(
     if pending_bytes > 0 {
         ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
     }
-    // Single predecessor (the ingest-stopping break above), so this can be a literal.
-    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "ingest_stopped" }));
-    log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id})"));
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
+    log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id}, {close_reason})"));
 }
 
 /// SIDE-2 RAW TS, DEMUXED (S3/RMX): follow the ring, weaving each PAIR into one socket.
@@ -2710,9 +2803,18 @@ mod tests {
         for (i, vs) in v.segments.iter().enumerate() {
             let useq = v.media_sequence + i as i64;
             match pair_audio(vs, useq, &a) {
-                PairPick::Found(p) => {
+                PairPick::Found(p, aseq) => {
                     let d = (p.pdt_ms.unwrap() - vs.pdt_ms.unwrap()).abs();
                     assert!(d < 100, "seq {useq} paired to media {d} ms away — that is a different segment");
+                    // The pick must carry the AUDIO lane's own number, not the video's. This is the number
+                    // RFC 8216 §5.2 turns into an absent-IV, so borrowing the video's here decrypts the
+                    // partner's first CBC block against the wrong IV on exactly the renewal this test models.
+                    assert_eq!(
+                        aseq,
+                        a.media_sequence + i as i64,
+                        "seq {useq} paired correctly but reported the wrong media sequence for the partner"
+                    );
+                    assert_eq!(aseq, useq + 1, "the renumbering must be visible in the reported sequence");
                 }
                 _ => panic!("seq {useq} failed to pair despite the audio being present"),
             }
@@ -2732,7 +2834,12 @@ mod tests {
         for (i, vs) in v.segments.iter().enumerate() {
             let useq = v.media_sequence + i as i64;
             let by_pdt = match pair_audio(vs, useq, &a) {
-                PairPick::Found(p) => p.uri.clone(),
+                PairPick::Found(p, aseq) => {
+                    // Aligned lanes: the reported sequence must be the video's, which is what makes passing
+                    // `upstream_seq` to the audio fetch correct on every source that pairs by index.
+                    assert_eq!(aseq, useq, "an aligned lane must report the same sequence");
+                    p.uri.clone()
+                }
                 _ => panic!("aligned pair must resolve"),
             };
             let by_index = a.segments[(useq - a.media_sequence) as usize].uri.clone();
@@ -2746,7 +2853,10 @@ mod tests {
         let v = lane(10, 0, 3, 5.0, false);
         let a = lane(10, 0, 3, 5.0, false);
         match pair_audio(&v.segments[1], 11, &a) {
-            PairPick::Found(p) => assert_eq!(p.uri, "seg11.ts", "index pairing still selects positionally"),
+            PairPick::Found(p, aseq) => {
+                assert_eq!(p.uri, "seg11.ts", "index pairing still selects positionally");
+                assert_eq!(aseq, 11, "the fallback reports the index it selected on");
+            }
             _ => panic!("the fallback must still pair"),
         }
         // …including its rolled-past arm.
