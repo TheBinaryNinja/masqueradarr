@@ -2134,6 +2134,35 @@ async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> Ready {
     }
 }
 
+/// The viewer HEARTBEAT, in one place.
+///
+/// A manifest poll is what keeps a viewer "active" — exactly as on the proxy path, the difference being that
+/// these bytes came from RAM, so no upstream fetch was involved and none is reported. Every endpoint that
+/// answers a manifest owes one, and the shape must be identical everywhere: `noteViewer` keys on
+/// (ip, ua, username, channel), so a field that drifts between the entry and the lane endpoints would split
+/// one client into two viewers on demuxed channels only — an accounting bug visible as a phantom viewer
+/// rather than as an error. It was three copies of this literal before; one is enough.
+fn note_viewer(state: &AppState, mount_path: &str, source: &str, entry: &str, id: &crate::proxy::Identity, bytes: usize) {
+    state.report(serde_json::json!({
+        "kind": "viewer", "source": source, "entryUrl": entry,
+        "ip": id.ip, "ua": id.ua, "username": id.username,
+        "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
+        "bytes": bytes as u64,
+    }));
+}
+
+/// Snapshot the published window and its discontinuity counter, IN THAT ORDER.
+///
+/// The order is the point, and it is why this is a function rather than two lines at each call site. The two
+/// are separate atomics, so an eviction landing between them leaves a one-poll skew either way — but reading
+/// the COUNTER first makes it an UNDER-count, where the tag is still in the window and the client counts it
+/// itself. The other order double-counts it. (Monotonicity holds regardless: the counter only ever rises.)
+/// Every renderer needs both, and a rule this easy to reverse should exist once.
+fn window_snapshot(origin: &Origin) -> (u64, Vec<Arc<Segment>>) {
+    let disc_seq = origin.disc_seq();
+    (disc_seq, origin.window())
+}
+
 /// Name the moment the entry's playlist KIND changes, once per change.
 ///
 /// A client that fetched a media playlist reloads that same URL for the rest of its session; getting a master
@@ -2185,10 +2214,6 @@ pub async fn serve_entry(
         Ready::Ineligible => return None,
         Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
     }
-    // Read the counter BEFORE snapshotting the window. The two are separate atomics, so an eviction landing
-    // between them leaves a one-poll skew either way — but this order makes it an UNDER-count, where the tag
-    // is still in the window and the client counts it itself. The other order double-counts it. (Monotonicity
-    // holds regardless: the counter only ever rises.)
     // A DEMUXED origin answers the entry with an authored MASTER over the two lanes; a muxed one answers
     // with the single media playlist, byte-identically to before pairing existed.
     let demuxed = origin.demuxed_audio();
@@ -2199,16 +2224,10 @@ pub async fn serve_entry(
         log::info("oop", rid, || {
             format!("origin master served (1 variant + audio rendition \"{}\", {} bytes)", m.audio.name, body.len())
         });
-        state.report(serde_json::json!({
-            "kind": "viewer", "source": source, "entryUrl": entry,
-            "ip": id.ip, "ua": id.ua, "username": id.username,
-            "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
-            "bytes": body.len() as u64,
-        }));
+        note_viewer(state, mount_path, source, entry, id, body.len());
         return Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()));
     }
-    let disc_seq = origin.disc_seq();
-    let window = origin.window();
+    let (disc_seq, window) = window_snapshot(&origin);
     let body = render_media_playlist(
         &window,
         origin.target_duration(),
@@ -2224,14 +2243,7 @@ pub async fn serve_entry(
     log::info("oop", rid, || {
         format!("origin manifest served ({} segment(s), {} bytes)", window.len(), body.len())
     });
-    // A manifest poll is the viewer heartbeat, exactly as on the proxy path — the difference is that these
-    // bytes came from RAM, so no upstream fetch was involved and none is reported.
-    state.report(serde_json::json!({
-        "kind": "viewer", "source": source, "entryUrl": entry,
-        "ip": id.ip, "ua": id.ua, "username": id.username,
-        "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
-        "bytes": body.len() as u64,
-    }));
+    note_viewer(state, mount_path, source, entry, id, body.len());
     Some(crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes()))
 }
 
@@ -2281,10 +2293,7 @@ pub async fn serve_playlist(
         }
         Ready::TimedOut => return crate::proxy::text(503, "stream warming up: no playable window yet"),
     }
-    // Same ordering rule as `serve_entry`: read the counter BEFORE the window so a concurrent eviction
-    // under-counts rather than double-counts.
-    let disc_seq = origin.disc_seq();
-    let window = origin.window();
+    let (disc_seq, window) = window_snapshot(&origin);
     // The audio lane is rendered off the SAME ladder as the video one, so nothing downstream checks that the
     // entries actually carry a second lane — a ring holding muxed segments would publish a full ladder of
     // `-a` URIs and 404 every one of them at `serve_segment`. Fail the playlist instead: one honest 404 the
@@ -2311,14 +2320,8 @@ pub async fn serve_playlist(
     log::info("oop", rid, || {
         format!("origin manifest served ({lane:?} lane, {} segment(s), {} bytes)", window.len(), body.len())
     });
-    // The viewer heartbeat. `noteViewer` keys on (ip, ua, username, channel), so the two lanes' polls
-    // collapse to ONE viewer rather than double-counting the client.
-    state.report(serde_json::json!({
-        "kind": "viewer", "source": source, "entryUrl": entry,
-        "ip": id.ip, "ua": id.ua, "username": id.username,
-        "playerType": if mount_path == "/api/ext/v1" { "externalPlayer" } else { "appPlayer" },
-        "bytes": body.len() as u64,
-    }));
+    // Both lanes' polls collapse to ONE viewer — see `note_viewer` for why the shape must not drift.
+    note_viewer(state, mount_path, source, entry, id, body.len());
     crate::proxy::raw(200, "application/vnd.apple.mpegurl", body.into_bytes())
 }
 
