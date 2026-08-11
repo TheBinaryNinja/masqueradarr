@@ -314,7 +314,13 @@ function broadcast(payload: unknown): void {
 }
 
 async function pushSnapshot(only?: WebSocket): Promise<void> {
-  const text = JSON.stringify({ type: 'active-streams', streams: await buildDisplaySnapshot() });
+  // `at` is THIS process's clock at send time, and it is load-bearing rather than informational. Every
+  // timestamp in the payload below — `lastSeen`, `connectedAt`, `ingest.at`, `lastClose.at` — is stamped with
+  // the same Date.now(), so a client that ages them against ITS OWN clock is subtracting two different
+  // clocks: a few seconds of skew is enough to pin a channel permanently live or permanently dead, and the
+  // browser reading is worst exactly when the stream dies. Sending our clock alongside lets the SPA turn all
+  // of them back into same-clock subtractions (see `serverNow` in useStreamStats).
+  const text = JSON.stringify({ type: 'active-streams', at: Date.now(), streams: await buildDisplaySnapshot() });
   if (only) send(only, text);
   else for (const ws of sockets) send(ws, text);
 }
