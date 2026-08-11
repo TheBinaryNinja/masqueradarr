@@ -366,7 +366,7 @@ pub async fn serve_stream(
     //    entry / cold hop rides the live mirror — and a failover-pinned stream never snaps back to its dead
     //    parent) and fail this request (the player refetches).
     //  · ENTRY — a transport failure always enters the walk: a fresh resolve of the SAME pinned candidate
-    //    first (Node re-runs resolveStream → dlhd/dami reprobeMirror — the pre-failover mirror rotation),
+    //    first (Node re-runs resolveStream → dlhd reprobeMirror — the pre-failover mirror rotation),
     //    then, when failoverEnabled, the NEXT candidates in Node's order. A DEFINITIVE non-2xx enters the
     //    walk only when failoverOnDefiniteError is on (default keeps the forward-verbatim semantics).
     if resp.is_none() && is_hop {

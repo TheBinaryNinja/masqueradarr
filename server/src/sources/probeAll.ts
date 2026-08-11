@@ -6,7 +6,7 @@
 //
 // HYBRID by design — the churny per-source logic stays in Node, the durable byte work stays in Rust:
 //   1. RESOLVE in Node (throttled): buildGrant() runs the same adapter logic the resolve seam does (dulo
-//      Supabase session, dlhd 3-hop scrape + mirror, dami delegation) → a { target, upstreamHeaders } grant.
+//      Supabase session, dlhd 3-hop scrape + mirror) → a { target, upstreamHeaders } grant.
 //   2. FETCH + ANALYZE in Rust: the resolved batch is POSTed to the sidecar's /probe endpoint, which fetches
 //      each target concurrently and reports liveness (a 2xx manifest = live) + decode via the SAME parser the
 //      live proxy uses (manifest::extract_media).

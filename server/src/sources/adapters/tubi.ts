@@ -9,7 +9,7 @@
 // shared rewriter (core/playlist.ts) routes the #EXT-X-KEY URI back through the proxy so the key decrypts.
 //
 // tubi is UNIQUE in that it carries its OWN EPG inline: afterSync (the source-agnostic post-sync hook)
-// attaches EPG the dlhd/dami TWO-TIER way — (1) a committed gracenote crosswalk (TUBI_EPG_ADDON_FILE, ported
+// attaches EPG the dlhd TWO-TIER way — (1) a committed gracenote crosswalk (TUBI_EPG_ADDON_FILE, ported
 // from FastChannels' exact per-content_id tmsid map) links the curated US linear channels to a real Gracenote
 // guide so they share a standard grid + cross-source-dedupe, then (2) tubi's own inline guide
 // (epgchannels/programs from this same listing) is written, the 'tubi' EpgSource upserted, and the REMAINING
@@ -159,7 +159,7 @@ const tubiAdapter: SourceAdapter = {
 
   // ── post-sync hook: tubi carries its own EPG (gracenote crosswalk THEN self-EPG) ─────────────────────
   // Runs after syncLive upserts/prunes the channel stores, off the SAME listing (`raw`) this sync fetched.
-  // The dlhd/dami TWO-TIER pattern: a committed gracenote crosswalk claims the curated US linear channels
+  // The dlhd TWO-TIER pattern: a committed gracenote crosswalk claims the curated US linear channels
   // first (so a Tubi "CBS News" shares a STANDARD guide + cross-source-dedupes with the same channel from
   // other sources), then tubi's own inline-program self-EPG fills the remainder. Both are
   // FILL-ONLY-IF-UNTOUCHED (epg == null AND epgState == null), so a user link/unlink/remap always survives.

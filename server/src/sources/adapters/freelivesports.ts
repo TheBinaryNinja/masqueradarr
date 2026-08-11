@@ -95,7 +95,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 // Build the freelivesports self-EPG from the inline epg.entries (the same `raw` catalog rows buildSource
 // consumed), upsert the 'freelivesports' EpgSource, and self-link the still-untouched channels onto it. Live-only
 // (the caller guards on `live` so a snapshot fallback never overwrites a good guide). FILL-ONLY-IF-UNTOUCHED —
-// same posture as dlhd/dami/samsung/vizio/lg/vidaa/whale.
+// same posture as dlhd/samsung/vizio/lg/vidaa/whale.
 async function applyFlsSelfEpg(sourceId: string, raw: FlsRow[]): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);

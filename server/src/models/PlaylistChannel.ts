@@ -46,7 +46,7 @@ export interface PlaylistChannelDoc {
   // distinct from a stored null (its original tvg_id was unlinked). Never in a $set/$setOnInsert bucket,
   // so it rides re-sync untouched. See services/failover.ts failoverDisbandUpdate for the restore.
   origTvgId?: string | null;
-  // Operator's preferred upstream "player" for sources that expose several (adapter.playerSelectable — dlhd/dami's
+  // Operator's preferred upstream "player" for sources that expose several (adapter.playerSelectable — dlhd's
   // DaddyLive Player 1..N). 1-based; null/absent = inherit the source-wide default (Settings.dlhdPlayer). Read at
   // resolve time by the seam (buildGrant) and honored+failed-over by the adapter's resolveStream. OPTIONAL — older
   // docs lack it (treat undefined as null). $setOnInsert-only, like the failover fields, so it survives re-sync.

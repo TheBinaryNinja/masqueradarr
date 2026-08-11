@@ -19,7 +19,7 @@
 //! the PCR/PTS reset); a truly seamless splice would need RMX.
 //!
 //! Durability reuses the RSL layer: playlist + segment fetches go through `fetch_with_retry` (transient retry),
-//! and a persistent media-playlist failure re-resolves the entry (driving dlhd/dami `reprobeMirror` failover).
+//! and a persistent media-playlist failure re-resolves the entry (driving dlhd `reprobeMirror` failover).
 //! Telemetry uses the SOCKET model (noteSocketViewer* — explicit open/close, a 60s no-byte backstop) rather
 //! than the 30s poll-recency model, since a continuous stream never polls: `open` → Node mints a connId; periodic
 //! `sbytes` → egress; `close` → session end.

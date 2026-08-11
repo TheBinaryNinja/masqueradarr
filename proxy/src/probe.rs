@@ -1,6 +1,6 @@
 //! The channel-probe endpoint (PRB, P1.3) — the successor to the removed streamProbe sweep; reads manifest-declared decode metadata.
 //!
-//! Node's `sources/probeAll.ts` RESOLVES every Active channel (dulo/dlhd/dami adapter logic, throttled) then
+//! Node's `sources/probeAll.ts` RESOLVES every Active channel (dulo/dlhd adapter logic, throttled) then
 //! POSTs the resolved `{ id, target, upstreamHeaders }` batch here. This binary FETCHES each target
 //! concurrently (bounded), decides liveness (a 2xx that parses as a manifest = live), and extracts the
 //! declared decode metadata via the SAME parser the live proxy uses (`manifest::extract_media`). It writes

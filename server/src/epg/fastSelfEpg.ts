@@ -1,5 +1,5 @@
 // fastSelfEpg — the source-agnostic WRITE / LINK / UPSERT half of a FAST source's self-EPG, extracted from
-// epg/tubi.ts + epg/dlhd.ts + epg/dami.ts (which were three copies of the same mechanics). It carries NO
+// epg/tubi.ts + epg/dlhd.ts (which had grown into copies of the same mechanics). It carries NO
 // per-source fetch/parse logic: a source's epg/<id>.ts produces already-mapped EpgChannel/Program docs (Samsung
 // reuses the shared XMLTV mappers; an inline-program source builds them with a tiny mapper) and calls these.
 //
@@ -16,7 +16,7 @@ import { PlaylistChannel } from '../models/PlaylistChannel.js';
 /**
  * Per-source REPLACE of the guide stores (epgchannels + programs, both scoped by `source`) from already-mapped
  * docs. Returns the new counts PLUS the distinct bare channelIds present (the playlist hook self-links those via
- * linkFastSelfEpg). The same pattern Gracenote / EPG-PW / tubi / dlhd / dami use.
+ * linkFastSelfEpg). The same pattern Gracenote / EPG-PW / tubi / dlhd use.
  */
 export async function writeFastEpg(
   sourceId: string,
@@ -35,7 +35,7 @@ export async function writeFastEpg(
 
 /**
  * Self-link a source's still-UNTOUCHED PlaylistChannels onto its own guide (FILL-ONLY-IF-UNTOUCHED — generalized
- * from dlhd/dami's afterSync). The filter requires epg == null AND epgState == null, so a user link/unlink (or a
+ * from dlhd's afterSync). The filter requires epg == null AND epgState == null, so a user link/unlink (or a
  * crosswalk that already claimed the row) is never overwritten. Returns the number of channels linked.
  */
 export async function linkFastSelfEpg(sourceId: string, channelIds: string[]): Promise<number> {

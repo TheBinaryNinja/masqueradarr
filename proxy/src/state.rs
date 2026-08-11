@@ -475,7 +475,7 @@ impl AppState {
 
     /// FOG: force a FRESH resolve of a SPECIFIC candidate (bypass the target cache) and re-cache the
     /// result — pinning the stream's cursor to that attempt. attempt 0 = the channel itself (Node re-runs
-    /// `resolveStream`, which drives dlhd/dami `reprobeMirror()` — the pre-failover "mirror failover");
+    /// `resolveStream`, which drives dlhd `reprobeMirror()` — the pre-failover "mirror failover");
     /// attempt N >= 1 = the channel's Nth ordered failover child, resolved via the child's own adapter.
     pub async fn resolve_at(
         &self,

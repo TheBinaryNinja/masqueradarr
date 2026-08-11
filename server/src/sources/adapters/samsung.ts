@@ -135,7 +135,7 @@ async function resolveStream(entryUrl: string): Promise<{ masterUrl: string }> {
 
 // Build the samsung self-EPG from the per-region XMLTV, upsert the 'samsung' EpgSource, and self-link the still-
 // untouched channels onto it. Live-only (the caller guards on `live` so a snapshot fallback never overwrites a
-// good guide). FILL-ONLY-IF-UNTOUCHED — same posture as dlhd/dami.
+// good guide). FILL-ONLY-IF-UNTOUCHED — same posture as dlhd.
 async function applySamsungSelfEpg(sourceId: string): Promise<void> {
   const { offset, defaulted } = await resolveProgramOffset();
   if (defaulted) logger.warn('seed', `[${sourceId}] settings offset unset — guide times stored as UTC (+0000)`);
