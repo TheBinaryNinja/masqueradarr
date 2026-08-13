@@ -17,7 +17,7 @@
 # -----------------------------------------------------------------------------
 set -euo pipefail
 
-NODE_UID=node                            # uid/gid 1000 in node:*-bookworm-slim
+NODE_UID=node                            # uid/gid 1000 in every node:*-slim base (bookworm and bullseye)
 DATA_DIR=/data
 DB_DIR=/data/db
 COMPOSE_DIR=/data/compose

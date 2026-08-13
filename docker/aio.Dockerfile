@@ -20,27 +20,50 @@
 #    runtime BASE is not a divergence. The only intentional divergence left is the all-in-one delta: mongod +
 #    gosu + the /data redirect + the supervisor entrypoint,
 #    and no `USER node` line because the entrypoint starts as root to chown the data volume.
+#    (app.Dockerfile carries the same RUNTIME_IMAGE/RUST_IMAGE args; MONGO_IMAGE is aio-only.)
 #
 # All-in-one specifics:
-#   - mongod 7.0 (server only) runs --auth, bound to 127.0.0.1 ONLY (never port-exposed).
+#   - mongod (server only) runs --auth, bound to 127.0.0.1 ONLY (never port-exposed).
 #   - A bash supervisor (docker/aio-entrypoint.sh) runs config-init -> mongod -> ready-gate -> node
 #     under tini, dropping both long-lived processes to the `node` uid (1000) via gosu.
 #   - One /data volume holds the DB (/data/db), composed exports (/data/compose via a symlink from the
 #     non-overridable /app/compose), the config (/data/config.json), and the embedded mongo creds.
 #
-# AVX NOTE: on amd64, mongod 7.0 requires a CPU with AVX (same constraint as the standard mongo:7.0.15
-# image). On hosts without AVX, use the multi-container compose stack instead.
+# AVX NOTE: on amd64, mongod 5.0+ requires a CPU with AVX (same constraint as the standard mongo:7.0.15
+# image), so the DEFAULT build will not start on older Atom/Celeron/pre-2011 Xeon hosts or on a
+# hypervisor exposing a kvm64/qemu64 CPU model — mongod dies instantly with SIGILL ("Illegal
+# instruction"). Those hosts want the mongo4.4-* tags built by .github/workflows/docker-publish-mongo44.yml
+# (4.4 predates the AVX requirement), or the multi-container compose stack with `image: mongo:4.4`.
 # -----------------------------------------------------------------------------
+
+# ---- Base-image matrix (build args) ----
+# The DEFAULTS below reproduce the standard mongo-7 image exactly — the normal workflow passes only
+# APP_VERSION. `Build and Publish Mongo 4.4` overrides all four TOGETHER, because they are not
+# independent: MONGO_IMAGE's Ubuntu base decides which OpenSSL the copied-in mongod needs, and the Rust
+# sidecar is dynamically linked against the RUNTIME glibc, so RUST_IMAGE must track RUNTIME_IMAGE or
+# masq-proxy fails to load with `GLIBC_2.34 not found`.
+#
+#   MONGO_IMAGE               ->  needs         ->  RUNTIME_IMAGE / NODE_IMAGE  ->  RUST_IMAGE
+#   mongo:7.0.15  (jammy 22.04, glibc 2.35)  OpenSSL 3    node:22*-bookworm-slim     rust:1-bookworm
+#   mongo:4.4.30-focal (focal 20.04, glibc 2.31)  OpenSSL 1.1  node:22*-bullseye-slim  rust:1-bullseye
+#
+# (bullseye reaches EOL ~2026-08-31; once Debian moves it to archive.debian.org the runtime apt blocks
+# below will 404 on that variant only — fix is an sources.list rewrite to archive.debian.org plus
+# `-o Acquire::Check-Valid-Until=false`. The default bookworm build is unaffected.)
 ARG NODE_IMAGE=node:22.11.0-bookworm-slim
+ARG RUNTIME_IMAGE=node:22-bookworm-slim
+ARG RUST_IMAGE=rust:1-bookworm
+ARG MONGO_IMAGE=mongo:7.0.15
 
 # ---- mongod binary source: the official multi-arch mongo image (amd64 + arm64) ----
 # MongoDB ships arm64 ONLY via its Ubuntu builds — the Debian apt repo is amd64-only (its bookworm
 # InRelease advertises no arm64), which is why an apt install fails the arm64 build. The official
-# `mongo` image is multi-arch and built from those Ubuntu (jammy) packages, so we copy mongod out of it
-# per target arch. The jammy binary runs on the bookworm runtime below (glibc is forward-compatible and
-# the openssl 3 ABI matches; libcurl4 added there satisfies its last dep — verified). Pinned to 7.0.15
-# to match docker-compose.yml's MONGO = 7.0.15.
-FROM mongo:7.0.15 AS mongo
+# `mongo` image is multi-arch and built from those Ubuntu packages, so we copy mongod out of it per
+# target arch. The Ubuntu binary runs on the Debian runtime below because glibc is forward-compatible
+# and the OpenSSL ABI is paired by the matrix above (7.0/jammy needs libssl3, which bookworm has;
+# 4.4/focal needs libssl1.1, which bullseye has) — libcurl4, added in the runtime, satisfies its last
+# dep in both cases. The 7.0.15 default matches docker-compose.yml's MONGO = 7.0.15.
+FROM ${MONGO_IMAGE} AS mongo
 
 # ---- Stage 1: build the SPA (root package) — MIRRORS docker/app.Dockerfile ----
 FROM ${NODE_IMAGE} AS spa-build
@@ -67,12 +90,15 @@ COPY server/src/ ./src/
 RUN npm run build                       # tsc -p .  -> /server/dist
 
 # ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) — MIRRORS docker/app.Dockerfile ----
-# Debian bookworm base → glibc, matching the runtime stage (and this image's copied-in mongod). The durable
-# video DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts). Produces
-# /proxy/target/release/masq-proxy. cargo-chef splits the dependency compile into its own gha-cacheable
-# layer (busts only on Cargo.toml/Cargo.lock change). See app.Dockerfile for the full rationale (keep the
-# two in sync).
-FROM rust:1-bookworm AS chef
+# Debian base → glibc, and it MUST be the SAME Debian release as RUNTIME_IMAGE: masq-proxy is dynamically
+# linked, so a bookworm-built binary (glibc 2.36) will not load on a bullseye runtime (glibc 2.31). That
+# is the whole reason RUST_IMAGE exists as an arg — it moves with RUNTIME_IMAGE, never on its own. There
+# is no OpenSSL coupling here: the crate uses rustls + RustCrypto, not system OpenSSL (proxy/Cargo.toml).
+# The durable video DATA PLANE that node spawns + supervises on loopback (server/src/proxy/sidecar.ts).
+# Produces /proxy/target/release/masq-proxy. cargo-chef splits the dependency compile into its own
+# gha-cacheable layer (busts only on Cargo.toml/Cargo.lock change). See app.Dockerfile for the full
+# rationale (keep the two in sync).
+FROM ${RUST_IMAGE} AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /proxy
 
@@ -87,11 +113,13 @@ COPY proxy/ ./
 RUN cargo build --release                                 # only the masq-proxy crate recompiles
 
 # ---- Stage 3: runtime (app + mongod + config-init supervisor) ----
-# Debian (bookworm) base — same as app.Dockerfile (both are glibc). This image additionally MUST stay glibc
-# regardless of the app image: the mongod binary copied in from the official mongo image (the `mongo` stage) is
-# a glibc build and won't run on musl. The dulo browser here is Debian's apt `chromium` (same as app.Dockerfile).
-# mongod is copied (not apt-installed) because MongoDB's Debian repo has no arm64.
-FROM node:22-bookworm-slim AS runtime
+# Debian base (bookworm by default) — same as app.Dockerfile (both are glibc). This image additionally MUST
+# stay glibc regardless of the app image: the mongod binary copied in from the official mongo image (the
+# `mongo` stage) is a glibc build and won't run on musl. It must also ship the OpenSSL major that mongod was
+# linked against — see the base-image matrix at the top; that pairing is why RUNTIME_IMAGE and MONGO_IMAGE
+# are overridden together and never one at a time. The dulo browser here is Debian's apt `chromium` (same as
+# app.Dockerfile). mongod is copied (not apt-installed) because MongoDB's Debian repo has no arm64.
+FROM ${RUNTIME_IMAGE} AS runtime
 # BACKUPS_DIR redirects the scheduled-backup target into the single /data volume (the server seeds
 # settings.backupLocation from this env default). The standard image instead defaults to /backups (a
 # bind-mountable dir created in app.Dockerfile) — an intentional all-in-one delta, like the /data redirect.
@@ -120,14 +148,18 @@ COPY server/package.json server/package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 
 # All-in-one additions: gosu (per-process privilege drop) + libcurl4 (the one mongod runtime lib not
-# already in node:bookworm-slim). The Node runtime already present does the mongod readiness probe and
-# the first-boot user creation via the transitive mongodb driver, so no mongosh is needed.
+# already in the node:*-slim base). This line is variant-agnostic and MUST NOT name an libssl package:
+# libcurl4 itself Depends on libssl3 in bookworm and on libssl1.1 in bullseye, which is exactly what
+# mongod 7.0 and 4.4 respectively link against — so the matrix at the top drags in the right one for free,
+# whereas a hardcoded libssl would break the other variant. The Node runtime already present does the
+# mongod readiness probe and the first-boot user creation via the transitive mongodb driver, so no mongosh
+# is needed.
 RUN apt-get update \
  && apt-get install -y --no-install-recommends gosu libcurl4 \
  && rm -rf /var/lib/apt/lists/*
 
-# mongod 7.0 (server only) — the binary lifted from the official multi-arch mongo image (see the `mongo`
-# stage). COPY --from selects the matching-arch mongod per build platform.
+# mongod (server only) — the binary lifted from the official multi-arch mongo image named by MONGO_IMAGE
+# (see the `mongo` stage). COPY --from selects the matching-arch mongod per build platform.
 COPY --from=mongo /usr/bin/mongod /usr/bin/mongod
 
 # Compiled server + built SPA + committed source snapshots (MIRROR app.Dockerfile).

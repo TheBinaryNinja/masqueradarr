@@ -30,7 +30,13 @@
 # cannot dlopen), AMD VAAPI, and Intel QSV. The dulo streamed-login browser drives Debian's `chromium` apt package
 # via puppeteer-core. Keep the Node major in lockstep with CLAUDE.md.
 # -----------------------------------------------------------------------------
+
+# Base-image args — MIRRORS docker/aio.Dockerfile (which additionally carries MONGO_IMAGE, since only the
+# all-in-one bundles mongod). RUNTIME_IMAGE and RUST_IMAGE must move as a pair: masq-proxy is dynamically
+# linked against the runtime glibc. Nothing overrides these today — the defaults are the shipped image.
 ARG NODE_IMAGE=node:22.11.0-bookworm-slim
+ARG RUNTIME_IMAGE=node:22-bookworm-slim
+ARG RUST_IMAGE=rust:1-bookworm
 
 # ---- Stage 1: build the SPA (root package) ----------------------------------
 FROM ${NODE_IMAGE} AS spa-build
@@ -69,7 +75,7 @@ RUN npm run build                       # tsc -p .  -> /server/dist
 # reruns. cargo-chef is installed from crates.io onto the same trusted rust:1-bookworm base — no
 # third-party base image, so the supply chain is unchanged. (Cargo.lock is committed; --locked-free cook
 # still respects it since it's in the recipe.)
-FROM rust:1-bookworm AS chef
+FROM ${RUST_IMAGE} AS chef
 RUN cargo install cargo-chef --locked
 WORKDIR /proxy
 
@@ -88,7 +94,7 @@ RUN cargo build --release                                 # only the masq-proxy 
 # the only remaining divergence is the config bootstrap (see SYNC NOTE). The dulo streamed-login browser drives
 # Debian's apt `chromium`. (The video engine + all ffmpeg/GPU-hwaccel deps were removed in the video-engine
 # teardown — see the runtime deps below; the base stays Debian for mongod parity, not for NVENC.)
-FROM node:22-bookworm-slim AS runtime
+FROM ${RUNTIME_IMAGE} AS runtime
 ENV NODE_ENV=production \
     MASQUERADARR_CONFIG=/app/config/config.json \
     CHROMIUM_PATH=/usr/bin/chromium \

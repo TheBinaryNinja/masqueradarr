@@ -181,7 +181,8 @@ class DuloLoginBrowser {
     try {
       session.browser = await puppeteer.launch({
         // executablePath points at the distro Chromium baked into the Docker image (CHROMIUM_PATH: Debian's apt
-        // /usr/bin/chromium — same path in app.Dockerfile and aio.Dockerfile, both bookworm). puppeteer-core
+        // /usr/bin/chromium — same path in app.Dockerfile and aio.Dockerfile on every base; note the aio
+        // mongo4.4-* variant is bullseye, whose chromium is frozen at 120 vs bookworm's). puppeteer-core
         // ships NO bundled browser, so this must resolve to a real binary; if unset the launch throws and the
         // feature degrades cleanly (caught below). HEADFUL: running headed (under Xvfb in the Docker runtime) is the
         // biggest lever against Google's "Continue with Google" gate after navigator.webdriver.
