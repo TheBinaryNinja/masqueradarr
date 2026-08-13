@@ -1,0 +1,234 @@
+# -----------------------------------------------------------------------------
+# .github/workflows/docker-publish-mongo44.yml — the legacy-CPU all-in-one variant.
+#
+# Builds the SAME image as the `aio` leg of docker-publish.yml, but with mongod 4.4 on a Debian
+# bullseye runtime, so it starts on x86-64 CPUs WITHOUT AVX — Synology NAS boxes, Atom/Celeron
+# (J4125, N5105, J3455…), pre-2011 Xeons, and VMs whose hypervisor exposes a kvm64/qemu64 CPU model.
+# MongoDB 5.0+ hard-requires AVX; on those hosts the standard image dies instantly with
+# "Illegal instruction (core dumped)" the moment aio-entrypoint.sh execs mongod.
+#
+# All four base images are overridden together (see the matrix comment in docker/aio.Dockerfile):
+# mongod 4.4 is a focal build needing OpenSSL 1.1 -> bullseye runtime -> bullseye Rust builder, or
+# masq-proxy would fail to load with `GLIBC_2.34 not found`.
+#
+# Same Docker Hub repo as the standard aio image; tags carry a `mongo4.4-` prefix:
+#   0.1.16-latest -> :mongo4.4-0.1.16 + :mongo4.4-latest
+#   0.1.16-dev    -> :mongo4.4-0.1.16-dev + :mongo4.4-dev
+#   0.1.16        -> :mongo4.4-0.1.16
+#
+# SILENT by design: no GitHub Release, no git tag, no repo-visible artifact of any kind. The
+# file-wide `permissions: contents: read` is the ceiling and NO job elevates it, so this workflow
+# structurally cannot write to the repo. The run summary is the record of what shipped.
+#
+# NOTE: a /data volume written by mongod 7.0 CANNOT be opened by 4.4 (no FCV downgrade path) — this
+# image needs a fresh volume, or a restore through the app's own JSON backup.
+# -----------------------------------------------------------------------------
+name: Build and Publish Mongo 4.4
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to publish (e.g. 0.1.16, 0.1.16-dev, 0.1.16-latest) — tags get a mongo4.4- prefix"
+        required: true
+        type: string
+
+permissions:
+  contents: read              # never elevated — this workflow publishes nothing to GitHub
+
+concurrency:
+  group: docker-publish-mongo44-${{ inputs.version }}
+  cancel-in-progress: false   # never kill an in-flight push
+
+env:
+  TAG_PREFIX: mongo4.4-
+  REPO: masqueradarr-aio
+  # The no-AVX base matrix. These four move together — see docker/aio.Dockerfile.
+  # Renovate parses Dockerfile `ARG x=image` + `FROM $x`, but NOT workflow build-args, so it will never
+  # bump the four pins below — they are hand-maintained. The Dockerfile's mongo-7/bookworm defaults stay
+  # Renovate-managed as before.
+  MONGO_IMAGE: mongo:4.4.30-focal
+  NODE_IMAGE: node:22.11.0-bullseye-slim
+  RUNTIME_IMAGE: node:22-bullseye-slim
+  RUST_IMAGE: rust:1-bullseye
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.derive.outputs.version }}
+      primary: ${{ steps.derive.outputs.primary }}
+      rolling: ${{ steps.derive.outputs.rolling }}
+    steps:
+      - name: Validate input & derive prefixed tags
+        id: derive
+        run: |
+          version="${{ inputs.version }}"
+          if [ -z "$version" ]; then
+            echo "::error::version input is empty"; exit 1
+          fi
+          case "$version" in
+            *[[:space:]]*) echo "::error::version must not contain whitespace: '$version'"; exit 1 ;;
+          esac
+          case "$version" in
+            # the prefix is added below — pre-prefixing would yield mongo4.4-mongo4.4-0.1.16
+            mongo4.4-*) echo "::error::pass the bare version; this workflow adds the 'mongo4.4-' prefix itself"; exit 1 ;;
+          esac
+
+          lc="$(printf '%s' "$version" | tr '[:upper:]' '[:lower:]')"
+
+          # rolling tag (dev before latest), case-insensitive — MIRRORS docker-publish.yml
+          case "$lc" in
+            *dev*)    rolling=dev ;;
+            *latest*) rolling=latest ;;
+            *)        rolling= ;;
+          esac
+          # dedupe: caller literally passed `dev`/`latest` as the whole version
+          if [ "$rolling" = "$version" ]; then rolling=; fi
+
+          # strip a trailing -latest (0.1.16-latest -> 0.1.16); keep -dev / plain versions as-is
+          clean="$(printf '%s' "$version" | sed -E 's/-(latest|dev)$//I')"
+          case "$rolling" in
+            latest) base="$clean" ;;
+            *)      base="$version" ;;
+          esac
+
+          # the ONLY divergence from docker-publish.yml's derivation: both tags carry the prefix.
+          # There is deliberately no is_release/release_title here — this workflow never releases.
+          primary="${TAG_PREFIX}${base}"
+          [ -n "$rolling" ] && rolling="${TAG_PREFIX}${rolling}"
+
+          {
+            echo "version=$version"
+            echo "primary=$primary"
+            echo "rolling=$rolling"
+          } >> "$GITHUB_OUTPUT"
+          echo "Resolved: version='$version' primary='$primary' rolling='${rolling:-<none>}'"
+
+  build:
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # aio only — the app-stack image has no bundled mongod, so there is nothing to downgrade.
+        # Native runners per arch (no QEMU), same as docker-publish.yml.
+        include:
+          - { arch: amd64, runner: ubuntu-latest }
+          - { arch: arm64, runner: ubuntu-24.04-arm }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/aio.Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          build-args: |
+            APP_VERSION=${{ needs.prepare.outputs.version }}
+            MONGO_IMAGE=${{ env.MONGO_IMAGE }}
+            NODE_IMAGE=${{ env.NODE_IMAGE }}
+            RUNTIME_IMAGE=${{ env.RUNTIME_IMAGE }}
+            RUST_IMAGE=${{ env.RUST_IMAGE }}
+          provenance: false
+          # distinct gha scope so this variant never shares layers with the mongo-7 aio build
+          cache-from: type=gha,scope=aio-mongo44-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=aio-mongo44-${{ matrix.arch }}
+          outputs: type=image,name=${{ secrets.DOCKERHUB_USERNAME }}/masqueradarr-aio,push-by-digest=true,name-canonical=true,push=true
+
+      # Emit an empty file NAMED for the pushed digest; the merge job globs these into the manifest list.
+      - name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-aio-mongo44-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  merge:
+    needs: [prepare, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-aio-mongo44-*
+          merge-multiple: true
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compose tag args
+        id: tags
+        run: |
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          primary="${{ needs.prepare.outputs.primary }}"
+          rolling="${{ needs.prepare.outputs.rolling }}"
+          args="-t $ns/$REPO:$primary"
+          [ -n "$rolling" ] && args="$args -t $ns/$REPO:$rolling"
+          echo "args=$args" >> "$GITHUB_OUTPUT"
+
+      - name: Create & push manifest list
+        working-directory: /tmp/digests
+        run: |
+          # word-splitting is intentional: tag args + one source ref per per-arch digest file.
+          # shellcheck disable=SC2046,SC2086
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          docker buildx imagetools create ${{ steps.tags.outputs.args }} \
+            $(printf "$ns/$REPO@sha256:%s " *)
+
+      # There is no Release to read, so the run summary IS the record of what shipped.
+      # DOCKERHUB_USERNAME is deliberately NOT printed: Actions masks secret values in job summaries, so
+      # interpolating it would render every line as `***/masqueradarr-aio:…` and break copy-paste. The
+      # namespace is whatever DOCKERHUB_USERNAME is set to — the same one the standard aio image uses.
+      - name: Report published tags
+        run: |
+          ns="${{ secrets.DOCKERHUB_USERNAME }}"
+          primary="${{ needs.prepare.outputs.primary }}"
+          rolling="${{ needs.prepare.outputs.rolling }}"
+          digest="$(docker buildx imagetools inspect "$ns/$REPO:$primary" --format '{{.Manifest.Digest}}')"
+          {
+            echo "### Published to Docker Hub (silent — no GitHub Release)"
+            echo
+            echo "Repository \`$REPO\`, under the configured Docker Hub account. Tags pushed:"
+            echo
+            echo "- \`$REPO:$primary\`"
+            [ -n "$rolling" ] && echo "- \`$REPO:$rolling\`"
+            echo
+            echo "| field | value |"
+            echo "|---|---|"
+            echo "| platforms | linux/amd64, linux/arm64 |"
+            echo "| manifest digest | \`$digest\` |"
+            echo "| mongod | \`$MONGO_IMAGE\` — no AVX requirement |"
+            echo "| runtime | \`$RUNTIME_IMAGE\` (OpenSSL 1.1) |"
+            echo "| sidecar built on | \`$RUST_IMAGE\` |"
+            echo "| source commit | \`$GITHUB_SHA\` |"
+            echo
+            echo "> **Fresh \`/data\` volume required.** A dbpath written by mongod 7.0 cannot be opened by"
+            echo "> 4.4 (no FCV downgrade). Migrate with Settings → Data: generate a backup on the 7.0 image,"
+            echo "> boot this one on an empty volume, then restore."
+          } >> "$GITHUB_STEP_SUMMARY"

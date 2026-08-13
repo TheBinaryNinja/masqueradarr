@@ -217,8 +217,15 @@ masqueradarr ships as Docker images. There are two deployment shapes.
 A second image bundles **app + MongoDB + config bootstrap** into one container, so the whole stack runs
 from a single `docker run` with no external database — ideal for a quick trial or a small home server. One
 `/data` volume persists the database, exports, config, and credentials. It's published under the
-**`iflip721/masqueradarr`** name (see **Migration status** above). *(On amd64, the bundled MongoDB 7.0
-requires a CPU with AVX; on hosts without it, use the compose stack.)*
+**`iflip721/masqueradarr`** name (see **Migration status** above).
+
+> **No-AVX hosts (Synology NAS, Atom/Celeron, older Xeons, kvm64/qemu64 VMs).** On amd64 the bundled
+> MongoDB 7.0 requires a CPU with AVX — without it mongod dies at boot with `Illegal instruction (core
+> dumped)`. Those hosts want the **`mongo4.4-`** tags, an otherwise-identical image built with MongoDB
+> 4.4 (which predates the AVX requirement): `iflip721/masqueradarr-aio:mongo4.4-latest`. It needs a
+> **fresh `/data` volume** — a database written by MongoDB 7.0 cannot be opened by 4.4. To carry data
+> across, generate a backup from **Settings → Data** on the 7.0 image, boot this one on an empty volume,
+> then restore. Alternatively, use the compose stack with `image: mongo:4.4`.
 
 To publish on a different host port, change the left side of the `-p` mapping — e.g. `-p 8080:3000`
 (the container always serves on `3000` internally; `MASQUERADARR_PORT` only applies to the compose stack).
