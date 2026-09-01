@@ -1,3 +1,5 @@
+# 📄 Guides and Docs ⮕ [Start Here](https://thebinaryninja.github.io/masqueradarr/)
+
 <div align="center">
   <img src="docs/img/masqueradarr.png">
   <p><em>Aggregating scattered IPTV sources behind a single, trusted identity.</em></p>
