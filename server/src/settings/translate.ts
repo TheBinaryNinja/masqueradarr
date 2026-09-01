@@ -19,6 +19,7 @@
 
 import { isIP } from 'node:net';
 import type { SettingsDoc } from '../models/Settings.js';
+import { DULO_DEFAULT_DOMAIN, normalizeDomain } from '../sources/adapters/dulo/config.js';
 import { zoneOffsetString } from './zoneOffset.js';
 
 // First-provision default for the outbound-fetch DNS resolver(s). Hardcoded (the NAMESERVER env was
@@ -62,6 +63,10 @@ export function envDefaults(): SettingsData {
     videoPlayer: asVideoPlayerMode(process.env.VIDEO_PLAYER),
     // Source-wide default DaddyLive player (0 = Auto). Seedable from DLHD_PLAYER; clamped to a non-negative int.
     dlhdPlayer: Math.max(0, Math.trunc(Number(process.env.DLHD_PLAYER)) || 0),
+    // The domain dulo is currently on. Deliberately NOT env-derived: dulo identity is kept out of infra
+    // config (the old DULO_API / DULO_API_BASE overrides were retired with this field), so the committed
+    // default seeds first boot and the operator edits it on the Settings screen thereafter.
+    duloDomain: DULO_DEFAULT_DOMAIN,
     // nameservers: hardcoded first-provision default (no longer env-derived — the NAMESERVER env was
     // dropped). 8.8.8.8,8.8.4.4 (Google public DNS) is written into the singleton on first insert so a
     // working outbound-fetch resolver is ALWAYS present out of the box; the operator edits it on the
@@ -92,6 +97,7 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     darkMode: doc.darkMode,
     videoPlayer: asVideoPlayerMode(doc.videoPlayer),
     dlhdPlayer: typeof doc.dlhdPlayer === 'number' ? doc.dlhdPlayer : 0, // source-wide default DaddyLive player (0 = Auto)
+    duloDomain: doc.duloDomain || DULO_DEFAULT_DOMAIN, // bare host; not secret — returned for the Settings UI
     nameservers: doc.nameservers ?? null, // not secret — returned verbatim for the Settings UI
     logLevel: typeof doc.logLevel === 'number' ? doc.logLevel : 2,
     maxmindAccountId: doc.maxmindAccountId ?? null,
@@ -153,6 +159,15 @@ export function toExternalPatch(body: unknown): PatchResult {
       return { ok: false, error: 'dlhdPlayer (integer 0..12; 0 = Auto) required' };
     }
     $set.dlhdPlayer = v;
+  }
+  // duloDomain: the host dulo is currently on. Normalized (scheme/path/port/userinfo stripped, lowercased)
+  // and gated by the SAME validator the Test/Auto-detect endpoints use — it rejects IP literals and
+  // private/loopback targets, which matters because those endpoints server-side-fetch this value.
+  if (b.duloDomain !== undefined) {
+    if (typeof b.duloDomain !== 'string') return { ok: false, error: 'duloDomain (string) required' };
+    const parsed = normalizeDomain(b.duloDomain);
+    if (!parsed.ok) return { ok: false, error: `duloDomain: ${parsed.error}` };
+    $set.duloDomain = parsed.domain;
   }
   // nameservers: optional comma-separated resolver IP(s). null or '' clears it (stored null → OS resolver);
   // a non-empty string must be a comma list of valid IPs (isIP), else 400 — a bad value never reaches dns.ts.

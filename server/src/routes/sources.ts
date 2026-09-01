@@ -21,6 +21,16 @@ import { createMetrics, snapshotOne, type Metrics } from '../sources/core/metric
 import { syncLive, resetSource, ensureShellRow } from '../sources/seed.js';
 import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { duloPairing, buildBookmarklet, buildSnippet } from '../sources/adapters/dulo/pairing.js';
+import {
+  DULO_DEFAULT_DOMAIN,
+  browserHeadersFor,
+  catalogUrlFor,
+  getDomain,
+  getOrigin,
+  normalizeDomain,
+  originFor,
+} from '../sources/adapters/dulo/config.js';
+import { scrapeSupabaseConfig } from '../sources/adapters/dulo/supabaseConfig.js';
 import type { Request, Response } from 'express';
 import { Playlist } from '../models/Playlist.js';
 import { grantPlaylistToAdmins } from '../security/adminAccess.js';
@@ -121,6 +131,99 @@ sourcesRouter.post('/api/sources/:id/provision', async (req, res, next) => {
   }
 });
 
+// ── dulo domain (Settings → Advanced → Dulo.tv Authentication) ────────────────
+// dulo REBRANDS periodically, so the domain it lives on is an operator setting (Settings.duloDomain) rather
+// than a compile-time const. These two endpoints only HELP the operator find and verify a candidate —
+// NEITHER PERSISTS ANYTHING. The save goes through PUT /api/settings, which is where the cascade lives
+// (reset Supabase discovery + sign the dulo session out, since a session belongs to the domain it was
+// captured on). Admin-only via the /api/sources prefix (index.ts adminOnlyRoutes).
+//
+// SSRF: both fetch an OPERATOR-SUPPLIED host server-side, so every candidate goes through normalizeDomain()
+// first — it strips scheme/path/port/userinfo and rejects IP literals plus private/loopback targets. This
+// is the gate that actually runs on user input (the adapter's isAllowedUpstream is not wired up today).
+const DOMAIN_PROBE_TIMEOUT_MS = 10_000;
+
+// Probe a candidate domain: does it serve dulo's Live TV catalog, and is it a dulo frontend build? The
+// bundle scrape is the stronger signal — any site can 404, but only dulo's build carries an
+// `sb_publishable_` key next to a supabase.co project URL.
+sourcesRouter.post('/api/sources/dulo/domain/test', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const parsed = normalizeDomain(typeof body.domain === 'string' ? body.domain : '');
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+    const domain = parsed.domain;
+    const endpoint = catalogUrlFor(domain);
+    let httpStatus: number | null = null;
+    let channelCount: number | null = null;
+    let error: string | null = null;
+    try {
+      const r = await fetch(endpoint, {
+        headers: browserHeadersFor(originFor(domain)),
+        signal: AbortSignal.timeout(DOMAIN_PROBE_TIMEOUT_MS),
+      });
+      httpStatus = r.status;
+      if (r.ok) {
+        const parsedBody = (await r.json()) as { channels?: unknown[] };
+        channelCount = Array.isArray(parsedBody.channels) ? parsedBody.channels.length : 0;
+      } else {
+        error = `catalog returned HTTP ${r.status}`;
+      }
+    } catch (err) {
+      error = (err as Error).message;
+    }
+
+    // Cache-free scrape (scrapeSupabaseConfig, not discoverSupabaseConfig) so probing a candidate can never
+    // poison the ACTIVE session's Supabase config.
+    const supabase = await scrapeSupabaseConfig(originFor(domain));
+
+    res.json({
+      domain,
+      endpoint,
+      ok: channelCount !== null && channelCount > 0,
+      httpStatus,
+      channelCount,
+      supabaseFound: !!supabase,
+      supabaseUrl: supabase?.supabaseUrl ?? null,
+      error,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// Where did dulo move to? Follow redirects from the currently configured domain and, if different, from the
+// committed default. A rebrand that leaves a 301/302 on the old host is discoverable this way; a hard
+// cut-over (old host simply dead) is not — `detected: null` then, and the SPA says so.
+sourcesRouter.post('/api/sources/dulo/domain/detect', async (_req, res, next) => {
+  try {
+    const current = getDomain();
+    const candidates = [...new Set([current, DULO_DEFAULT_DOMAIN])];
+    const tried: Array<{ from: string; landed: string | null; httpStatus: number | null; error: string | null }> = [];
+
+    for (const from of candidates) {
+      try {
+        const r = await fetch(originFor(from), {
+          redirect: 'follow',
+          headers: browserHeadersFor(originFor(from)),
+          signal: AbortSignal.timeout(DOMAIN_PROBE_TIMEOUT_MS),
+        });
+        const landedParsed = normalizeDomain(new URL(r.url).hostname);
+        const landed = landedParsed.ok ? landedParsed.domain : null;
+        tried.push({ from, landed, httpStatus: r.status, error: null });
+        if (landed && landed !== from) {
+          return res.json({ detected: landed, from, sameAsCurrent: landed === current, tried });
+        }
+      } catch (err) {
+        tried.push({ from, landed: null, httpStatus: null, error: (err as Error).message });
+      }
+    }
+    res.json({ detected: null, from: current, sameAsCurrent: true, tried });
+  } catch (err) {
+    next(err);
+  }
+});
+
 // ── dulo Live TV authentication ───────────────────────────────────────────────
 // dulo gates Live TV streams behind a Supabase session (no static stream URLs). The SPA captures the
 // already signed-in session from dulo.tv and POSTs the tokens here — only tokens are stored, never a
@@ -180,7 +283,7 @@ sourcesRouter.post('/api/sources/dulo/auth/pair', (req, res) => {
     code,
     expiresAt,
     callbackUrl,
-    duloUrl: 'https://dulo.tv',
+    duloUrl: getOrigin(), // follows Settings.duloDomain — the SPA links the user to the right site
     bookmarklet: buildBookmarklet(code, callbackUrl),
     snippet: buildSnippet(code, callbackUrl),
   });

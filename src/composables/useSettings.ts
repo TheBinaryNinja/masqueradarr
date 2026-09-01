@@ -31,6 +31,11 @@ export const videoPlayer = ref<VideoPlayerMode>('inapp');
 // Player 1, falling back to the rest on failure), 1..N = prefer that player. Persisted on the Settings
 // singleton; the server caches it into the dlhd resolver. A per-channel override (ChannelDrawer) wins over it.
 export const dlhdPlayer = ref(0);
+// The domain dulo is currently on, as a bare host (e.g. 'dulo.tv'). dulo rebrands periodically, so every
+// dulo-facing hop derives from this. DELIBERATELY NOT auto-persisted like the refs above: saving a changed
+// domain signs the dulo session out server-side, so a debounced keystroke watcher would sign the operator
+// out mid-typing. The Dulo panel writes it explicitly through saveDuloDomain() instead.
+export const duloDomain = ref('dulo.tv');
 export const epgPath = ref('/_global/epg/playlist.xml');
 // Outbound-fetch DNS: comma-separated resolver IP(s) (blank => OS resolver). Persists like any other field;
 // the server re-applies it to the live undici dispatcher on save (server/src/dns.ts via settings/applyDns.ts).
@@ -86,6 +91,7 @@ export async function loadSettings(): Promise<void> {
       darkMode: boolean;
       videoPlayer: VideoPlayerMode;
       dlhdPlayer: number;
+      duloDomain: string;
       nameservers: string | null;
       logLevel: number;
       maxmindAccountId: string | null;
@@ -100,6 +106,7 @@ export async function loadSettings(): Promise<void> {
     if (typeof s.darkMode === 'boolean') darkMode.value = s.darkMode;
     if (s.videoPlayer && VIDEO_PLAYER_MODES.includes(s.videoPlayer)) videoPlayer.value = s.videoPlayer;
     if (typeof s.dlhdPlayer === 'number') dlhdPlayer.value = s.dlhdPlayer;
+    if (typeof s.duloDomain === 'string' && s.duloDomain) duloDomain.value = s.duloDomain;
     if (s.nameservers !== undefined) nameservers.value = s.nameservers ?? '';
     if (typeof s.logLevel === 'number') logLevel.value = s.logLevel;
     if (s.maxmindAccountId !== undefined) maxmindAccountId.value = s.maxmindAccountId ?? '';
@@ -176,6 +183,27 @@ export async function saveMaxmindLicenseKey(key: string): Promise<boolean> {
 
 export function clearMaxmindLicenseKey(): Promise<boolean> {
   return saveMaxmindLicenseKey('');
+}
+
+// Explicit (un-debounced) PUT of the dulo domain, from the Save button on the Dulo panel. Not a watcher:
+// the server treats a CHANGED domain as a provider change and signs the dulo session out, so this must fire
+// once, on an intentional click — never per keystroke. Surfaces the server's validation message (the shared
+// normalizer rejects IP literals, private hosts and malformed names) so the panel can show why a value was
+// refused, unlike the silent debounced persist() above.
+export async function saveDuloDomain(next: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ duloDomain: next }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { duloDomain?: string; error?: string };
+    if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}` };
+    if (typeof body.duloDomain === 'string' && body.duloDomain) duloDomain.value = body.duloDomain;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
 }
 
 export const epgEndpoint = computed(() => `${domain.value.replace(/\/$/, '')}${epgPath.value.startsWith('/') ? '' : '/'}${epgPath.value}`);
