@@ -136,7 +136,7 @@
           <div class="tile"><div class="ic">● 2-factor link</div><h3>Guide id + its source</h3><p>Linking saves a persisted two-factor pair immediately. The channel then shows program data in the published guide and its <strong>Unmatched</strong> count on the Dashboard drops.</p></div>
           <div class="tile"><div class="ic">● many-to-one</div><h3>Shared networks</h3><p>Several playlist channels can point at the same EPG channel — useful when the same network appears in multiple playlists.</p></div>
         </div>
-        <div class="note-block" style="margin-top:16px;">
+        <div class="note-block">
           <div class="lbl">finding what still needs a link</div>
           <p>A playlist's channel table carries a segmented <strong>All / Matched / Unmatched</strong> filter, so you can work through the backlog without scrolling past everything you have already done. It is a <strong>view filter only</strong> — it changes what the table shows, never the channels — and <strong>Unmatched</strong> deliberately includes channels that have <em>never been evaluated</em> for a match, not just ones that were evaluated and missed.</p>
         </div>
@@ -178,7 +178,7 @@
             <div class="step"><div class="rail"><div class="marker">✓</div></div><div class="body"><div class="who">Credit</div><div class="act">Update run-stats</div><div class="note">Every contributing source gets <code>lastXmlAt</code> + <code>xmlGeneratedCount++</code> (or <code>xmlFailCount++</code> on failure).</div></div></div>
           </div>
         </div>
-        <div class="note-block" style="margin-top:16px;">
+        <div class="note-block">
           <div class="lbl">the join that binds guide to lineup</div>
           <p>Downstream, the player pairs the guide to the M3U by matching each <code>&lt;channel id&gt;</code> to a channel's <code>tvg-id</code>. That's why the compose re-tags everything to the <em>bare</em> <code>tvg_id</code> — a channel linked to an <code>epgchannels</code> row that isn't synced yet is skipped, never orphaned.</p>
         </div>

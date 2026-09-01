@@ -160,7 +160,7 @@
             <li><strong>Blind scheduling → live observability.</strong> WebSocket-pushed viewer / bandwidth / buffering telemetry, live system stats, and MongoDB-backed logs.</li>
           </ul>
         </div>
-        <div class="note-block" style="margin-top:8px;">
+        <div class="note-block">
           <div class="lbl">coming from TVApp2?</div>
           <p>There is <strong>no in-place upgrade path</strong>. masqueradarr is a new application with a new data model (MongoDB instead of flat files) — stand it up fresh and re-add your sources through the UI.</p>
         </div>
@@ -229,7 +229,7 @@
             </div>
           </div>
         </div>
-        <div class="note-block" style="margin-top:16px;">
+        <div class="note-block">
           <div class="lbl">honest scope</div>
           <p>The rename and re-architecture are effectively complete — codebase, brand, runtime and Docker images are all masqueradarr. Playback is <strong>live</strong> over the Rust engine (HLS + raw-TS), and the paths that used to be blocked on a remux — AES-encrypted sources, and bare MPEG-TS from a tuner — are handled in-engine under the opt-in <a href="local-origin.html">local origin</a> mode. Actual re-encoding is still out of scope, by design.</p>
         </div>

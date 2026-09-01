@@ -297,9 +297,9 @@ ol li::before { content: counter(li); position: absolute; left: 0; top: 0.05em; 
 .scroll { overflow-x: auto; }
 
 /* ── feature cards / TL;DR pair ────────────────────────────────────────── */
-.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-top: 8px; }
+.pair { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin: 18px 0; }
 @media (max-width: 720px) { .pair { grid-template-columns: 1fr; } }
-.fcard { padding: 20px 20px 22px; border-radius: var(--radius-l); border: 1px solid var(--hairline); background: var(--bg-1); position: relative; overflow: hidden; }
+.fcard { padding: 20px 20px 22px; border-radius: 0 var(--radius-l) var(--radius-l) 0; border: 1px solid var(--hairline); border-left: 0; background: var(--bg-1); position: relative; overflow: hidden; }
 .fcard::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: var(--accent); }
 .fcard.accent::before { background: var(--accent); }
 .fcard.ts::before { background: var(--ts); }
@@ -338,11 +338,11 @@ ol li::before { content: counter(li); position: absolute; left: 0; top: 0.05em; 
 @media (max-width: 620px) { .gloss { grid-template-columns: 1fr; gap: 4px; } }
 
 /* ── aha / note-block / refs ───────────────────────────────────────────── */
-.aha { border-left: 3px solid var(--cfg); background: var(--cfg-soft); border-radius: 0 var(--radius-m) var(--radius-m) 0; padding: 14px 18px; margin: 18px 0 0; max-width: var(--measure); }
+.aha { border-left: 3px solid var(--cfg); background: var(--cfg-soft); border-radius: 0 var(--radius-m) var(--radius-m) 0; padding: 14px 18px; margin: 18px 0; max-width: var(--measure); }
 .aha .lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--cfg); }
 .aha p { margin: 4px 0 0; font-size: 14.5px; color: var(--text-1); }
 
-.note-block { border: 1px solid var(--risk-line); background: var(--risk-soft); border-radius: var(--radius-m); padding: 16px 18px; max-width: var(--measure); }
+.note-block { border-left: 3px solid var(--risk); background: var(--risk-soft); border-radius: 0 var(--radius-m) var(--radius-m) 0; padding: 16px 18px; margin: 18px 0; max-width: var(--measure); }
 .note-block .lbl { font-family: var(--mono); font-size: 10.5px; letter-spacing: 0.16em; text-transform: uppercase; color: var(--risk); }
 .note-block p { margin: 6px 0 0; font-size: 14px; color: var(--text-1); }
 .note-block p code { white-space: normal; }

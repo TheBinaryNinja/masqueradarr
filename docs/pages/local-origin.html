@@ -62,7 +62,7 @@
         <div class="eyebrow"><b>local origin</b> · 08 <span class="rule"></span> republishing the stream</div>
         <h1>masqueradarr becomes the <span class="em">origin</span></h1>
         <p class="lede">Turn one switch on and the engine stops forwarding the provider's playlist. Instead, <strong>one ingest per channel</strong> — not per viewer — follows the upstream, decrypts and normalizes each segment into an in-memory ring, and both output shapes are rendered from that ring. What reaches your player is a stream <em>we authored</em>.</p>
-        <div class="aha" style="margin-top:18px;">
+        <div class="aha">
           <div class="lbl">the one-line version</div>
           <p><strong>Remux-free is still true; “passthrough” no longer is.</strong> Nothing is ever re-encoded — but with <code>originEnabled</code> on, the bytes a player sees come out of our RAM, under our numbering, with the provider erased from every line of the manifest.</p>
         </div>
@@ -341,7 +341,7 @@
           <div class="tile"><div class="ic">● flip back after 30 s</div><h3>A brand-new timeline</h3><p>The registry entry is gone, so a fresh ingest is built: sequence numbering and the generation counter both <strong>restart at zero</strong>. It is a new session, not a continued one.</p></div>
           <div class="tile warn"><div class="ic">● the cost of the grace</div><h3>RAM with nobody watching</h3><p>For those 30 seconds the ring is still committed. An idle-grace origin has <strong>no row on Active Streams</strong> and is invisible per-channel — the process-wide <a href="#observe">memory-pressure</a> reading is the only thing that sees it.</p></div>
         </div>
-        <div class="note-block" style="margin-top:16px;">
+        <div class="note-block">
           <div class="lbl">one asymmetry worth knowing</div>
           <p>An HLS viewer holds its lease only for the length of each manifest poll — the grace window covers the gaps between polls. A <strong>raw-TS viewer holds one for the whole socket</strong>, because a continuous socket has no polling to renew a lease with. And a bare-TS <em>ingest</em> runs its socket session inline, so the idle check does not run while it is being consumed: such an ingest keeps pulling until the socket ends or errors, even after the last viewer leaves.</p>
         </div>
@@ -974,7 +974,7 @@
           <div class="tile accent"><div class="ic">● trigger 2</div><h3>A sequence gap proves it</h3><p>The upstream's sequence jumped: this segment is not the previous one plus one. Something was missed — a failed fetch, a dropped key, a playlist that skipped — so the bytes on either side are not contiguous, whether or not anyone tagged it.</p></div>
           <div class="tile accent"><div class="ic">● trigger 3</div><h3>The session was renewed</h3><p>The provider ended <em>our</em> playlist with <code>#EXT-X-ENDLIST</code> and we re-resolved onto a new session on the same channel. Whether the bytes either side join cleanly is unknowable from here, so the join is <strong>signalled rather than assumed</strong>. This is the one boundary the engine introduces itself.</p></div>
         </div>
-        <div class="note-block" style="margin-top:16px;">
+        <div class="note-block">
           <div class="lbl">an ENDLIST is not always the end</div>
           <p>Pluto's stitcher ends the playlist roughly every 25 seconds as a session artefact, not because the channel finished. Treating that literally would tear down a perfectly live ingest twice a minute. So the tag is checked against reality: the engine compares the segment URI list either side of it. An <strong>unchanged</strong> list means the stream genuinely finished; a <strong>different</strong> list means the session was renewed — keep the ring, dedupe the re-offered window, and mark the join as a splice. An <em>empty</em> list is excluded by name, because it is evidence of nothing.</p>
         </div>
@@ -1139,7 +1139,7 @@
             </tbody>
           </table>
         </div>
-        <div class="note-block" style="margin-top:16px;">
+        <div class="note-block">
           <div class="lbl">the misreading to expect</div>
           <p><strong>“Upstream pulled” will not match the bitrate chart above it, and that is correct.</strong> One is a single shared ingest; the other is egress summed across every viewer. With five viewers they differ by roughly five times. Reading them as the same number is the natural mistake — and the divergence is the feature doing its job. The engine enforces this on both sides of the seam: ingest bytes are never folded into the viewer byte counters, because doing so would over-count egress by a factor of N and destroy the attribution the whole split exists to provide.</p>
         </div>

@@ -62,7 +62,7 @@
         <div class="eyebrow"><b>video proxy engine</b> · 07 <span class="rule"></span> how bytes actually move</div>
         <h1>The <span class="em">remux-free</span> Rust data plane</h1>
         <p class="lede">The old always-on ffmpeg engine is gone, replaced by a durable Rust sidecar (<code>masq-proxy</code>) that resolves each stream on demand and pipes it — with retry, mirror rotation, failover groups and read-ahead buffering — to the player. Node stays the brains; Rust moves the muscle.</p>
-        <div class="aha" style="margin-top:18px;">
+        <div class="aha">
           <div class="lbl">one word of this page has changed meaning</div>
           <p><strong>Remux-free is still true; “passthrough” no longer is.</strong> Nothing is ever re-encoded — but with <a href="local-origin.html"><strong>local origin</strong></a> switched on, the engine stops forwarding the provider's playlist and publishes one it wrote itself, from segments it ingested, decrypted, normalized and cached in RAM. Everything on this page describes the <em>rewriting proxy</em> — the default, and still the whole story with <code>originEnabled</code> off. Where origin mode changes an answer below, it is called out inline.</p>
         </div>
