@@ -9,6 +9,7 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import StatusDot from './StatusDot.vue';
+import { duloDomain } from '../composables/useSettings';
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'captured'): void }>();
 
@@ -180,7 +181,7 @@ onBeforeUnmount(() => {
         <div style="flex: 1;">
           <div style="font-weight: 600; font-size: 15px;">Sign in to dulo</div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 2px;">
-            This is dulo.tv — your password goes straight to dulo, never to TVApp2.
+            This is {{ duloDomain }} — your password goes straight to dulo, never to TVApp2.
           </div>
         </div>
         <div class="row" style="gap: 8px; align-items: center;">

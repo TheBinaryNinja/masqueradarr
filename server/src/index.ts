@@ -41,6 +41,7 @@ import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
 import { applyDlhdPlayerFromSettings } from './settings/applyDlhdPlayer.js';
+import { applyDuloDomainFromSettings } from './settings/applyDuloDomain.js';
 import { logger } from './sources/core/logger.js';
 import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
@@ -102,6 +103,16 @@ async function main() {
     await applyDlhdPlayerFromSettings('mongo');
   } catch (err) {
     logger.error('startup', `dlhd player default apply error (continuing): ${(err as Error).message}`);
+  }
+
+  // Hydrate the dulo adapter's domain cache from the persisted settings. MUST run before
+  // startDuloKeepalive() below, so the keepalive's first token refresh already targets the configured
+  // domain. Boot never signs the session out — it only mirrors what is already stored. Non-fatal
+  // (falls back to the committed default domain).
+  try {
+    await applyDuloDomainFromSettings('mongo');
+  } catch (err) {
+    logger.error('startup', `dulo domain apply error (continuing): ${(err as Error).message}`);
   }
 
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler

@@ -1,4 +1,5 @@
 import { Schema, model } from 'mongoose';
+import { DULO_DEFAULT_DOMAIN } from '../sources/adapters/dulo/config.js';
 
 // Settings — a single application-settings document. Deterministic _id ('app') makes every read/write
 // a singleton upsert (same idempotency rule as the synced collections). It holds operator-facing values
@@ -54,6 +55,12 @@ export interface SettingsDoc {
   darkMode: boolean;
   videoPlayer: 'inapp' | 'ultimate' | 'debug'; // which player the slide-out renders ('inapp' default; 'ultimate' = popup player window; 'debug' = diagnostic HUD)
   dlhdPlayer: number; // source-wide default DaddyLive player (0 = Auto/first; 1..N) for dlhd channels without a per-channel override
+  // The domain dulo is currently on, as a bare host (no scheme/path) — e.g. 'dulo.tv'. dulo rebrands
+  // periodically, so every dulo-facing hop (catalog, playback-session, Supabase bundle scrape, pairing,
+  // streamed login, SSRF apex) derives from this instead of a compile-time const. Edited on
+  // Settings -> Advanced -> Dulo.tv Authentication; pushed into the adapter cache by
+  // settings/applyDuloDomain.ts. NOT to be confused with `domain` above, which is masqueradarr's OWN base URL.
+  duloDomain: string;
   nameservers: string | null; // comma-separated outbound-fetch resolver IP(s); null/blank = OS resolver (DEFAULT_NAMESERVERS 8.8.8.8,8.8.4.4 seeds first boot)
   logLevel: number; // GLOBAL 1|2|3 log verbosity — app + Rust proxy engine (default 2; formerly dnsLogLevel)
   maxmindAccountId: string | null; // MaxMind GeoLite2 web-service account id (null = geo disabled)
@@ -78,6 +85,7 @@ const SettingsSchema = new Schema<SettingsDoc>(
     darkMode: { type: Boolean, required: true, default: true },
     videoPlayer: { type: String, required: true, default: 'inapp' },
     dlhdPlayer: { type: Number, required: true, default: 0 }, // 0 = Auto; 1..N = source-wide default DaddyLive player
+    duloDomain: { type: String, required: true, default: DULO_DEFAULT_DOMAIN },
     nameservers: { type: String, default: null },
     logLevel: { type: Number, required: true, default: 2 },
     maxmindAccountId: { type: String, default: null },

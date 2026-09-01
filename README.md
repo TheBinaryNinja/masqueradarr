@@ -241,9 +241,17 @@ creating the **first admin account**. After that:
    Chromium signs you in; only tokens are stored). The server then **keeps the session alive on its own**,
    rotating the token ahead of each expiry — and it **auto-discovers dulo's current Supabase config at
    runtime**, so when dulo migrates its Supabase project (rotating the public URL + anon key) the session
-   self-heals on its next refresh with no re-capture and nothing to configure. If you captured the session
+   self-heals on its next refresh with no re-capture and no key to bump. If you captured the session
    from your own browser (pair/paste), just **close that dulo tab — don't sign out**: signing out of
-   dulo.tv revokes the very session you handed over.
+   dulo revokes the very session you handed over.
+
+   dulo also **rebrands onto new domains** periodically, and that one *is* operator-configurable: the
+   **Domain** field on the same panel (Settings → Advanced → Dulo.tv Authentication) drives every
+   dulo-facing hop — catalog fetch, playback-session mint, Supabase bundle scrape, the pairing bookmarklet,
+   the streamed login, and the SSRF apex. **Auto-detect** follows a redirect from the old domain (it finds a
+   rebrand that left a 301 behind; a hard cut-over has to be typed in), and **Test** probes a candidate
+   without saving it. Saving a *changed* domain **signs the dulo session out** — a captured session belongs
+   to the site it came from — so re-pair afterwards.
 3. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
    **Channel Mapping** screen.
 4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
@@ -475,7 +483,7 @@ All adapters implement the `SourceAdapter` contract (`server/src/sources/types.t
 | `direct` | Imported | — | Identity (passthrough) | — | — |
 | `hdhomerun` | HDHomeRun | — | Catalog import (playback dormant — needs remux) | — | — |
 | `local` | Local Now | — | Sentinel → rotating CDN | — | — |
-| `dulo` | dulo.tv | session | `dulo://` sentinel → playbackUrl | — | yes |
+| `dulo` | dulo.tv (default; operator-set) | session | `dulo://` sentinel → playbackUrl | — | yes |
 | `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape, 6 providers | yes | yes |
 | `tubi` | Tubi.TV | — | `tubi://` → Tubi API | yes (inline) | — |
 | `xumo` | Xumo Play | — | broadcast.json → 3-hop API | yes | — |

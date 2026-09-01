@@ -10,7 +10,7 @@
 // Google" gate blocks headless. The same CDP session lets us read the token call off the page's network.
 //
 // Recon (2026-06-12, see the plan): dulo is a Vite SPA ("amri.gg"); its login is a full page at
-// https://dulo.tv/login (email/password + Google/Discord OAuth); it stores the Supabase session under a
+// <domain>/login (email/password + Google/Discord OAuth); it stores the Supabase session under a
 // CUSTOM `amri-*` localStorage key (NOT `sb-*-auth-token`); the Supabase URL/anon key live in the bundle and
 // are not exposed before sign-in. So capture is host-agnostic (match the GoTrue token path, read the apikey
 // header) and the localStorage fallback scans every key for a value carrying an access_token.
@@ -23,12 +23,12 @@
 import type { Browser, BrowserContext, Page, CDPSession, HTTPResponse, KeyInput } from 'puppeteer-core';
 import { WebSocket } from 'ws';
 import { duloAuth, type CapturePayload } from './auth.js';
+import { getDomain, getLoginUrl, getLiveUrl } from './config.js';
 import { logger } from '../../core/logger.js';
 
+// dulo rebrands periodically, so the sign-in / live URLs and the app host are derived from the operator
+// setting (Settings.duloDomain, cached in ./config.ts) at NAVIGATION time, never captured at import.
 const tag = 'dulo:login';
-const LOGIN_URL = 'https://dulo.tv/login';
-const LIVE_URL = 'https://dulo.tv/live'; // navigated to after sign-in to provoke the client's activate-device
-const APP_HOST = 'dulo.tv';
 const VIEWPORT_W = 1280;
 const VIEWPORT_H = 800;
 const HARD_CAP_MS = 5 * 60_000; // a session may not linger past this, even if the WS stays open
@@ -240,7 +240,7 @@ class DuloLoginBrowser {
     sendJson(session.ws, { type: 'status', state: 'live' });
 
     try {
-      await session.page.goto(LOGIN_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await session.page.goto(getLoginUrl(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     } catch (err) {
       // Don't fail the session on a slow/blocked nav — the screencast shows whatever rendered (incl. a
       // bot-gate/CAPTCHA the user can solve live).
@@ -357,7 +357,7 @@ class DuloLoginBrowser {
       const u = new URL(url);
       // Only trust the response origin as the GoTrue base when it isn't the dulo app host (where it'd be a
       // proxied path); otherwise let duloAuth.signIn derive the base from the JWT `iss` claim.
-      if (u.host !== APP_HOST) supabaseUrl = u.origin;
+      if (u.hostname !== getDomain()) supabaseUrl = u.origin;
       anonKey = res.request().headers()['apikey'] ?? null;
     } catch {
       /* ignore — signIn backfills from the JWT */
@@ -447,7 +447,7 @@ class DuloLoginBrowser {
     await new Promise((r) => setTimeout(r, 1500));
     if (session.finalized || session.tornDown) return; // device captured (or torn down) during the wait
     try {
-      await page.goto(LIVE_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+      await page.goto(getLiveUrl(), { waitUntil: 'domcontentloaded', timeout: 30_000 });
     } catch (err) {
       // The screencast still shows whatever rendered (incl. a "use this device" prompt the user can click).
       logger.warn(tag, `live-tv navigation issue (device provoke): ${(err as Error).message}`);
