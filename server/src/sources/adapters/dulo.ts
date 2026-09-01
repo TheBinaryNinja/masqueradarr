@@ -10,40 +10,26 @@
 //   · isEntryUrl()     → true for that sentinel
 //   · resolveStream()  → duloAuth.resolvePlayback(channelId) → the fresh playbackUrl (the real master)
 //
-// The resolved playbackUrl is served through dulo's own proxy (/proxy/hls/, gotcha.dulo.tv / live-gateway)
+// The resolved playbackUrl is served through dulo's own proxy (/proxy/hls/, gotcha.<domain> / live-gateway)
 // or an external host (tstrm.org / vixproxy). Its exact host can't be known until resolved, so the SSRF
-// gate allows *.dulo.tv plus any host LEARNED from a playlist we legitimately resolved/fetched
-// (onPlaylistChildHost), the same dynamic-allow approach dlhd uses. Auth is established out-of-band by the
-// SPA capture flow → POST /api/sources/dulo/auth (see routes/sources.ts).
+// gate allows the active dulo domain (and its subdomains) plus any host LEARNED from a playlist we
+// legitimately resolved/fetched (onPlaylistChildHost) — the shared _fast/dynamicAllow set, owned by
+// ./dulo/config.ts. Auth is established out-of-band by the SPA capture flow → POST /api/sources/dulo/auth
+// (see routes/sources.ts).
+//
+// dulo REBRANDS periodically, so no dulo URL is a const here: the domain is an operator setting
+// (Settings.duloDomain) and every endpoint/header is derived from ./dulo/config.ts at use time.
 
 import { readFileSync } from 'node:fs';
 import { snapshotFile, DULO_EPG_ADDON_FILE } from '../paths.js';
 import { applyEpgCrosswalk } from '../epgCrosswalk.js';
 import { duloAuth } from './dulo/auth.js';
+import { getCatalogUrl, browserHeaders, duloAllow } from './dulo/config.js';
 import type { SourceAdapter } from '../types.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
 
 const SNAPSHOT = snapshotFile('dulo');
-const DULO_ORIGIN = 'https://dulo.tv';
-const DULO_API = process.env.DULO_API || 'https://dulo.tv/api/live-tv/channels';
-const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 const ENTRY_PREFIX = 'dulo://channel/';
-
-// Hosts allowed for direct (non-entry) proxy hops. *.dulo.tv is static; additional playbackUrl hosts are
-// learned at runtime from playlists we resolved/fetched (trust roots at dulo's authenticated response).
-const EXTRA_HOSTS = new Set(
-  (process.env.DULO_EXTRA_HOSTS || '')
-    .split(',')
-    .map((h) => h.trim().toLowerCase())
-    .filter(Boolean),
-);
-const dynamicHosts = new Set<string>();
-
-function hostAllowed(host: string): boolean {
-  const h = host.toLowerCase();
-  return h === 'dulo.tv' || h.endsWith('.dulo.tv') || EXTRA_HOSTS.has(h) || dynamicHosts.has(h);
-}
 
 function toIso(ts: unknown): string | null {
   if (!ts || typeof ts !== 'string') return null;
@@ -61,22 +47,38 @@ const duloAdapter: SourceAdapter = {
   // (The catalog is metadata-only now — no stream URLs — so this needs no auth; the stream is resolved
   // lazily at play time via resolveStream().)
   async listChannels() {
+    const endpoint = getCatalogUrl(); // follows Settings.duloDomain — reported in meta so a sync shows it
     try {
-      const res = await fetch(DULO_API, { headers: { 'User-Agent': UA, Origin: DULO_ORIGIN, Referer: `${DULO_ORIGIN}/live` } });
+      const res = await fetch(endpoint, { headers: browserHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const body = (await res.json()) as { channels?: any[] };
       const raw = body.channels || [];
       if (!raw.length) throw new Error('empty channel list');
-      return { raw, meta: { endpoint: DULO_API, live: true, fetchedAt: new Date().toISOString() } };
+      return { raw, meta: { endpoint, live: true, fetchedAt: new Date().toISOString() } };
     } catch (err) {
-      const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8')) as { channels?: any[] };
+      const reason = (err as Error).message;
+      // Offline fallback. UNLIKE every other source, dulo has no committed snapshot, so this read normally
+      // throws ENOENT — which turned a wrong/dead domain into an opaque file error. Compose a message that
+      // names the endpoint actually tried and points at the setting. Deliberately NOT an empty channel
+      // list: a sync with zero rows would wipe the catalog. `npm run rebuild:seed` commits a snapshot and
+      // restores the intended soft (warn, not fail) fallback.
+      let snap: { channels?: any[] };
+      try {
+        snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8')) as { channels?: any[] };
+      } catch (snapErr) {
+        throw new Error(
+          `dulo catalog unreachable at ${endpoint} (${reason}), and no offline snapshot is available ` +
+            `(${(snapErr as Error).message}). If dulo has changed domain, set the new one under ` +
+            `Settings → Advanced → Dulo.tv Authentication.`,
+        );
+      }
       return {
         raw: snap.channels || [],
         meta: {
-          endpoint: DULO_API,
+          endpoint,
           live: false,
           fallback: 'dulo.snapshot.json',
-          reason: (err as Error).message,
+          reason,
           fetchedAt: new Date().toISOString(),
         },
       };
@@ -133,23 +135,15 @@ const duloAdapter: SourceAdapter = {
 
   proxy: {
     upstreamHeaders() {
-      // Browser-like headers: dulo is bot-gated and the memfs/proxy hosts check Origin. The Bearer is
-      // deliberately NOT sent on CDN hops — the resolved playbackUrl is expected to be self-authenticating
-      // (token in the URL). If a real account shows segments need it, add it here.
-      return { 'User-Agent': UA, Origin: DULO_ORIGIN, Referer: `${DULO_ORIGIN}/live` };
+      // Browser-like headers: dulo is bot-gated and the memfs/proxy hosts check Origin. Built from the
+      // ACTIVE domain at call time. The Bearer is deliberately NOT sent on CDN hops — the resolved
+      // playbackUrl is expected to be self-authenticating (token in the URL). If a real account shows
+      // segments need it, add it here.
+      return browserHeaders();
     },
-    isAllowedUpstream(url: string) {
-      try {
-        const u = new URL(url);
-        return (u.protocol === 'https:' || u.protocol === 'http:') && hostAllowed(u.hostname);
-      } catch {
-        return false;
-      }
-    },
+    isAllowedUpstream: (url: string) => duloAllow.isAllowedUpstream(url),
     // Learn each child host of a playlist we resolved/fetched so its segments pass the SSRF gate.
-    onPlaylistChildHost: (host: string) => {
-      if (host) dynamicHosts.add(host.toLowerCase());
-    },
+    onPlaylistChildHost: (host: string) => duloAllow.onPlaylistChildHost(host),
     relabelSegmentContentType(_url: string, contentType: string) {
       return contentType || 'application/octet-stream'; // plain TS — pass the upstream type through
     },

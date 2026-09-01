@@ -11,6 +11,7 @@ import { bootInitSources } from '../sources/seed.js';
 import { startScheduler, removeAllCronjobs } from '../scheduler/index.js';
 import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
+import { applyDuloDomainFromSettings } from '../settings/applyDuloDomain.js';
 import { logger } from '../sources/core/logger.js';
 
 // Thrown when an uploaded/stored buffer is not a recognizable backup — the routes map it to 400 bad_backup.
@@ -117,6 +118,14 @@ export async function applyPostRestore(): Promise<void> {
     await applyDnsFromSettings('update');
   } catch (err) {
     logger.warn('settings', `post-restore: dns re-apply failed (continuing): ${(err as Error).message}`);
+  }
+  // A restored backup can carry a different Settings.duloDomain — re-hydrate the adapter cache from it.
+  // Phase 'mongo' deliberately, NOT 'update': the restore already replaced the playlistauths row wholesale
+  // (and invalidates the auth cache below), so signing the restored session out would be wrong.
+  try {
+    await applyDuloDomainFromSettings('mongo');
+  } catch (err) {
+    logger.warn('settings', `post-restore: dulo domain re-apply failed (continuing): ${(err as Error).message}`);
   }
   try {
     await startScheduler();

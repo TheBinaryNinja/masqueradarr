@@ -1,19 +1,24 @@
 <script setup lang="ts">
 // dulo Live TV authentication panel (Settings).
 //
-// dulo.tv gates Live TV behind a signed-in Supabase session; the server resolves each stream on demand
+// dulo gates Live TV behind a signed-in Supabase session; the server resolves each stream on demand
 // (server/src/sources/adapters/dulo/auth.ts). The user signs in through a server-streamed real browser
 // (DuloLoginDrawer) on dulo's own login page — their password goes straight to dulo, never to TVApp2 — and
 // the server intercepts the session and stores only the tokens (never a password), refreshing them
 // automatically. A paste-the-session textarea remains as a no-stream fallback.
+//
+// The panel also owns the DOMAIN field: dulo rebrands periodically, so which site all of the above talks to
+// is Settings.duloDomain rather than a compile-time const. It saves explicitly (not through the debounced
+// settings auto-persist) because a changed domain signs the session out server-side.
 
-import { ref, computed, onMounted, onUnmounted } from 'vue';
+import { ref, computed, watch, onMounted, onUnmounted } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import StatusDot from './StatusDot.vue';
 import DuloLoginDrawer from './DuloLoginDrawer.vue';
 import { bus } from '../composables/bus';
+import { duloDomain, saveDuloDomain } from '../composables/useSettings';
 
 interface DuloStatus {
   signedIn: boolean;
@@ -53,6 +58,130 @@ const pairing = ref<Pairing | null>(null);
 const pairFound = ref(false);
 const advancedOpen = ref(false);
 let pairPoll: ReturnType<typeof setInterval> | null = null;
+
+// ── Domain ────────────────────────────────────────────────────────────────────
+// dulo REBRANDS periodically, so the site every dulo hop derives from (catalog, sign-in, stream resolution,
+// Supabase key discovery, SSRF apex) is an operator setting rather than a compile-time const. Saving a
+// CHANGED domain signs the session out server-side — a captured session belongs to the site it came from —
+// so this is an EXPLICIT-save field: never the debounced auto-persist the other settings refs use, which
+// would sign the operator out mid-keystroke.
+const domainInput = ref(duloDomain.value);
+const domainState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
+const probing = ref(false);
+const detecting = ref(false);
+const domainMsg = ref<{ tone: 'good' | 'warn' | 'bad'; text: string } | null>(null);
+
+// Mirror what the server's normalizer does (strip scheme/path/port, lowercase) so "https://Dulo.TV/" does
+// not read as a change and arm a pointless sign-out. The server is still the authority — it re-normalizes.
+const cleanedInput = computed(() =>
+  domainInput.value
+    .trim()
+    .toLowerCase()
+    .replace(/^[a-z][a-z0-9+.-]*:\/\//, '')
+    .replace(/[/?#].*$/, '')
+    .replace(/:\d+$/, ''),
+);
+const domainDirty = computed(() => !!cleanedInput.value && cleanedInput.value !== duloDomain.value);
+// Settings hydrate asynchronously at app boot; adopt the real value if it lands after this panel mounted.
+watch(duloDomain, (v) => {
+  if (!domainDirty.value) domainInput.value = v;
+});
+
+function resetDomain(): void {
+  domainInput.value = duloDomain.value;
+  domainMsg.value = null;
+  domainState.value = 'idle';
+}
+
+// Probe a candidate WITHOUT saving it: does it serve dulo's catalog, and is it a dulo frontend build?
+async function testDomain(): Promise<void> {
+  probing.value = true;
+  domainMsg.value = null;
+  error.value = null;
+  try {
+    const res = await fetch('/api/sources/dulo/domain/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ domain: domainInput.value }),
+    });
+    const b = (await res.json().catch(() => ({}))) as {
+      domain?: string; ok?: boolean; channelCount?: number | null; supabaseFound?: boolean; error?: string | null;
+    };
+    if (!res.ok) {
+      domainMsg.value = { tone: 'bad', text: b.error || `HTTP ${res.status}` };
+      return;
+    }
+    if (b.ok) {
+      domainMsg.value = {
+        tone: b.supabaseFound ? 'good' : 'warn',
+        text: `${b.domain} — ${b.channelCount} channels${b.supabaseFound ? ', dulo build confirmed' : ' (no dulo bundle found — double-check this is dulo)'}`,
+      };
+    } else {
+      domainMsg.value = {
+        tone: 'bad',
+        text: `${b.domain} — catalog unavailable${b.error ? `: ${b.error}` : ''}${b.supabaseFound ? ' (it does look like a dulo build, though)' : ''}`,
+      };
+    }
+  } catch (e) {
+    domainMsg.value = { tone: 'bad', text: (e as Error).message };
+  } finally {
+    probing.value = false;
+  }
+}
+
+// Ask the server where the old domain redirects to. Only finds a rebrand that left a 301 behind; a hard
+// cut-over is undetectable, and we say so rather than pretending.
+async function detectDomain(): Promise<void> {
+  detecting.value = true;
+  domainMsg.value = null;
+  error.value = null;
+  try {
+    const res = await fetch('/api/sources/dulo/domain/detect', { method: 'POST' });
+    const b = (await res.json().catch(() => ({}))) as {
+      detected?: string | null; from?: string; sameAsCurrent?: boolean; error?: string;
+    };
+    if (!res.ok) {
+      domainMsg.value = { tone: 'bad', text: b.error || `HTTP ${res.status}` };
+      return;
+    }
+    if (b.detected) {
+      domainInput.value = b.detected;
+      domainMsg.value = b.sameAsCurrent
+        ? { tone: 'good', text: `${b.from} redirects to ${b.detected} — already the configured domain.` }
+        : { tone: 'warn', text: `${b.from} redirects to ${b.detected}. Test it, then save.` };
+    } else {
+      domainMsg.value = {
+        tone: 'warn',
+        text: 'No redirect found — the old domain may simply be dead. Enter the new one manually.',
+      };
+    }
+  } catch (e) {
+    domainMsg.value = { tone: 'bad', text: (e as Error).message };
+  } finally {
+    detecting.value = false;
+  }
+}
+
+async function saveDomain(): Promise<void> {
+  if (!domainDirty.value) return;
+  domainState.value = 'saving';
+  domainMsg.value = null;
+  error.value = null;
+  const r = await saveDuloDomain(domainInput.value);
+  if (!r.ok) {
+    domainState.value = 'error';
+    domainMsg.value = { tone: 'bad', text: r.error || 'Save failed' };
+    setTimeout(() => (domainState.value = 'idle'), 2200);
+    return;
+  }
+  domainState.value = 'saved';
+  domainInput.value = duloDomain.value; // adopt the server's normalized form
+  // The server signed the session out as part of the change — re-read it, and tell the Playlists view its
+  // dulo row's isAuthenticated flipped (same contract as signOut() below).
+  await refresh();
+  bus.emit('tvapp:auth-changed', { source: 'dulo' });
+  setTimeout(() => (domainState.value = 'idle'), 2200);
+}
 
 const tone = computed(() => {
   const s = status.value?.status;
@@ -274,15 +403,76 @@ onUnmounted(() => {
     <div class="row" style="align-items: center; gap: 10px;">
       <Icon name="tv" :size="16" />
       <h3 class="section-title" style="margin: 0;">Dulo.tv Authentication</h3>
+      <code class="mono" style="font-size: var(--fs-xs); color: var(--text-2);">{{ duloDomain }}</code>
       <span class="spacer" style="flex: 1;" />
       <StatusDot :status="tone" />
       <span class="muted" style="font-size: var(--fs-xs);">{{ statusLabel }}</span>
     </div>
 
     <div class="muted" style="font-size: var(--fs-xs); margin: 6px 0 14px;">
-      dulo.tv now streams Live TV only to signed-in accounts and mints each stream on demand. Connect a
+      {{ duloDomain }} streams Live TV only to signed-in accounts and mints each stream on demand. Connect a
       dulo account once — TVApp2 stores only the session tokens (never your password) and refreshes them
       automatically.
+    </div>
+
+    <!-- Domain. dulo rebrands periodically; every dulo hop (catalog, sign-in, stream resolution, guide
+         crosswalk fetches) derives from this one value. Explicit save — changing it signs the session out. -->
+    <div class="form-row" style="margin-bottom: 14px;">
+      <div class="field-lbl">Domain</div>
+      <div class="input mono" style="font-size: 12px;">
+        <Icon name="globe" :size="14" />
+        <input
+          v-model="domainInput"
+          placeholder="dulo.tv"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          @keyup.enter="saveDomain"
+        />
+      </div>
+      <div class="row" style="gap: 8px; margin-top: 8px; align-items: center; flex-wrap: wrap;">
+        <Btn variant="ghost" size="sm" icon="search" :disabled="detecting || probing" @click="detectDomain">
+          {{ detecting ? 'Detecting…' : 'Auto-detect' }}
+        </Btn>
+        <Btn variant="ghost" size="sm" icon="sync" :disabled="probing || detecting || !domainInput.trim()" @click="testDomain">
+          {{ probing ? 'Testing…' : 'Test' }}
+        </Btn>
+        <Btn
+          variant="primary"
+          size="sm"
+          icon="check"
+          :disabled="!domainDirty || domainState === 'saving'"
+          @click="saveDomain"
+        >
+          {{ domainState === 'saving' ? 'Saving…' : status && status.signedIn ? 'Save & sign out' : 'Save domain' }}
+        </Btn>
+        <Btn v-if="domainDirty" variant="ghost" size="sm" @click="resetDomain">Cancel</Btn>
+        <span v-if="domainState === 'saved'" style="color: var(--good); font-size: var(--fs-xs);">Saved</span>
+      </div>
+
+      <!-- Changing the domain is a provider change: the stored session belongs to the old site. -->
+      <div
+        v-if="domainDirty && status && status.signedIn"
+        class="row"
+        style="gap: 8px; margin-top: 8px; padding: 8px 10px; background: var(--bg-2); border-radius: 8px; align-items: flex-start;"
+      >
+        <span style="color: var(--warn, var(--text-2)); margin-top: 1px;"><Icon name="warn" :size="13" /></span>
+        <span style="font-size: var(--fs-xs); color: var(--text-1);">
+          Saving a new domain signs the current dulo session out — you'll need to pair again.
+        </span>
+      </div>
+
+      <div
+        v-if="domainMsg"
+        style="font-size: var(--fs-xs); margin-top: 8px;"
+        :style="{ color: domainMsg.tone === 'good' ? 'var(--good)' : domainMsg.tone === 'bad' ? 'var(--bad)' : 'var(--warn, var(--text-2))' }"
+      >
+        {{ domainMsg.text }}
+      </div>
+      <div v-else class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+        The site dulo runs on today. Everything dulo-facing derives from it — catalog, sign-in, and stream
+        resolution. <b>Test</b> checks a domain without saving it.
+      </div>
     </div>
 
     <!-- Connected state -->
@@ -319,8 +509,8 @@ onUnmounted(() => {
       <div class="muted" style="font-size: var(--fs-sm); color: var(--text-1); line-height: 1.6;">
         Sign in with <b>your own browser</b> — where Google &amp; Discord work normally — then hand the session
         back with one click. This is the most reliable way to connect a social account. Afterwards simply
-        <b>close the dulo tab — don't sign out</b>: signing out of dulo.tv revokes the session you just handed
-        over. The server keeps it refreshed automatically from then on.
+        <b>close the dulo tab — don't sign out</b>: signing out of {{ duloDomain }} revokes the session you
+        just handed over. The server keeps it refreshed automatically from then on.
       </div>
 
       <div class="row" style="gap: 8px; flex-wrap: wrap; align-items: center;">
@@ -332,11 +522,11 @@ onUnmounted(() => {
 
       <div v-if="pasteOpen" class="col" style="gap: 8px;">
         <div class="muted" style="font-size: var(--fs-xs);">
-          Manual alternative: sign in on dulo.tv in your own browser, then open DevTools → Application → Local
+          Manual alternative: sign in on {{ duloDomain }} in your own browser, then open DevTools → Application → Local
           Storage → copy the value of the key starting with <code class="mono">amri-</code> (any key whose value
           contains <code class="mono">access_token</code>) and paste it here. Best captured from a
           <b>private/incognito window</b>; when done, <b>close the window without signing out</b> — signing out
-          of dulo.tv revokes the pasted session. Once pasted, the server keeps the session alive automatically.
+          of {{ duloDomain }} revokes the pasted session. Once pasted, the server keeps the session alive automatically.
         </div>
         <textarea v-model="pasteText" rows="4" placeholder='{"access_token":"…","refresh_token":"…","expires_at":…}'
                   class="input mono" style="width: 100%; font-size: 11px; padding: 8px; resize: vertical;" />
@@ -373,9 +563,9 @@ onUnmounted(() => {
           <a :href="pairing.bookmarklet" class="mono" draggable="true" style="color: var(--accent, var(--text-0)); text-decoration: underline; cursor: grab;" @click.prevent>↧ Connect dulo → masqueradarr</a>
           <Btn variant="ghost" size="sm" @click="copyText(pairing.bookmarklet)">copy</Btn>
         </li>
-        <li><a :href="pairing.duloUrl" target="_blank" rel="noopener" style="color: var(--accent, var(--text-0));">Open dulo.tv</a> and sign in (Google / Discord work in your own browser).</li>
+        <li><a :href="pairing.duloUrl" target="_blank" rel="noopener" style="color: var(--accent, var(--text-0));">Open {{ duloDomain }}</a> and sign in (Google / Discord work in your own browser).</li>
         <li>
-          On dulo.tv, click that bookmark.
+          On {{ duloDomain }}, click that bookmark.
           <span class="muted">No bookmarks bar?</span>
           <Btn variant="ghost" size="sm" @click="copyText(pairing.snippet)">Copy console snippet</Btn>
           <span class="muted">and paste it into DevTools → Console.</span>

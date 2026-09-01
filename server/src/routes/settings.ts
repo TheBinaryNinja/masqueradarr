@@ -3,6 +3,7 @@ import { Settings, SETTINGS_ID, type SettingsDoc } from '../models/Settings.js';
 import { envDefaults, toRuntimeSettings, toExternalPatch } from '../settings/translate.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
 import { applyDlhdPlayerFromSettings } from '../settings/applyDlhdPlayer.js';
+import { applyDuloDomainFromSettings } from '../settings/applyDuloDomain.js';
 import { cascadePlaylistUrls } from './playlists.js';
 import { logger } from '../sources/core/logger.js';
 
@@ -86,6 +87,19 @@ settingsRouter.put('/', async (req, res, next) => {
         await applyDlhdPlayerFromSettings('update');
       } catch (err) {
         logger.error('settings', `dlhd player default re-apply failed (continuing): ${(err as Error).message}`);
+      }
+    }
+
+    // Push the dulo domain into the adapter's cache so every dulo hop (catalog, playback-session, Supabase
+    // discovery, pairing, streamed login) retargets live. A CHANGED domain also resets Supabase discovery
+    // and signs the dulo session out — a session belongs to the domain it was captured on, so the operator
+    // is sent back through pairing rather than hitting an opaque playback failure later. Best-effort: a
+    // cascade hiccup must not fail the write (same contract as the domain cascade above).
+    if ('duloDomain' in $set) {
+      try {
+        await applyDuloDomainFromSettings('update');
+      } catch (err) {
+        logger.error('settings', `dulo domain re-apply failed (continuing): ${(err as Error).message}`);
       }
     }
 

@@ -32,15 +32,12 @@ import { logger } from '../../core/logger.js';
 // env/infra config, we resolve them here (captured-with-session → runtime-discovered → committed seed) and
 // discover the current pair from dulo's live bundle when a refresh 401s at the apikey gate. See supabaseConfig.ts.
 import { currentAnonKey, currentSupabaseUrl, discoverSupabaseConfig } from './supabaseConfig.js';
+// Where dulo lives today. dulo rebrands periodically, so the domain is an operator setting
+// (Settings.duloDomain) cached in ./config.ts — read through getApiBase()/browserHeaders() at USE time so
+// a domain change is honored without a restart. The old DULO_API_BASE env override is gone with it.
+import { getApiBase, browserHeaders } from './config.js';
 
-const DULO_ORIGIN = 'https://dulo.tv';
-const DULO_BASE = process.env.DULO_API_BASE || 'https://dulo.tv/api';
 const DEVICE_NAME = process.env.DULO_DEVICE_NAME || 'Masqueradarr';
-
-// Default UA when a session carries no captured UA (paste/handoff). Kept reasonably current for coherence
-// with the server-side API calls; a per-session `userAgent` (loginBrowser capture) overrides this.
-export const UA =
-  'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
 const REFRESH_MARGIN_MS = 60_000; // refresh when <60s of access_token life remains
 const TRANSIENT_BACKOFF_MS = 60_000; // after a transient refresh failure, don't retry for this long
 
@@ -89,10 +86,6 @@ export interface CapturePayload {
   // Where the session came from: 'streamed' (dedicated throwaway browser context — its own refresh-token
   // family), or 'paste' / 'handoff' (shares the user's own tab's family → rotation-collision risk).
   origin?: 'streamed' | 'paste' | 'handoff' | null;
-}
-
-function browserHeaders(ua: string | null | undefined, extra: Record<string, string> = {}): Record<string, string> {
-  return { 'User-Agent': ua || UA, Origin: DULO_ORIGIN, Referer: `${DULO_ORIGIN}/live`, ...extra };
 }
 
 function decodeJwt(token: string): { exp?: number; iss?: string; ref?: string } {
@@ -411,7 +404,7 @@ class PlaylistAuthState {
     }
     this.activating = (async () => {
       const post = (token: string) =>
-        fetch(`${DULO_BASE}/live-tv/activate-device`, {
+        fetch(`${getApiBase()}/live-tv/activate-device`, {
           method: 'POST',
           headers: browserHeaders(s.userAgent, { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }),
           body: JSON.stringify({ deviceFingerprint: s.deviceFingerprint, deviceName: s.deviceName || DEVICE_NAME }),
@@ -463,7 +456,7 @@ class PlaylistAuthState {
     const token = await this.ensureFreshToken();
     const s = await this.ensureDeviceLoaded(token);
     const post = (tok: string) =>
-      fetch(`${DULO_BASE}/live-tv/playback-session`, {
+      fetch(`${getApiBase()}/live-tv/playback-session`, {
         method: 'POST',
         headers: browserHeaders(s.userAgent, { 'Content-Type': 'application/json', Authorization: `Bearer ${tok}` }),
         body: JSON.stringify({ deviceFingerprint: s.deviceFingerprint, channelId }),
