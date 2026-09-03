@@ -16,6 +16,7 @@ import { usePublishedUrls } from '../composables/usePublishedUrls';
 import { useToast } from '../composables/useToast';
 import { useStreamStats } from '../composables/useStreamStats';
 import { useSystemStats } from '../composables/useSystemStats';
+import { openUltimatePlayer } from '../composables/uplLaunch';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
@@ -430,7 +431,23 @@ onBeforeUnmount(() => {
             <Btn variant="ghost" size="sm" @click="go('/playlists')">View all</Btn>
             <Btn variant="ghost" size="sm" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
           </div>
-          <PlaylistRow v-for="p in sortedPlaylists" :key="p.id" :playlist="p" compact @open="go(`/playlists/${p.id}`)" />
+          <!-- Same Ultimate Player launcher as the Playlists rows, plus the chevron this panel showed
+               before (PlaylistRow's default #actions) so the open affordance survives. -->
+          <PlaylistRow v-for="p in sortedPlaylists" :key="p.id" :playlist="p" compact @open="go(`/playlists/${p.id}`)">
+            <template #actions>
+              <Btn
+                size="sm"
+                variant="ghost"
+                icon="play"
+                class="upl-btn"
+                :disabled="!p.channels"
+                title="Open in the Ultimate Video Player"
+                aria-label="Open in the Ultimate Video Player"
+                @click="openUltimatePlayer(p.id)"
+              />
+              <Btn variant="ghost" size="sm" icon="chevron-r" @click="go(`/playlists/${p.id}`)" />
+            </template>
+          </PlaylistRow>
         </div>
 
         <div class="card flush">

@@ -30,6 +30,9 @@ and the **Custom Tags** manager. Changes save to the single application settings
     and guide for the playlist you launched from, a channel switcher you can pull out from the right edge,
     and a **what's on now / next** strip under the picture. Best when you actually want to *watch* a
     channel rather than glance at it. Allow pop-ups for this site or the window can't open.
+    This setting only governs the **slide-out**. The **play button** on every playlist row — on Playlists
+    and on the Dashboard's Playlists panel — opens the Ultimate player scoped to that playlist whatever
+    this is set to, so you can leave the slide-out on the in-app player and still launch the big one.
     The channel switcher lists channels **A–Z by name**; the **A–Z** button in its header flips it to
     **channel-number** order (**#**), with unnumbered channels last. Channel numbers come from the provider
     and are often meaningless in a clone playlist, which is why name order is the default; your choice is

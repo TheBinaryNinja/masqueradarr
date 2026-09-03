@@ -16,6 +16,7 @@ import { useToast } from '../composables/useToast';
 import { usePlaylistActions, hasLiveUpstream, isGlobalScope, syncRequestUrl } from '../composables/usePlaylistActions';
 import { isAdmin } from '../composables/useAuth';
 import { playlistsAlphaSort } from '../composables/useSettings';
+import { openUltimatePlayer } from '../composables/uplLaunch';
 
 const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
@@ -377,6 +378,27 @@ function onPlaylistUpdated(patch: Partial<Playlist>): void {
               :aria-pressed="p.pinned ? 'true' : 'false'"
               :class="['pin-btn', { 'is-pinned': p.pinned }]"
               @click="togglePin(p)"
+            />
+            <!-- Launch the Ultimate Player scoped to THIS playlist. No channel id: UplApp.boot() falls back
+                 to the first row of the rail's current order, so the player starts on the playlist's first
+                 channel. Shown regardless of the videoPlayer setting — that setting decides what the channel
+                 slide-out renders, which is a separate question from this row's launcher. Ghost + .upl-btn
+                 rather than cyan so it doesn't compete with the waffle sitting next to it.
+                 Sits BEFORE the waffle so the waffle stays the row's last control — which also keeps
+                 RowActionsMenu (position:absolute; right:0 against this cell) anchored under it.
+                 Disabled while the playlist has no channels (a built-in is a zero-channel shell until its
+                 first sync — launching would open the player on a dead "No channel"). No explanatory title
+                 there: .btn:disabled sets pointer-events:none globally so it would never show, and the row's
+                 own "0 channels" stat two cells to the left already says it. -->
+            <Btn
+              size="sm"
+              variant="ghost"
+              icon="play"
+              class="upl-btn"
+              :disabled="!p.channels"
+              title="Open in the Ultimate Video Player"
+              aria-label="Open in the Ultimate Video Player"
+              @click="openUltimatePlayer(p.id)"
             />
             <Btn
               variant="cyan"
