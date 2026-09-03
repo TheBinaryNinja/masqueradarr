@@ -564,7 +564,14 @@ button, input, textarea, select { outline: none; }
   background: radial-gradient(125% 105% at 50% 36%, transparent 60%, rgb(0 0 0 / 0.06) 100%);
 }
 /* the scrolling content of a stage screen sits inset above the field;
-   the gradient itself stays edge-to-edge (no padding on .screen). */
+   the gradient itself stays edge-to-edge (no padding on .screen).
+
+   LANDMINE: `position: relative` + `z-index: 1` makes this a STACKING CONTEXT. Any fixed-position
+   overlay rendered from inside a stage screen (dashboard, active) is clamped to level 1 here and
+   therefore paints BELOW .topbar (z-index 20) — see issue #55, where the topbar's "Search
+   everything…" box covered the Active Streams slide-over's header. Overlays inside a stage screen
+   MUST `<Teleport to="body">`. (The z-index itself is load-bearing for the .mq-stage::before
+   vignette — keep it.) */
 .mq-stage > .mq-stage-content {
   position: relative;
   z-index: 1;
@@ -2740,7 +2747,10 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .status-badge-slot > .live-pill .dot { width: 8px; height: 8px; }
 .status-badge-slot > .pill .ico { width: 12px; height: 12px; flex: none; }
 
-/* Stream view slide-over (1/2 screen) */
+/* Stream view slide-over (1/2 screen).
+   z-index 85 only resolves if this overlay is NOT inside a stacking context. ActiveStreamsScreen is a
+   stage route, so it must `<Teleport to="body">` its copy (issue #55); EPGDetailScreen is not, so its
+   copy renders in place. See the .mq-stage-content LANDMINE note above. */
 .stream-view-bg {
   position: fixed;
   inset: 0;

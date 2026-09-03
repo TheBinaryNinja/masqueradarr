@@ -1169,124 +1169,131 @@ function onRailKey(e: KeyboardEvent): void {
       </div>
     </div>
 
-    <!-- Stream viewer slide-over -->
-    <div v-if="viewStream" class="stream-view-bg" @click="close">
-      <div class="stream-view" @click.stop>
-        <div class="stream-view-hd">
-          <ChannelLogo :ch="chOf(viewStream)" />
-          <div style="min-width: 0; flex: 1;">
+    <!-- Stream viewer slide-over.
+         Teleported to <body>: /active is a stage route, so this screen renders inside
+         .mq-stage-content, which is `position:relative; z-index:1` and therefore a stacking context —
+         it would clamp this overlay's z-index:85 down to 1, below .topbar (20), letting the topbar's
+         "Search everything…" box paint over the panel header (issue #55). At <body> the z-index
+         resolves against the root context and the panel sits above the bar, like every other drawer. -->
+    <Teleport to="body">
+      <div v-if="viewStream" class="stream-view-bg" @click="close">
+        <div class="stream-view" @click.stop>
+          <div class="stream-view-hd">
+            <ChannelLogo :ch="chOf(viewStream)" />
+            <div style="min-width: 0; flex: 1;">
+              <div class="row" style="gap: 8px;">
+                <span style="font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ chOf(viewStream).tvg_name }}</span>
+                <span v-if="viewStream.status !== 'bad'" class="live-pill"><span class="dot" />LIVE</span>
+                <Pill v-else tone="bad"><Icon name="warn" :size="11" />offline</Pill>
+              </div>
+              <div class="mono muted" style="font-size: var(--fs-xs); margin-top: 3px;">
+                #{{ chOf(viewStream).channelNo ?? '—' }} · {{ chOf(viewStream).group }} ·
+                {{ viewStream.status === 'bad' ? 'no signal' : (viewStream.resolution ?? '—') + ' · ' + viewStream.bitrate.toFixed(1) + ' Mbps' }}
+              </div>
+            </div>
+            <Btn variant="ghost" size="sm" icon="x" @click="close" title="Close (Esc)" />
+          </div>
+
+          <div class="stream-view-body">
+            <div class="player" style="border-radius: 12px;">
+              <template v-if="viewStream.status === 'bad'">
+                <div style="position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-2); font-size: 13px;">
+                  <div style="text-align: center;">
+                    <Icon name="warn" :size="32" />
+                    <div style="margin-top: 12px; font-weight: 600; color: var(--text-1); font-size: 15px;">Stream offline</div>
+                    <div class="mono" style="font-size: 11px; margin-top: 6px;">upstream unreachable</div>
+                  </div>
+                </div>
+              </template>
+              <template v-else>
+                <div class="stripes" />
+                <div class="label mono">{{ viewTech?.resolution }} · {{ viewTech?.fps ?? '—' }}fps · {{ viewStream.bitrate.toFixed(1) }} Mbps</div>
+                <div v-if="!playing" class="play" @click="playing = true">
+                  <div class="play-btn"><Icon name="play" :size="28" /></div>
+                </div>
+                <div class="controls">
+                  <button class="player-ctrl" @click="playing = !playing">
+                    <Icon :name="playing ? 'pause' : 'play'" :size="14" />
+                  </button>
+                  <div class="track" />
+                  <button class="player-ctrl" @click="muted = !muted">
+                    <Icon :name="muted ? 'x' : 'check'" :size="13" />
+                  </button>
+                  <span class="mono" style="font-size: 11px;">LIVE</span>
+                  <button class="player-ctrl" title="Fullscreen"><Icon name="grid" :size="13" /></button>
+                </div>
+              </template>
+            </div>
+
+            <div v-if="viewStream.status !== 'bad'" class="card flush" style="background: var(--bg-2);">
+              <div class="card-hd" style="padding: 12px 14px;">
+                <h2 style="font-size: 13px;">From the guide</h2>
+                <span class="spacer" />
+                <span class="muted" style="font-size: var(--fs-xs);">EPG-matched</span>
+              </div>
+              <div :style="{ padding: '14px', display: 'grid', gridTemplateColumns: npData(viewStream.channelId).live && npData(viewStream.channelId).next ? '1fr 1fr' : '1fr', gap: '12px' }">
+                <div v-if="npData(viewStream.channelId).live"
+                     style="padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid oklch(0.82 0.13 220 / 0.4);">
+                  <div class="mono" style="font-size: 10px; letter-spacing: 0.08em; color: var(--accent-hi); font-weight: 600;">ON NOW</div>
+                  <div style="font-weight: 600; font-size: 14px; margin-top: 4px; color: var(--accent-hi);">{{ npData(viewStream.channelId).live!.title }}</div>
+                  <div class="mono muted" style="font-size: 11px; margin-top: 4px;">
+                    {{ formatTime(npData(viewStream.channelId).live!.start) }}–{{ formatTime(npData(viewStream.channelId).live!.end) }} · {{ npData(viewStream.channelId).live!.cat }}
+                  </div>
+                </div>
+                <div v-if="npData(viewStream.channelId).next"
+                     style="padding: 10px 12px; border-radius: 8px; background: var(--bg-3); border: 1px solid var(--hairline);">
+                  <div class="mono" style="font-size: 10px; letter-spacing: 0.08em; color: var(--text-2); font-weight: 600;">UP NEXT</div>
+                  <div style="font-weight: 600; font-size: 14px; margin-top: 4px; color: var(--text-0);">{{ npData(viewStream.channelId).next!.title }}</div>
+                  <div class="mono muted" style="font-size: 11px; margin-top: 4px;">
+                    {{ formatTime(npData(viewStream.channelId).next!.start) }}–{{ formatTime(npData(viewStream.channelId).next!.end) }} · {{ npData(viewStream.channelId).next!.cat }}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div class="metric-grid" style="grid-template-columns: repeat(4, 1fr);">
+              <div class="metric"><div class="lbl">Viewers</div><div class="val" style="font-size: 17px;">{{ viewStream.viewers }}</div></div>
+              <div class="metric"><div class="lbl">Bitrate</div><div class="val" style="font-size: 17px;">{{ viewStream.status === 'bad' ? '—' : viewStream.bitrate.toFixed(1) + ' Mbps' }}</div></div>
+              <div class="metric"><div class="lbl">Bandwidth</div><div class="val" style="font-size: 17px;">{{ viewStream.bandwidth }} Mbps</div></div>
+              <div class="metric"><div class="lbl">Uptime</div><div class="val" style="font-size: 17px;">{{ viewStream.uptime }}</div></div>
+            </div>
+
+            <div class="card flush" style="background: var(--bg-2);">
+              <div class="card-hd" style="padding: 12px 14px;">
+                <h2 style="font-size: 13px;">Stream details</h2>
+                <span class="spacer" />
+                <Pill :tone="viewStream.status === 'bad' ? 'bad' : viewStream.status === 'warn' ? 'warn' : 'good'">
+                  <StatusDot :status="viewStream.status" :pulse="viewStream.status !== 'bad'" />
+                  {{ viewStream.status === 'bad' ? 'offline' : viewStream.status === 'warn' ? viewStream.phase : 'healthy' }}
+                </Pill>
+              </div>
+              <div style="padding: 14px;">
+                <div class="kv-list">
+                  <div class="k">Video</div><div class="v mono">{{ viewTech?.video }}</div>
+                  <div class="k">Audio</div><div class="v mono">{{ viewTech?.audio }}</div>
+                  <div class="k">Container</div><div class="v mono">{{ viewTech?.container }}</div>
+                  <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(viewStream.delivery) }}</div>
+                  <div class="k">Resolution</div><div class="v mono">{{ viewTech?.resolution }}<template v-if="viewTech?.fps"> @ {{ viewTech?.fps }}fps</template></div>
+                  <div class="k">Bandwidth</div><div class="v mono">{{ viewStream.bandwidth }} Mbps egress</div>
+                  <div class="k">TVG-ID</div>
+                  <div class="v mono">
+                    <template v-if="chOf(viewStream).tvg_id">{{ chOf(viewStream).tvg_id }}</template>
+                    <span v-else style="color: var(--text-3);">—</span>
+                  </div>
+                  <div class="k">Source</div>
+                  <div class="v"><Pill tone="cyan">{{ chOf(viewStream).source }}</Pill></div>
+                </div>
+              </div>
+            </div>
+
             <div class="row" style="gap: 8px;">
-              <span style="font-weight: 600; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">{{ chOf(viewStream).tvg_name }}</span>
-              <span v-if="viewStream.status !== 'bad'" class="live-pill"><span class="dot" />LIVE</span>
-              <Pill v-else tone="bad"><Icon name="warn" :size="11" />offline</Pill>
-            </div>
-            <div class="mono muted" style="font-size: var(--fs-xs); margin-top: 3px;">
-              #{{ chOf(viewStream).channelNo ?? '—' }} · {{ chOf(viewStream).group }} ·
-              {{ viewStream.status === 'bad' ? 'no signal' : (viewStream.resolution ?? '—') + ' · ' + viewStream.bitrate.toFixed(1) + ' Mbps' }}
-            </div>
-          </div>
-          <Btn variant="ghost" size="sm" icon="x" @click="close" title="Close (Esc)" />
-        </div>
-
-        <div class="stream-view-body">
-          <div class="player" style="border-radius: 12px;">
-            <template v-if="viewStream.status === 'bad'">
-              <div style="position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-2); font-size: 13px;">
-                <div style="text-align: center;">
-                  <Icon name="warn" :size="32" />
-                  <div style="margin-top: 12px; font-weight: 600; color: var(--text-1); font-size: 15px;">Stream offline</div>
-                  <div class="mono" style="font-size: 11px; margin-top: 6px;">upstream unreachable</div>
-                </div>
-              </div>
-            </template>
-            <template v-else>
-              <div class="stripes" />
-              <div class="label mono">{{ viewTech?.resolution }} · {{ viewTech?.fps ?? '—' }}fps · {{ viewStream.bitrate.toFixed(1) }} Mbps</div>
-              <div v-if="!playing" class="play" @click="playing = true">
-                <div class="play-btn"><Icon name="play" :size="28" /></div>
-              </div>
-              <div class="controls">
-                <button class="player-ctrl" @click="playing = !playing">
-                  <Icon :name="playing ? 'pause' : 'play'" :size="14" />
-                </button>
-                <div class="track" />
-                <button class="player-ctrl" @click="muted = !muted">
-                  <Icon :name="muted ? 'x' : 'check'" :size="13" />
-                </button>
-                <span class="mono" style="font-size: 11px;">LIVE</span>
-                <button class="player-ctrl" title="Fullscreen"><Icon name="grid" :size="13" /></button>
-              </div>
-            </template>
-          </div>
-
-          <div v-if="viewStream.status !== 'bad'" class="card flush" style="background: var(--bg-2);">
-            <div class="card-hd" style="padding: 12px 14px;">
-              <h2 style="font-size: 13px;">From the guide</h2>
+              <Btn variant="ghost" icon="edit">Edit channel</Btn>
               <span class="spacer" />
-              <span class="muted" style="font-size: var(--fs-xs);">EPG-matched</span>
             </div>
-            <div :style="{ padding: '14px', display: 'grid', gridTemplateColumns: npData(viewStream.channelId).live && npData(viewStream.channelId).next ? '1fr 1fr' : '1fr', gap: '12px' }">
-              <div v-if="npData(viewStream.channelId).live"
-                   style="padding: 10px 12px; border-radius: 8px; background: var(--accent-soft); border: 1px solid oklch(0.82 0.13 220 / 0.4);">
-                <div class="mono" style="font-size: 10px; letter-spacing: 0.08em; color: var(--accent-hi); font-weight: 600;">ON NOW</div>
-                <div style="font-weight: 600; font-size: 14px; margin-top: 4px; color: var(--accent-hi);">{{ npData(viewStream.channelId).live!.title }}</div>
-                <div class="mono muted" style="font-size: 11px; margin-top: 4px;">
-                  {{ formatTime(npData(viewStream.channelId).live!.start) }}–{{ formatTime(npData(viewStream.channelId).live!.end) }} · {{ npData(viewStream.channelId).live!.cat }}
-                </div>
-              </div>
-              <div v-if="npData(viewStream.channelId).next"
-                   style="padding: 10px 12px; border-radius: 8px; background: var(--bg-3); border: 1px solid var(--hairline);">
-                <div class="mono" style="font-size: 10px; letter-spacing: 0.08em; color: var(--text-2); font-weight: 600;">UP NEXT</div>
-                <div style="font-weight: 600; font-size: 14px; margin-top: 4px; color: var(--text-0);">{{ npData(viewStream.channelId).next!.title }}</div>
-                <div class="mono muted" style="font-size: 11px; margin-top: 4px;">
-                  {{ formatTime(npData(viewStream.channelId).next!.start) }}–{{ formatTime(npData(viewStream.channelId).next!.end) }} · {{ npData(viewStream.channelId).next!.cat }}
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div class="metric-grid" style="grid-template-columns: repeat(4, 1fr);">
-            <div class="metric"><div class="lbl">Viewers</div><div class="val" style="font-size: 17px;">{{ viewStream.viewers }}</div></div>
-            <div class="metric"><div class="lbl">Bitrate</div><div class="val" style="font-size: 17px;">{{ viewStream.status === 'bad' ? '—' : viewStream.bitrate.toFixed(1) + ' Mbps' }}</div></div>
-            <div class="metric"><div class="lbl">Bandwidth</div><div class="val" style="font-size: 17px;">{{ viewStream.bandwidth }} Mbps</div></div>
-            <div class="metric"><div class="lbl">Uptime</div><div class="val" style="font-size: 17px;">{{ viewStream.uptime }}</div></div>
-          </div>
-
-          <div class="card flush" style="background: var(--bg-2);">
-            <div class="card-hd" style="padding: 12px 14px;">
-              <h2 style="font-size: 13px;">Stream details</h2>
-              <span class="spacer" />
-              <Pill :tone="viewStream.status === 'bad' ? 'bad' : viewStream.status === 'warn' ? 'warn' : 'good'">
-                <StatusDot :status="viewStream.status" :pulse="viewStream.status !== 'bad'" />
-                {{ viewStream.status === 'bad' ? 'offline' : viewStream.status === 'warn' ? viewStream.phase : 'healthy' }}
-              </Pill>
-            </div>
-            <div style="padding: 14px;">
-              <div class="kv-list">
-                <div class="k">Video</div><div class="v mono">{{ viewTech?.video }}</div>
-                <div class="k">Audio</div><div class="v mono">{{ viewTech?.audio }}</div>
-                <div class="k">Container</div><div class="v mono">{{ viewTech?.container }}</div>
-                <div class="k">Delivery</div><div class="v mono">{{ deliveryLabel(viewStream.delivery) }}</div>
-                <div class="k">Resolution</div><div class="v mono">{{ viewTech?.resolution }}<template v-if="viewTech?.fps"> @ {{ viewTech?.fps }}fps</template></div>
-                <div class="k">Bandwidth</div><div class="v mono">{{ viewStream.bandwidth }} Mbps egress</div>
-                <div class="k">TVG-ID</div>
-                <div class="v mono">
-                  <template v-if="chOf(viewStream).tvg_id">{{ chOf(viewStream).tvg_id }}</template>
-                  <span v-else style="color: var(--text-3);">—</span>
-                </div>
-                <div class="k">Source</div>
-                <div class="v"><Pill tone="cyan">{{ chOf(viewStream).source }}</Pill></div>
-              </div>
-            </div>
-          </div>
-
-          <div class="row" style="gap: 8px;">
-            <Btn variant="ghost" icon="edit">Edit channel</Btn>
-            <span class="spacer" />
           </div>
         </div>
       </div>
-    </div>
+    </Teleport>
   </div>
 </template>
 

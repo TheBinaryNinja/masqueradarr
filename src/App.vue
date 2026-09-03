@@ -392,14 +392,27 @@ onBeforeUnmount(() => {
 <style scoped>
 /* Absolutely centers the search box in the topbar (dead-center on every screen, independent of the
    title/crumb on the left and the Docs/theme/Add cluster on the right). Also anchors the
-   absolute-positioned SearchResults dropdown directly under the box. */
+   absolute-positioned SearchResults dropdown directly under the box.
+
+   Centered with a negative half-width margin, NOT `transform: translateX(-50%)`. A transform makes an
+   element the containing block for its position:fixed descendants, which collapsed SearchResults'
+   `.sr-backdrop` (position:fixed; inset:0) from the viewport down to this 480x36 box — so clicking
+   anywhere outside the search box never dismissed the results. Keep this transform-free. */
 .topbar-search {
+  --sr-w: min(480px, 90vw);  /* the shared width: the input fills it, the results panel stretches to it */
   position: absolute;
   left: 50%;
-  transform: translateX(-50%);
-  width: min(480px, 90vw);  /* the shared width: the input fills it, the results panel stretches to it */
+  margin-left: calc(var(--sr-w) / -2);
+  width: var(--sr-w);
   display: flex;
   align-items: center;
   z-index: 1;               /* keep the centered box above the flex siblings if they ever meet */
+}
+/* The input outranks the click-away backdrop (.sr-backdrop, z-index 90, a sibling in this same
+   stacking context) so clicking back into the box to edit the query moves the caret instead of
+   dismissing the results. Every other click still lands on the backdrop and closes them. */
+.topbar-search > .search-input {
+  position: relative;
+  z-index: 92;
 }
 </style>
