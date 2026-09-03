@@ -32,7 +32,17 @@ export async function applyEpgCrosswalk(sourceId: string, addonFile: string): Pr
     const parsed = JSON.parse(readFileSync(addonFile, 'utf8'));
     rows = Array.isArray(parsed) ? parsed : [];
   } catch (err) {
-    logger.warn('seed', `[${sourceId}] EPG crosswalk not applied (unreadable): ${(err as Error).message}`);
+    // A MISSING addon file is the expected steady state, not a failure: paths.ts declares a crosswalk
+    // constant for every source, but only dulo/dlhd/tubi have a generated file — the rest are wired ahead of
+    // time and documented as "no-ops until the addon lands". Logging that ENOENT at warn made a designed
+    // no-op read as a broken sync (and buried the real warnings next to it), so it is an info line. A file
+    // that EXISTS but won't read or parse is a genuine problem and still warns.
+    const e = err as NodeJS.ErrnoException;
+    if (e.code === 'ENOENT') {
+      logger.info('seed', `[${sourceId}] no committed EPG crosswalk — channels rely on the source's own guide`);
+    } else {
+      logger.warn('seed', `[${sourceId}] EPG crosswalk not applied (unreadable): ${e.message}`);
+    }
     return;
   }
 
