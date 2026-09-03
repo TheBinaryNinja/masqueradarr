@@ -15,7 +15,7 @@ import type { Channel, Program } from '../data';
 import ChannelLogo from '../components/ChannelLogo.vue';
 import Icon from '../components/Icon.vue';
 import { useVirtualList } from '../composables/useVirtualList';
-import { now, nowNext, progressOf, epgKey, fmtClock, fmtRemaining } from './useUplData';
+import { now, nowNext, progressOf, epgKey, fmtClock, fmtRemaining, sortKey } from './useUplData';
 
 const ROW_H = 58; // MUST match .upl-rail-row height in CSS — useVirtualList is pure arithmetic on this
 
@@ -74,6 +74,10 @@ watch(sliceRows, (rows) => emit('visibleKeys', rows.map((r) => epgKey(r.ch))), {
 
 // Reset the virtual window when the filter changes the list out from under it.
 watch(shown, () => { void nextTick(() => vl.measure()); });
+// A reorder moves every index, so the cursor must be re-pinned to what is actually playing. Deliberately NOT
+// folded into the watcher above: that one also fires on every filter keystroke, where yanking the cursor back
+// to the playing channel would fight the person typing.
+watch(sortKey, () => { void nextTick(() => syncCursorToCurrent()); });
 
 // --- keyboard cursor movement, driven by the parent's global keymap ------------------------------------
 function move(delta: number): void {
@@ -113,6 +117,18 @@ defineExpose({ move, tuneCursor });
       <Icon name="tv" :size="14" />
       <span class="upl-rail-count mono">{{ shown.length }}</span>
       <input v-model="filter" class="input upl-rail-search" placeholder="Filter channels…" />
+      <!-- Sort toggle. A pressed-state text button rather than a Segmented, mirroring the Playlists screen's
+           A-Z button: the rail is only 340px wide and the filter box owns flex:1. -->
+      <button
+        type="button"
+        class="upl-rail-sort"
+        :class="{ 'is-active': sortKey === 'name' }"
+        :aria-pressed="sortKey === 'name' ? 'true' : 'false'"
+        :title="sortKey === 'name'
+          ? 'Sorted by channel name — switch to channel number order'
+          : 'Sorted by channel number — switch to A–Z'"
+        @click="sortKey = sortKey === 'name' ? 'channelNo' : 'name'"
+      >{{ sortKey === 'name' ? 'A–Z' : '#' }}</button>
       <button type="button" class="upl-rail-close" aria-label="Hide channels" @click="emit('update:open', false)">
         <Icon name="x" :size="14" />
       </button>
@@ -130,7 +146,9 @@ defineExpose({ move, tuneCursor });
             @click="emit('tune', row.ch)"
           >
             <ChannelLogo :ch="row.ch" />
-            <span class="upl-rail-no mono">{{ row.ch.channelNo ?? '—' }}</span>
+            <!-- `||`, not `??`: a blank channelNo is unnumbered as far as this rail is concerned (the sort
+                 treats it as such), so it reads '—' like a null one instead of leaving a gap in the column. -->
+            <span class="upl-rail-no mono">{{ row.ch.channelNo || '—' }}</span>
             <span class="upl-rail-body">
               <span class="upl-rail-name">{{ row.ch.tvg_name }}</span>
               <span class="upl-rail-epg mono">
@@ -200,6 +218,23 @@ defineExpose({ move, tuneCursor });
   cursor: pointer;
 }
 .upl-rail-close:hover { color: var(--text-0); background: oklch(1 0 0 / 0.06); }
+/* Same metrics as the close button, but text-width rather than square (the label is 'A-Z' or '#'). */
+.upl-rail-sort {
+  display: grid;
+  place-items: center;
+  height: 24px;
+  padding: 0 6px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.upl-rail-sort:hover { color: var(--text-0); background: oklch(1 0 0 / 0.06); }
+.upl-rail-sort.is-active { color: var(--accent); }
 
 .upl-rail-list { flex: 1; min-height: 0; overflow-y: auto; }
 
