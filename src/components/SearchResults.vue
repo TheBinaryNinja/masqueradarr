@@ -71,6 +71,10 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </template>
 
 <style scoped>
+/* Full-viewport click-away catcher. Relies on NO ancestor having a transform/filter/backdrop-filter:
+   any of those would become the containing block for this position:fixed element and shrink it to
+   their own box, silently killing click-to-dismiss. See the transform-free note on .topbar-search in
+   App.vue — the topbar's centering used to do exactly that. */
 .sr-backdrop {
   position: fixed;
   inset: 0;
