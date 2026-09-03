@@ -10,6 +10,7 @@
 // its macro vocabulary source-local, the same precedent Vizio set with its own expandMacros.
 
 import { randomUUID } from 'node:crypto';
+import { gunzipSync, inflateSync } from 'node:zlib';
 
 export const API_BASE = 'https://api.lgchannels.com/api/v1.0';
 /** Public anonymous catalog+guide: { timestamp, categories:[ { categoryName, channels:[ { …, programs:[] } ] } ] }. */
@@ -28,7 +29,12 @@ export const UA =
   process.env.LG_UA ||
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36';
 
-/** Request headers for the schedulelist fetch — the web-client device headers LG's API gates on. */
+// Request headers for the schedulelist fetch — the web-client device headers LG's API gates on.
+//
+// ⚠️ LOAD-BEARING, not decoration. `Accept` MUST keep its trailing wildcard term: a strict
+// `Accept: application/json` gets an HTTP 406 from LG (the success body is served as `text/plain` — see
+// parseSchedulelist), and a request with no device headers at all gets a 411. Don't "tidy" this set.
+// (These lines are `//` rather than a JSDoc block on purpose: the wildcard term would close a block comment.)
 export const LG_HEADERS: Record<string, string> = {
   'User-Agent': UA,
   Accept: 'application/json, text/plain, */*',
@@ -201,15 +207,56 @@ export function flattenLgRows(payload: any): LgRow[] {
   return rows;
 }
 
+// Ceiling on the INFLATED schedulelist, mirroring the gzip-bomb guard posture of epg/xmltvIngest.ts: a
+// compressed body is attacker-shaped input, so bound the allocation rather than trusting the ratio. The live
+// payload inflates ~7x (≈250 KB → ≈1.8 MB), so 64 MB is ample headroom for LG growing its catalog.
+const MAX_SCHEDULELIST_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Decode a schedulelist response body → the parsed catalog object.
+ *
+ * LG changed this endpoint's encoding (observed broken since ~2026-06-27): it now serves
+ * `Content-Type: text/plain` whose body is BASE64 of a zlib-deflate stream of the JSON — the tell-tale
+ * leading `eJz` is base64 of the `78 9c` zlib header, which is what made `res.json()` throw
+ * `Unexpected token 'e'`. This is an APPLICATION-level encoding, not transport: undici already
+ * auto-decodes `Content-Encoding`, so the bytes reaching us are the literal base64 text. No request-header
+ * combination was found that opts out of it.
+ *
+ * SNIFFED, not assumed, in both directions — a body that already looks like JSON is parsed as-is, so if LG
+ * reverts the encoding this keeps working with no code change. Mirrors the magic-byte sniff in
+ * adapters/samsung.ts (`fetchGzJson`), one layer deeper because LG wraps the compressed bytes in base64.
+ */
+function parseSchedulelist(body: string): any {
+  const text = body.trim();
+  if (text.startsWith('{') || text.startsWith('[')) return JSON.parse(text);
+
+  // Buffer.from(…, 'base64') SILENTLY drops invalid characters instead of throwing, so an HTML error page
+  // would decode to garbage and surface as a cryptic zlib "incorrect header check". Check the framing magic
+  // explicitly and fail with a message that names what actually arrived.
+  const buf = Buffer.from(text, 'base64');
+  const gzip = buf.length > 2 && buf[0] === 0x1f && buf[1] === 0x8b;
+  const zlib = buf.length > 2 && buf[0] === 0x78;
+  if (!gzip && !zlib) {
+    throw new Error(`schedulelist body was neither JSON nor a compressed payload (starts ${JSON.stringify(text.slice(0, 24))})`);
+  }
+  const opts = { maxOutputLength: MAX_SCHEDULELIST_BYTES };
+  const raw = gzip ? gunzipSync(buf, opts) : inflateSync(buf, opts);
+  return JSON.parse(raw.toString('utf8'));
+}
+
 /**
  * LIVE catalog+guide fetch → trimmed LgRow[]. No snapshot fallback here (that's the adapter's listChannels
  * wrapper): the standalone EPG sync (epg/lg.ts) needs a live-only fetch that throws on failure so a transient
  * outage fails loudly and preserves the existing guide. Throws on HTTP error or an empty catalog.
+ *
+ * Reads the body as TEXT and decodes it via parseSchedulelist — `res.json()` cannot be used here (see there).
+ * This is the ONE fetch point for LG: both the adapter's listChannels (which falls back to the committed
+ * snapshot) and the standalone syncLgEpg go through it, so the decode lives here rather than in either caller.
  */
 export async function fetchLgRows(): Promise<LgRow[]> {
   const res = await fetch(SCHEDULELIST_URL, { headers: LG_HEADERS });
   if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  const payload = await res.json();
+  const payload = parseSchedulelist(await res.text());
   const rows = flattenLgRows(payload);
   if (!rows.length) throw new Error('schedulelist had no channels');
   return rows;
