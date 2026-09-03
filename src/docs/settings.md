@@ -30,11 +30,15 @@ and the **Custom Tags** manager. Changes save to the single application settings
     and guide for the playlist you launched from, a channel switcher you can pull out from the right edge,
     and a **what's on now / next** strip under the picture. Best when you actually want to *watch* a
     channel rather than glance at it. Allow pop-ups for this site or the window can't open.
-    Sound is on by default and your volume / mute choice is remembered between channels and windows. If the
-    browser blocks audio on load — most do, until you've interacted with the page — the picture says so and
-    one click on that banner (or the **M** key) turns sound on. The window opens without a tab strip,
-    toolbar or bookmarks bar; the thin strip showing the site address is forced on by the browser itself and
-    can't be turned off from the app, so use **Full screen** (or the **F** key) for a completely bare window.
+    The channel switcher lists channels **A–Z by name**; the **A–Z** button in its header flips it to
+    **channel-number** order (**#**), with unnumbered channels last. Channel numbers come from the provider
+    and are often meaningless in a clone playlist, which is why name order is the default; your choice is
+    remembered in this browser. Sound is on by default and your volume / mute choice is remembered between
+    channels and windows. If the browser blocks audio on load — most do, until you've interacted with the
+    page — the picture says so and one click on that banner (or the **M** key) turns sound on. The window
+    opens without a tab strip, toolbar or bookmarks bar; the thin strip showing the site address is forced
+    on by the browser itself and can't be turned off from the app, so use **Full screen** (or the **F** key)
+    for a completely bare window.
   - **Debug video player** — adds a live hls.js status readout and event log. Reach for it only when a
     channel won't play; it shows exactly where the stream stalls.
 

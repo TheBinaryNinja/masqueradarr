@@ -18,7 +18,7 @@
 //             the one being watched. Tiny payload, so the rich projection costs nothing here.
 // They write to SEPARATE caches so a lean rail fetch can never clobber the rich data the strip is showing.
 
-import { ref, computed } from 'vue';
+import { ref, computed, watch } from 'vue';
 import type { Channel, Program } from '../data';
 
 const HOUR_MS = 3_600_000;
@@ -227,12 +227,56 @@ export function fmtEpisode(p: Program | null): string {
   return [s, e].filter(Boolean).join(' ');
 }
 
-// Channel-number-ordered list for the rail. The API sorts by (group, name); a player wants channel order,
-// with unnumbered channels last but still reachable.
+// ---------------------------------------------------------------------------------------------------
+// Rail sort order — a per-device viewer preference, not an operator setting.
+// ---------------------------------------------------------------------------------------------------
+// Persisted exactly like the volume/mute choice (UplVideoJsPlayer's `upl:audio`): same `upl:` namespace, same
+// defensive read, same silent fallback when storage is blocked. Deliberately NOT a Settings field — this
+// bundle never fetches /api/settings, and importing useSettings would drag data.ts into the popup.
+const SORT_PREF_KEY = 'upl:sort';
+export type UplSortKey = 'name' | 'channelNo';
+
+function loadSortPref(): UplSortKey {
+  try {
+    const raw = localStorage.getItem(SORT_PREF_KEY);
+    if (raw === 'name' || raw === 'channelNo') return raw;
+  } catch { /* private mode / storage blocked — fall through to the default */ }
+  return 'name';
+}
+
+// Default is NAME, not number. Channel numbers are inherited verbatim from the upstream provider and are
+// frequently meaningless in a clone playlist (issue #51: 600000 sitting next to 6065), whereas the name always
+// means something. Most playlists carry no number at all, so for them this is the order the rail already had.
+export const sortKey = ref<UplSortKey>(loadSortPref());
+
+watch(sortKey, (k) => {
+  try { localStorage.setItem(SORT_PREF_KEY, k); } catch { /* a lost preference is not worth throwing over */ }
+});
+
+// The rail's flat, ordered list. The API sorts by (group, tvg_name); a player wants ONE list in the viewer's
+// chosen order, so the grouping is discarded here and the sort is redone client-side.
 export const orderedChannels = computed<Channel[]>(() => {
-  const n = (c: Channel) => {
-    const v = Number(c.channelNo);
-    return Number.isFinite(v) ? v : Number.POSITIVE_INFINITY;
-  };
-  return [...channels.value].sort((a, b) => n(a) - n(b) || a.tvg_name.localeCompare(b.tvg_name));
+  const byName = (a: Channel, b: Channel) => a.tvg_name.localeCompare(b.tvg_name);
+  const rows = [...channels.value];
+  if (sortKey.value === 'name') return rows.sort(byName);
+  // channelNo is a user-editable nullable STRING ('101', '4.1', '12A', '', null). Compare numerically when
+  // both sides parse, else lexically, with unnumbered channels LAST — the rule the Playlist detail table's
+  // "Channel No" sort already uses (PlaylistDetailScreen.vue), plus the blank-is-unnumbered guard below.
+  // parseFloat (not Number) is load-bearing: it reads the leading number, so a '12A' subchannel sorts next
+  // to 12 rather than being exiled with the unparseable ones.
+  //
+  // The previous `Number(c.channelNo)` here sorted unnumbered channels FIRST, against the comment that sat
+  // above it: Number(null) is 0, not NaN.
+  return rows.sort((a, b) => {
+    // Blank counts as unnumbered. ChannelDrawer normalizes '' back to null on save, but a sync or an import
+    // can still seed an empty string, and '' would otherwise lexically outrank every real channel number.
+    const an = a.channelNo?.trim() || null;
+    const bn = b.channelNo?.trim() || null;
+    if (an == null && bn == null) return byName(a, b);
+    if (an == null) return 1;
+    if (bn == null) return -1;
+    const af = parseFloat(an), bf = parseFloat(bn);
+    const bothNum = !Number.isNaN(af) && !Number.isNaN(bf);
+    return (bothNum ? af - bf : an.localeCompare(bn)) || byName(a, b);
+  });
 });
