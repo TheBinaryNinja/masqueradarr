@@ -55,6 +55,11 @@ Rows are grouped by **kind** (built-in, clone, file, URL, HDHomeRun), and you ca
 
 - **Pin** a playlist with the **pin button** on its row to lift it into a **PINNED** section above the kind
   groups — handy for the handful you reach for most.
+- **Play** a playlist with the **play button** on its row to open it in the **Ultimate Video Player** — a
+  dedicated player window scoped to that playlist, starting on its first channel in the player's current
+  sort order. It's there whatever **Settings → Video Config → Video player** is set to, and it's greyed out
+  on a playlist that has no channels yet. Relaunching reuses the same player window rather than piling up
+  pop-ups, so allow pop-ups for masqueradarr. The same button sits on the Dashboard's Playlists panel.
 - **Drag** a row by its grip to reorder it within its section; the order you set is saved. (Reordering
   pauses while a search filter is active.)
 - Toggle **A–Z** in the toolbar to sort rows alphabetically **within each kind group** instead. It's a

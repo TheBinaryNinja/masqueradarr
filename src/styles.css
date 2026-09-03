@@ -1324,7 +1324,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   display: flex;
   justify-content: flex-end;
   align-items: center;
-  gap: 2px;
+  gap: 4px;
   width: 100%;
   justify-self: end;
 }
@@ -1334,6 +1334,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .src-row.pl-row .pl-row-actions .btn.pin-btn { color: var(--text-3); }
 .src-row.pl-row .pl-row-actions .btn.pin-btn:hover { color: var(--text-1); }
 .src-row.pl-row .pl-row-actions .btn.pin-btn.is-pinned { color: var(--accent-hi); }
+/* Ultimate Player launcher (right of the waffle). Same muted-at-rest treatment as the pin so the row keeps
+   ONE loud control — the cyan waffle; two cyan buttons side by side would fight for the eye. Falls back to
+   the shared .btn:disabled treatment on a playlist with nothing to tune yet. */
+.src-row.pl-row .pl-row-actions .btn.upl-btn { color: var(--text-3); }
+.src-row.pl-row .pl-row-actions .btn.upl-btn:hover { color: var(--accent-hi); }
 /* Two stacked rows inside the playlist name cell: row 1 is the status dot + display name, row 2 is the
    chip/pill cluster underneath. Scoped to .pl-row so the shared .src-name (EPG Sources / Dashboard rows,
    which stay a single inline row) is unaffected. The column overrides the base .src-name flex-row. */

@@ -13,7 +13,7 @@ import GroupManager from './GroupManager.vue';
 import TagPicker from './TagPicker.vue';
 import { useStreamStats } from '../composables/useStreamStats';
 import { videoPlayer } from '../composables/useSettings';
-import { pushToast } from '../composables/useToast';
+import { openUltimatePlayer } from '../composables/uplLaunch';
 import { ACTIVE_STREAMS, CHANNELS, PLAYLISTS, appPlayerProxyPath, deleteChannels, playerSelectable, tagNames, type Channel, type StreamProbe } from '../data';
 import { bus } from '../composables/bus';
 
@@ -128,34 +128,18 @@ function onResolution(res: string) {
   if (res !== props.ch.stream.res) putChannel({ stream: { res } });
 }
 
-// Ultimate Player launch (videoPlayer === 'ultimate'): open the standalone player.html window on this
+// Ultimate Player launch (videoPlayer === 'ultimate'): open the standalone player.html window on THIS
 // channel. `ch.source` IS the owning playlist id for both playlist kinds (a custom playlist's channels are
 // keyed by its id; a (Default) playlist is provisioned with id === source), which is what lets the popup
 // load the right channel list + guide — the same lookup `playlist` above relies on.
 //
-// window.open MUST be called synchronously from the click handler: await anything first and pop-up blockers
-// treat it as unsolicited. One fixed window name means relaunching re-navigates and focuses the existing
-// window rather than stacking new ones; since only the hash differs, no reload fires and the player picks
-// the change up via its `hashchange` listener.
-//
-// `popup=yes` is already the most chrome a script can remove — it drops the tab strip, bookmarks bar,
-// toolbar and menu. Do NOT add `location=no,toolbar=no,menubar=no`: every current browser IGNORES them and
-// force-shows a read-only origin chip on any pop-up, as anti-spoofing rather than as a preference. The
-// player window's F key / Full screen button is the supported way to get rid of that last strip.
+// The window.open itself (synchronous-call rule, fixed window name, features string, pop-up-blocked toast)
+// lives in the shared openUltimatePlayer helper, which the Playlists/Dashboard rows also call — they launch
+// a playlist with no channel argument, which lands the player on that playlist's first channel.
 function launchUpl() {
   const { source, id } = props.ch;
   if (!source || !id) return;
-  const url = `/player.html#pl=${encodeURIComponent(source)}&ch=${encodeURIComponent(id)}`;
-  const w = window.open(url, 'masq-upl', 'popup=yes,width=1440,height=900');
-  if (w) {
-    w.focus();
-  } else {
-    pushToast({
-      tone: 'warn',
-      title: 'Pop-up blocked',
-      text: 'Allow pop-ups for this site to open the Ultimate Video Player.',
-    });
-  }
+  openUltimatePlayer(source, id);
 }
 
 // Persisted per-channel technical snapshot. The deep decode-metadata probe + its live poll (the removed
