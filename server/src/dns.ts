@@ -58,8 +58,18 @@ function parseServers(raw: string | null | undefined): { valid: string[]; invali
   return { valid, invalid };
 }
 
+// c-ares query budget for the configured nameservers: a 1 s first-try timeout and no retry round. The defaults
+// (5 s, 4 tries, per server) make a nameserver that never answers cost ~50 s per address family before `done` sees
+// an error — longer than undici's 10 s connect timeout, so the OS-resolver fallback below never got to run for a
+// fetch(), and a lookupAll() caller sat for ~100 s. With these options a query against the two default servers,
+// both blackholed, gives up in ~3 s (about 1 s per server, plus 1), and an A timeout goes straight to the fallback
+// (see the family-0 branch) — in line with the data plane's resolver (proxy/src/dns.rs: 2 s, no retry).
+const RESOLVER_OPTIONS = { timeout: 1000, tries: 1 } as const;
+/** lookupAll()'s own deadline — a vetting caller must never hold a stream start longer than this on DNS. */
+const LOOKUP_ALL_DEADLINE_MS = 5_000;
+
 function installCustomLookup(servers: string[]): void {
-  const resolver = new Resolver();
+  const resolver = new Resolver(RESOLVER_OPTIONS);
   resolver.setServers(servers); // c-ares honors this (unlike dns.setServers for fetch's lookup path)
 
   const lookup = (hostname: string, options: LookupOptions, callback: LookupCb): void => {
@@ -134,6 +144,10 @@ function installCustomLookup(servers: string[]): void {
       resolver.resolve4(hostname, (e4, a4) => {
         if (!e4 && a4 && a4.length > 0) {
           done(null, a4.map((address) => ({ address, family: 4 })));
+        } else if (e4 && (e4.code === 'ETIMEOUT' || e4.code === 'ECONNREFUSED')) {
+          // The configured servers are unreachable, not merely A-less: asking them for AAAA would only spend a
+          // second timeout before the OS fallback — which resolves BOTH families itself, so nothing is lost.
+          done(e4, []);
         } else {
           // v4 empty/failed → try v6. Always warn (a fallback is a notable event), independent of level.
           logger.warn('dns', `${hostname}: A empty, trying AAAA`);

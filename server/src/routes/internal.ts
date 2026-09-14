@@ -4,6 +4,7 @@ import { buildGrant } from '../proxy/resolveSeam.js';
 import { ingestTelemetry } from '../proxy/telemetryIngest.js';
 import { ingestProxyLog } from '../proxy/logIngest.js';
 import { getProxyLogLevel } from '../proxy/logLevel.js';
+import { getProxyNameservers } from '../proxy/nameservers.js';
 import { userFromToken } from '../middleware/auth.js';
 import { gateStreamAccess } from '../middleware/streamGate.js';
 
@@ -18,11 +19,21 @@ import { gateStreamAccess } from '../middleware/streamGate.js';
 //   POST /api/internal/telemetry  a viewer/bytes event (or { events:[...] }) → streamTelemetry writers
 //   POST /api/internal/log        an engine log event (or { events:[...] }) → logStore (the `proxy` category)
 //
-// The two batched-flush endpoints (/telemetry + /log) reply { logLevel } — the current global verbosity — so
-// the Rust flushers learn a live logLevel change within one flush cycle (no sidecar restart; see
-// proxy/logLevel.ts + proxy/src/log.rs). Rust ignores the body on failure; it's advisory, best-effort.
+// The two batched-flush endpoints (/telemetry + /log) reply { logLevel, nameservers } — the current global
+// verbosity, and the upstream resolver list the engine should use (the validated IP list dns.ts applies; null =
+// the OS resolver) — so the Rust flushers learn a live change of either within one flush cycle (no sidecar
+// restart; see proxy/logLevel.ts + proxy/nameservers.ts + proxy/src/log.rs). Rust ignores the body on failure;
+// it's advisory, best-effort.
 
 export const internalRouter = Router();
+
+// The echo both flush endpoints reply with. One builder so /telemetry and /log can never drift — either flow
+// alone must keep the sidecar current (at level 1 an active stream may ship telemetry but no logs).
+// `nameservers` is sent even when null (JSON keeps it): null is a real value — "use the OS resolver" — and must
+// stay distinguishable from the key being absent, which is what an older Node sends.
+function flushEcho(): { logLevel: number; nameservers: string | null } {
+  return { logLevel: getProxyLogLevel(), nameservers: getProxyNameservers() };
+}
 
 internalRouter.use((req, res, next) => {
   if (!checkSecret(req.headers[PROXY_SECRET_HEADER])) {
@@ -88,7 +99,7 @@ internalRouter.post('/authorize', async (req, res, next) => {
 internalRouter.post('/telemetry', (req, res, next) => {
   try {
     ingestTelemetry(req.body);
-    res.json({ logLevel: getProxyLogLevel() }); // echo the live level so the sidecar tracks changes
+    res.json(flushEcho()); // echo the live level + resolver so the sidecar tracks changes
   } catch (err) {
     next(err);
   }
@@ -99,7 +110,7 @@ internalRouter.post('/telemetry', (req, res, next) => {
 internalRouter.post('/log', (req, res, next) => {
   try {
     ingestProxyLog(req.body);
-    res.json({ logLevel: getProxyLogLevel() }); // echo the live level so the sidecar tracks changes
+    res.json(flushEcho()); // echo the live level + resolver so the sidecar tracks changes
   } catch (err) {
     next(err);
   }

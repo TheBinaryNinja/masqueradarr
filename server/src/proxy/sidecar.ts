@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { logger } from '../sources/core/logger.js';
 import { PROXY_SECRET } from './secret.js';
 import { getProxyLogLevel } from './logLevel.js';
+import { getProxyNameservers } from './nameservers.js';
 
 // The masqueradarr durable video DATA PLANE is a separate Rust binary (repo `proxy/` crate → `masq-proxy`)
 // run as a LOOPBACK sidecar that Node spawns + supervises (plan topology "sidecar behind Node", staged to a
@@ -85,6 +86,11 @@ function spawnOnce(bin: string): void {
       MASQ_PROXY_SECRET: PROXY_SECRET, // shared secret for the Node↔sidecar internal channel (secret.ts)
       MASQ_NODE_URL: nodeUrl, // where the sidecar calls resolve/authorize/telemetry/log (= Node's port, 8080 in edge)
       MASQ_LOG_LEVEL: String(getProxyLogLevel()), // INITIAL engine verbosity; kept live via the seam echo-back
+      // INITIAL upstream resolver — Settings nameservers exactly as dns.ts applies them ('' = the OS resolver);
+      // kept live via the same seam echo-back. ALWAYS stamped, even empty: the env spread above would otherwise
+      // let an inherited MASQ_NAMESERVERS (a stray compose/.env line) outrank the Settings value on the engine
+      // while Node's fetch() follows Settings — the split-resolver state proxy/nameservers.ts exists to prevent.
+      MASQ_NAMESERVERS: getProxyNameservers() ?? '',
       // EDGE-3: hand Rust the public bind so it lights its second (edge) listener. Explicit so a bare
       // MASQ_EDGE=1 is enough (the host/port defaults resolve here); omitted entirely in sidecar mode.
       ...(EDGE ? { MASQ_EDGE: '1', MASQ_EDGE_HOST: EDGE_HOST, MASQ_EDGE_PORT: String(EDGE_PORT) } : {}),

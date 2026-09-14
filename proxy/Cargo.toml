@@ -2,7 +2,11 @@
 name = "masq-proxy"
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.84"
+# The floor the LOCKED tree actually needs: hickory-resolver/-proto/-net 0.26 declare 1.88 (rand 0.10 and
+# getrandom 0.4 under them, 1.85; the icu_* 2.2 crates, 1.86). Cargo refuses a toolchain below any of them, so a
+# lower value here would only promise what `cargo build --locked` cannot keep. Both Rust images the Dockerfiles
+# build on (rust:1-bookworm, rust:1-bullseye) and CI's stable toolchain are well past it.
+rust-version = "1.88"
 description = "masqueradarr durable video data plane — HLS/TS proxy sidecar (control plane stays in Node)"
 license = "MIT"
 publish = false
@@ -43,6 +47,11 @@ bytes = "1"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 hex = "0.4"
+# The Settings nameservers, in the data plane (dns.rs): a custom reqwest resolver that asks the operator's
+# servers first and falls back to the OS resolver. Plain DNS over UDP/TCP only — default features off, which
+# drops the system-config reader (the servers come from Settings, never /etc/resolv.conf) and every
+# DoT/DoH/DoQ transport, so the tree gains no TLS stack of its own and still no system OpenSSL.
+hickory-resolver = { version = "0.26", default-features = false, features = ["tokio"] }
 
 # A lean, durable release binary (this runs 24/7 on modest hardware — a Pi / small VPS).
 [profile.release]

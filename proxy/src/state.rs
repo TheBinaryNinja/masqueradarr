@@ -1,5 +1,5 @@
-//! Shared state: the HTTP client, the Node control-plane endpoint, the shared secret, and the per-source
-//! POLICY CACHE. A `SourcePolicy` holds what the sidecar replays for a source's streams — the upstream
+//! Shared state: the HTTP clients (upstream ones on the Settings resolver, dns.rs; the Node one on the system
+//! resolver), the Node control-plane endpoint, the shared secret, and the per-source POLICY CACHE. A `SourcePolicy` holds what the sidecar replays for a source's streams — the upstream
 //! headers, the segment-relabel rule, and a GROWING allowlist of hosts. The allowlist is observational: it
 //! is seeded with the resolved master's host and grown with every host the sidecar rewrites out of a
 //! manifest (mirroring each adapter's dynamic-allow), so a client can only reach hosts that appeared in a
@@ -97,12 +97,20 @@ struct AuthDecision {
 
 #[derive(Clone)]
 pub struct AppState {
-    /// The DEFAULT client — used for the loopback Node calls (resolve/authorize/telemetry) and as a build fallback.
+    /// The DEFAULT UPSTREAM client — the probe's, and `client_for`'s build fallback. Resolves through `dns` (the
+    /// Settings nameservers), like every `client_for` client.
     pub client: reqwest::Client,
-    /// EDGE-3: the reverse-proxy client for the non-stream leg (SPA / /api/* → Node). Distinct from `client`
+    /// The loopback CONTROL-PLANE client: the resolve / authorize / telemetry / log calls to Node. Kept on the
+    /// system resolver on purpose — see dns.rs SCOPE: no nameserver setting may cut the engine off from Node.
+    node_client: reqwest::Client,
+    /// EDGE-3: the reverse-proxy client for the non-stream leg (SPA / /api/* → Node). Distinct from `node_client`
     /// because a TRANSPARENT proxy must NOT auto-follow redirects (relay Node's 3xx verbatim) or auto-decompress
     /// (gzip off — else a stale Content-Length survives a stripped Content-Encoding). Only used on the edge path.
+    /// System resolver, like `node_client`: it only ever dials Node.
     pub proxy_client: reqwest::Client,
+    /// DNS: the upstream resolver every UPSTREAM client shares (dns.rs) — retargeted in place by the flush echo,
+    /// so no client is rebuilt when the operator changes nameservers.
+    dns: Arc<crate::dns::UpstreamDns>,
     pub node_url: String,
     pub secret: String,
     cache: Arc<Mutex<HashMap<String, Arc<SourcePolicy>>>>,
@@ -490,12 +498,28 @@ impl Default for ProxyConfigWire {
 
 impl AppState {
     pub fn new(node_url: String, secret: String) -> Self {
-        // NO overall request timeout — segment streams are long-lived and a total timeout would truncate
-        // them. A connect timeout only bounds the handshake. Redirects are followed (up to 10), and the
-        // final URL (Response::url()) is used to rebase relative manifest URIs.
+        // DNS: the upstream resolver every upstream client will share. It starts on the OS resolver; `with_dns`
+        // gives it MASQ_NAMESERVERS once logging is up to announce it.
+        Self::with_dns(node_url, secret, Arc::new(crate::dns::UpstreamDns::new()))
+    }
+
+    /// `new`, around a given upstream resolver — the seam a test uses to stand in for the OS resolver. The resolver
+    /// comes first because every upstream client below is built with it.
+    fn with_dns(node_url: String, secret: String, dns: Arc<crate::dns::UpstreamDns>) -> Self {
+        // The loopback Node client — the resolve seam, the edge gate and both flushers. System resolver.
+        let node_client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::limited(10))
+            .connect_timeout(Duration::from_secs(15))
+            .build()
+            .expect("failed to build reqwest client");
+        // The default UPSTREAM client. NO overall request timeout — segment streams are long-lived and a total
+        // timeout would truncate them. A connect timeout only bounds the handshake (the resolve included, which
+        // is why dns.rs keeps its own budget well under it). Redirects are followed (up to 10), and the final URL
+        // (Response::url()) is used to rebase relative manifest URIs.
         let client = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(10))
             .connect_timeout(Duration::from_secs(15))
+            .dns_resolver(dns.clone())
             .build()
             .expect("failed to build reqwest client");
         // EDGE-3 reverse-proxy client: no redirect-follow + no auto-gzip so Node's responses relay byte-exact.
@@ -503,27 +527,32 @@ impl AppState {
             .redirect(reqwest::redirect::Policy::none())
             .gzip(false)
             .build()
-            .unwrap_or_else(|_| client.clone());
+            .unwrap_or_else(|_| node_client.clone());
         // TEL: the telemetry queue + its single background flusher (spawned once; new() runs inside the tokio
         // runtime from #[tokio::main]). Best-effort — the byte path never waits on telemetry.
         let (telemetry_tx, telemetry_rx) = mpsc::channel::<serde_json::Value>(TELEMETRY_QUEUE);
         tokio::spawn(telemetry_flusher(
             telemetry_rx,
-            client.clone(),
+            node_client.clone(),
             format!("{node_url}/api/internal/telemetry"),
             secret.clone(),
+            dns.clone(),
         ));
         // S3/ORIGIN: the live-ingest registry, built HERE rather than inline in `Self` so the ring reporter
         // can hold its own handle — it needs the map, not the whole AppState.
         let origins: Arc<Mutex<HashMap<String, Arc<crate::origin::Origin>>>> = Arc::new(Mutex::new(HashMap::new()));
         tokio::spawn(ring_reporter(origins.clone(), telemetry_tx.clone()));
         // LOG: install the global structured-logging sink + its own batched flusher (seeds the level from
-        // MASQ_LOG_LEVEL, ships to /api/internal/log, learns live level changes from the flush echo). A
-        // cross-cutting global (like Node's `logger`) so every module logs without threading state.
-        crate::log::init(client.clone(), format!("{node_url}/api/internal/log"), secret.clone());
+        // MASQ_LOG_LEVEL, ships to /api/internal/log, learns live level + nameserver changes from the flush
+        // echo). A cross-cutting global (like Node's `logger`) so every module logs without threading state.
+        crate::log::init(node_client.clone(), format!("{node_url}/api/internal/log"), secret.clone(), dns.clone());
+        // DNS: the resolver Node stamped at spawn — after log::init, so its lifecycle line reaches the drawer.
+        dns.init_from_env();
         Self {
             client,
+            node_client,
             proxy_client,
+            dns,
             node_url,
             secret,
             cache: Arc::new(Mutex::new(HashMap::new())),
@@ -550,6 +579,8 @@ impl AppState {
     /// Only connect_timeout + max_redirects are CLIENT-level in reqwest, so the cache key is exactly those two.
     /// There is still NO overall/read timeout — segment streams are long-lived and a total timeout would
     /// truncate them (the deferred readTimeoutMs lands in P3). Falls back to the default client on build error.
+    /// DNS: every client built here shares the one upstream resolver, so a cached client follows a nameserver
+    /// change live — the resolver is retargeted, never the client (the cache key stays the two knobs).
     pub fn client_for(&self, connect_timeout_ms: u64, max_redirects: u32) -> reqwest::Client {
         // Guard a degenerate 0 connect timeout (Node clamps to >=100, but never trust the wire).
         let connect_ms = if connect_timeout_ms == 0 { 15000 } else { connect_timeout_ms };
@@ -563,6 +594,7 @@ impl AppState {
         let built = reqwest::Client::builder()
             .redirect(reqwest::redirect::Policy::limited(max_redirects as usize))
             .connect_timeout(Duration::from_millis(connect_ms))
+            .dns_resolver(self.dns.clone())
             .build()
             .unwrap_or_else(|_| self.client.clone());
         let mut m = self.upstream_clients.lock_ok();
@@ -920,7 +952,7 @@ impl AppState {
             "source": source, "url": entry_url, "pl": pl, "attempt": attempt, "reason": reason,
         });
         let resp = self
-            .client
+            .node_client
             .post(format!("{}/api/internal/resolve", self.node_url))
             .header("x-masq-secret", &self.secret)
             .json(&body)
@@ -1080,7 +1112,7 @@ impl AppState {
     ) -> Option<(bool, u16, String, Option<String>)> {
         let body = serde_json::json!({ "token": token, "source": source, "pl": pl });
         let resp = self
-            .client
+            .node_client
             .post(format!("{}/api/internal/authorize", self.node_url))
             .header("x-masq-secret", &self.secret)
             .json(&body)
@@ -1145,6 +1177,7 @@ async fn telemetry_flusher(
     client: reqwest::Client,
     url: String,
     secret: String,
+    dns: Arc<crate::dns::UpstreamDns>,
 ) {
     loop {
         let first = match rx.recv().await {
@@ -1164,10 +1197,10 @@ async fn telemetry_flusher(
             }
         }
         let body = serde_json::json!({ "events": batch });
-        // The telemetry response echoes the current { logLevel } too — apply it so a level change reaches the
-        // sidecar even when only telemetry (not logs) is flowing (e.g. an active stream at level 1).
+        // The telemetry response echoes the current { logLevel, nameservers } too — apply it so a Settings change
+        // reaches the sidecar even when only telemetry (not logs) is flowing (e.g. an active stream at level 1).
         if let Ok(resp) = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await {
-            crate::log::apply_level_response(resp).await;
+            crate::log::apply_flush_echo(resp, &dns).await;
         }
     }
 }
@@ -1340,6 +1373,65 @@ mod tests {
         );
         assert_eq!(s.target_record("zl", "zl://abc", "https://b/other.m3u8"), None, "overwritten by another resolve");
         assert_eq!(s.target_record("zl", "zl://other", "https://a/1.m3u8"), None);
+    }
+
+    /// DNS SCOPE: every UPSTREAM client — the default one (the probe's) and each `client_for` build — resolves
+    /// through the shared Settings resolver, and the Node client never does: a nameserver the operator can get
+    /// wrong must not be able to cut the engine off from its control plane.
+    #[tokio::test]
+    async fn upstream_clients_resolve_through_the_settings_resolver_and_the_node_client_never_does() {
+        use crate::testkit::{Mock, Seam};
+        let web = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let web_port = web.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let app = axum::Router::new().route("/", axum::routing::get(|| async { "upstream" }));
+            let _ = axum::serve(web, app).await;
+        });
+        // Only this resolver can place the name, so a 200 proves the client asked it.
+        let (dns, asked) = crate::dns::UpstreamDns::over_fake_os(&[("upstream.example.test", "127.0.0.1")]);
+        let mock = Mock::start(Seam::Reply(502, String::new())).await;
+        // Node reached by NAME, so the Node client has to resolve something too.
+        let s = AppState::with_dns(format!("http://localhost:{}", mock.port()), String::new(), Arc::new(dns));
+        let url = format!("http://upstream.example.test:{web_port}/");
+        let asked_now = || asked.load(Ordering::SeqCst);
+
+        let default = s.client.get(&url).send().await.expect("the default client reaches the upstream");
+        assert_eq!(default.status().as_u16(), 200);
+        assert_eq!(asked_now(), 1, "…through the shared resolver");
+        let knobbed = s.client_for(2_500, 3).get(&url).send().await.expect("a client_for client reaches it too");
+        assert_eq!(knobbed.status().as_u16(), 200);
+        assert_eq!(asked_now(), 2, "…through the same resolver");
+
+        assert!(s.resolve_at("zl", "zl://abc", None, 0, None).await.is_err(), "the scripted seam refuses");
+        assert_eq!(mock.resolves(), 1, "the Node client reached the seam by name…");
+        assert_eq!(asked_now(), 2, "…without ever asking the upstream resolver");
+    }
+
+    /// DNS: an operator's nameserver change travels Node's flush echo into the RUNNING engine — no restart, and
+    /// the resolver the upstream clients were built with is the one retargeted. The telemetry flusher alone must
+    /// carry it: at level 1 an active stream ships telemetry and no logs.
+    #[tokio::test]
+    async fn a_nameserver_change_reaches_the_running_engine_through_the_flush_echo() {
+        use crate::testkit::{until, Mock, Seam};
+        let mock = Mock::start(Seam::Reply(502, String::new())).await;
+        let s = mock.state();
+        let within = Duration::from_secs(5);
+        let servers = |list: &[&str]| list.iter().map(|ip| ip.parse().unwrap()).collect::<Vec<std::net::IpAddr>>();
+
+        mock.script(|sc| sc.echo = serde_json::json!({ "nameservers": "192.0.2.53,192.0.2.54" }));
+        s.report(serde_json::json!({ "kind": "probe" }));
+        until(within, "the echoed servers to be in force", || s.dns.servers() == servers(&["192.0.2.53", "192.0.2.54"])).await;
+
+        // An echo that says nothing — an older Node — leaves them be.
+        mock.script(|sc| sc.echo = serde_json::json!({}));
+        s.report(serde_json::json!({ "kind": "probe" }));
+        tokio::time::sleep(Duration::from_millis(3 * TELEMETRY_FLUSH_MS)).await;
+        assert_eq!(s.dns.servers(), servers(&["192.0.2.53", "192.0.2.54"]));
+
+        // null is Node's word for "the OS resolver".
+        mock.script(|sc| sc.echo = serde_json::json!({ "nameservers": null }));
+        s.report(serde_json::json!({ "kind": "probe" }));
+        until(within, "the OS resolver to be back in charge", || s.dns.servers().is_empty()).await;
     }
 
     impl AppState {
