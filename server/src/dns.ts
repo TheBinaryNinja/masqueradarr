@@ -45,6 +45,9 @@ type LookupCb = LookupAllCb | LookupOneCb;
 let activeServers: string[] = [];
 let activeLogLevel = 2;
 const lastResolved = new Map<string, string>();
+// The custom lookup currently installed on the global dispatcher (null = the default Agent, i.e. the OS
+// resolver). Kept so lookupAll() below vets a host through the SAME resolver fetch() will connect with.
+let activeLookup: ((hostname: string, options: LookupOptions, callback: LookupCb) => void) | null = null;
 
 function parseServers(raw: string | null | undefined): { valid: string[]; invalid: string[] } {
   if (!raw) return { valid: [], invalid: [] };
@@ -157,7 +160,53 @@ function installCustomLookup(servers: string[]): void {
     }
   };
 
+  activeLookup = lookup;
   setGlobalDispatcher(new Agent({ connect: { lookup: lookup as never } }));
+}
+
+/**
+ * Resolve `hostname` to every address a global fetch() could connect to, through the SAME path the installed
+ * dispatcher uses: the configured nameservers (with their OS-resolver fallback), or the OS resolver when none
+ * are set. IP literals come straight back. Rejects when nothing resolves.
+ *
+ * For a caller that must VET a host before anything connects to it — an SSRF check on an upstream-supplied
+ * redirect target (adapters/zlive/resolver.ts). Vetting with a different resolver than the one that will
+ * connect would vet a different answer (split-horizon DNS, a filtered nameserver), so this deliberately goes
+ * through activeLookup rather than dns.lookup. Asks with `all: true`, as net.connect does, so every address the
+ * connection may try is in the answer.
+ *
+ * Bounded: rejects with code ETIMEOUT after LOOKUP_ALL_DEADLINE_MS whatever the resolvers are doing. fetch() gets
+ * that bound from undici's connect timeout; a direct caller like this one gets it from nothing else, and the
+ * fallback chain (configured servers, then getaddrinfo) can outlast any single timeout on a lossy network.
+ */
+export function lookupAll(hostname: string): Promise<{ address: string; family: number }[]> {
+  const host = hostname.replace(/^\[|\]$/g, ''); // URL.hostname keeps IPv6 literal brackets
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      const err: NodeJS.ErrnoException = new Error(`${host}: lookup timed out after ${LOOKUP_ALL_DEADLINE_MS} ms`);
+      err.code = 'ETIMEOUT';
+      reject(err);
+    }, LOOKUP_ALL_DEADLINE_MS);
+    timer.unref?.();
+    const settle = (err: NodeJS.ErrnoException | null, recs: { address: string; family: number }[]): void => {
+      if (settled) return; // the deadline already answered; a late result is dropped
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err);
+      else if (!recs.length) reject(new Error(`${host}: no addresses`));
+      else resolve(recs);
+    };
+    if (activeLookup) {
+      activeLookup(host, { family: 0, all: true }, settle as LookupAllCb);
+    } else {
+      osLookup(host, { family: 0, all: true }, (err, addresses) =>
+        settle(err, (addresses ?? []).map((a) => ({ address: a.address, family: a.family }))),
+      );
+    }
+  });
 }
 
 // Success traceability, gated by the active log level:
@@ -194,6 +243,7 @@ export function applyDnsSettings(rawServers: string | null, logLevel: number, so
     logger.info('dns', `applied ${valid.length} nameserver(s) from ${source}: ${valid.join(', ')} (log level ${activeLogLevel})`);
   } else {
     activeServers = [];
+    activeLookup = null;
     setGlobalDispatcher(new Agent()); // reset global fetch() resolution to the OS resolver
     logger.info('dns', `reset to OS resolver (no nameserver configured, from ${source}) (log level ${activeLogLevel})`);
   }

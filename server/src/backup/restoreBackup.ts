@@ -12,6 +12,7 @@ import { startScheduler, removeAllCronjobs } from '../scheduler/index.js';
 import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
 import { applyDuloDomainFromSettings } from '../settings/applyDuloDomain.js';
+import { applyZliveFromSettings } from '../settings/applyZlive.js';
 import { logger } from '../sources/core/logger.js';
 
 // Thrown when an uploaded/stored buffer is not a recognizable backup — the routes map it to 400 bad_backup.
@@ -126,6 +127,14 @@ export async function applyPostRestore(): Promise<void> {
     await applyDuloDomainFromSettings('mongo');
   } catch (err) {
     logger.warn('settings', `post-restore: dulo domain re-apply failed (continuing): ${(err as Error).message}`);
+  }
+  // A restored backup can carry a different Settings.zliveDomain / zliveMaxStreams — re-hydrate the adapter cache.
+  // Phase 'mongo': a restore is a hydrate, not an operator edit (the domain epoch still resets the resolver if the
+  // restored domain differs, since that happens in the config leaf whatever the phase).
+  try {
+    await applyZliveFromSettings('mongo');
+  } catch (err) {
+    logger.warn('settings', `post-restore: zlive settings re-apply failed (continuing): ${(err as Error).message}`);
   }
   try {
     await startScheduler();

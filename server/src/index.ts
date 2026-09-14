@@ -42,6 +42,7 @@ import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/lo
 import { applyDnsFromSettings } from './settings/applyDns.js';
 import { applyDlhdPlayerFromSettings } from './settings/applyDlhdPlayer.js';
 import { applyDuloDomainFromSettings } from './settings/applyDuloDomain.js';
+import { applyZliveFromSettings } from './settings/applyZlive.js';
 import { logger } from './sources/core/logger.js';
 import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
@@ -113,6 +114,14 @@ async function main() {
     await applyDuloDomainFromSettings('mongo');
   } catch (err) {
     logger.error('startup', `dulo domain apply error (continuing): ${(err as Error).message}`);
+  }
+
+  // Hydrate the zlive adapter's domain + stream-cap caches, before the scheduler can start a sync or the sidecar
+  // can ask for a resolve. Non-fatal (falls back to the committed default domain and cap).
+  try {
+    await applyZliveFromSettings('mongo');
+  } catch (err) {
+    logger.error('startup', `zlive settings apply error (continuing): ${(err as Error).message}`);
   }
 
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler

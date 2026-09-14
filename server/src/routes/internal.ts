@@ -13,8 +13,14 @@ import { gateStreamAccess } from '../middleware/streamGate.js';
 // and behind the (non-blocking) global `authenticate`, but its OWN guard is the shared secret (secret.ts) —
 // a request without the matching x-masq-secret header is rejected 403 regardless of any user token.
 //
-//   POST /api/internal/resolve    { source, url, pl?, attempt? } → the per-stream GRANT (resolveSeam.buildGrant;
-//                                 attempt N >= 1 targets the channel's Nth failover child, 410 = exhausted)
+//   POST /api/internal/resolve    { source, url, pl?, attempt?, reason? } → the per-stream GRANT
+//                                 (resolveSeam.buildGrant; attempt N >= 1 targets the channel's Nth failover
+//                                 child, 410 = exhausted, 429 { error:'source_stream_cap', message } = the
+//                                 source's stream cap refused a NEW channel — definitive: no failover walk, no
+//                                 retry (a cap refusal a backup could route around is a walkable 502 instead).
+//                                 `reason` says why the data plane is retiring the upstream it served;
+//                                 `target_rejected` / `refresh_failed` also ask the adapter for a FRESH target
+//                                 instead of a cached one — ResolveStreamOptions.fresh)
 //   POST /api/internal/authorize  { token, source }      → the stream-token gate decision (EDGE-3)
 //   POST /api/internal/telemetry  a viewer/bytes event (or { events:[...] }) → streamTelemetry writers
 //   POST /api/internal/log        an engine log event (or { events:[...] }) → logStore (the `proxy` category)
@@ -54,12 +60,18 @@ internalRouter.post('/resolve', async (req, res, next) => {
     // Older sidecars omit it → undefined (identical to today; also keeps probe-style callers inert).
     const att =
       typeof attempt === 'number' && Number.isInteger(attempt) && attempt >= 0 ? attempt : undefined;
-    // `reason` (optional): why the data plane is retiring the upstream it was serving. Bounded and
-    // string-checked here rather than trusted — it reaches an adapter's memory and a log line.
+    // `reason` (optional): why the data plane is retiring the upstream it was serving (an undecodable
+    // provider on an escalation; a refused target or a failed playlist refresh on a same-candidate
+    // re-resolve). Bounded and string-checked here rather than trusted — it reaches an adapter's memory and a
+    // log line.
     const why = typeof reason === 'string' && reason ? reason.slice(0, 64) : undefined;
     const grant = await buildGrant(source, url, typeof pl === 'string' ? pl : undefined, att, why);
     if (!grant.ok) {
-      res.status(grant.status).json({ error: grant.error });
+      // The seam's own status IS the wire status (404 unknown source, 403 unrecognized entry, 410 exhausted,
+      // 429 source_stream_cap, 502 resolve_failed) — Rust branches on the code. `message` rides along when the
+      // seam wrote one.
+      const body = grant.message ? { error: grant.error, message: grant.message } : { error: grant.error };
+      res.status(grant.status).json(body);
       return;
     }
     res.json(grant);
