@@ -38,7 +38,7 @@ use url::Url;
 
 use crate::log;
 use crate::proxy::{build_headers, fetch_with_retry, is_private_host, MAX_UPSTREAM_RETRIES};
-use crate::state::{AppState, SourcePolicy};
+use crate::state::{AppState, ResolveErr, SourcePolicy};
 use crate::sync::{LockExt, RwExt};
 use crate::tsmux::{
     decrypt_aes128_cbc, encryption_method, has_map, is_master, parse_media_playlist, pick_variant, poll_interval,
@@ -82,6 +82,66 @@ const MAX_EMPTY_POLLS: u32 = 5;
 /// channel's configured backups. Without this an origin-mode stream can never fail over at all: it owns its
 /// own retry loop and never passes through the handler's `failover_walk`.
 const MEDIA_FAIL_ESCALATE: u32 = 2;
+
+/// BKO: the pacing for CONSECUTIVE failures to follow the upstream at all — resolve failures, failed playlist
+/// refreshes, stalls, entries that are neither a playlist nor a stream. The first retry is immediate (see
+/// `Backoff`), then 2 s, doubling to the cap; any segment that actually lands resets it.
+///
+/// Before this, every failure cost a flat 2 s and then went again, forever: a channel dead everywhere — or an
+/// upstream that has stopped serving this address and answers every fresh token with a 403 — was re-resolved
+/// and re-fetched about every two seconds for as long as anyone held it open. Against a provider that keeps a
+/// list of the addresses that do that, the retry loop is itself the problem.
+///
+/// The growth is for a chain that is dead END TO END, not for a walk still working through it (`Backoff::fail_walk`).
+/// Until an escalation has folded the cursor back to the channel itself, every wait is capped at this base, so a
+/// first pass over the operator's candidates keeps its old pace of about two seconds a step — a cold start whose
+/// first working backup is the fourth candidate still fills the ring inside a viewer's `READY_TIMEOUT`. Only once
+/// the walk has wrapped does the streak's own doubling apply, so a channel dead everywhere — or a single-candidate
+/// source whose upstream has stopped serving this address — settles at one attempt a minute instead of cycling at
+/// a fixed rate forever. Pass-through viewers are unaffected: the handler's own walk is not paced by this.
+const FAILURE_BACKOFF_BASE: Duration = Duration::from_secs(2);
+const FAILURE_BACKOFF_CAP: Duration = Duration::from_secs(60);
+
+/// EXP: how far ahead of a resolved target's own expiry (the grant's `expiresAtMs`) the ingest renews it. Enough
+/// for a resolve, the entry fetch, and a retry or two if the first renewal fails — all while the target being
+/// replaced still plays.
+const PROACTIVE_REFRESH_LEAD: Duration = Duration::from_secs(60);
+
+/// …never sooner than this after the resolve that scheduled it. The floor is what stops an adapter that keeps
+/// handing back targets already inside the lead from turning the renewal into a resolve per poll.
+///
+/// This and `PROACTIVE_RETRY` are the only timings shortened under test: they are what lets the ingest's
+/// renewal path be driven end to end in a second rather than half a minute. The tests of the arithmetic are
+/// written against the NAMES, not the numbers, so what they pin holds for both.
+#[cfg(not(test))]
+const MIN_PROACTIVE_REFRESH: Duration = Duration::from_secs(30);
+#[cfg(test)]
+const MIN_PROACTIVE_REFRESH: Duration = Duration::from_millis(400);
+
+/// A proactive renewal that could not resolve is retried after this — on the target it was replacing, which
+/// is still valid, so the viewer never sees the attempt.
+#[cfg(not(test))]
+const PROACTIVE_RETRY: Duration = Duration::from_secs(15);
+#[cfg(test)]
+const PROACTIVE_RETRY: Duration = Duration::from_millis(400);
+
+/// CNT: how far a same-candidate re-resolve's window may have slid PAST the segment we would have fetched next
+/// and still count as the timeline we were following — about two minutes at a typical 4 s cadence. A short
+/// slide is an outage we sat out: keeping the ring costs nothing, and the kept `prev` still marks the hole as
+/// a `SequenceGap`. Much further than that the numbering is more likely a new one that happens to run higher,
+/// and a reset is the honest way to join it.
+const MAX_CONTINUITY_GAP: i64 = 30;
+
+/// TMO: the floor under every origin read — segment and key bodies, playlist refreshes, the entry drain, a bare
+/// TS socket's silence. Before it, only `readTimeoutMs` bounded anything, and only response HEADERS: a CDN
+/// connection that went quiet mid-body parked the ingest inside one await forever, where the loop-head stop and
+/// idle checks can never run — the ring froze at a playable depth, clients kept getting a playlist that never
+/// advanced, and the RAM was never released.
+const MIN_INGEST_IO: Duration = Duration::from_secs(10);
+
+/// …and the most the target-duration term may add, so a nonsense `#EXT-X-TARGETDURATION` cannot quietly turn
+/// the bound back into "forever".
+const MAX_INGEST_IO_TD_SECS: f64 = 120.0;
 
 /// S3/UND — how many consecutive segments must carry the SAME structural fault before the upstream is
 /// retired. The faults themselves are named and judged by `tsseg::inspect_segment`.
@@ -163,9 +223,214 @@ pub enum Boundary {
     SequenceGap,
     /// The provider ended OUR playlist (`#EXT-X-ENDLIST`) and we re-resolved onto a new session on the same
     /// channel. Whether the bytes either side are contiguous is unknowable from here — a new session may
-    /// resume where the old one stopped or jump — so the join is SIGNALLED rather than assumed. This is the
-    /// one boundary we introduce ourselves; the other two are read off the upstream.
+    /// resume where the old one stopped or jump — so the join is SIGNALLED rather than assumed. One of the
+    /// two boundaries we introduce ourselves; the upstream-read ones are the two above.
     SessionRenewal,
+    /// CNT: the ring was RESET on a re-resolve (a failover, or a window that does not continue the one we
+    /// held), so the first segment after it starts a timeline no player has seen. The other boundary we
+    /// introduce ourselves.
+    ///
+    /// It used to go unsaid. The reset dropped the splicer's clock, `prev` was cleared so no gap could be
+    /// read, and the first new segment went out with no tag at all — so a client continued straight from the
+    /// old window's last segment into media whose timestamps might run backwards (a re-signed token re-offering
+    /// what it had already played), an RFC 8216 timeline violation. Forcing the boundary puts
+    /// `#EXT-X-DISCONTINUITY` on that segment, and `disc_seq` already counts the reset's departing tags, so
+    /// the discontinuity sequence stays exact across it.
+    Reset,
+}
+
+/// CNT — how a successful re-resolve joins the window the ring already holds. Decided once per resolve, before
+/// the first new segment lands, because the answer governs that very segment.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Rejoin {
+    /// Nothing is held — a cold start, or every fetch since the last reset failed. Re-anchor on the new
+    /// window's head: nothing was published that the join could contradict, and a splice already pending
+    /// (a reset's, say) stays pending. Also what fixes a renumbered-LOWER window after an empty spell, which
+    /// used to be skipped wholesale as "already ingested" until `MAX_EMPTY_POLLS` gave up on it.
+    Anchor,
+    /// The provider ended our session (`#EXT-X-ENDLIST`) and a renewal resolved: keep the ring and mark the
+    /// join. Its own path, because a renewed session RENUMBERS — the sequence says nothing across it, which is
+    /// why that path dedupes by URI instead.
+    Renewal,
+    /// The SAME candidate re-resolved onto a window that still lists — or abuts — the segment we would have
+    /// fetched next, or slid a little past it, and PROVABLY the same media: the timeline we were following,
+    /// re-signed. Keep the ring, the generation, both splicers and the upstream cursor; the sequence filter
+    /// dedupes the overlap, and the kept `prev` marks any slide as a `SequenceGap`. This is the signed-URL expiry:
+    /// before it, a lapsed token dropped the whole ring (every segment URL a client held turned 404), stalled
+    /// every viewer in `wait_ready` until three segments re-landed, and replayed the overlap as new media.
+    Continue,
+    /// Anything else — a retired provider, a different candidate, a window that does not continue ours or lists
+    /// different media where it overlaps ours, a bare TS socket. Drop the window, and say so on the next segment
+    /// (`Boundary::Reset`).
+    Reset,
+}
+
+/// Choose the `Rejoin` for a successful re-resolve. Pure so every branch can be pinned without a network.
+///
+/// `window` is the fresh media playlist's `(media_sequence, segment count)`, `None` for a bare TS socket.
+///
+/// `same_timeline` must be PROVEN, not assumed, on two counts. The CANDIDATE: a non-escalated resolve re-asks
+/// the stream's pinned failover candidate, but that pin can move underneath the ingest (a concurrent relay walk,
+/// the cursor's idle reset), and two candidates can easily share a numbering — continuing across them would
+/// splice one provider's media onto another's timeline with nothing to say so. And the MEDIA: the same candidate
+/// can come back on a renumbered session, or through another of its own upstreams, whose numbers happen to overlap
+/// ours — so the caller also needs content evidence (`overlap_evidence`), or a target that declared the expiry
+/// being renewed across. The sequence arithmetic here is only the third test, not a proof on its own.
+///
+/// `retired`: the resolve escalated to RETIRE the provider serving the ring (the undecodable watch burned it), so
+/// its timeline must never be continued, whatever comes back. An escalation that merely wrapped back to the very
+/// attempt the ring came from is not that — `same_timeline` already rejects one that moved anywhere else.
+fn rejoin(
+    renewing: bool,
+    retired: bool,
+    same_timeline: bool,
+    ring_depth: usize,
+    next_upstream_seq: i64,
+    window: Option<(i64, usize)>,
+) -> Rejoin {
+    if ring_depth == 0 {
+        return Rejoin::Anchor;
+    }
+    if renewing {
+        return Rejoin::Renewal;
+    }
+    match window {
+        Some((ms, len)) if !retired && same_timeline && next_upstream_seq >= 0 && window_continues(next_upstream_seq, ms, len) => {
+            Rejoin::Continue
+        }
+        _ => Rejoin::Reset,
+    }
+}
+
+/// CNT: what a re-resolve's window says about the media the ring holds, judged where the two OVERLAP — every
+/// upstream sequence both of them know must name the same segment: the same URL path, a re-signed token's query
+/// aside (a signed CDN's segment paths are content-addressed, so they survive a re-sign where the query does not).
+///
+/// `Some(true)` when at least one overlapping sequence was ingested and every one agrees; `Some(false)` on any
+/// disagreement — a renumbered session, or another upstream, that happens to overlap our numbers; `None` when
+/// nothing we ingested is listed, so there is nothing to compare.
+fn overlap_evidence(ingested: &VecDeque<(i64, String)>, base: &Url, window: &crate::tsmux::MediaPlaylist) -> Option<bool> {
+    let mut agreed = None;
+    for (i, seg) in window.segments.iter().enumerate() {
+        let seq = window.media_sequence + i as i64;
+        let Some((_, held)) = ingested.iter().find(|(s, _)| *s == seq) else { continue };
+        let listed = base.join(&seg.uri).ok();
+        if listed.as_ref().map(Url::path) != Some(held.as_str()) {
+            return Some(false);
+        }
+        agreed = Some(true);
+    }
+    agreed
+}
+
+/// Does a window of `len` segments from upstream sequence `ms` continue a timeline whose next segment is
+/// `next`? Yes when it still lists `next` or ends right before it (the next one is simply not published yet),
+/// or when it starts past `next` by at most `MAX_CONTINUITY_GAP`. A window that ends BEFORE `next` does not:
+/// it has been renumbered lower, and every segment in it would be skipped as already held.
+fn window_continues(next: i64, ms: i64, len: usize) -> bool {
+    let end = ms.saturating_add(len as i64); // one past the last listed segment
+    if ms <= next {
+        next <= end
+    } else {
+        ms - next <= MAX_CONTINUITY_GAP
+    }
+}
+
+/// Whether a segment is published with `#EXT-X-DISCONTINUITY`. Only a splice the normaliser ABSORBED onto a
+/// clock that already existed goes untagged; everything else carries its boundary — upstream's, or ours. That
+/// is also what makes a forced `Boundary::Reset` land: the reset drops the splicer's clock, so the segment
+/// after it can never count as joined.
+fn publishes_discontinuity(boundary: Option<Boundary>, absorbed: bool, joined: bool) -> bool {
+    if absorbed && joined {
+        false
+    } else {
+        boundary.is_some()
+    }
+}
+
+/// BKO: consecutive failures to follow the upstream, and the wait each one earns. See `FAILURE_BACKOFF_BASE`.
+#[derive(Debug, Default)]
+struct Backoff {
+    failures: u32,
+}
+
+impl Backoff {
+    /// Count one more failure and return how long to wait before the next attempt.
+    ///
+    /// NOTHING for the first. That one immediate retry is the whole reason a signed-URL expiry costs no delay:
+    /// the lapsed token's refused refresh is failure one, and the re-resolve that mints a fresh token runs at
+    /// once. Only a second failure in a row — the fresh token refused too — starts the clock.
+    fn fail(&mut self) -> Duration {
+        self.failures = self.failures.saturating_add(1);
+        match self.failures {
+            0 | 1 => Duration::ZERO,
+            n => FAILURE_BACKOFF_BASE.saturating_mul(1u32 << (n - 2).min(16)).min(FAILURE_BACKOFF_CAP),
+        }
+    }
+
+    /// Media landed: whatever was failing has recovered.
+    fn succeed(&mut self) {
+        self.failures = 0;
+    }
+
+    /// `fail`, for a failure somewhere in a failover walk: capped at `FAILURE_BACKOFF_BASE` until the walk has
+    /// wrapped back to the channel itself (`walk_wrapped`), then the streak's own doubling. The count still spans
+    /// the whole walk either way — the cap only decides how much of it is waited out.
+    fn fail_walk(&mut self, walk_wrapped: bool) -> Duration {
+        let wait = self.fail();
+        if walk_wrapped {
+            wait
+        } else {
+            wait.min(FAILURE_BACKOFF_BASE)
+        }
+    }
+}
+
+/// Sleep out one backoff step, naming it — a dead channel pacing itself should read as that in the log, not as
+/// an ingest that went quiet.
+async fn back_off(rid: &str, wait: Duration, failures: u32) {
+    if wait.is_zero() {
+        return;
+    }
+    log::info("iop", rid, || format!("{failures} consecutive failure(s) — next attempt in {}s", wait.as_secs()));
+    tokio::time::sleep(wait).await;
+}
+
+/// EXP: when to renew a target that expires at `expires_at_ms` (epoch ms), resolved at `now` / `now_ms`.
+/// `PROACTIVE_REFRESH_LEAD` ahead of the expiry, but never sooner than `MIN_PROACTIVE_REFRESH` from now.
+/// `None` only for an expiry so far out that it cannot be represented — which is "not in this session".
+fn proactive_refresh_at(expires_at_ms: u64, now_ms: u64, now: Instant) -> Option<Instant> {
+    let left = Duration::from_millis(expires_at_ms.saturating_sub(now_ms));
+    now.checked_add(left.saturating_sub(PROACTIVE_REFRESH_LEAD).max(MIN_PROACTIVE_REFRESH))
+}
+
+/// TMO: the time bounds for one origin fetch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct IngestIo {
+    /// Per-attempt wait for response HEADERS — what `fetch_with_retry` calls `read_timeout_ms`.
+    header_ms: u64,
+    /// The whole BODY read (or, on a bare TS socket, the longest silence between chunks).
+    body: Duration,
+}
+
+/// TMO: `max(readTimeoutMs, 3 × target duration, MIN_INGEST_IO)` for bodies — three target durations is the
+/// most a healthy segment or playlist should ever take, and the ring holds more than that in hand. Headers keep
+/// the operator's own `readTimeoutMs` when one is set (that is what the knob has always bounded) and take the
+/// body bound when it is not, where unset used to mean an unbounded wait.
+fn ingest_io(read_timeout_ms: u64, target_duration: f64) -> IngestIo {
+    let td = if target_duration.is_finite() && target_duration > 0.0 {
+        (target_duration * 3.0).min(MAX_INGEST_IO_TD_SECS)
+    } else {
+        0.0
+    };
+    let body = Duration::from_millis(read_timeout_ms).max(Duration::from_secs_f64(td)).max(MIN_INGEST_IO);
+    let header_ms = if read_timeout_ms > 0 { read_timeout_ms } else { body.as_millis() as u64 };
+    IngestIo { header_ms, body }
+}
+
+/// Read a (small) body as text within the bound — a playlist, never media.
+async fn read_text(resp: reqwest::Response, within: Duration) -> Option<String> {
+    tokio::time::timeout(within, resp.text()).await.ok()?.ok()
 }
 
 /// What the previous ingested segment looked like, for boundary detection against the next one.
@@ -354,6 +619,25 @@ pub struct Origin {
     /// every resolve BEFORE the eligibility guards, so a channel the origin declines still reports what it
     /// found rather than reporting nothing.
     encryption: RwLock<Option<String>>,
+    /// DSG: the disguise this channel's segments arrived in — `"riff-webp"`, or `"opaque-prefix"` for a
+    /// wrapper the sync proof saw through without recognising it — once ingest has unwrapped one. `None` means
+    /// every segment so far opened on a packet.
+    ///
+    /// Written only when the wrapper CHANGES, not per segment (see `unwrap_disguise`), and never cleared: it
+    /// records what the upstream DID. It is the only trace of the wrapper — nothing downstream of ingest ever
+    /// sees one — and it is what explains a channel whose upstream segments probe as a 1×1 WebP while ours
+    /// probe as TS.
+    segment_wrapper: RwLock<Option<String>>,
+    /// CAP: the resolve seam REFUSED this channel — the source is at its concurrent-stream cap — with Node's
+    /// message for the viewer. Set once, just before the ingest ends; read by `wait_ready`, which answers
+    /// every waiter with a 429 at once.
+    ///
+    /// Without it a refusal was just another resolve failure: the ingest retried every couple of seconds and
+    /// every waiting client sat out `READY_TIMEOUT` for a 503 — twenty seconds to say "try again" about a
+    /// stream that policy had already said no to. It is not a memo like `ineligible`: the refusal also expires
+    /// the entry's cached target (`AppState::resolve_at`), so the next request asks Node itself, before any
+    /// ingest exists, and a slot that frees up is taken at once rather than after a memo ages out.
+    refused: RwLock<Option<String>>,
 }
 
 /// What a DEMUXED origin needs in order to author its own master over the pair.
@@ -408,7 +692,31 @@ impl Origin {
             suspect_retires: AtomicU32::new(0),
             upstream_shape: RwLock::new(None),
             encryption: RwLock::new(None),
+            segment_wrapper: RwLock::new(None),
+            refused: RwLock::new(None),
         }
+    }
+
+    /// DSG: see through a disguised segment before ANYTHING else reads it — `scan_profile`, the undecodable
+    /// check, both splicers and the ring all assume a body that opens on a packet, and `tsnorm`'s lone-0x47
+    /// resync is what a wrapper's size fields defeat (see `tsseg`'s DSG section). Zero-copy: `Bytes::slice`.
+    ///
+    /// Universal here, unlike the grant-gated pass-through paths. The ring is TS by contract, and the rule
+    /// cannot fire on a body that already opens on a sync byte — so every source that ingests cleanly today is
+    /// decided by its first byte and handed back untouched. Returns the wrapper's label and size when it differs
+    /// from the one last recorded — exactly once for a steady upstream — so the caller logs it once rather than
+    /// once per segment.
+    fn unwrap_disguise(&self, body: Bytes) -> (Bytes, Option<(&'static str, usize)>) {
+        let Some(n) = crate::tsseg::disguise_prefix_len(&body) else {
+            return (body, None);
+        };
+        let label = crate::tsseg::disguise_label(&body);
+        // Read first, write only on a change: the steady state is one uncontended read guard per segment.
+        let first = self.segment_wrapper.read_ok().as_deref() != Some(label);
+        if first {
+            *self.segment_wrapper.write_ok() = Some(label.to_string());
+        }
+        (body.slice(n..), first.then_some((label, n)))
     }
 
     /// The audio rendition this origin rings beside the video, if it is a demuxed one.
@@ -432,6 +740,17 @@ impl Origin {
     fn mark_ineligible(&self, reason: String) {
         *self.ineligible.write_ok() = Some(reason);
         *self.ineligible_at.lock_ok() = Some(Instant::now());
+        self.notify.notify_waiters();
+    }
+
+    /// CAP: why the resolve seam refused this channel, if it did.
+    fn refused(&self) -> Option<String> {
+        self.refused.read_ok().clone()
+    }
+
+    /// CAP: record the seam's refusal and wake every waiter — the answer they are waiting for is a 429, now.
+    fn mark_refused(&self, why: String) {
+        *self.refused.write_ok() = Some(why);
         self.notify.notify_waiters();
     }
 
@@ -775,6 +1094,10 @@ async fn ingest(ctx: IngestCtx) {
     // one window's worth so a recycling source would have to wrap inside 64 segments to collide.
     let mut recent_uris: VecDeque<String> = VecDeque::new();
     let mut dedupe_by_uri = false;
+    // CNT: the upstream sequence and URL path of the most recently ingested segments on the CURRENT numbering —
+    // the content evidence a re-resolve's window is checked against before the ring may continue across it
+    // (`overlap_evidence`). Cleared whenever the numbering is re-anchored, since a sequence then names nothing.
+    let mut recent_paths: VecDeque<(i64, String)> = VecDeque::new();
     let mut splicer = crate::tsnorm::Splicer::new();
     // The demuxed counterpart. Only one of the two ever runs for a given session — which one is decided by
     // whether `resolve_media` found an audio rendition — but both are held so a re-resolve can change shape
@@ -791,8 +1114,30 @@ async fn ingest(ctx: IngestCtx) {
     // Set for exactly one resolve: the NEXT one carries this reason, so the adapter records WHICH fault
     // retired the provider rather than a generic "it failed".
     let mut pending_reason: Option<&'static str> = None;
+    // REJ: why the next re-resolve is happening when the target it replaces FAILED before its time — the playlist
+    // refresh failed (`RETIRE_REFRESH_FAILED`) or the upstream refused the target outright (`RETIRE_TARGET_REJECTED`).
+    // Taken by the next resolve; never sent on a scheduled renewal, whose target is still good. It is what makes a
+    // caching adapter (zlive's per-channel Location) mint a new target instead of handing the dead one back.
+    let mut retire_hint: Option<&'static str> = None;
     // Consecutive failures to produce a playable window from the pinned candidate — drives MEDIA_FAIL_ESCALATE.
     let mut media_failures: u32 = 0;
+    // BKO: the same failures, paced. Unlike `media_failures` it survives an escalation — see FAILURE_BACKOFF_BASE.
+    let mut backoff = Backoff::default();
+    // BKO: set once an escalation folds the failover cursor back to the channel itself (Node's 410, or the attempt
+    // cap) — from then on the pacing grows (`Backoff::fail_walk`). Cleared whenever media lands.
+    let mut walk_wrapped = false;
+    // CNT: the failover attempt the ring's current content was resolved at, when the target record proved it.
+    // A re-resolve may only CONTINUE the ring from the very same candidate (see `rejoin`).
+    let mut serving_attempt: Option<u32> = None;
+    // UND: the SERVING candidate's policy — the grant's `policySource`, which is not the mount source's after a
+    // failover onto another provider. The undecodable watch reads its capability from here.
+    let mut serving_policy: Option<Arc<SourcePolicy>> = None;
+    // EXP: when to renew the target ahead of its own expiry (None ⇒ the adapter stated none; the reactive
+    // refresh-failed path still covers it).
+    let mut refresh_at: Option<Instant> = None;
+    // EXP: while a PROACTIVE renewal is resolving, the playlist it would replace. The target it came from is still
+    // valid, so a renewal that fails falls back onto it instead of costing a working stream.
+    let mut standby: Option<PollPlaylists> = None;
     let mut last_idle_check = Instant::now();
 
     loop {
@@ -817,18 +1162,22 @@ async fn ingest(ctx: IngestCtx) {
         let (media_url, media_body, audio_pl) = match media.take() {
             Some(m) => (m.url, m.body, m.audio),
             None => {
+                // EXP: a PROACTIVE renewal carries the playlist it would replace (see `standby`).
+                let standby_media = standby.take();
                 // Escalate once the pinned candidate has failed to produce a playable window MEDIA_FAIL_ESCALATE
-                // times running (~a few seconds at the 2 s retry cadence). Below that we re-resolve the same
-                // candidate, which is what recovers an expired token or a rotated dlhd mirror.
-                let escalate = media_failures >= MEDIA_FAIL_ESCALATE;
+                // times running. Below that we re-resolve the same candidate, which is what recovers an expired
+                // token or a rotated dlhd mirror. A proactive renewal never escalates: nothing has failed.
+                let escalate = media_failures >= MEDIA_FAIL_ESCALATE && standby_media.is_none();
                 if escalate {
                     log::warn("iop", &rid, || {
                         format!("{media_failures} consecutive resolve/ingest failures — advancing to the next candidate")
                     });
                     // The counter means "failures since the LAST escalation", not "failures ever": without
                     // this reset a channel that is dead everywhere would advance on every single pass,
-                    // turning the 2 s retry loop into a hot walk over every candidate (and, for dlhd, a full
+                    // turning the retry loop into a hot walk over every candidate (and, for dlhd, a full
                     // provider re-walk per step). Each candidate now gets its own MEDIA_FAIL_ESCALATE tries.
+                    // (`backoff` is deliberately NOT reset here — its count spans candidates, and `fail_walk` decides
+                    // how much of it is waited out: little until the walk wraps, the full doubling after.)
                     media_failures = 0;
                 }
                 // A renewal that had to ESCALATE is no longer a renewal: the failover walk may hand back a
@@ -838,29 +1187,65 @@ async fn ingest(ctx: IngestCtx) {
                 }
                 // S3/UND: name the cause on the resolve that retires the provider, then disarm — a later
                 // ordinary re-resolve must not keep blaming it.
-                let reason = pending_reason.take();
-                let resolved = resolve_media(&ctx, &rid, escalate, reason).await;
-                // A fresh upstream gets a fresh verdict: the probe window re-opens so the NEW provider is
-                // judged on its own segments, not on the corpse of the last one.
-                if resolved.is_some() {
+                let retiring = pending_reason.take();
+                // REJ: …otherwise say what failed, so the adapter re-mints rather than re-serving its cache — but
+                // never on a proactive renewal: that target is still valid, and a cached answer is right for it.
+                let hint = retire_hint.take().filter(|_| standby_media.is_none());
+                let mut target_rejected = false;
+                let resolved = resolve_media(&ctx, &rid, escalate, retiring.or(hint), &mut target_rejected).await;
+                if target_rejected {
+                    retire_hint = Some(crate::state::RETIRE_TARGET_REJECTED);
+                }
+                // BKO: an escalation that ends back on the channel itself (Node's 410 past the last candidate, or the
+                // attempt cap) has walked the whole chain — from here on the pacing may grow.
+                if escalate && ctx.state.cursor_attempt(&ctx.source, &ctx.entry) == 0 {
+                    walk_wrapped = true;
+                }
+                if let Some(r) = &resolved {
+                    // A fresh upstream gets a fresh verdict: the probe window re-opens so the NEW provider is
+                    // judged on its own segments, not on the corpse of the last one.
                     probe_segments = 0;
                     suspect_run = None;
-                }
-                // A fresh resolve may point at a different upstream, so the previous window's bytes cannot be
-                // ASSUMED contiguous with the next ones. There are two honest ways to say that, and which one
-                // is right depends on why we re-resolved:
-                //
-                //  · A SESSION RENEWAL — the provider ended our playlist but the channel is still live —
-                //    KEEPS the ring. Dropping it would blank the published window (and bump `generation`,
-                //    invalidating every segment URL the client already holds) on every renewal, and pluto
-                //    renews every ~25 s: the cure would be worse than the disease. The join is marked as a
-                //    splice instead, which is exactly what `#EXT-X-DISCONTINUITY` exists to say.
-                //  · Anything ELSE (a stalled candidate, a failover) still DROPS the window. That resolve may
-                //    land on a different provider or a different channel entirely, and a discontinuity tag
-                //    would not make serving the old bytes honest.
-                if resolved.is_some() {
-                    if ctx.origin.ring_depth() > 0 {
-                        if renewing_session {
+                    // A fresh resolve may point at a different upstream, so the previous window's bytes cannot
+                    // be ASSUMED contiguous with the next ones. Which of the honest answers applies depends on
+                    // why we re-resolved and on what came back (`rejoin` decides; pure, and pinned by tests):
+                    //
+                    //  · A SESSION RENEWAL — the provider ended our playlist but the channel is still live —
+                    //    KEEPS the ring. Dropping it would blank the published window (and bump `generation`,
+                    //    invalidating every segment URL the client already holds) on every renewal, and pluto
+                    //    renews every ~25 s: the cure would be worse than the disease. The join is marked as a
+                    //    splice instead, which is exactly what `#EXT-X-DISCONTINUITY` exists to say.
+                    //  · A CONTINUATION — the same candidate, re-signed, still listing where we stopped — keeps
+                    //    everything. It is the same timeline; only the URL we poll it through changed.
+                    //  · Anything ELSE (a failover, a window that does not continue ours) still DROPS the
+                    //    window, and the first segment after it carries a discontinuity we now force.
+                    //
+                    // CNT: the numbers alone never prove a continuation. Where the fresh window overlaps what we
+                    // ingested, it must list the same media at those sequences (`overlap_evidence`); where it does
+                    // not overlap at all there is nothing to compare, so only a target that DECLARED its expiry (a
+                    // signed URL, re-signed — the known cause) or the proactive renewal may continue across it.
+                    let (window, evidence) = match &r.media {
+                        MediaSource::Hls(url, body, _) => {
+                            let w = parse_media_playlist(body);
+                            (Some((w.media_sequence, w.segments.len())), overlap_evidence(&recent_paths, url, &w))
+                        }
+                        MediaSource::RawTs(..) => (None, None),
+                    };
+                    let same_candidate = r.attempt.is_some() && r.attempt == serving_attempt;
+                    let same_timeline =
+                        same_candidate && evidence.unwrap_or(r.expires_at_ms.is_some() || standby_media.is_some());
+                    // Only a RETIREMENT — the undecodable watch burned the provider serving the ring — rules a
+                    // continuation out on the escalation itself. One that wrapped back to the very attempt the
+                    // ring came from (a single-candidate source riding out a refusal blip) is still that candidate,
+                    // and `same_timeline` has already turned away every escalation that went anywhere else.
+                    let retired = escalate && retiring.is_some();
+                    match rejoin(renewing_session, retired, same_timeline, ctx.origin.ring_depth(), next_upstream_seq, window) {
+                        Rejoin::Anchor => {
+                            prev = PrevSeg::default();
+                            next_upstream_seq = -1;
+                            recent_paths.clear();
+                        }
+                        Rejoin::Renewal => {
                             forced = Some(Boundary::SessionRenewal);
                             dedupe_by_uri = true;
                             log::info("iop", &rid, || {
@@ -869,47 +1254,158 @@ async fn ingest(ctx: IngestCtx) {
                                     ctx.origin.ring_depth()
                                 )
                             });
-                        } else {
+                            // The new session renumbers, so sequence-gap detection must re-anchor.
+                            prev = PrevSeg::default();
+                            next_upstream_seq = -1;
+                            recent_paths.clear();
+                        }
+                        Rejoin::Continue => {
+                            // Nothing to undo: `prev`, `next_upstream_seq`, the generation, both splicers and any
+                            // open ad break all describe the timeline this window continues.
+                            let (ms, _) = window.unwrap_or_default();
+                            log::info("iop", &rid, || {
+                                let slide = if ms > next_upstream_seq {
+                                    format!(" (the window slid {} segment(s) past us — marked as a gap)", ms - next_upstream_seq)
+                                } else {
+                                    String::new()
+                                };
+                                format!(
+                                    "re-resolved onto the same timeline — ring kept ({} seg, generation={}), continuing at upstream seq {next_upstream_seq}{slide}",
+                                    ctx.origin.ring_depth(),
+                                    ctx.origin.generation()
+                                )
+                            });
+                        }
+                        Rejoin::Reset => {
                             ctx.origin.reset_ring();
                             log::info("iop", &rid, || {
-                                format!("ring reset on re-resolve (generation={})", ctx.origin.generation())
+                                let why = if retired {
+                                    "the provider was retired".to_string()
+                                } else if !same_candidate {
+                                    if escalate { "a failover step" } else { "a different candidate" }.to_string()
+                                } else if evidence == Some(false) {
+                                    "the new window lists different media at the sequences we hold".to_string()
+                                } else {
+                                    match window {
+                                        None => "a bare TS socket".to_string(),
+                                        Some(_) if next_upstream_seq < 0 => "no upstream sequence to continue from".to_string(),
+                                        Some((ms, len)) if !window_continues(next_upstream_seq, ms, len) => format!(
+                                            "upstream seq {next_upstream_seq} is not in the new window [{ms}, {})",
+                                            ms.saturating_add(len as i64)
+                                        ),
+                                        Some(_) => "nothing in the new window proves it continues ours".to_string(),
+                                    }
+                                };
+                                format!(
+                                    "ring reset on re-resolve ({why}; generation={}) — the next segment is marked as a discontinuity",
+                                    ctx.origin.generation()
+                                )
                             });
-                            // ONLY on a real reset. A renewal is the same channel continuing, so an ad pod
-                            // spans it: clearing here fragmented one 2-minute break into a fresh break per
-                            // renewal — a new id every ~2.5 s in the `iop:cue` log. A reset is different: that
-                            // upstream may be another channel entirely, so its break AND its rebased timeline
-                            // are both meaningless now. `splicer.reset()` is the load-bearing half — it is what
-                            // stops the new upstream's first segment being spaced against the dead one's clock.
+                            // ONLY on a real reset. A renewal or a continuation is the same channel carrying on,
+                            // so an ad pod spans it: clearing here fragmented one 2-minute break into a fresh
+                            // break per renewal — a new id every ~2.5 s in the `iop:cue` log. A reset is
+                            // different: that upstream may be another channel entirely, so its break AND its
+                            // rebased timeline are both meaningless now. `splicer.reset()` is the load-bearing
+                            // half — it is what stops the new upstream's first segment being spaced against the
+                            // dead one's clock.
                             ad_break = None;
                             splicer.reset();
                             pair_splicer.reset();
+                            // …and SAY so. With the clock dropped and `prev` cleared, nothing else would put a
+                            // boundary on the first new segment — see `Boundary::Reset`.
+                            forced = Some(Boundary::Reset);
+                            prev = PrevSeg::default();
+                            next_upstream_seq = -1;
+                            recent_paths.clear();
                         }
-                        // The new session renumbers regardless, so sequence-gap detection must re-anchor.
-                        prev = PrevSeg::default();
-                        next_upstream_seq = -1;
                     }
                     // Consumed only on a SUCCESSFUL resolve. A transient resolve failure mid-renewal keeps
                     // the flag armed, so the retry that succeeds still keeps the ring instead of paying for
                     // a blip with a rebuffer.
                     renewing_session = false;
+                    serving_attempt = r.attempt;
+                    serving_policy = Some(r.policy.clone());
+                    // Re-derived on every resolve: a renewal that lands on a target with a new expiry (or none)
+                    // replaces the schedule the old target set.
+                    refresh_at = r.expires_at_ms.and_then(|exp| proactive_refresh_at(exp, crate::state::epoch_ms(), Instant::now()));
                 }
                 match resolved {
-                    Some(MediaSource::Hls(u, b, a)) => (u, b, a),
+                    Some(Resolution { media: MediaSource::Hls(u, b, a), .. }) => (u, b, a),
                     // A bare TS socket has nothing to poll: hand off to the local segmenter for the whole
                     // session, then fall back into this loop (which re-checks stop/idle and re-resolves).
-                    Some(MediaSource::RawTs(stream, first)) => {
-                        ingest_raw_ts(&ctx, &rid, stream, first).await;
+                    Some(Resolution { media: MediaSource::RawTs(stream, first), .. }) => {
+                        let read_timeout_ms = ctx.state.get(&ctx.source).map_or(0, |p| p.read_timeout_ms.load(Ordering::Relaxed));
+                        let started = Instant::now();
+                        // A splice pending from the resolve (a reset's, or a renewal that landed on a socket) rides
+                        // on the session's first cut, exactly as the HLS path puts it on its first segment.
+                        let (produced, min_session) =
+                            ingest_raw_ts(&ctx, &rid, stream, first, read_timeout_ms, forced.is_some()).await;
+                        if produced > 0 {
+                            forced = None;
+                        }
                         next_upstream_seq = -1;
+                        recent_paths.clear();
+                        let lasted = started.elapsed();
+                        if produced > 0 && lasted >= min_session {
+                            // A socket that carried media for a while and then ended is a reconnect, not a fault.
+                            media_failures = 0;
+                            backoff.succeed();
+                            walk_wrapped = false;
+                        } else if produced > 0 {
+                            // BKO: a live socket runs in real time, so one that ended within a few target
+                            // durations — a finite clip behind a `.ts` entry, a restreamer that accepts and drops —
+                            // is a failure however many cuts it yielded. Read as a clean reconnect, it looped
+                            // straight back into a resolve with no pause: one Node resolve, one entry GET and a
+                            // ring reset per pass, hundreds a second, while no window ever grew playable.
+                            media_failures = media_failures.saturating_add(1);
+                            let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
+                            log::warn("iop", &rid, || {
+                                format!(
+                                    "raw-TS session ended after {}ms ({produced} segment(s)) — shorter than a live socket runs, counted as a failure",
+                                    lasted.as_millis()
+                                )
+                            });
+                            back_off(&rid, wait, backoff.failures).await;
+                        } else {
+                            // BKO: a 2xx entry that is neither a playlist nor a transport stream — an HTML
+                            // interstitial, a challenge page — used to loop straight back into a resolve with
+                            // no pause and no failure counted: one Node resolve plus one entry GET per pass,
+                            // for as long as anyone was subscribed. It is a failure, and it always waits.
+                            media_failures = media_failures.saturating_add(1);
+                            let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
+                            log::warn("iop", &rid, || {
+                                "the entry answered with neither a playlist nor a transport stream (0 segments cut) — counted as a failure".to_string()
+                            });
+                            back_off(&rid, wait, backoff.failures).await;
+                        }
                         continue;
                     }
                     // A STRUCTURAL decline is not a failure to retry: the shape will not change on the next
                     // poll, and the renderer has already been told to fall back. Retrying would pull the entry
                     // every 2 s forever for a channel nobody is being served from the ring.
                     None if ctx.origin.ineligible().is_some() => break,
+                    // CAP: nor is a refusal. The seam said this channel may not stream now, and every waiter has
+                    // already been answered 429 (`wait_ready`). Retrying would only put the question to Node again
+                    // every couple of seconds; the next viewer request asks it afresh anyway.
+                    None if ctx.origin.refused().is_some() => break,
+                    // EXP: a proactive renewal that did not resolve is not a failure yet — the target it was
+                    // replacing is still valid, and `standby` is the window just fetched from it. Carry on with
+                    // that, and try again shortly.
+                    None if standby_media.is_some() => {
+                        log::warn("iop", &rid, || {
+                            format!(
+                                "could not renew the target ahead of its expiry — still following the current one, retrying in {PROACTIVE_RETRY:?}"
+                            )
+                        });
+                        refresh_at = Instant::now().checked_add(PROACTIVE_RETRY);
+                        media = standby_media;
+                        continue;
+                    }
                     None => {
                         media_failures = media_failures.saturating_add(1);
                         report_iop(&ctx, "resolve_failed");
-                        tokio::time::sleep(Duration::from_secs(2)).await;
+                        let wait = backoff.fail_walk(walk_wrapped);
+                        back_off(&rid, wait, backoff.failures).await;
                         continue;
                     }
                 }
@@ -940,17 +1436,19 @@ async fn ingest(ctx: IngestCtx) {
         // source the retirement would just re-resolve the same dead provider on a 2 s loop. It used to be
         // `ctx.source == "dlhd"`, the crate's only hardcoded provider id.
         //
-        // Read per poll off the MOUNT source's policy, exactly like this loop's other knobs (headers,
-        // timeouts, allow_private) — not off the serving candidate's. The two differ only after a failover
-        // onto another provider, whose grant files its policy under its own `policySource`; for attempt 0
-        // they are the same object. Worth knowing when reading this: a child's capability does not flip the
-        // parent's watch, which is the existing behaviour of every knob here rather than a rule of this one.
-        let undecodable_watch = policy.player_selectable.load(Ordering::Relaxed);
+        // Read off the SERVING candidate's policy — the one its grant filed under its own `policySource` —
+        // and deliberately not the mount's, unlike this loop's other knobs (headers, timeouts, allow_private).
+        // The capability describes the media being judged: a failover child from a provider whose segments
+        // legitimately open mid-GOP (their parameter sets sit past the scan cap) is NOT playerSelectable, and
+        // judging it by its dlhd parent's capability struck three healthy segments in a row and retired it.
+        // For attempt 0 the two are the same object, so nothing changes there.
+        let undecodable_watch = serving_policy.as_ref().is_some_and(|p| p.player_selectable.load(Ordering::Relaxed));
         let client = ctx.state.client_for(
             policy.connect_timeout_ms.load(Ordering::Relaxed),
             policy.max_redirects.load(Ordering::Relaxed),
         );
-        let read_timeout_ms = policy.read_timeout_ms.load(Ordering::Relaxed);
+        // TMO: every read this poll makes is bounded — see `ingest_io`.
+        let io = ingest_io(policy.read_timeout_ms.load(Ordering::Relaxed), mp.target_duration);
 
         let mut ingested_this_poll = 0u32;
         // Segments the renewal check recognised as already-held. Tracked separately from `ingested_this_poll`
@@ -1054,7 +1552,7 @@ async fn ingest(ctx: IngestCtx) {
             };
             let boundary = boundary_before(&prev, seg, upstream_seq).or(pending);
 
-            let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, read_timeout_ms, &mut key_cache).await {
+            let plain = match fetch_segment(&ctx, &rid, &client, &policy, &media_url, seg, &seg_url, upstream_seq, io, &mut key_cache).await {
                 Some(b) => b,
                 None => continue, // a gap: the NEXT ingested segment will see the sequence jump and splice
             };
@@ -1078,7 +1576,7 @@ async fn ingest(ctx: IngestCtx) {
                         }
                         policy.hosts.write_ok().insert(h.to_lowercase());
                     }
-                    match fetch_segment(&ctx, &rid, &client, &policy, aurl, aseg, &aseg_url, *aseq, read_timeout_ms, &mut audio_key_cache).await {
+                    match fetch_segment(&ctx, &rid, &client, &policy, aurl, aseg, &aseg_url, *aseq, io, &mut audio_key_cache).await {
                         Some(b) => Some(b),
                         // No partner bytes ⇒ no pair. Dropping BOTH keeps the two published windows aligned;
                         // the next segment's sequence check turns the hole into an honest splice.
@@ -1279,7 +1777,7 @@ async fn ingest(ctx: IngestCtx) {
             // Drop the tag ONLY when the splice was genuinely absorbed — the segment was moved onto a clock
             // that already existed. A FRESH anchor leaves the timestamps exactly where upstream put them, so
             // upstream's own signal still governs and must still be published.
-            let discontinuity = if absorbed && joined { false } else { boundary.is_some() };
+            let discontinuity = publishes_discontinuity(boundary, absorbed, joined);
 
             let evicted = ctx.origin.push(Segment {
                 seq: our_seq,
@@ -1297,6 +1795,10 @@ async fn ingest(ctx: IngestCtx) {
             if recent_uris.len() > RECENT_URI_MEMORY {
                 recent_uris.pop_front();
             }
+            recent_paths.push_back((upstream_seq, seg_url.path().to_string()));
+            if recent_paths.len() > RECENT_URI_MEMORY {
+                recent_paths.pop_front();
+            }
             if let Some(b) = boundary {
                 log::info("iop", &rid, || {
                     let detail = match b {
@@ -1306,6 +1808,7 @@ async fn ingest(ctx: IngestCtx) {
                         ),
                         Boundary::Tag => "upstream #EXT-X-DISCONTINUITY".to_string(),
                         Boundary::SessionRenewal => "first segment of a renewed provider session".to_string(),
+                        Boundary::Reset => "first segment after a ring reset".to_string(),
                     };
                     // Say which of the two happened. An ABSORBED splice publishes no tag, so a log line that
                     // read the same either way would make the normaliser silently un-diagnosable — exactly
@@ -1370,6 +1873,13 @@ async fn ingest(ctx: IngestCtx) {
         if ingested_this_poll > 0 || duplicates_this_poll > 0 {
             empty_polls = 0;
             media_failures = 0; // this candidate is producing media — it has earned the cursor back
+            backoff.succeed();
+            walk_wrapped = false;
+            // FOG: keep the stream's failover cursor pinned while the ring is being fed. Only requests used to
+            // refresh its idle clock, and a raw-TS viewer of the origin sends none after connecting — so after
+            // FAILOVER_CURSOR_IDLE a session riding a failover child snapped back to its dead parent on the next
+            // re-resolve (tsmux has always done this for the same reason).
+            ctx.state.touch_stream(&ctx.source, &ctx.entry);
             report_iop(&ctx, "ok");
         } else {
             empty_polls += 1;
@@ -1381,6 +1891,8 @@ async fn ingest(ctx: IngestCtx) {
                 empty_polls = 0;
                 media_failures = media_failures.saturating_add(1);
                 media = None;
+                let wait = backoff.fail_walk(walk_wrapped);
+                back_off(&rid, wait, backoff.failures).await;
                 continue;
             }
         }
@@ -1419,31 +1931,55 @@ async fn ingest(ctx: IngestCtx) {
         // the recovery that already exists.
         let audio_url = audio_pl.as_ref().map(|(u, _)| u.clone());
         let refreshed = async {
-            let vresp = fetch_with_retry(&client, media_url.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-playlist", MAX_UPSTREAM_RETRIES).await.ok()?;
+            let vresp = fetch_with_retry(&client, media_url.as_str(), &build_headers(&policy), io.header_ms, &rid, "iop-playlist", MAX_UPSTREAM_RETRIES).await.ok()?;
             if !vresp.status().is_success() {
                 return None;
             }
             let vurl = vresp.url().clone();
-            let vbody = vresp.text().await.ok()?;
+            let vbody = read_text(vresp, io.body).await?;
             let audio = match &audio_url {
                 None => None,
                 Some(u) => {
-                    let aresp = fetch_with_retry(&client, u.as_str(), &build_headers(&policy), read_timeout_ms, &rid, "iop-audio", MAX_UPSTREAM_RETRIES).await.ok()?;
+                    let aresp = fetch_with_retry(&client, u.as_str(), &build_headers(&policy), io.header_ms, &rid, "iop-audio", MAX_UPSTREAM_RETRIES).await.ok()?;
                     if !aresp.status().is_success() {
                         return None;
                     }
-                    Some((aresp.url().clone(), aresp.text().await.ok()?))
+                    let aurl = aresp.url().clone();
+                    Some((aurl, read_text(aresp, io.body).await?))
                 }
             };
             Some((vurl, vbody, audio))
         }
         .await;
         match refreshed {
+            // EXP: renew a target that is about to lapse BEFORE it does. The reactive path below also recovers an
+            // expired token, but only once it has been refused — by which time segments may already have 403'd
+            // into gaps. This re-resolves the same candidate while the current target still plays, and `rejoin`
+            // continues the ring across it.
+            //
+            // Checked AFTER the refresh, on purpose: the playlist just fetched rides along as `standby`, so a
+            // renewal that fails falls back onto a FRESH window of the target it was replacing — never a stale
+            // one that would skip this poll's new segments, however the retry cadence and the poll cadence
+            // happen to line up. It costs one extra playlist fetch per renewal, i.e. per token lifetime.
+            Some((url, body, audio)) if refresh_at.is_some_and(|t| Instant::now() >= t) => {
+                refresh_at = None;
+                log::info("iop", &rid, || {
+                    format!("the resolved target expires within {}s — renewing it ahead of the lapse", PROACTIVE_REFRESH_LEAD.as_secs())
+                });
+                standby = Some(PollPlaylists { url, body, audio }); // `media` stays None: the loop head renews
+            }
             Some((url, body, audio)) => media = Some(PollPlaylists { url, body, audio }),
             None => {
                 log::warn("iop", &rid, || "media playlist refresh failed — re-resolving".to_string());
                 media_failures = media_failures.saturating_add(1);
                 media = None;
+                // REJ: the re-resolve says so — a caching adapter would otherwise hand back the very target whose
+                // playlist just stopped refreshing.
+                retire_hint = Some(crate::state::RETIRE_REFRESH_FAILED);
+                // BKO: the first failure in a row waits for nothing — a lapsed token's refused refresh is
+                // exactly this, and the re-resolve that mints its replacement must run at once.
+                let wait = backoff.fail_walk(walk_wrapped);
+                back_off(&rid, wait, backoff.failures).await;
             }
         }
     }
@@ -1541,9 +2077,34 @@ fn pair_audio<'a>(video: &SegRef, upstream_seq: i64, apl: &'a crate::tsmux::Medi
     }
 }
 
+/// A successful `resolve_media`: what to follow, plus what the resolve established about the candidate
+/// serving it.
+struct Resolution {
+    media: MediaSource,
+    /// The SERVING candidate's policy — keyed by the grant's `policySource`, which differs from the mount
+    /// source's after a failover onto another provider.
+    policy: Arc<SourcePolicy>,
+    /// Which failover attempt served it — `None` when the target record no longer names this target (a
+    /// concurrent resolve of the channel overwrote it), which `rejoin` reads as "not provably the same".
+    attempt: Option<u32>,
+    /// Epoch ms at which the resolved target stops being valid, when the adapter knew (EXP).
+    expires_at_ms: Option<u64>,
+}
+
 /// Resolve the entry and walk to the MEDIA playlist to follow (peeking the top variant when the entry is a
-/// master). `None` when nothing usable is reachable — the caller backs off and retries.
-async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Option<&str>) -> Option<MediaSource> {
+/// master). `None` when nothing usable is reachable — the caller backs off and retries — or when the seam
+/// REFUSED the channel, which it records on the origin (`mark_refused`) for the caller to act on.
+///
+/// `reason` rides on the resolve, escalated or not (see `AppState::resolve`). `target_rejected` is set when the
+/// upstream refused the resolved target outright — a definitive 401/403/410 on the entry or on a playlist the
+/// entry named — so the caller can tell the NEXT resolve why (`RETIRE_TARGET_REJECTED`).
+async fn resolve_media(
+    ctx: &IngestCtx,
+    rid: &str,
+    escalate: bool,
+    reason: Option<&str>,
+    target_rejected: &mut bool,
+) -> Option<Resolution> {
     // `escalate` = the pinned candidate has failed us repeatedly, so advance the failover cursor instead of
     // re-resolving the same one. The ingest loop drives its own retries and never enters the handler's
     // failover_walk, so this is the ONLY way an origin-mode stream reaches the source's alternate upstreams
@@ -1551,23 +2112,46 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     let resolved = if escalate {
         ctx.state.resolve_advance(&ctx.source, &ctx.entry, ctx.pl.as_deref(), reason).await
     } else {
-        ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref()).await
+        ctx.state.resolve_fresh(&ctx.source, &ctx.entry, ctx.pl.as_deref(), reason).await
     };
-    let (policy, target) = resolved
-        .map_err(|e| {
+    let mut refused_by_upstream = |status: reqwest::StatusCode| {
+        if matches!(status.as_u16(), 401 | 403 | 410) {
+            *target_rejected = true;
+        }
+    };
+    let (policy, target) = match resolved {
+        Ok(v) => v,
+        // CAP: the source's stream cap refused this channel. Not a failure to retry — see `Origin::refused`.
+        Err(ResolveErr::Refused(why)) => {
+            log::info("iop", rid, || format!("resolve refused by the source's stream cap — ending the ingest ({why})"));
+            ctx.origin.mark_refused(why);
+            return None;
+        }
+        Err(e) => {
             log::warn("iop", rid, || format!("resolve failed: {e}"));
-        })
-        .ok()?;
+            return None;
+        }
+    };
+    // CNT/EXP: which candidate this is and how long its target lives, off the record the resolve just wrote.
+    let meta = ctx.state.target_record(&ctx.source, &ctx.entry, &target);
+    let resolution = |media: MediaSource| Resolution {
+        media,
+        policy: policy.clone(),
+        attempt: meta.map(|m| m.attempt),
+        expires_at_ms: meta.and_then(|m| m.expires_at_ms),
+    };
     let client = ctx.state.client_for(
         policy.connect_timeout_ms.load(Ordering::Relaxed),
         policy.max_redirects.load(Ordering::Relaxed),
     );
-    let read_timeout_ms = policy.read_timeout_ms.load(Ordering::Relaxed);
-    let resp = fetch_with_retry(&client, &target, &build_headers(&policy), read_timeout_ms, rid, "iop-entry", MAX_UPSTREAM_RETRIES)
+    // TMO: the channel's own cadence when a previous resolve learned it, else the floor.
+    let io = ingest_io(policy.read_timeout_ms.load(Ordering::Relaxed), ctx.origin.target_duration());
+    let resp = fetch_with_retry(&client, &target, &build_headers(&policy), io.header_ms, rid, "iop-entry", MAX_UPSTREAM_RETRIES)
         .await
         .ok()?;
     if !resp.status().is_success() {
         log::warn("iop", rid, || format!("entry fetch {} — not usable", resp.status().as_u16()));
+        refused_by_upstream(resp.status());
         return None;
     }
     let url = resp.url().clone();
@@ -1576,10 +2160,14 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     // bare TS socket — that never ends. So take the first chunk and decide from it: a playlist starts with
     // `#EXTM3U`, a transport stream with the 0x47 sync byte.
     let mut stream = resp.bytes_stream();
-    let first = match stream.next().await {
-        Some(Ok(b)) => b,
-        _ => {
+    let first = match tokio::time::timeout(io.body, stream.next()).await {
+        Ok(Some(Ok(b))) => b,
+        Ok(_) => {
             log::warn("iop", rid, || "entry produced no bytes".to_string());
+            return None;
+        }
+        Err(_) => {
+            log::warn("iop", rid, || format!("entry sent headers but no body within {}s", io.body.as_secs()));
             return None;
         }
     };
@@ -1596,12 +2184,20 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
         // keeps listing an audio lane whose segments 404, and `serve_ts` keeps dispatching to the pair
         // producer, which declines to its cap and ends the socket on a flag the reconnect re-reads unchanged.
         *ctx.origin.demuxed_audio.write_ok() = None;
-        return Some(MediaSource::RawTs(Box::pin(stream), first));
+        return Some(resolution(MediaSource::RawTs(Box::pin(stream), first)));
     }
-    // A manifest: drain the (small) remainder into text.
+    // A manifest: drain the (small) remainder into text — within the bound, or a stalled entry would park the
+    // ingest here with every stop and idle check out of reach.
     let mut body = String::from_utf8_lossy(&first).into_owned();
-    while let Some(Ok(b)) = stream.next().await {
-        body.push_str(&String::from_utf8_lossy(&b));
+    let drained = tokio::time::timeout(io.body, async {
+        while let Some(Ok(b)) = stream.next().await {
+            body.push_str(&String::from_utf8_lossy(&b));
+        }
+    })
+    .await;
+    if drained.is_err() {
+        log::warn("iop", rid, || format!("entry playlist body stalled for {}s — not usable", io.body.as_secs()));
+        return None;
     }
 
     let mut variant_bandwidth = 0i64;
@@ -1643,13 +2239,15 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
         } else {
             None
         };
-        let vresp = fetch_with_retry(&client, pick.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
+        let vresp = fetch_with_retry(&client, pick.url.as_str(), &build_headers(&policy), io.header_ms, rid, "iop-variant", MAX_UPSTREAM_RETRIES)
             .await
             .ok()?;
         if !vresp.status().is_success() {
+            refused_by_upstream(vresp.status());
             return None;
         }
-        (vresp.url().clone(), vresp.text().await.ok()?, rendition)
+        let vurl = vresp.url().clone();
+        (vurl, read_text(vresp, io.body).await?, rendition)
     } else {
         (url, body, None)
     };
@@ -1676,14 +2274,15 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     let audio = match &rendition {
         None => None,
         Some(r) => {
-            let aresp = fetch_with_retry(&client, r.url.as_str(), &build_headers(&policy), read_timeout_ms, rid, "iop-audio", MAX_UPSTREAM_RETRIES)
+            let aresp = fetch_with_retry(&client, r.url.as_str(), &build_headers(&policy), io.header_ms, rid, "iop-audio", MAX_UPSTREAM_RETRIES)
                 .await
                 .ok()?;
             if !aresp.status().is_success() {
+                refused_by_upstream(aresp.status());
                 return None;
             }
             let aurl = aresp.url().clone();
-            let abody = aresp.text().await.ok()?;
+            let abody = read_text(aresp, io.body).await?;
             if has_map(&abody) {
                 log::warn("iop", rid, || format!("{}: audio rendition is fMP4 (#EXT-X-MAP) — origin ingest not eligible", ctx.source));
                 ctx.origin.mark_ineligible("audio rendition is fMP4 (#EXT-X-MAP)".to_string());
@@ -1777,7 +2376,7 @@ async fn resolve_media(ctx: &IngestCtx, rid: &str, escalate: bool, reason: Optio
     // URL without any renewal-specific code.
     *ctx.origin.demuxed_audio.write_ok() =
         rendition.map(|audio| DemuxedMaster { audio, bandwidth: variant_bandwidth });
-    Some(MediaSource::Hls(media_url, media_body, audio))
+    Some(resolution(MediaSource::Hls(media_url, media_body, audio)))
 }
 
 /// What an upstream turned out to BE. Both shapes feed the same ring; only the way boundaries are discovered
@@ -1798,14 +2397,23 @@ fn looks_like_manifest(b: &[u8]) -> bool {
 
 /// Ingest a BARE TS socket: cut it into segments locally and push them into the same ring the HLS path fills.
 ///
-/// Runs until the socket ends or the ingest is stopping — unlike the HLS path there is nothing to poll, so
-/// this is one long read rather than a loop over playlist refreshes.
+/// Runs until the socket ends, falls silent for longer than the ingest's I/O bound, or the ingest is stopping
+/// — unlike the HLS path there is nothing to poll, so this is one long read rather than a loop over playlist
+/// refreshes. Returns how many segments it cut — ZERO means the entry never carried media at all — and the
+/// shortest a live session runs (the silence bound: three target durations at least), below which the caller
+/// counts the session as a failure rather than a reconnect: a live socket delivers in real time, so one that
+/// ended sooner was a finite clip or a dropped connection.
+///
+/// `mark_first`: a splice is pending (the ring was reset for this socket, or a renewal landed on one), so the
+/// first cut carries `#EXT-X-DISCONTINUITY` — the new socket's clock is not the one the window was on.
 async fn ingest_raw_ts(
     ctx: &IngestCtx,
     rid: &str,
     mut stream: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>>,
     first: Bytes,
-) {
+    read_timeout_ms: u64,
+    mark_first: bool,
+) -> (u64, Duration) {
     // Segment length: reuse whatever target the channel already reported, else a 5 s default that matches
     // typical HLS practice. This also seeds the renderer's #EXT-X-TARGETDURATION.
     let target = {
@@ -1815,19 +2423,34 @@ async fn ingest_raw_ts(
     ctx.origin.target_duration_ms.fetch_max((target * 1000.0) as u64, Ordering::Relaxed);
     let mut seg = crate::tsseg::TsSegmenter::new(target);
     let mut produced = 0u64;
+    // TMO: a live socket that stops sending without closing used to hold this read — and the whole ingest with
+    // it — forever, since `stopping` is only ever looked at after a chunk arrives.
+    let silence = ingest_io(read_timeout_ms, target).body;
+    // The pending splice rides on the session's first cut, and on that one only.
+    let mut disc = mark_first;
 
     for cut in seg.push(&first) {
-        push_cut(ctx, cut);
+        push_cut(ctx, cut, std::mem::take(&mut disc));
         produced += 1;
     }
-    while let Some(item) = stream.next().await {
+    loop {
+        let item = match tokio::time::timeout(silence, stream.next()).await {
+            Ok(Some(item)) => item,
+            Ok(None) => break,
+            Err(_) => {
+                log::warn("iop", rid, || {
+                    format!("raw-TS socket silent for {}s after {produced} segment(s) — ending the session", silence.as_secs())
+                });
+                break;
+            }
+        };
         if ctx.origin.stopping.load(Ordering::Relaxed) {
             break;
         }
         match item {
             Ok(b) => {
                 for cut in seg.push(&b) {
-                    push_cut(ctx, cut);
+                    push_cut(ctx, cut, std::mem::take(&mut disc));
                     produced += 1;
                 }
             }
@@ -1839,29 +2462,47 @@ async fn ingest_raw_ts(
     }
     // Flush the tail so the last partial segment is not silently lost on a clean end.
     if let Some(tail) = seg.finish() {
-        push_cut(ctx, tail);
+        push_cut(ctx, tail, std::mem::take(&mut disc));
         produced += 1;
     }
     log::info("iop", rid, || format!("raw-TS session ended — {produced} segment(s) cut"));
     report_iop(ctx, "closed");
+    (produced, silence)
 }
 
-/// Push a locally-cut segment into the ring. `discontinuity` is always false: a bare TS socket is one
-/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate.
-fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment) {
+/// Push a locally-cut segment into the ring. Within a session `discontinuity` is false: a bare TS socket is one
+/// continuous encode, and unlike HLS it carries no splice signal we could honestly propagate. Only a session's
+/// FIRST cut may carry one — the boundary the resolve before it forced (see `ingest_raw_ts`).
+fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment, discontinuity: bool) {
     let our_seq = ctx.origin.next_seq.fetch_add(1, Ordering::Relaxed);
     // A bare TS socket is one muxed stream, so there is never a second lane to pair with.
     ctx.origin.push(Segment {
         seq: our_seq,
         duration: cut.duration,
         bytes: Bytes::from(cut.bytes),
-        discontinuity: false,
+        discontinuity,
         pdt: SystemTime::now(),
         audio: None,
     });
 }
 
-/// Fetch ONE segment and return its plaintext bytes, decrypting AES-128 when keyed.
+/// `Origin::unwrap_disguise` plus its one-shot `iop` line. Runs on PLAINTEXT only: the sync proof needs
+/// cleartext, so an encrypted segment is unwrapped after it is decrypted, never before.
+fn unwrap_logged(ctx: &IngestCtx, rid: &str, body: Bytes) -> Bytes {
+    let (clean, first) = ctx.origin.unwrap_disguise(body);
+    if let Some((label, n)) = first {
+        log::info("iop", rid, || {
+            format!(
+                "{}: segments arrive disguised ({label}, {n} B before the first TS packet) — unwrapping at ingest, so the ring and both renderers carry clean TS",
+                ctx.source
+            )
+        });
+    }
+    clean
+}
+
+/// Fetch ONE segment and return its plaintext bytes, decrypting AES-128 when keyed — and unwrapped, when the
+/// upstream disguises its segments (DSG), so every reader from here on sees a body that opens on a packet.
 ///
 /// `None` drops just this segment (leaving a gap the next boundary check will splice) rather than failing the
 /// whole ingest — one bad segment must not end a channel that is otherwise healthy.
@@ -1875,10 +2516,10 @@ async fn fetch_segment(
     seg: &SegRef,
     seg_url: &Url,
     upstream_seq: i64,
-    read_timeout_ms: u64,
+    io: IngestIo,
     key_cache: &mut Option<(String, [u8; 16])>,
 ) -> Option<Bytes> {
-    let resp = match fetch_with_retry(client, seg_url.as_str(), &build_headers(policy), read_timeout_ms, rid, "iop-segment", MAX_UPSTREAM_RETRIES).await {
+    let resp = match fetch_with_retry(client, seg_url.as_str(), &build_headers(policy), io.header_ms, rid, "iop-segment", MAX_UPSTREAM_RETRIES).await {
         Ok(r) if r.status().is_success() => r,
         _ => {
             log::warn("iop", rid, || format!("segment fetch failed at upstream seq={upstream_seq} — gap"));
@@ -1888,10 +2529,27 @@ async fn fetch_segment(
             return None;
         }
     };
-    let body = resp.bytes().await.ok()?;
+    // TMO: the whole body, bounded. A CDN connection that goes quiet mid-segment is a GAP, like any other
+    // failed segment — not a reason for the ingest to stop polling for good.
+    let body = match tokio::time::timeout(io.body, resp.bytes()).await {
+        Ok(Ok(b)) => b,
+        Ok(Err(e)) => {
+            log::warn("iop", rid, || format!("segment body read failed at upstream seq={upstream_seq} ({e}) — gap"));
+            return None;
+        }
+        Err(_) => {
+            log::warn("iop", rid, || {
+                format!("segment body stalled for {}s at upstream seq={upstream_seq} — gap", io.body.as_secs())
+            });
+            ctx.state.report(serde_json::json!({
+                "kind": "upstream", "ok": false, "status": 0, "source": ctx.source, "entryUrl": ctx.entry,
+            }));
+            return None;
+        }
+    };
 
     let key = match seg.key.as_ref() {
-        None => return Some(body), // cleartext
+        None => return Some(unwrap_logged(ctx, rid, body)), // cleartext
         Some(k) if k.method == "AES-128" => k,
         Some(k) => {
             log::warn("iop", rid, || format!("unsupported mid-stream METHOD={} — dropping seq={upstream_seq}", k.method));
@@ -1912,14 +2570,17 @@ async fn fetch_segment(
     let key_bytes = match key_cache {
         Some((uri, k)) if uri == key_url.as_str() => *k,
         _ => {
-            let kresp = fetch_with_retry(client, key_url.as_str(), &build_headers(policy), read_timeout_ms, rid, "iop-key", MAX_UPSTREAM_RETRIES)
+            let kresp = fetch_with_retry(client, key_url.as_str(), &build_headers(policy), io.header_ms, rid, "iop-key", MAX_UPSTREAM_RETRIES)
                 .await
                 .ok()?;
             if !kresp.status().is_success() {
                 log::warn("iop", rid, || format!("AES key fetch {} — dropping seq={upstream_seq}", kresp.status().as_u16()));
                 return None;
             }
-            let b = kresp.bytes().await.ok()?;
+            let Ok(Ok(b)) = tokio::time::timeout(io.body, kresp.bytes()).await else {
+                log::warn("iop", rid, || format!("AES key body unreadable within {}s — dropping seq={upstream_seq}", io.body.as_secs()));
+                return None;
+            };
             if b.len() != 16 {
                 log::warn("iop", rid, || format!("AES key wrong size {} (want 16) — dropping seq={upstream_seq}", b.len()));
                 return None;
@@ -1937,7 +2598,7 @@ async fn fetch_segment(
         iv
     });
     match decrypt_aes128_cbc(&key_bytes, &iv, &body) {
-        Some(p) => Some(Bytes::from(p)),
+        Some(p) => Some(unwrap_logged(ctx, rid, Bytes::from(p))),
         None => {
             log::warn("iop", rid, || format!("AES-128 decrypt failed at seq={upstream_seq} ({} bytes) — gap", body.len()));
             None
@@ -2107,12 +2768,21 @@ enum Ready {
     Yes,
     TimedOut,
     Ineligible,
+    /// CAP: the seam refused the channel (the source's stream cap), with Node's message. Not "not yet" and not
+    /// "not on this shape" — "not now, by policy" — so it is answered 429, never a fallback and never a 503.
+    Refused(String),
 }
 
 /// Wait for a cold ring to become playable.
 async fn wait_ready(origin: &Arc<Origin>, rid: &str) -> Ready {
     let deadline = Instant::now() + READY_TIMEOUT;
     loop {
+        // CAP: FIRST, ahead of the depth test — a refused channel must not be served from whatever its ring
+        // still holds; the refusal is about whether it may stream at all.
+        if let Some(why) = origin.refused() {
+            log::info("oop", rid, || format!("origin refused by the source's stream cap ({why}) — 429"));
+            return Ready::Refused(why);
+        }
         if origin.ring_depth() >= MIN_SEGMENTS {
             return Ready::Yes;
         }
@@ -2213,6 +2883,7 @@ pub async fn serve_entry(
         Ready::Yes => {}
         Ready::Ineligible => return None,
         Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
+        Ready::Refused(why) => return Some(crate::proxy::text(429, &why)),
     }
     // A DEMUXED origin answers the entry with an authored MASTER over the two lanes; a muxed one answers
     // with the single media playlist, byte-identically to before pairing existed.
@@ -2292,6 +2963,7 @@ pub async fn serve_playlist(
             return crate::proxy::text(404, "not found: no live ingest");
         }
         Ready::TimedOut => return crate::proxy::text(503, "stream warming up: no playable window yet"),
+        Ready::Refused(why) => return crate::proxy::text(429, &why),
     }
     let (disc_seq, window) = window_snapshot(&origin);
     // The audio lane is rendered off the SAME ladder as the video one, so nothing downstream checks that the
@@ -2402,8 +3074,12 @@ pub async fn serve_segment(
 /// pipeline. Where the passthrough concatenator (tsmux.rs) fetches upstream per viewer, this reads segments
 /// N viewers already share, so a second viewer costs zero upstream bandwidth.
 ///
-/// KEYFRAME ALIGNMENT comes free: every HLS segment begins at a random-access point, so starting on a segment
-/// boundary IS starting on a keyframe. No TS parsing is needed to splice in.
+/// KEYFRAME ALIGNMENT does NOT come free. This used to say it did — that every HLS segment begins at a
+/// random-access point, so a segment boundary is a keyframe — and that is only a convention. The zlive capture
+/// breaks it on every segment (the first IDR sits 0.1–1.9 s in), so a socket that joined on a boundary opened on
+/// pictures no decoder could reconstruct. The muxed producer therefore trims each JOIN — the socket's first
+/// segment, and the first after it falls off the ring — to its first keyframe (`tsseg::trim_to_keyframe`, which
+/// holds the whole story). Segments after a join are untouched: the decoder already has its reference.
 #[allow(clippy::too_many_arguments)]
 pub async fn serve_ts(
     state: &AppState,
@@ -2419,6 +3095,7 @@ pub async fn serve_ts(
         Ready::Yes => {}
         Ready::Ineligible => return None,
         Ready::TimedOut => return Some(crate::proxy::text(503, "stream warming up: no playable window yet")),
+        Ready::Refused(why) => return Some(crate::proxy::text(429, &why)),
     }
     // A demuxed ring holds two elementary streams as two separate transport streams, which do not concatenate
     // — for a long time that made `outputFormat=ts` decline here and fall back to the manifest rewrite, on
@@ -2501,6 +3178,9 @@ async fn ts_ring_producer(
     // viewer joins the ring at a different point and therefore sits on its own timeline.
     let mut splicer = crate::tsnorm::Splicer::new();
     let mut warned_splice = false;
+    // KEY: the next segment is a JOIN — the decoder behind this socket holds no reference picture — so it is
+    // trimmed to its first keyframe. True for the first segment, and again after a skip ahead on the ring.
+    let mut joining = true;
     // Two paths reach the close emit now — the ingest-stopping `break` and the lane-changed `break 'outer`
     // — so the reason has to be threaded, exactly as the pair producer threads its own.
     let mut close_reason = "ingest_stopped";
@@ -2518,6 +3198,8 @@ async fn ts_ring_producer(
                 // The skipped media is gone; anchoring the next segment against the clock it would have ended
                 // on would publish a gap. Re-anchor instead.
                 splicer.reset();
+                // …and the pictures it held were the references for what comes next, so this is a join again.
+                joining = true;
             }
         }
         // The kill switch, read per segment so a re-resolve flips it live — same contract as the ingest's.
@@ -2546,10 +3228,19 @@ async fn ts_ring_producer(
                 close_reason = "lane_changed";
                 break 'outer;
             }
+            // KEY: a join starts at the segment's first keyframe, BEFORE normalisation, so the timeline the splicer
+            // anchors on this segment is the one the client actually receives. The trimmed segment keeps its
+            // PAT/PMT, which is all the splicer asks of it. One whole-segment copy, once per join; every other
+            // segment is the ring's own bytes.
+            let src = if std::mem::take(&mut joining) {
+                join_at_keyframe(&seg.bytes, seg.seq, &ctx.rid)
+            } else {
+                seg.bytes.clone()
+            };
             // Declining is a designed outcome: a segment carrying no PSI, or a program shape the published
             // layout cannot express, is served verbatim. That reinstates the upstream splice for that one
             // segment — a visible glitch — which still beats emitting a stream we mis-rewrote.
-            let body = match normalize.then(|| splicer.normalize(&seg.bytes)).flatten() {
+            let body = match normalize.then(|| splicer.normalize(&src)).flatten() {
                 Some(bytes) => Bytes::from(bytes),
                 None => {
                     // Only a genuine DECLINE is worth acting on. With the switch off there is nothing to
@@ -2573,7 +3264,7 @@ async fn ts_ring_producer(
                             });
                         }
                     }
-                    seg.bytes.clone()
+                    src
                 }
             };
             pending_bytes += body.len() as u64;
@@ -2610,12 +3301,39 @@ async fn ts_ring_producer(
     log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id}, {close_reason})"));
 }
 
+/// KEY: a ring segment as a socket JOINING on it should receive it — trimmed to its first keyframe
+/// (`tsseg::trim_to_keyframe`). The ring's own bytes come back, uncopied, when there is nothing to trim (it
+/// already opens on one) or nothing to trim to (no keyframe found — sent whole, never held back).
+///
+/// The ring itself is never trimmed: it is shared, and only the socket joining on this segment lacks the
+/// references for the pictures in front of the keyframe. The HLS renderer publishes the whole segment, because
+/// an HLS player picks its own entry point.
+fn join_at_keyframe(bytes: &Bytes, seq: u64, rid: &str) -> Bytes {
+    match crate::tsseg::trim_to_keyframe(bytes) {
+        Some(trimmed) => {
+            log::info("oop", rid, || {
+                format!(
+                    "raw-TS join at seq={seq} opens on its first keyframe ({} KiB of pre-keyframe media skipped)",
+                    (bytes.len() - trimmed.len()) / 1024
+                )
+            });
+            Bytes::from(trimmed)
+        }
+        None => bytes.clone(),
+    }
+}
+
 /// SIDE-2 RAW TS, DEMUXED (S3/RMX): follow the ring, weaving each PAIR into one socket.
 ///
 /// A deliberate sibling of `ts_ring_producer` rather than a branch inside it — the muxed path is proven and
 /// must keep emitting byte-identical output. Everything around the per-segment step is the same by design:
 /// same lease-held-for-the-session contract, same open/sbytes/close telemetry, same start-at-the-oldest-held
 /// join, same fell-behind-the-ring handling, same 30 s park on `wait_for_segment`.
+///
+/// One difference is deliberate: a join is NOT trimmed to its keyframe here (see `join_at_keyframe`). Trimming
+/// the video lane alone would latch `PairSplicer`'s A/V skew on a pair whose video starts seconds after its
+/// audio, and every untrimmed pair after it would then drift past the tolerance and be declined. The only
+/// demuxed source in the wild (pluto) opens every segment on a keyframe anyway.
 ///
 /// The step itself is what differs. `tsweave::PairWeaver` is per-SESSION for the same reason the muxed
 /// producer's `Splicer` is: a bare TS socket has no `#EXT-X-DISCONTINUITY` to splice with, and two viewers who
@@ -2792,6 +3510,9 @@ fn report_iop(ctx: &IngestCtx, status: &str) {
         // What the upstream actually IS, as opposed to what we serve. Null until the first resolve completes.
         "upstreamShape": ctx.origin.upstream_shape.read_ok().clone(),
         "encryption": ctx.origin.encryption.read_ok().clone(),
+        // DSG: the disguise ingest stripped off this channel's segments, null while none has been seen. Like
+        // the two above, a fact about the UPSTREAM: nothing we serve carries it.
+        "segmentWrapper": ctx.origin.segment_wrapper.read_ok().clone(),
         // S3/UND: null until an upstream is retired for a structural fault. Present ⇒ this channel has been
         // hopping providers, which every byte-level metric here would otherwise show as perfectly healthy.
         "suspect": ctx.origin.last_suspect.read_ok().clone(),
@@ -2912,6 +3633,50 @@ mod tests {
         let before = first.generation();
         first.reset_ring();
         assert!(first.generation() > before, "reset_ring must still advance the generation");
+    }
+
+    /// `n` packets of null padding — enough transport stream to hide inside a disguise.
+    fn null_ts(n: usize) -> Vec<u8> {
+        (0..n)
+            .flat_map(|_| {
+                let mut p = vec![0xFFu8; crate::tsseg::PKT];
+                p[0] = crate::tsseg::SYNC;
+                p[1] = 0x1F;
+                p[3] = 0x10;
+                p
+            })
+            .collect()
+    }
+
+    /// DSG at ingest: what reaches the ring is the transport stream itself — a SLICE of the fetched body, not
+    /// a copy of it — and the wrapper is recorded for the `iop` frame exactly once, however many segments
+    /// arrive wearing it.
+    #[test]
+    fn a_disguised_segment_reaches_the_ring_as_clean_ts_without_a_copy() {
+        let o = Origin::new(10_000);
+        let ts = null_ts(12);
+        let body = Bytes::from(crate::tsseg::webp_disguise(&ts));
+        let (clean, first) = o.unwrap_disguise(body.clone());
+        assert_eq!(&clean[..], &ts[..], "the ring gets the stream, byte for byte");
+        assert_eq!(clean.as_ptr(), body[42..].as_ptr(), "…as a slice of the fetched buffer");
+        assert_eq!(first, Some(("riff-webp", 42)), "the first sighting is announced");
+        assert_eq!(o.segment_wrapper.read_ok().as_deref(), Some("riff-webp"));
+
+        let (_, again) = o.unwrap_disguise(Bytes::from(crate::tsseg::webp_disguise(&ts)));
+        assert_eq!(again, None, "the same wrapper on the next segment is not news — one log line, not one per segment");
+    }
+
+    /// The universal half of the contract: a segment that opens on a packet — every source that ingests
+    /// cleanly today — comes back as the very same buffer, and records no wrapper.
+    #[test]
+    fn a_clean_segment_passes_the_ingest_unwrap_untouched() {
+        let o = Origin::new(10_000);
+        let body = Bytes::from(null_ts(12));
+        let (out, first) = o.unwrap_disguise(body.clone());
+        assert_eq!(out.as_ptr(), body.as_ptr());
+        assert_eq!(out.len(), body.len());
+        assert_eq!(first, None);
+        assert_eq!(o.segment_wrapper.read_ok().as_deref(), None, "nothing to report on the iop frame");
     }
 
     /// The decline memo is what stops an unringable shape re-resolving on every poll — and the TTL is what
@@ -3570,5 +4335,668 @@ mod tests {
     fn first_segment_ever_is_not_a_boundary() {
         // A cold ring has no previous segment — starting is not a splice.
         assert_eq!(boundary_before(&PrevSeg::default(), &segref("s0.ts", None, false), 0), None);
+    }
+
+    // ── CNT: how a re-resolve joins the ring ─────────────────────────────────────────────────────────────
+    // The shape behind all of these is zlive's: a ~4-segment window behind a signed URL that lapses every
+    // ~2.5 h, re-signed by its resolver onto (it is believed) the same numbering.
+
+    /// The signed-URL expiry itself: the same candidate, re-signed, still lists the segment we would have
+    /// fetched next — or ends right before it, the next one simply not published yet. Both are the timeline
+    /// we were following.
+    #[test]
+    fn a_re_signed_window_that_still_lists_our_next_segment_continues_the_ring() {
+        // next = 104; the fresh window is 102..=105 — it overlaps what we hold and carries on past it.
+        assert_eq!(rejoin(false, false, true, 4, 104, Some((102, 4))), Rejoin::Continue);
+        // …opens exactly on it.
+        assert_eq!(rejoin(false, false, true, 4, 104, Some((104, 4))), Rejoin::Continue);
+        // …ends right before it (102..=103): nothing new yet, but nothing contradicts us either.
+        assert_eq!(rejoin(false, false, true, 4, 104, Some((102, 2))), Rejoin::Continue);
+    }
+
+    /// An outage the ingest sat out (a resolver hiccup, a backoff) lets the window slide past us. Keeping the
+    /// ring is still honest because `prev` is kept: the first new segment reads as a `SequenceGap`, so the
+    /// hole is marked rather than papered over.
+    #[test]
+    fn a_window_that_slid_a_little_past_us_continues_and_the_hole_is_still_marked() {
+        assert_eq!(rejoin(false, false, true, 6, 104, Some((110, 4))), Rejoin::Continue);
+        let kept = PrevSeg { upstream_seq: Some(103) };
+        assert_eq!(
+            boundary_before(&kept, &segref("/seg/110", None, false), 110),
+            Some(Boundary::SequenceGap),
+            "the kept prev is what turns the slide into an honest gap"
+        );
+        // The bound, exactly: MAX_CONTINUITY_GAP past `next` still continues, one more resets.
+        assert_eq!(rejoin(false, false, true, 6, 104, Some((104 + MAX_CONTINUITY_GAP, 4))), Rejoin::Continue);
+        assert_eq!(rejoin(false, false, true, 6, 104, Some((105 + MAX_CONTINUITY_GAP, 4))), Rejoin::Reset);
+    }
+
+    /// A window renumbered LOWER must reset. Kept, every one of its segments would sit below `next` and be
+    /// skipped as already held — five empty polls of real media, then a re-resolve that finds the same thing.
+    #[test]
+    fn a_window_renumbered_below_us_resets_instead_of_being_skipped_as_held() {
+        assert_eq!(rejoin(false, false, true, 4, 104, Some((10, 4))), Rejoin::Reset);
+        // One short of abutting is already "behind us".
+        assert_eq!(rejoin(false, false, true, 4, 104, Some((101, 2))), Rejoin::Reset);
+    }
+
+    /// Continuity is only ever claimed for a PROVEN timeline — the same candidate, listing the same media — and
+    /// never for a provider the resolve retired. Another provider, or another session of the same one, may share
+    /// the numbering, and splicing its media onto our timeline untagged is the one outcome worse than a reset.
+    #[test]
+    fn a_retired_provider_or_an_unproven_timeline_never_continues_the_ring() {
+        assert_eq!(rejoin(false, true, true, 4, 104, Some((102, 4))), Rejoin::Reset, "the provider was retired");
+        assert_eq!(rejoin(false, false, false, 4, 104, Some((102, 4))), Rejoin::Reset, "not provably the same timeline");
+        assert_eq!(rejoin(false, false, true, 4, -1, Some((102, 4))), Rejoin::Reset, "no sequence anchor to continue from");
+        assert_eq!(rejoin(false, false, true, 4, 104, None), Rejoin::Reset, "a bare TS socket has no window to continue");
+    }
+
+    /// A playlist of `uris` from upstream sequence `ms`.
+    fn listing(ms: i64, uris: &[&str]) -> crate::tsmux::MediaPlaylist {
+        let mut body = format!("#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:{ms}\n");
+        for u in uris {
+            body.push_str(&format!("#EXTINF:4.0,\n{u}\n"));
+        }
+        parse_media_playlist(&body)
+    }
+
+    /// CNT: the content evidence a continuation needs. A re-signed window lists the same segment paths at the
+    /// sequences both know, whatever its query says; a session that merely lands in our numbering lists other
+    /// media there, and one disagreement outweighs any agreement. With no overlap there is nothing to judge.
+    #[test]
+    fn overlap_evidence_compares_what_both_windows_list_by_path_not_by_number() {
+        let base = Url::parse("https://cdn.example.test/live/index.m3u8?token=fresh").unwrap();
+        let held: VecDeque<(i64, String)> =
+            [(102, "/live/s102.ts"), (103, "/live/s103.ts")].into_iter().map(|(s, p)| (s, p.to_string())).collect();
+        let re_signed = listing(102, &["s102.ts?sig=b", "s103.ts?sig=b", "s104.ts?sig=b"]);
+        assert_eq!(overlap_evidence(&held, &base, &re_signed), Some(true), "the query churns, the media does not");
+        assert_eq!(overlap_evidence(&held, &base, &listing(102, &["x902.ts", "x903.ts"])), Some(false), "other media, same numbers");
+        assert_eq!(overlap_evidence(&held, &base, &listing(102, &["s102.ts", "x903.ts"])), Some(false), "one disagreement is enough");
+        assert_eq!(overlap_evidence(&held, &base, &listing(104, &["s104.ts"])), None, "nothing both know");
+        let moved = Url::parse("https://cdn.example.test/session9/index.m3u8").unwrap();
+        assert_eq!(
+            overlap_evidence(&held, &moved, &listing(102, &["s102.ts", "s103.ts"])),
+            Some(false),
+            "the same relative names under another base are other media"
+        );
+    }
+
+    /// BKO: a walk over the operator's candidates keeps its old pace — a step about every two seconds, however far
+    /// it goes — and only a walk that has wrapped back to the channel (the whole chain dead) backs off toward the
+    /// cap. A single-candidate source wraps on its first escalation, so it still gets the full doubling.
+    #[test]
+    fn a_walk_keeps_its_pace_until_it_wraps_and_only_then_backs_off_toward_the_cap() {
+        let (zero, base) = (Duration::ZERO, FAILURE_BACKOFF_BASE);
+        let mut walk = Backoff::default();
+        let first_pass: Vec<Duration> = (0..6).map(|_| walk.fail_walk(false)).collect();
+        assert_eq!(first_pass, vec![zero, base, base, base, base, base], "six failures across the candidates");
+        assert_eq!(walk.fail_walk(true), FAILURE_BACKOFF_CAP, "wrapped: the streak's own doubling, which is past the cap by now");
+
+        let mut single = Backoff::default();
+        let waits: Vec<Duration> = [false, false, true, true, true].into_iter().map(|w| single.fail_walk(w)).collect();
+        assert_eq!(waits, vec![zero, base, 2 * base, 4 * base, 8 * base], "one immediate retry, one step, then the doubling");
+        single.succeed();
+        assert_eq!(single.fail_walk(true), zero, "media resets it like any streak");
+    }
+
+    /// A renewal keeps its own path whatever the numbering says: a renewed session RENUMBERS, so a window that
+    /// happens to cover `next` proves nothing there — which is why that path dedupes by URI instead. And an
+    /// empty ring has nothing to keep or reset: it re-anchors, and a splice already pending stays pending.
+    #[test]
+    fn a_renewal_keeps_its_own_path_and_an_empty_ring_simply_re_anchors() {
+        assert_eq!(rejoin(true, false, true, 4, 104, Some((102, 4))), Rejoin::Renewal);
+        assert_eq!(rejoin(false, false, true, 0, 104, Some((102, 4))), Rejoin::Anchor);
+        assert_eq!(rejoin(true, false, true, 0, 104, Some((10, 4))), Rejoin::Anchor);
+        assert_eq!(rejoin(false, true, false, 0, -1, None), Rejoin::Anchor, "even a failover onto a bare socket");
+    }
+
+    /// The forced boundary is only worth anything if it reaches the playlist. After a reset the splicer has no
+    /// clock, so even a segment it normalised cannot count as joined — the tag goes out. The rule itself is
+    /// unchanged: only a splice absorbed onto a clock that already existed goes untagged.
+    #[test]
+    fn a_forced_reset_boundary_is_always_published() {
+        let fresh = crate::tsnorm::Splicer::new();
+        assert!(!fresh.has_timeline(), "precondition: a reset splicer has no clock to join");
+        assert!(publishes_discontinuity(Some(Boundary::Reset), true, fresh.has_timeline()), "normalised but not joined");
+        assert!(publishes_discontinuity(Some(Boundary::Reset), false, false), "declined");
+        // The existing rule, unchanged around it.
+        assert!(!publishes_discontinuity(Some(Boundary::SequenceGap), true, true), "absorbed onto a live clock");
+        assert!(!publishes_discontinuity(None, false, false), "no boundary, no tag");
+    }
+
+    /// …and on the wire: the window after a reset opens on `#EXT-X-DISCONTINUITY` (plus its own date-time),
+    /// OUR sequence carries straight on across it, and the discontinuity sequence stays exact — the reset
+    /// counted every tag that left with the old window.
+    #[test]
+    fn the_window_after_a_reset_opens_on_a_discontinuity_with_exact_sequences() {
+        let o = Origin::new(1_000_000);
+        for i in 0..4 {
+            let s = o.next_seq.fetch_add(1, Ordering::Relaxed);
+            let mut seg = seg(s as usize, 100);
+            seg.discontinuity = i == 2; // one tag in the window that is about to be dropped
+            o.push(seg);
+        }
+        o.reset_ring();
+        for i in 0..3 {
+            let s = o.next_seq.fetch_add(1, Ordering::Relaxed);
+            let boundary = if i == 0 { Some(Boundary::Reset) } else { None };
+            o.push(Segment { discontinuity: publishes_discontinuity(boundary, false, false), ..seg(s as usize, 100) });
+        }
+        let (disc_seq, w) = window_snapshot(&o);
+        assert_eq!(disc_seq, 1, "the dropped window's one tag left the playlist with it");
+        let m = render_media_playlist(&w, 5.0, "/api/v1", "zl", "zl://abc", o.generation(), None, None, disc_seq, Lane::Video);
+        let lines: Vec<&str> = m.lines().collect();
+        assert!(m.contains("#EXT-X-MEDIA-SEQUENCE:4"), "our sequence continues across the reset:\n{m}");
+        assert!(m.contains("#EXT-X-DISCONTINUITY-SEQUENCE:1"), "and the discontinuity sequence is exact:\n{m}");
+        let tag = lines.iter().position(|l| *l == "#EXT-X-DISCONTINUITY").expect("the join is tagged");
+        let first_inf = lines.iter().position(|l| l.starts_with("#EXTINF:")).unwrap();
+        assert!(tag < first_inf, "the tag precedes the FIRST segment of the new window:\n{m}");
+        assert_eq!(lines.iter().filter(|l| **l == "#EXT-X-DISCONTINUITY").count(), 1, "and only that one");
+        assert!(lines[tag + 1].starts_with("#EXT-X-PROGRAM-DATE-TIME:"), "re-anchored in wall-clock time too");
+    }
+
+    // ── BKO / EXP / TMO ──────────────────────────────────────────────────────────────────────────────────
+
+    /// One immediate retry, then 2 s doubling to the cap — and any media that lands resets it. The immediate
+    /// retry is what keeps a routine token expiry free: its refused refresh is failure one, and the re-resolve
+    /// that fixes it must not wait.
+    #[test]
+    fn the_backoff_retries_once_at_once_then_doubles_to_its_cap_and_resets_on_media() {
+        let mut b = Backoff::default();
+        let waits: Vec<u64> = (0..9).map(|_| b.fail().as_secs()).collect();
+        assert_eq!(waits, vec![0, 2, 4, 8, 16, 32, 60, 60, 60]);
+        b.succeed();
+        assert_eq!(b.fail(), Duration::ZERO, "a fresh streak starts with the immediate retry again");
+        assert_eq!(b.fail(), FAILURE_BACKOFF_BASE);
+        // A streak far longer than any real outage must not overflow its way back to zero.
+        let mut long = Backoff { failures: u32::MAX - 1 };
+        assert_eq!(long.fail(), FAILURE_BACKOFF_CAP);
+        assert_eq!(long.fail(), FAILURE_BACKOFF_CAP);
+    }
+
+    /// The renewal is scheduled `PROACTIVE_REFRESH_LEAD` ahead of the target's own expiry — for zlive, a
+    /// minute before a ~2.5 h token lapses — but never sooner than the floor, or an adapter that keeps handing
+    /// back nearly-expired targets would turn the renewal into a resolve per poll.
+    #[test]
+    fn a_target_with_an_expiry_is_renewed_a_lead_ahead_of_it_and_never_in_a_hot_loop() {
+        let now = Instant::now();
+        const NOW_MS: u64 = 1_786_000_000_000;
+        let lead = PROACTIVE_REFRESH_LEAD.as_millis() as u64;
+        let floor = MIN_PROACTIVE_REFRESH.as_millis() as u64;
+        let at = |exp: u64| proactive_refresh_at(exp, NOW_MS, now).expect("representable").duration_since(now);
+        assert_eq!(at(NOW_MS + 9_000_000), Duration::from_secs(9_000) - PROACTIVE_REFRESH_LEAD, "a fresh zlive token");
+        assert_eq!(at(NOW_MS + lead + 2 * floor), 2 * MIN_PROACTIVE_REFRESH, "just past the floor: the lead governs");
+        assert_eq!(at(NOW_MS + lead + floor / 2), MIN_PROACTIVE_REFRESH, "inside lead + floor: the floor wins");
+        assert_eq!(at(NOW_MS + 1_000), MIN_PROACTIVE_REFRESH, "already inside the lead");
+        assert_eq!(at(NOW_MS - 5_000), MIN_PROACTIVE_REFRESH, "already lapsed — the reactive path has it; still no hot loop");
+    }
+
+    /// Every origin read is bounded, and never below the floor. The operator's `readTimeoutMs` keeps its old
+    /// meaning for headers; unset, headers get the body bound instead of an unbounded wait.
+    #[test]
+    fn every_ingest_read_is_bounded_even_with_no_read_timeout_configured() {
+        let unset = ingest_io(0, 0.0);
+        assert_eq!(unset.body, MIN_INGEST_IO);
+        assert_eq!(unset.header_ms, MIN_INGEST_IO.as_millis() as u64, "unset used to mean forever");
+        assert_eq!(ingest_io(0, 6.0).body, Duration::from_secs(18), "three target durations");
+        let set = ingest_io(25_000, 4.0);
+        assert_eq!(set.body, Duration::from_secs(25), "the operator's bound when it is the larger");
+        assert_eq!(set.header_ms, 25_000, "and exactly the operator's for headers");
+        // A nonsense target duration cannot disable the bound, or panic the conversion.
+        assert_eq!(ingest_io(0, 1e12).body, Duration::from_secs_f64(MAX_INGEST_IO_TD_SECS));
+        assert_eq!(ingest_io(0, f64::INFINITY).body, MIN_INGEST_IO);
+        assert_eq!(ingest_io(0, f64::NAN).body, MIN_INGEST_IO);
+        assert_eq!(ingest_io(0, -4.0).body, MIN_INGEST_IO);
+    }
+
+    // ── CAP: a refused channel ───────────────────────────────────────────────────────────────────────────
+
+    /// A refusal is answered the moment it is known — including to a waiter that was already parked on the
+    /// cold ring when it arrived — instead of every waiter sitting out READY_TIMEOUT for a 503.
+    #[tokio::test]
+    async fn a_refused_origin_answers_its_waiters_at_once_rather_than_after_the_ready_timeout() {
+        let o = Arc::new(Origin::new(10_000));
+        let parked = {
+            let o = o.clone();
+            tokio::spawn(async move {
+                let t = Instant::now();
+                (wait_ready(&o, "t").await, t.elapsed())
+            })
+        };
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        o.mark_refused("ZLive already has 2 of 2 allowed concurrent stream(s) live".to_string());
+        let (ready, took) = parked.await.unwrap();
+        assert!(matches!(ready, Ready::Refused(ref m) if m.contains("2 of 2")), "the waiter is told why");
+        assert!(took < Duration::from_secs(5), "answered at once, not after {READY_TIMEOUT:?} (took {took:?})");
+        // …and the refusal wins over whatever the ring still holds: it is about whether to stream at all.
+        for i in 0..MIN_SEGMENTS {
+            o.push(seg(i, 100));
+        }
+        assert!(matches!(wait_ready(&o, "t").await, Ready::Refused(_)));
+    }
+
+    // ── end to end, through the real ingest loop (testkit: a loopback Node + upstream) ───────────────────
+
+    use crate::testkit::{media_playlist, tag_of, tagged_ts, undecodable_playlist, until, Mock, Seam, Serve};
+
+    fn viewer() -> crate::proxy::Identity {
+        crate::proxy::Identity { ip: "127.0.0.1".into(), ua: "test".into(), username: None }
+    }
+
+    /// Resolve the channel once (the entry request's half) through a seam answering `seam`, with `first`
+    /// serving `body`, and subscribe to its origin. Returns the stand-in, the data plane, the lease (which keeps
+    /// the ingest alive) and the origin.
+    async fn ingesting(seam: Seam, first: &str, body: String) -> (Mock, AppState, OriginLease, Arc<Origin>) {
+        let up = Mock::start(seam).await;
+        up.script(|s| {
+            s.paths.insert(first.to_string(), Serve::Body(body));
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        let origin = lease.origin().clone();
+        (up, state, lease, origin)
+    }
+
+    /// CNT, end to end: the signed playlist URL lapses (its refresh is refused) and the re-resolve hands out a
+    /// re-signed one on the SAME numbering. The ring, its generation and so every segment URL a client already
+    /// holds all survive; the overlap is not re-ingested; no splice is invented — where the ring used to be
+    /// dropped, every held URL 404'd, and the overlap went out again as new media.
+    #[tokio::test]
+    async fn a_lapsed_token_rejoins_the_same_timeline_without_dropping_the_ring() {
+        let (up, _state, _lease, o) = ingesting(Seam::grant("/pl/a.m3u8", true), "/pl/a.m3u8", media_playlist(100, 4, 1)).await;
+        until(Duration::from_secs(10), "the first window rings", || o.ring_depth() >= 4).await;
+        let generation = o.generation();
+
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Status(403));
+            s.paths.insert("/pl/b.m3u8".into(), Serve::Body(media_playlist(102, 4, 1)));
+            s.seam = Seam::grant("/pl/b.m3u8", true);
+        });
+        until(Duration::from_secs(10), "the re-signed window continues the ring", || o.ring_depth() >= 6).await;
+
+        let w = o.window();
+        assert_eq!(o.generation(), generation, "no reset: every segment URL a client holds stays valid");
+        assert_eq!(
+            w.iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(),
+            (100..106).collect::<Vec<u64>>(),
+            "the overlap (102, 103) is deduped by sequence, not replayed"
+        );
+        assert!(w.iter().all(|s| !s.discontinuity), "one continuous timeline carries no splice");
+        assert_eq!(up.resolves(), 3, "the entry's resolve, the ingest's first, and exactly one renewal");
+        // REJ: …which says why it is happening, so an adapter that caches its targets mints a new one instead of
+        // handing back the one whose playlist was just refused.
+        let reasons: Vec<Option<String>> = up.calls().into_iter().map(|c| c.reason).collect();
+        assert_eq!(reasons, vec![None, None, Some(crate::state::RETIRE_REFRESH_FAILED.to_string())]);
+    }
+
+    /// CNT, end to end: the same candidate re-resolves onto a window whose NUMBERS overlap ours but whose media
+    /// does not — a renumbered session that happens to land in our range. Sequence arithmetic alone used to splice
+    /// it on untagged (ring [100..103, 904, 905], generation unchanged); the content evidence now resets the ring
+    /// and marks the join.
+    #[tokio::test]
+    async fn an_overlapping_window_of_other_media_resets_rather_than_being_spliced_on_by_number() {
+        let (up, _state, _lease, o) = ingesting(Seam::grant("/pl/a.m3u8", true), "/pl/a.m3u8", media_playlist(100, 4, 1)).await;
+        until(Duration::from_secs(10), "the first window rings", || o.ring_depth() >= 4).await;
+        let generation = o.generation();
+
+        let mut other = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:102\n".to_string();
+        for t in 902..906u64 {
+            other.push_str(&format!("#EXTINF:1.000,\n/pl/x{t}.ts\n"));
+        }
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Status(403));
+            s.paths.insert("/pl/b.m3u8".into(), Serve::Body(other));
+            for t in 902..906u64 {
+                s.paths.insert(format!("/pl/x{t}.ts"), Serve::Media(tagged_ts(t)));
+            }
+            s.seam = Seam::grant("/pl/b.m3u8", true);
+        });
+        until(Duration::from_secs(10), "the other media lands on a reset ring", || {
+            o.generation() != generation && o.ring_depth() >= 4
+        })
+        .await;
+
+        let w = o.window();
+        assert_eq!(w.iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(), vec![902, 903, 904, 905]);
+        assert!(w[0].discontinuity, "the join is marked");
+    }
+
+    /// CNT, end to end — zlive's own operational risk: an IP-wide refusal blip on a single-candidate source. The
+    /// refresh is refused (failure one), so is the fresh target's entry (failure two), the ingest escalates, Node
+    /// answers 410 past the channel itself, and the resolve folds back onto the very attempt the ring came from, on
+    /// the same numbering and the same media. That is the timeline we were following: the ring, its generation and
+    /// every segment URL a viewer holds survive — where the escalation alone used to force a reset. Each re-resolve
+    /// on the way names what failed, so a caching adapter re-mints rather than re-serving the refused link.
+    #[tokio::test]
+    async fn an_escalation_that_wraps_back_to_the_same_candidate_keeps_the_ring() {
+        let (up, _state, _lease, o) = ingesting(Seam::grant("/pl/a.m3u8", true), "/pl/a.m3u8", media_playlist(100, 4, 1)).await;
+        up.script(|s| s.exhaust_advances = true); // no children, no alternates: attempt 1 is Node's 410
+        until(Duration::from_secs(10), "the first window rings", || o.ring_depth() >= 4).await;
+        let generation = o.generation();
+        let before = up.calls().len();
+
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Status(403)); // failure one: the refresh
+            s.paths.insert("/pl/b.m3u8".into(), Serve::Status(403)); // failure two: the fresh target's entry
+            s.seam = Seam::grant("/pl/b.m3u8", true);
+        });
+        until(Duration::from_secs(10), "the immediate re-resolve", || up.calls().len() > before).await;
+        tokio::time::sleep(Duration::from_millis(400)).await; // its entry has been refused by now; the ingest waits
+        up.script(|s| {
+            s.paths.insert("/pl/b.m3u8".into(), Serve::Body(media_playlist(102, 4, 1))); // the blip clears
+        });
+        until(Duration::from_secs(10), "media flows again after the escalation", || {
+            o.ring_depth() >= 6 || o.generation() != generation
+        })
+        .await;
+
+        let w = o.window();
+        assert_eq!(o.generation(), generation, "the ring survives the wrap");
+        assert_eq!(w.iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(), (100..106).collect::<Vec<u64>>());
+        assert!(w.iter().all(|s| !s.discontinuity), "one timeline throughout");
+        let asked: Vec<(u32, Option<String>)> = up.calls()[before..].iter().map(|c| (c.attempt, c.reason.clone())).collect();
+        let (refresh, rejected) = (crate::state::RETIRE_REFRESH_FAILED.to_string(), crate::state::RETIRE_TARGET_REJECTED.to_string());
+        assert_eq!(
+            asked,
+            vec![(0, Some(refresh)), (1, Some(rejected.clone())), (0, Some(rejected))],
+            "the refresh failure, then the refused target — carried through the escalation's fold-back"
+        );
+    }
+
+    /// BKO, end to end: a failover walk over dead candidates keeps its old pace — about two seconds a step — so a
+    /// channel whose working backup is third in line still reaches it inside a viewer's patience. Counting the
+    /// streak across escalations used to double every wait: the second backup was first asked after ~14 s, the
+    /// third after ~62 s.
+    #[tokio::test]
+    async fn a_failover_walk_reaches_later_candidates_at_its_old_pace() {
+        let up = Mock::start(Seam::grant("/pl/a.m3u8", true)).await;
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        up.script(|s| s.seam = Seam::Reply(502, r#"{"error":"resolve_failed"}"#.into())); // every candidate is dead
+        let started = Instant::now();
+        let _lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        until(Duration::from_secs(10), "the second backup is asked", || up.calls().iter().any(|c| c.attempt == 2)).await;
+        assert!(started.elapsed() < Duration::from_secs(9), "asked after {:?}", started.elapsed());
+    }
+
+    /// BKO, end to end, the other half: a channel with nothing to walk to (Node's 410 past the channel itself — a
+    /// single-candidate source) wraps on its first escalation, and from there its retries back off exponentially
+    /// rather than knocking every two seconds on an upstream that has stopped serving this address.
+    #[tokio::test]
+    async fn a_dead_single_candidate_channel_backs_off_once_its_walk_wraps() {
+        let up = Mock::start(Seam::grant("/pl/a.m3u8", true)).await;
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let before = up.calls().len();
+        up.script(|s| {
+            s.seam = Seam::Reply(502, r#"{"error":"resolve_failed"}"#.into());
+            s.exhaust_advances = true;
+        });
+        let _lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        until(Duration::from_secs(10), "five resolves", || up.calls().len() >= before + 5).await;
+        let calls = up.calls()[before..before + 5].to_vec();
+        assert_eq!(calls.iter().map(|c| c.attempt).collect::<Vec<_>>(), vec![0, 0, 1, 0, 0], "retry, step, 410, fold back, retry");
+        let after_wrap = calls[4].at - calls[3].at;
+        assert!(after_wrap >= Duration::from_millis(3500), "the wrapped walk backs off ({after_wrap:?}), not another 2 s");
+    }
+
+    /// BKO, end to end: an entry that answers with a FINITE transport stream — a short clip behind a `.ts` URL, a
+    /// restreamer that accepts and drops — used to read as a clean reconnect every time it ended, and looped back
+    /// into a resolve at once: well over a thousand resolves, entry GETs and ring resets a second, with no window
+    /// ever growing playable. A session that ends sooner than a live socket runs is a failure now, and waits.
+    #[tokio::test]
+    async fn a_finite_ts_entry_is_paced_as_a_failure_not_reconnected_in_a_hot_loop() {
+        let up = Mock::start(Seam::grant("/pl/clip.ts", true)).await;
+        up.script(|s| {
+            s.paths.insert("/pl/clip.ts".into(), Serve::Media(crate::tsseg::tuner_ts(20)));
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let before = up.resolves();
+        let lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        let o = lease.origin().clone();
+        until(Duration::from_secs(5), "the clip is cut into the ring", || o.ring_depth() >= 3).await;
+        tokio::time::sleep(Duration::from_secs(1)).await;
+        assert_eq!(up.resolves() - before, 1, "one session, then a pause — not a resolve per spin");
+    }
+
+    /// CNT, end to end, on a bare TS socket: a reconnect after the ring holds media resets the ring — and the new
+    /// socket's first cut SAYS so, as the first HLS segment after a reset does. It used to go out untagged: the
+    /// media sequence carried straight on onto a new socket's clock with no `#EXT-X-DISCONTINUITY`.
+    #[tokio::test]
+    async fn the_first_cut_after_a_raw_reconnect_is_marked_as_a_discontinuity() {
+        let up = Mock::start(Seam::grant("/pl/tuner.ts", true)).await;
+        up.script(|s| {
+            s.paths.insert("/pl/tuner.ts".into(), Serve::Media(crate::tsseg::tuner_ts(20)));
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        let o = lease.origin().clone();
+        until(Duration::from_secs(5), "the first session rings", || o.ring_depth() >= 3).await;
+        let generation = o.generation();
+        until(Duration::from_secs(10), "the reconnect's reset ring refills", || {
+            o.generation() != generation && o.ring_depth() >= 3
+        })
+        .await;
+
+        let (disc_seq, w) = window_snapshot(&o);
+        assert!(w[0].discontinuity, "the reconnect's first cut carries the splice");
+        assert!(w[1..].iter().all(|s| !s.discontinuity), "…and only that one");
+        let m = render_media_playlist(&w, 5.0, "/api/v1", "zl", "zl://abc", o.generation(), None, None, disc_seq, Lane::Video);
+        let first_inf = m.find("#EXTINF:").expect("segments");
+        assert!(m[..first_inf].contains("#EXT-X-DISCONTINUITY\n"), "published ahead of the first segment:\n{m}");
+    }
+
+    /// CNT, end to end, the other way: the re-resolve lands on a window that cannot continue ours (renumbered
+    /// far past it). The ring resets — and the first new segment now SAYS so, where it used to go out untagged.
+    #[tokio::test]
+    async fn a_re_resolve_that_cannot_continue_resets_the_ring_and_marks_the_join() {
+        let (up, _state, _lease, o) = ingesting(Seam::grant("/pl/a.m3u8", true), "/pl/a.m3u8", media_playlist(100, 4, 1)).await;
+        until(Duration::from_secs(10), "the first window rings", || o.ring_depth() >= 4).await;
+        let generation = o.generation();
+
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Status(403));
+            s.paths.insert("/pl/c.m3u8".into(), Serve::Body(media_playlist(900, 4, 1)));
+            s.seam = Seam::grant("/pl/c.m3u8", true);
+        });
+        until(Duration::from_secs(10), "a fresh window after the reset", || {
+            o.generation() != generation && o.ring_depth() >= 4
+        })
+        .await;
+
+        let w = o.window();
+        assert_eq!(w.iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(), (900..904).collect::<Vec<u64>>());
+        assert!(w[0].discontinuity, "the first segment after the reset carries the splice");
+        assert!(w[1..].iter().all(|s| !s.discontinuity), "…and only that one");
+        assert_eq!(w[0].seq, 4, "our own sequence carries straight on from the dropped window");
+    }
+
+    /// A grant for `path` whose target lapses just past the renewal lead — so the renewal falls due at the
+    /// ingest's first refresh.
+    fn expiring_grant(path: &str) -> Seam {
+        let soon = crate::state::epoch_ms() + PROACTIVE_REFRESH_LEAD.as_millis() as u64 + 600;
+        Seam::Grant { path: path.to_string(), origin: true, expires_at_ms: Some(soon), extra: serde_json::Value::Null }
+    }
+
+    /// EXP, end to end: a grant that says its target lapses soon is renewed AHEAD of the lapse — the upstream
+    /// never has to refuse anything first — and the renewal continues the ring across the new target.
+    #[tokio::test]
+    async fn a_target_is_renewed_ahead_of_its_expiry_and_the_ring_carries_on_across_it() {
+        let (up, _state, _lease, o) =
+            ingesting(expiring_grant("/pl/a.m3u8"), "/pl/a.m3u8", media_playlist(100, 4, 1)).await;
+        until(Duration::from_secs(10), "the first window rings", || o.ring_depth() >= 4).await;
+        let generation = o.generation();
+
+        // The resolver re-signs onto the same numbering. The OLD target is never refused: nothing waits for a 403.
+        up.script(|s| {
+            s.paths.insert("/pl/b.m3u8".into(), Serve::Body(media_playlist(102, 4, 1)));
+            s.seam = Seam::grant("/pl/b.m3u8", true);
+        });
+        until(Duration::from_secs(10), "the renewed target continues the ring", || o.ring_depth() >= 6).await;
+
+        let w = o.window();
+        assert_eq!(o.generation(), generation, "a renewal is not a reset");
+        assert_eq!(w.iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(), (100..106).collect::<Vec<u64>>());
+        assert!(w.iter().all(|s| !s.discontinuity));
+        assert_eq!(up.resolves(), 3, "the entry's resolve, the ingest's first, and the one renewal");
+        assert!(
+            up.calls().iter().all(|c| c.reason.is_none()),
+            "a scheduled renewal asks for no fresh target — the current one is still good, and a cached answer is right"
+        );
+    }
+
+    /// EXP, end to end, when the renewal cannot resolve: the ingest keeps following the target it was replacing
+    /// — still valid — rather than paying for the attempt with a failure count, a backoff or a dropped ring. And
+    /// once the resolver answers again, the renewal goes through and continues the ring.
+    #[tokio::test]
+    async fn a_renewal_that_cannot_resolve_keeps_following_the_target_it_would_replace() {
+        let (up, _state, _lease, o) =
+            ingesting(expiring_grant("/pl/a.m3u8"), "/pl/a.m3u8", media_playlist(100, 4, 1)).await;
+        until(Duration::from_secs(10), "the first window rings", || o.ring_depth() >= 4).await;
+        let generation = o.generation();
+
+        // The resolver is down just as the renewal falls due, while the current target keeps publishing.
+        up.script(|s| {
+            s.seam = Seam::Reply(502, r#"{"error":"resolve_failed"}"#.into());
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(media_playlist(100, 6, 1)));
+        });
+        until(Duration::from_secs(10), "a failed renewal, and the current target's new segments", || {
+            up.resolves() >= 3 && o.ring_depth() >= 6
+        })
+        .await;
+        assert_eq!(o.generation(), generation, "a failed renewal costs the ring nothing");
+        assert_eq!(o.window().iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(), (100..106).collect::<Vec<u64>>());
+
+        // The resolver is back: the next attempt renews, and the ring carries straight on.
+        up.script(|s| {
+            s.paths.insert("/pl/b.m3u8".into(), Serve::Body(media_playlist(104, 4, 1)));
+            s.seam = Seam::grant("/pl/b.m3u8", true);
+        });
+        until(Duration::from_secs(10), "the renewed target continues the ring", || o.ring_depth() >= 8).await;
+        let w = o.window();
+        assert_eq!(o.generation(), generation);
+        assert_eq!(w.iter().map(|s| tag_of(&s.bytes)).collect::<Vec<_>>(), (100..108).collect::<Vec<u64>>());
+        assert!(w.iter().all(|s| !s.discontinuity), "one timeline throughout");
+    }
+
+    /// UND, end to end: the MOUNT source is playerSelectable (dlhd's shape) but the stream is being served by a
+    /// failover child from a provider that is not — and whose segments open mid-GOP, so every one of them
+    /// strikes the watch. It is the SERVING candidate's capability that decides: nothing is retired, the ring
+    /// fills, and no escalating resolve goes out. Judged by the parent's capability, the child used to be
+    /// retired three segments in.
+    #[tokio::test]
+    async fn a_failover_child_is_judged_by_its_own_capability_not_its_parents() {
+        let parent = serde_json::json!({ "playerSelectable": true });
+        let up = Mock::start(Seam::grant_with("/pl/a.m3u8", parent)).await;
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        assert!(policy.player_selectable.load(Ordering::Relaxed), "precondition: the MOUNT policy watches");
+
+        let child = serde_json::json!({ "playerSelectable": false, "policySource": "child" });
+        up.script(|s| {
+            s.seam = Seam::grant_with("/pl/a.m3u8", child);
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(undecodable_playlist(100, 4, 1)));
+        });
+        let lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        let o = lease.origin().clone();
+        until(Duration::from_secs(10), "every striking segment rings", || o.ring_depth() >= 4).await;
+        assert_eq!(o.last_suspect.read_ok().as_deref(), None, "nothing was retired");
+        assert_eq!(up.resolves(), 2, "no escalation: the entry's resolve and the ingest's first, nothing more");
+    }
+
+    /// …and the control that keeps the test above honest: served by a candidate that IS playerSelectable, the
+    /// very same segments retire it.
+    #[tokio::test]
+    async fn the_same_segments_retire_a_serving_candidate_that_is_player_selectable() {
+        let (_up, _state, _lease, o) = ingesting(
+            Seam::grant_with("/pl/a.m3u8", serde_json::json!({ "playerSelectable": true })),
+            "/pl/a.m3u8",
+            undecodable_playlist(100, 4, 1),
+        )
+        .await;
+        until(Duration::from_secs(10), "the watch retires the upstream", || o.suspect_retires.load(Ordering::Relaxed) >= 1).await;
+        assert_eq!(o.last_suspect.read_ok().as_deref(), Some(crate::tsseg::Suspect::NoVideoParameterSets.slug()));
+    }
+
+    /// CAP, end to end: the channel's own ingest is refused by the seam. The ingest ends, the waiting client is
+    /// answered 429 with Node's message at once (not a 503 after READY_TIMEOUT), and the refusal retires the
+    /// cached target so the next request puts the question to Node rather than riding the cache around the cap.
+    #[tokio::test]
+    async fn a_refused_ingest_ends_and_the_client_is_answered_429_at_once() {
+        let up = Mock::start(Seam::grant("/pl/a.m3u8", true)).await;
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(media_playlist(100, 4, 1)));
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let refusal = r#"{"error":"source_stream_cap","message":"ZLive already has 2 of 2 allowed concurrent stream(s) live"}"#;
+        up.script(|s| s.seam = Seam::Reply(429, refusal.to_string()));
+
+        let started = Instant::now();
+        let resp = serve_entry(&state, &policy, "/api/v1", "zl", "zl://abc", None, None, &viewer(), "t")
+            .await
+            .expect("a refusal is an answer, not a fall-back to the rewrite path");
+        assert_eq!(resp.status().as_u16(), 429);
+        assert!(started.elapsed() < Duration::from_secs(5), "answered at once, not after {READY_TIMEOUT:?}");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("2 of 2"), "the viewer is told why");
+
+        let before = up.resolves();
+        assert!(
+            matches!(state.resolve_entry("zl", "zl://abc", None).await, Err(ResolveErr::Refused(_))),
+            "the cached target was retired with the refusal"
+        );
+        assert_eq!(up.resolves(), before + 1, "…so the next request asked Node itself");
+    }
+
+    /// KEY, end to end: a raw-TS viewer joining a ring whose segments open mid-GOP (the zlive shape) is sent, as
+    /// its very first bytes, the program tables and then the first keyframe — through both splice normalisers,
+    /// the ingest's and its own. The segment after the join goes out whole, and the shared ring is never trimmed:
+    /// the HLS renderer and the next viewer still get every segment entire.
+    #[tokio::test]
+    async fn a_raw_ts_join_opens_on_the_first_keyframe_while_the_ring_keeps_every_segment_whole() {
+        use crate::tsseg::PKT;
+        let (seg, cut) = crate::tsseg::mid_gop_segment();
+        let up = Mock::start(Seam::grant("/pl/a.m3u8", true)).await;
+        let playlist = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n\
+                        #EXTINF:1.0,\n/pl/g0.ts\n#EXTINF:1.0,\n/pl/g1.ts\n#EXTINF:1.0,\n/pl/g2.ts\n";
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(playlist.into()));
+            for g in ["/pl/g0.ts", "/pl/g1.ts", "/pl/g2.ts"] {
+                s.paths.insert(g.into(), Serve::Media(seg.clone()));
+            }
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let resp = serve_ts(&state, &policy, "zl", "zl://abc", None, &viewer(), "t").await.expect("a ringable shape");
+        assert_eq!(resp.status().as_u16(), 200);
+        let mut socket = resp.into_body().into_data_stream();
+        let join = socket.next().await.expect("a first segment").expect("readable");
+        let after = socket.next().await.expect("a second segment").expect("readable");
+
+        assert_eq!(join.len(), 2 * PKT + (seg.len() - cut), "the tables, then everything from the keyframe on");
+        assert_eq!(crate::tsseg::first_keyframe(&join).map(|(at, _)| at), Some(2 * PKT), "…opening on the keyframe");
+        assert_eq!(after.len(), seg.len(), "the segment after the join goes out whole");
+        let ring = subscribe(&state, "zl", "zl://abc", None, &policy);
+        assert!(ring.origin().window().iter().all(|s| s.bytes.len() == seg.len()), "the shared ring is never trimmed");
     }
 }
