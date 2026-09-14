@@ -76,6 +76,29 @@ export interface SourceProxy {
   upstreamHeaders(url: string): Record<string, string>;
   /** Ad-segment URI signature for cue-tag-less sources (pluto). Omitted ⇒ no URI-based ad detection. */
   adSignature?: AdSignature;
+  /**
+   * This source can ONLY be served through the local origin: the resolve seam forces `originEnabled: true`
+   * into every grant filed under it, overriding the operator's Default/Custom proxy config. For a source
+   * whose upstream must not see one connection per viewer (a rate-policed resolver, signed URLs that die if
+   * several clients replay them) — one refcounted ingest per channel is then the only shape that is safe.
+   *
+   * A FORCE rather than a default, deliberately. The Rust SourcePolicy is one shared cell per adapter id,
+   * written by every resolve, and in-app requests carry no `?pl` — so a softer "adapter default, Custom may
+   * override" would let any playlist's resolve flip the source's streams off the origin again (the shared-
+   * cell hazard in .claude/plans/origin-republish.md, concern #8). The manifest publishes it so the proxy
+   * config panels can say "forced by source" instead of showing a toggle that does nothing. Absent/false ⇒
+   * the operator's config decides, as for every other source.
+   */
+  originRequired?: boolean;
+  /**
+   * The upstream disguises each MPEG-TS segment inside a container prefix (an image wrapper whose payload is
+   * the TS) that the data plane must strip before any player or remuxer sees the bytes. Rides the grant as
+   * `segmentUnwrap` onto the serving policy — the origin ingest unwraps universally, but the PASS-THROUGH
+   * paths (plain relay, raw-TS producer) only unwrap for a policy that declares it, so an ordinary source's
+   * bytes stay byte-identical. Declared, never inferred, and never keyed on a source id in Rust (the same
+   * reason `playerSelectable` and `adSignature` ride the grant). Absent/false ⇒ bytes pass through verbatim.
+   */
+  segmentUnwrap?: boolean;
   /** SSRF gate for direct hops (dulo: *.dulo.tv; dlhd: dynamic Set; direct/import: any http(s), private IPs allowed for LAN sources). */
   isAllowedUpstream(url: string): boolean;
   /** Per-rewritten-child hook (dlhd: dynamic-allow each host; dulo/common: null). */
@@ -85,8 +108,9 @@ export interface SourceProxy {
   classifyArtifact(url: string): ArtifactType;
 }
 
-// Per-resolve options threaded from the resolve seam (buildGrant) into resolveStream. Only `playerSelectable`
-// sources read it; kept minimal + provider-agnostic (a numeric player index) so the generic core stays neutral.
+// Per-resolve options threaded from the resolve seam (buildGrant) into resolveStream. Mostly read by
+// `playerSelectable` sources (`fresh` is for any adapter that caches resolved targets); kept minimal +
+// provider-agnostic (a numeric player index, plain flags) so the generic core stays neutral.
 export interface ResolveStreamOptions {
   /** Preferred upstream player (1-based; 0/undefined = Auto). Resolved from the per-channel pref → source default. */
   player?: number;
@@ -112,6 +136,34 @@ export interface ResolveStreamOptions {
    * turns that into a 502 and the data plane moves on to the channel's failover-group children.
    */
   advance?: boolean;
+  /**
+   * "The target you handed me for THIS candidate was just refused, or stopped refreshing, before its expiry —
+   * don't hand me the same one again." Set by the resolve seam when the data plane re-resolves because of a
+   * data-plane failure (`reason` `target_rejected` / `refresh_failed` on /api/internal/resolve), not on a
+   * scheduled renewal. Unlike `advance` it asks for the SAME upstream, freshly resolved — it matters only to an
+   * adapter that caches resolved targets (zlive reuses a signed Location for most of its lifetime), which should
+   * drop its cached target for the entry, rate-limited so an upstream that refuses every fresh target too cannot
+   * turn a retry loop into a resolve per poll. Adapters that don't cache ignore it.
+   */
+  fresh?: boolean;
+}
+
+// What resolveStream hands back to the seam. Only `masterUrl` is required; the rest are OPTIONAL reporting
+// fields, so a plain `{ masterUrl }` (every identity/direct source) still satisfies it.
+export interface ResolvedStream {
+  /** The URL the data plane fetches for the ENTRY hop (a resolved master / media playlist). */
+  masterUrl: string;
+  /** `playerSelectable` sources: which player actually served (1-based), so the seam can log + badge it. */
+  playerIndex?: number;
+  /** `playerSelectable` sources: how many players the walk had to choose from. */
+  playerCount?: number;
+  /**
+   * Epoch MILLISECONDS at which `masterUrl` stops being valid — a signed URL whose token carries its own
+   * expiry. Rides the grant as `expiresAtMs`, so the data plane can re-resolve BEFORE the upstream starts
+   * refusing (the origin ingest schedules a renewal; the relay caps its target cache) instead of discovering
+   * the expiry as a 403 mid-stream. Omit when unknown — the data plane then keeps its fixed target TTL.
+   */
+  expiresAtMs?: number;
 }
 
 export interface SourceAdapter {
@@ -156,18 +208,41 @@ export interface SourceAdapter {
    * the SPA hides the picker. Purely a capability flag; the resolution logic lives in the adapter.
    */
   playerSelectable?: boolean;
+  /**
+   * Opt-out of the scheduled channel probe sweep (sources/probeAll.ts). For a source whose upstream polices
+   * bulk access — a sweep resolves and fetches EVERY Active channel, up to 8 at a time, which is exactly the
+   * traffic shape a restreamer-hunting upstream ranks and blocks, and a refused sweep would then mark the
+   * whole catalog "down" for nothing. Filtered PER CHANNEL on the channel's proxy source (`origin ?? source`),
+   * so a clone or mixed playlist is judged by each channel's real provider. The channels keep the status
+   * live playback last wrote. The manifest publishes it so the Settings probe card names the exempt sources.
+   * Absent/false ⇒ probed like any other source.
+   */
+  probeExempt?: boolean;
+  /**
+   * Optional per-source cap on DISTINCT concurrently-live streams this source's upstream carries (not viewers —
+   * N viewers of one channel share one ingest and count once). Read on every live resolve, so an operator
+   * setting behind it applies without a restart. A stream counts against the adapter SERVING it: this source's
+   * own channels, AND any failover group whose backup this source is currently carrying (a zlive child under a
+   * dlhd parent counts against zlive; a zlive parent carried by its dlhd backup does not). A stream already
+   * counted is never refused (an origin ingest re-resolving its own token must keep working).
+   *
+   * At the cap the resolve seam refuses a NEW stream before resolving it. Where nothing else could carry it —
+   * an ungrouped channel, a group whose backups are all on this source, failover off — that is a 429
+   * `source_stream_cap`, a definitive refusal the data plane does not fail over around or retry. Where a later
+   * candidate could (a grouped parent with a backup on another source, this source's own alternate-upstream
+   * attempt, or this source as a failover child), it is a walkable 502 and the walk moves on. Never applied to
+   * the probe sweep. null / 0 / absent ⇒ unlimited.
+   */
+  maxConcurrentStreams?(): number | null;
   /** Does this URL need server-side resolution before proxying? (dulo/common: false; dlhd: watch.php) */
   isEntryUrl(url: string): boolean;
   /**
-   * Entry URL → { masterUrl }. dulo/common: identity; dlhd: 3-hop scrape. `opts.player` (1-based; 0/undefined
+   * Entry URL → ResolvedStream. dulo/common: identity; dlhd: 3-hop scrape. `opts.player` (1-based; 0/undefined
    * = Auto) is honored only by `playerSelectable` sources; others ignore it (a 1-arg impl still satisfies this).
-   * `playerIndex`/`playerCount` are OPTIONAL reporting fields — a `playerSelectable` source returns which
-   * player actually served so the seam can log and badge it; a plain `{ masterUrl }` still satisfies this.
+   * Everything past `masterUrl` is an OPTIONAL reporting field (see ResolvedStream) — a plain `{ masterUrl }`
+   * still satisfies this.
    */
-  resolveStream(
-    entryUrl: string,
-    opts?: ResolveStreamOptions,
-  ): Promise<{ masterUrl: string; playerIndex?: number; playerCount?: number }>;
+  resolveStream(entryUrl: string, opts?: ResolveStreamOptions): Promise<ResolvedStream>;
   proxy: SourceProxy;
   /**
    * Optional post-sync side-effect, called by syncLive AFTER both channel stores are upserted/pruned.
@@ -178,6 +253,16 @@ export interface SourceAdapter {
    * false on a snapshot fallback. Non-fatal: a throw here is logged and must not fail the channel sync.
    */
   afterSync?(ctx: { raw: any[]; live: boolean; sourceId: string }): Promise<void>;
+  /**
+   * Optional EPG re-link, for a source that links its channels onto guides it does NOT own (a crosswalk onto
+   * the operator's external Gracenote / Jesmann sources). afterSync only runs on a PLAYLIST sync, so without
+   * this a guide the operator adds later would sit unlinked until the next playlist sync. epg/syncEpgSource.ts
+   * therefore calls it after every successful gracenote/jesmann guide sync, once per PROVISIONED built-in
+   * that declares it (a source never added as a playlist has no channels to link). Must be fill-only-if-
+   * untouched — it runs repeatedly, so it may never overwrite a link the operator made or cleared. Non-fatal:
+   * a throw is logged and never fails the guide sync. Absent ⇒ nothing to re-link.
+   */
+  applyEpgLinks?(sourceId: string): Promise<void>;
   /**
    * Optional SNAPSHOT-only transform, applied by scripts/rebuild-source-seed.ts to the live `raw` listing
    * BEFORE it is written to <id>.snapshot.json — NEVER on the sync path. The extension point for a source

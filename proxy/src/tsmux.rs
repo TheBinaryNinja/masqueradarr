@@ -45,6 +45,7 @@ use crate::log;
 use crate::proxy::{build_headers, failover_walk, fetch_with_retry, is_private_host, WalkOutcome, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, SourcePolicy};
 use crate::sync::RwExt;
+use crate::tsseg::{disguise_prefix_len, DisguiseStripper};
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -425,7 +426,7 @@ pub(crate) fn encryption_method(body: &str) -> String {
 /// AES-128-CBC + PKCS7 decrypt one whole HLS segment. None on a bad length / padding ⇒ the caller drops the
 /// segment (all-or-nothing: a valid TS packet stream can't be reconstructed from a partial/garbled decrypt).
 pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
-    if ct.is_empty() || ct.len() % 16 != 0 {
+    if ct.is_empty() || !ct.len().is_multiple_of(16) {
         return None;
     }
     Aes128CbcDec::new_from_slices(key, iv)
@@ -737,12 +738,31 @@ pub async fn try_ts_response(
     )
 }
 
+/// Why a mid-session re-resolve could not hand the producer a playlist — the socket's close reason.
+const REWALK_DEAD: &str = "failover_exhausted";
+/// CAP: the seam refused the stream (the source's concurrent-stream cap) — a refusal, not an exhausted chain.
+const REWALK_REFUSED: &str = "source_stream_cap";
+
+/// KEY: how much of a held join segment arrives before its keyframe is first looked for. After each look that
+/// finds none, the next waits until the hold has doubled, so the re-scans of a growing head add up to about one
+/// pass over it. Sized so the head of a typical segment (the capture's keyframe sat ~900 KB in) is judged in a
+/// handful of looks.
+const JOIN_FIRST_PROBE: usize = 64 << 10;
+
+/// KEY: the most of a join segment held back looking for its keyframe. Past it the hold goes out untrimmed and
+/// the rest streams: a body that never shows a keyframe — or never ENDS (a decoy, a continuous body listed as a
+/// segment) — must degrade to the plain pass-through it would have had without the trim, not grow in RAM with
+/// nothing reaching the client. Comfortably above any real segment's distance to its first keyframe.
+const JOIN_HOLD_CAP: usize = 8 << 20;
+
 /// Failover: walk the stream's candidates (a fresh resolve of the PINNED candidate first — Node re-runs
 /// resolveStream → reprobeMirror, the pre-failover mirror rotation — then, when failoverEnabled, the next
 /// failover children via the shared proxy.rs walk) and derive the media playlist again from the winning
 /// master. Swaps the producer onto the winning candidate's policy + client (FOG: a cross-provider child's
-/// headers live under ITS adapter's policy). `None` ⇒ nothing reachable (the producer ends).
-async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
+/// headers live under ITS adapter's policy). `Err` ⇒ the producer ends, and the value is its close reason:
+/// nothing reachable, or (CAP) the seam refused the stream — mid-session there is no 429 left to send, the
+/// client already holds a `video/mp2t` socket, so ending it is the refusal.
+async fn reresolve_media(ctx: &mut TsContext) -> Result<(Url, String), &'static str> {
     // Milestone (≥2): a live raw-TS session lost its media playlist and is now failing over.
     log::info("failover", &ctx.rid, || "media playlist unreachable — walking failover candidates".to_string());
     let walk_children = ctx.policy.failover_enabled.load(Ordering::Relaxed);
@@ -776,12 +796,16 @@ async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
             log::trace("failover", &ctx.rid, || "raw-TS producer swapped onto the winning candidate's policy".to_string());
             r
         }
-        _ => return None, // definitive non-2xx / dead — nothing a raw-TS producer can serve
+        WalkOutcome::Refused(why) => {
+            log::info("tsmux", &ctx.rid, || format!("re-resolve refused by the source's stream cap — {why}"));
+            return Err(REWALK_REFUSED);
+        }
+        _ => return Err(REWALK_DEAD), // definitive non-2xx / dead — nothing a raw-TS producer can serve
     };
     let furl = resp.url().clone();
-    let body = resp.text().await.ok()?;
+    let body = resp.text().await.map_err(|_| REWALK_DEAD)?;
     if is_master(&body) {
-        let pick = pick_variant(&body, &furl)?;
+        let pick = pick_variant(&body, &furl).ok_or(REWALK_DEAD)?;
         // Mid-session the fallback door is already shut (the client holds a video/mp2t socket), so ending the
         // session is the honest outcome — a silent one would look like working playback.
         if pick.external_audio {
@@ -791,17 +815,18 @@ async fn reresolve_media(ctx: &mut TsContext) -> Option<(Url, String)> {
                     ctx.source, ctx.entry
                 )
             });
-            return None;
+            return Err(REWALK_DEAD);
         }
         let vresp = fetch_with_retry(&ctx.client, pick.url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-variant", MAX_UPSTREAM_RETRIES)
             .await
-            .ok()?;
+            .map_err(|_| REWALK_DEAD)?;
         if !vresp.status().is_success() {
-            return None;
+            return Err(REWALK_DEAD);
         }
-        Some((vresp.url().clone(), vresp.text().await.ok()?))
+        let vurl = vresp.url().clone();
+        Ok((vurl, vresp.text().await.map_err(|_| REWALK_DEAD)?))
     } else {
-        Some((furl, body))
+        Ok((furl, body))
     }
 }
 
@@ -840,6 +865,14 @@ async fn ts_producer(
     // not per segment.
     let mut last_key_uri: Option<String> = None;
     let mut last_key: Option<[u8; 16]> = None;
+    // DSG: latch for the one-shot line saying this session's segments arrive disguised — once per socket, not
+    // once per segment.
+    let mut unwrap_logged = false;
+    // Latch for the one-shot line saying a segment host was refused as private — a playlist that names one names
+    // it on every poll.
+    let mut private_logged = false;
+    // KEY: whether the client has been sent any media yet. Until it has, the next segment is its JOIN.
+    let mut joined = false;
 
     'outer: loop {
         // Refresh the media playlist each cycle (except the first — we already have it from try_ts_response).
@@ -862,15 +895,17 @@ async fn ts_producer(
                     }
                 }
                 _ => match reresolve_media(&mut ctx).await {
-                    Some((u, b)) => {
+                    Ok((u, b)) => {
                         media_url = u;
                         media_body = b;
                     }
-                    None => {
-                        // Issue-level (≥1): the raw-TS session exhausted its failover chain and ends.
-                        log::warn("failover", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
-                        close_reason = "failover_exhausted";
-                        break 'outer; // nothing reachable — end the stream
+                    Err(reason) => {
+                        // Issue-level (≥1) when the chain is exhausted; a cap refusal was already named above.
+                        if reason == REWALK_DEAD {
+                            log::warn("failover", &ctx.rid, || "nothing reachable after re-resolve — ending raw-TS stream".to_string());
+                        }
+                        close_reason = reason;
+                        break 'outer; // nothing reachable (or not allowed) — end the stream
                     }
                 },
             }
@@ -901,9 +936,16 @@ async fn ts_producer(
                 Ok(u) => u,
                 Err(_) => continue,
             };
-            // Defense: never fetch a private/loopback host; grow the observational allowlist with the host.
+            // Defense: never fetch a private/loopback host unless the grant gives this source LAN reach — the same
+            // rule as the AES key below and the origin ingest. It used to ignore `allowPrivate`, so a LAN source's
+            // socket opened with a 200 and then silently never carried a byte. Grow the observational allowlist
+            // with the host.
             if let Some(h) = seg_url.host_str() {
-                if is_private_host(h) {
+                if !ctx.policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                    if !private_logged {
+                        private_logged = true;
+                        log::warn("tsmux", &ctx.rid, || format!("segment host {h} private/blocked — skipping its segments"));
+                    }
                     continue;
                 }
                 ctx.policy.hosts.write_ok().insert(h.to_lowercase());
@@ -977,33 +1019,105 @@ async fn ts_producer(
             };
 
             log::trace("tsmux", &ctx.rid, || format!("TS segment seq={seq} → {}", crate::proxy::host_of(seg_url.as_str())));
+            // DSG: read per SEGMENT, not per session. A failover swaps `ctx.policy` onto the winning candidate's,
+            // and whether ITS segments arrive disguised is that adapter's declaration, not the parent's.
+            let unwrap = ctx.policy.segment_unwrap.load(Ordering::Relaxed);
+            // KEY: the source that declares its segments disguised also cuts them mid-GOP — the same declaration
+            // drops its false `#EXT-X-INDEPENDENT-SEGMENTS` — so this socket's FIRST segment would start the
+            // client's decoder on pictures it cannot reconstruct. That one segment is held back only until its
+            // first keyframe is in hand, trimmed to it (`tsseg::trim_to_keyframe`) and sent at once, and the rest of
+            // it streams behind; every later segment streams exactly as before. An undeclared source is left alone:
+            // its segments open on keyframes by convention, and holding its head back would only delay its first
+            // byte.
+            let trim_join = unwrap && !joined;
             match fetch_with_retry(&ctx.client, seg_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-segment", MAX_UPSTREAM_RETRIES)
                 .await
             {
                 Ok(resp) if resp.status().is_success() => {
                     let mut s = Box::pin(resp.bytes_stream());
                     match key_material {
-                        // CLEARTEXT: stream chunk-by-chunk, partial-tolerant (unchanged — no buffering).
-                        None => loop {
-                            let chunk = match idle {
-                                Some(d) => match tokio::time::timeout(d, s.next()).await {
-                                    Ok(x) => x,
-                                    Err(_) => break, // segment stalled — truncate + move on (partial tolerance)
-                                },
-                                None => s.next().await,
-                            };
-                            match chunk {
-                                Some(Ok(b)) => {
-                                    pending_bytes += b.len() as u64;
-                                    if tx.send(Ok(b)).await.is_err() {
-                                        close_reason = "client_gone";
-                                        break 'outer; // client disconnected — tear down (close reported below)
+                        // CLEARTEXT: stream chunk-by-chunk, partial-tolerant. A flagged policy gives each segment
+                        // its own stripper (a disguise heads EVERY segment, so the concatenated socket would
+                        // otherwise carry a wrapper at every boundary); it holds a few KiB of head at most.
+                        // Egress counts what was sent — a stripped wrapper never reaches the client.
+                        None => {
+                            let mut strip = unwrap.then(DisguiseStripper::new);
+                            // KEY: a join segment's head collects here instead of streaming, until its keyframe is in
+                            // hand (or the hold reaches its cap); from then on the segment streams like any other.
+                            let mut held: Option<Vec<u8>> = trim_join.then(Vec::new);
+                            let mut probe_at = JOIN_FIRST_PROBE;
+                            loop {
+                                let chunk = match idle {
+                                    Some(d) => match tokio::time::timeout(d, s.next()).await {
+                                        Ok(x) => x,
+                                        Err(_) => break, // segment stalled — truncate + move on (partial tolerance)
+                                    },
+                                    None => s.next().await,
+                                };
+                                match chunk {
+                                    Some(Ok(b)) => {
+                                        let out = match strip.as_mut() {
+                                            Some(st) => st.push(b),
+                                            None => Some(b),
+                                        };
+                                        let Some(out) = out else { continue };
+                                        let out = match held.take() {
+                                            None => out,
+                                            Some(mut h) => {
+                                                h.extend_from_slice(&out);
+                                                if !join_is_ready(&h, &mut probe_at) {
+                                                    held = Some(h);
+                                                    continue;
+                                                }
+                                                // Trimmed exactly as the whole segment would have been: the cut is
+                                                // known, and everything after it goes out verbatim either way.
+                                                join_at_keyframe(&ctx, seq, Bytes::from(h))
+                                            }
+                                        };
+                                        let n = out.len() as u64;
+                                        if tx.send(Ok(out)).await.is_err() {
+                                            close_reason = "client_gone";
+                                            break 'outer; // client disconnected — tear down (close reported below)
+                                        }
+                                        pending_bytes += n;
+                                        joined = true;
+                                    }
+                                    Some(Err(_)) => break, // truncated segment — tolerate, continue with the next
+                                    None => break,          // segment complete
+                                }
+                            }
+                            // Whatever the stripper still holds is all of a segment shorter than its judging
+                            // window, or everything that arrived before a stall — released, not lost.
+                            if let Some(st) = strip.as_mut() {
+                                if let Some(out) = st.finish() {
+                                    if let Some(h) = held.as_mut() {
+                                        h.extend_from_slice(&out);
+                                    } else {
+                                        let n = out.len() as u64;
+                                        if tx.send(Ok(out)).await.is_err() {
+                                            close_reason = "client_gone";
+                                            break 'outer;
+                                        }
+                                        pending_bytes += n;
+                                        joined = true;
                                     }
                                 }
-                                Some(Err(_)) => break, // truncated segment — tolerate, continue with the next
-                                None => break,          // segment complete
+                                note_unwrap(&ctx, &mut unwrap_logged, st.stripped());
                             }
-                        },
+                            // KEY: a join still held here ended (or stalled — partial tolerance holds here too)
+                            // before its keyframe turned up or the cap was reached: trimmed if it can be, and sent in
+                            // one piece.
+                            if let Some(h) = held.take().filter(|h| !h.is_empty()) {
+                                let out = join_at_keyframe(&ctx, seq, Bytes::from(h));
+                                let n = out.len() as u64;
+                                if tx.send(Ok(out)).await.is_err() {
+                                    close_reason = "client_gone";
+                                    break 'outer;
+                                }
+                                pending_bytes += n;
+                                joined = true;
+                            }
+                        }
                         // ENCRYPTED: buffer the WHOLE ciphertext, then AES-128-CBC decrypt and send ONCE. All-or-
                         // nothing — a truncated ciphertext can't be validly CBC-decrypted, so a stall/error drops it.
                         Some((key, iv)) => {
@@ -1032,11 +1146,25 @@ async fn ts_producer(
                             }
                             match decrypt_aes128_cbc(&key, &iv, &cipher_buf) {
                                 Some(plain) => {
-                                    pending_bytes += plain.len() as u64;
-                                    if tx.send(Ok(Bytes::from(plain))).await.is_err() {
+                                    // DSG: the sync proof needs plaintext, so a disguise is judged AFTER the
+                                    // decrypt — on the whole segment, where the slice form is enough (zero-copy).
+                                    let plain = Bytes::from(plain);
+                                    let out = match unwrap.then(|| disguise_prefix_len(&plain)).flatten() {
+                                        Some(n) => {
+                                            note_unwrap(&ctx, &mut unwrap_logged, n);
+                                            plain.slice(n..)
+                                        }
+                                        None => plain,
+                                    };
+                                    // KEY: already whole, so a join is trimmed in place (same rule as cleartext).
+                                    let out = if trim_join { join_at_keyframe(&ctx, seq, out) } else { out };
+                                    let n = out.len() as u64;
+                                    if tx.send(Ok(out)).await.is_err() {
                                         close_reason = "client_gone";
                                         break 'outer; // client disconnected — tear down
                                     }
+                                    pending_bytes += n;
+                                    joined = true;
                                 }
                                 None => {
                                     log::warn("tsmux", &ctx.rid, || format!("AES-128 decrypt failed for segment seq={seq} ({} bytes) — dropping", cipher_buf.len()));
@@ -1077,6 +1205,52 @@ async fn ts_producer(
     }
     log::info("tsmux", &ctx.rid, || format!("raw-TS session close ({stream_id})"));
     ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
+}
+
+/// DSG: the one-shot line saying this socket's segments arrive disguised. Once per SESSION — the wrapper sits
+/// on every segment, so a per-segment line would be one every few seconds for as long as anyone watches.
+fn note_unwrap(ctx: &TsContext, logged: &mut bool, stripped: usize) {
+    if stripped == 0 || *logged {
+        return;
+    }
+    *logged = true;
+    log::info("tsmux", &ctx.rid, || {
+        format!("segments arrive disguised ({stripped} B ahead of the transport stream) — unwrapping each into the raw-TS socket")
+    });
+}
+
+/// KEY: may the join gathered so far go out? Looked at only once the hold has doubled since the last look
+/// (`probe_at`, from `JOIN_FIRST_PROBE`), so the re-scans add up to about one pass over it. Ready once its first
+/// keyframe is in hand — the cut is then known, and nothing after it can move it: `first_keyframe` reads forward
+/// only, so a head that shows the keyframe is trimmed exactly as the whole segment would be — or once the hold
+/// reaches `JOIN_HOLD_CAP`, past which it goes out as it is.
+fn join_is_ready(held: &[u8], probe_at: &mut usize) -> bool {
+    if held.len() >= JOIN_HOLD_CAP {
+        return true;
+    }
+    if held.len() < *probe_at {
+        return false;
+    }
+    *probe_at = held.len().saturating_mul(2);
+    crate::tsseg::first_keyframe(held).is_some()
+}
+
+/// KEY: the socket's join segment trimmed to its first keyframe (`tsseg::trim_to_keyframe`), or handed back
+/// untouched when there is nothing to trim or no keyframe to trim to — sent whole, never held back. Once per
+/// session, so the line it logs is too.
+fn join_at_keyframe(ctx: &TsContext, seq: i64, body: Bytes) -> Bytes {
+    match crate::tsseg::trim_to_keyframe(&body) {
+        Some(trimmed) => {
+            log::info("tsmux", &ctx.rid, || {
+                format!(
+                    "raw-TS join at seq={seq} opens on its first keyframe ({} KiB of pre-keyframe media skipped)",
+                    (body.len() - trimmed.len()) / 1024
+                )
+            });
+            Bytes::from(trimmed)
+        }
+        None => body,
+    }
 }
 
 #[cfg(test)]
@@ -1513,5 +1687,148 @@ mod tests {
         assert_eq!(poll_interval(0.0), Duration::from_secs(3)); // missing → default 3s
         assert_eq!(poll_interval(30.0), Duration::from_secs(10)); // clamp high
         assert_eq!(poll_interval(1.0), Duration::from_secs(1)); // 0.5 → clamp low to 1s
+    }
+
+    // ── end to end, through the relay handler (testkit: a loopback Node + upstream) ───────────────────────
+
+    use crate::testkit::{media_playlist, tag_of, tagged_ts, Mock, Seam, Serve};
+    use crate::tsseg::PKT;
+
+    fn viewer() -> crate::proxy::Identity {
+        crate::proxy::Identity { ip: "127.0.0.1".into(), ua: "test".into(), username: None }
+    }
+
+    /// A grant for the channel's entry (`/pl/live.m3u8`) with the local origin OFF and raw TS selected, so the
+    /// relay hands the entry to this producer. `extra` is merged over its top-level fields.
+    fn raw_ts_grant(extra: serde_json::Value) -> Seam {
+        let mut grant = serde_json::json!({ "proxyConfig": { "originEnabled": false, "outputFormat": "ts" } });
+        if let (Some(g), serde_json::Value::Object(x)) = (grant.as_object_mut(), extra) {
+            g.extend(x);
+        }
+        Seam::grant_with("/pl/live.m3u8", grant)
+    }
+
+    /// A one-segment media playlist naming `/pl/<name>`.
+    fn one_segment(name: &str) -> String {
+        format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:4.0,\n/pl/{name}\n")
+    }
+
+    /// Open the channel's raw-TS socket through the relay's external mount, as an external player would.
+    async fn open_socket(state: &AppState) -> axum::body::BodyDataStream {
+        let path = format!("/api/ext/v1/zl/{}", crate::manifest::enc("zl://abc"));
+        let resp = crate::proxy::serve_stream(state.clone(), axum::http::Method::GET, &path, "", viewer()).await;
+        assert_eq!(resp.status().as_u16(), 200);
+        assert_eq!(resp.headers()["content-type"], "video/mp2t", "a raw-TS socket, not the HLS fallback");
+        resp.into_body().into_data_stream()
+    }
+
+    /// Read from the socket until `n` bytes have arrived — failing the test, with what did arrive, after `within`.
+    async fn read_until(socket: &mut axum::body::BodyDataStream, n: usize, within: Duration) -> Vec<u8> {
+        let deadline = tokio::time::Instant::now() + within;
+        let mut got = Vec::new();
+        while got.len() < n {
+            match tokio::time::timeout_at(deadline, socket.next()).await {
+                Ok(Some(Ok(b))) => got.extend_from_slice(&b),
+                Ok(_) => panic!("the socket ended after {} of {n} bytes", got.len()),
+                Err(_) => panic!("only {} of {n} bytes within {within:?}", got.len()),
+            }
+        }
+        got
+    }
+
+    /// A raw-TS socket for a source whose grant gives it LAN reach carries its segments. The segment-host guard
+    /// used to ignore `allowPrivate`, so such a socket opened with a 200 and then never carried a single byte.
+    #[tokio::test]
+    async fn a_lan_source_s_raw_ts_socket_carries_its_segments() {
+        let up = Mock::start(raw_ts_grant(serde_json::json!({}))).await;
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(media_playlist(100, 3, 1)));
+        });
+        let mut socket = open_socket(&up.state()).await;
+        let one = tagged_ts(0).len();
+        let got = read_until(&mut socket, 3 * one, Duration::from_secs(5)).await;
+        let tags: Vec<u64> = got.chunks(one).take(3).map(tag_of).collect();
+        assert_eq!(tags, vec![100, 101, 102], "every segment, in order");
+    }
+
+    /// …and without that reach, a private segment host is still never fetched: the guard now reads the grant, it
+    /// did not stop guarding.
+    #[tokio::test]
+    async fn without_lan_reach_a_private_segment_host_is_never_fetched() {
+        let up = Mock::start(raw_ts_grant(serde_json::json!({}))).await;
+        let body = media_playlist(100, 3, 1);
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(body.clone()));
+        });
+        let state = up.state();
+        let Ok((policy, target)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        policy.allow_private.store(false, Ordering::Relaxed); // a public-CDN grant, as every one is today
+        let ctx = TsContext {
+            state: state.clone(),
+            policy: policy.clone(),
+            source: "zl".into(),
+            entry: "zl://abc".into(),
+            pl: None,
+            rid: "t".into(),
+            client: state.client_for(15_000, 10),
+            read_timeout_ms: 0,
+            ip: "127.0.0.1".into(),
+            ua: "test".into(),
+            username: None,
+        };
+        let resp = try_ts_response(body, Url::parse(&target).unwrap(), ctx, 0).await.expect("a TS-eligible playlist");
+        let mut socket = resp.into_body().into_data_stream();
+        let heard = tokio::time::timeout(Duration::from_millis(1500), socket.next()).await;
+        assert!(heard.is_err(), "no loopback segment was fetched and relayed");
+    }
+
+    /// KEY: a join segment is held back only until its keyframe is in hand — not until the segment ENDS. Here the
+    /// upstream sends a disguised mid-GOP segment and then holds the download open without finishing it; the viewer
+    /// still gets its join at once, and what it gets is exactly the whole-segment trim: the program tables, then
+    /// the segment from its keyframe on, unwrapped. It used to wait for the end of the body — a full segment
+    /// download before the first byte, or forever on a body that never ends.
+    #[tokio::test]
+    async fn a_join_goes_out_once_its_keyframe_is_in_hand_not_when_the_segment_ends() {
+        let (gop, cut) = crate::tsseg::mid_gop_segment();
+        let mut ts = gop;
+        while ts.len() < 2 * JOIN_FIRST_PROBE {
+            ts.extend(tagged_ts(0)); // null packets: media after the keyframe, well past the first look
+        }
+        let up = Mock::start(raw_ts_grant(serde_json::json!({ "segmentUnwrap": true }))).await;
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(one_segment("g0.ts")));
+            let head = crate::tsseg::webp_disguise(&ts);
+            s.paths.insert("/pl/g0.ts".into(), Serve::Stall { head, hold: Duration::from_secs(60) });
+        });
+        let mut socket = open_socket(&up.state()).await;
+        let want = [&ts[..2 * PKT], &ts[cut..]].concat();
+        let got = read_until(&mut socket, want.len(), Duration::from_secs(5)).await;
+        assert_eq!(got.len(), want.len());
+        assert!(got == want, "the tables, then everything from the keyframe on — while the segment is still downloading");
+    }
+
+    /// …and the hold is bounded. A "segment" that never ends and never shows a keyframe — a continuous body, a
+    /// decoy — used to be held in RAM for as long as it flowed, with nothing reaching the viewer. Past the cap it now
+    /// goes out as it is, and the rest streams behind it.
+    #[tokio::test]
+    async fn a_join_that_never_shows_a_keyframe_is_held_no_further_than_the_cap() {
+        let unit: Vec<u8> = (0..32).flat_map(|_| tagged_ts(7)).collect();
+        let up = Mock::start(raw_ts_grant(serde_json::json!({ "segmentUnwrap": true }))).await;
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(one_segment("forever.ts")));
+            s.paths.insert("/pl/forever.ts".into(), Serve::Endless(unit));
+        });
+        let mut socket = open_socket(&up.state()).await;
+        let first = tokio::time::timeout(Duration::from_secs(5), socket.next())
+            .await
+            .expect("bytes reach the viewer")
+            .expect("a first chunk")
+            .expect("readable");
+        assert!(first.len() >= JOIN_HOLD_CAP, "the hold went out at its cap ({} B)", first.len());
+        assert!(first.len() < 2 * JOIN_HOLD_CAP, "…and not a byte-hoard past it ({} B)", first.len());
+        let next = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;
+        assert!(matches!(next, Ok(Some(Ok(_)))), "the rest streams behind it");
     }
 }

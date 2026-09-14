@@ -181,13 +181,13 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
 
   b += gate.svg + relay.svg + resolve.svg + tel.svg + logs.svg + engine.svg + rsl.svg + ts.svg + inv.svg;
 
-  b += port(310, '/resolve', '→ grant');
+  b += port(310, '/resolve', 'grant · 429 cap');
   b += port(384, '/telemetry', 'batched');
   b += port(458, '/log', 'batched');
   b += port(518, '/authorize', 'edge mode only', C.dim, true);
   b += pill(523, 218, '127.0.0.1:8787');
 
-  b += text(32, 586, 'The telemetry + log responses echo the current log level — a verbosity change on the Settings screen reaches the sidecar within one flush, no restart.', { fill: C.dim, size: 9.6 });
+  b += text(32, 586, 'The telemetry + log responses echo { logLevel, nameservers } — a verbosity or DNS change on the Settings screen reaches the sidecar within one flush, no restart.', { fill: C.dim, size: 9.6 });
   b += legend(32, 614, [...L('node', 'rust'), [C.dim, 'Edge mode only']]);
   write('internal-seams.svg', svg(W, H, b));
 }
@@ -201,10 +201,10 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   const g = card({ x: 250, y: 196, w: 340, rail: C.teal, title: 'streamGate', sub: ['valid token? user enabled?', "source in the user's allow-list?"] });
   const x = card({ x: 672, y: 196, w: 228, rail: C.risk, title: '401 / 403', sub: ['plain text, so a media', 'player surfaces the reason'] });
   const r = card({ x: 250, y: 306, w: 340, rail: C.teal, title: 'proxyRelay', sub: ['→ 127.0.0.1:8787', 'inject client identity + secret'] });
-  const res = card({ x: 40, y: 505, w: 300, rail: C.teal, title: 'resolve seam → grant', sub: ['masterUrl · upstreamHeaders', 'allowHosts · proxyConfig'] });
+  const res = card({ x: 40, y: 505, w: 300, rail: C.teal, title: 'resolve seam → grant', sub: ['target · upstreamHeaders · proxyConfig', 'segmentUnwrap · expiresAtMs · …'] });
   const f = card({ x: 250, y: 615, w: 340, rail: C.amber, title: 'fetch upstream', sub: ['retry 502 / 503 / 504 · mirror failover', 'failover-group walk'] });
-  const rw = card({ x: 40, y: 824, w: 320, rail: C.amber, title: 'rewrite child URIs', sub: ['re-embed token + pl', 'grow the SSRF allow-set'], minH: 70.8 });
-  const seg = card({ x: 500, y: 824, w: 340, rail: C.amber, title: 'relabel + pipe bytes', sub: ['bounded read-ahead buffer'], minH: 70.8 });
+  const rw = card({ x: 40, y: 824, w: 320, rail: C.amber, title: 'rewrite child URIs', sub: ['re-embed token + pl · /s.ts media tail', 'grow the SSRF allow-set'], minH: 70.8 });
+  const seg = card({ x: 500, y: 824, w: 340, rail: C.amber, title: 'relabel + pipe bytes', sub: ['bounded read-ahead buffer', 'unwrap a disguised segment (segmentUnwrap)'], minH: 70.8 });
   const out = card({ x: 250, y: 934, w: 340, rail: C.ash, title: 'bytes → player', sub: ['durable HLS / raw-TS pipe'] });
 
   b += edge([[420, 163], [420, 195]], { color: 'ash' });
@@ -410,29 +410,32 @@ topology({
     {
       label: 'API SENTINEL', color: G.sentinel, desc: 'catalog stores an opaque sentinel · one API call per play · dynamic SSRF allow-set',
       items: [
-        A('tubi', 'Tubi.TV', ['tubi://channel/id', '→ Tubi API per play', 'programs[] on raw catalog rows'], ['SELF-EPG'], G.sentinel),
-        A('xumo', 'Xumo Play', ['broadcast.json sentinel', '→ 3-hop API resolve', 'paginated market guide'], ['SELF-EPG'], G.sentinel),
-        A('stirr', 'STIRR', ['/playable sentinel', '→ 1-hop POST per play', 'two-tier per-channel guide'], ['SELF-EPG'], G.sentinel),
-        A('tcl', 'TCL TV+', ['format-stream-url sentinel', '→ 1-hop POST per play', 'category + batched detail'], ['SELF-EPG'], G.sentinel),
+        A('tubi', 'Tubi.TV', ['oz/epg/programming?content_id', '→ JWT manifest per play', 'programs[] on raw catalog rows'], ['SELF-EPG', 'XWALK'], G.sentinel),
+        A('xumo', 'Xumo Play', ['broadcast.json sentinel', '→ 3-hop API resolve', 'paginated market guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
+        A('stirr', 'STIRR', ['/playable sentinel', '→ 1-hop POST per play', 'two-tier per-channel guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
+        A('tcl', 'TCL TV+', ['format-stream-url sentinel', '→ 1-hop POST per play', 'category + batched detail'], ['SELF-EPG', 'XWALK'], G.sentinel),
         A('pluto', 'Pluto TV', ['pluto://region/id', 'region boot (cached) + URL', 'per-region timelines guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
-        A('roku', 'The Roku Channel', ['roku://id', 'session boot (cached) + playId', 'content-proxy fanout guide'], ['SELF-EPG'], G.sentinel),
+        A('roku', 'The Roku Channel', ['roku://id', 'session boot (cached) + playId', 'content-proxy fanout guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
+        A('plex', 'Plex', ['plex://compoundId', 'anon JWT (cached) + signed master', 'per-channel grid fanout guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
+        A('zlive', 'ZLive', ['zlive://slug → 302 per play', 'TS disguised as WEBP images', 'station-id guide crosswalk'], ['XWALK', 'ORIGIN', 'UNWRAP', 'CAP'], G.sentinel),
+        N('Declared capabilities', ['originRequired · segmentUnwrap', 'probeExempt · stream limit', 'flags — never a source-id branch']),
       ],
     },
     {
       label: 'MACRO-FILL', color: G.macro, desc: 'catalog stores an HLS URL with macro slots · filled per play · dynamic SSRF allow-set',
       items: [
         A('samsung', 'Samsung TV Plus', ['jmp2.uk redirect → CDN master', 'follow redirect per play'], ['SELF-EPG', 'XWALK'], G.macro),
-        A('lg', 'LG Channels', ['HLS URL with {MACRO} slots', 'macro expand per play'], ['SELF-EPG'], G.macro),
-        A('whale', 'Whale TV+', ['HLS URL with macro slots', 'separate /epg fetch (Vidaa)'], ['SELF-EPG'], G.macro),
-        A('distro', 'Distro TV', ['__MACRO__ VAST slots', 'tvg_id-keyed self-EPG'], ['SELF-EPG'], G.macro),
-        A('freelivesports', null, ['device / cb / ref macro slots', 'inline program self-EPG'], ['SELF-EPG'], G.macro),
+        A('lg', 'LG Channels', ['HLS URL with {MACRO} slots', 'macro expand per play'], ['SELF-EPG', 'XWALK'], G.macro),
+        A('whale', 'Whale TV+', ['HLS URL with macro slots', 'separate /epg fetch (Vidaa)'], ['SELF-EPG', 'XWALK'], G.macro),
+        A('distro', 'Distro TV', ['__MACRO__ VAST slots', 'tvg_id-keyed self-EPG'], ['SELF-EPG', 'XWALK'], G.macro),
+        A('freelivesports', null, ['device / cb / ref macro slots', 'inline program self-EPG'], ['SELF-EPG', 'XWALK'], G.macro),
         N('Macro slots', ['device ids, cache-busters and', 'VAST refs — never persisted']),
       ],
     },
     {
       label: 'IDENTITY / DIRECT', color: G.ident, desc: 'catalog already carries the real HLS master · resolveStream is identity + host pre-allow',
       items: [
-        A('vizio', 'Vizio WatchFree+', ['channelUrls[0] IS the master', 'EPG: /api/airings schedule'], ['SELF-EPG', 'PRE-ALLOW'], G.ident),
+        A('vizio', 'Vizio WatchFree+', ['channelUrls[0] IS the master', 'EPG: /api/airings schedule'], ['SELF-EPG', 'XWALK', 'PRE-ALLOW'], G.ident),
         A('vidaa', 'Vidaa Free TV', ['macros expanded at catalog time', 'self-EPG via uid'], ['SELF-EPG', 'XWALK', 'PRE-ALLOW'], G.ident),
         N('Still on the seam', ['identity sources resolve through', 'the same seam — stream URLs are', 'never stored on disk']),
       ],
@@ -449,6 +452,9 @@ topology({
     ['PRE-ALLOW', 'static upstream host allow'],
     ['NO SHELL', 'no Playlist shell row'],
     ['NEEDS REMUX', 'catalog import only · playback dormant'],
+    ['ORIGIN', 'local origin forced (originRequired)'],
+    ['UNWRAP', 'disguised segments unwrapped (segmentUnwrap)'],
+    ['CAP', 'concurrent-channel limit (maxConcurrentStreams)'],
   ]);
   b += gl.svg;
   b += legend(34, gl.bottom + 34, [[G.syn, 'Synthetic'], [G.auth, 'Authenticated'], [G.scrape, 'Scrape'], [G.sentinel, 'API sentinel'], [G.macro, 'Macro-fill'], [G.ident, 'Identity']]);
@@ -498,7 +504,7 @@ topology({
 
   // the loop box + its fieldset chip
   b += `<rect x="44" y="470" width="976" height="448" rx="12" fill="${C.lane}" stroke="${C.amber}" stroke-opacity="0.42" stroke-width="1.2"/>`;
-  const chipLabel = 'failover_walk() · attempt cursor · cap MAX_FAILOVER_ATTEMPTS = 8';
+  const chipLabel = 'failover_walk() · attempt cursor · cap MAX_FAILOVER_ATTEMPTS = 12';
   const chipW = measure(chipLabel, 9, true) + 22;
   b += `<rect x="66" y="462" width="${chipW}" height="16" rx="5" fill="${C.bg}" stroke="${C.bracket}" stroke-width="1"/>`
     + text(66 + chipW / 2, 473.4, chipLabel, { fill: C.amber, size: 9, weight: 600, mono: true, anchor: 'middle' });
@@ -529,6 +535,7 @@ topology({
       "200 · grant — policySource = the child's own adapter",
       '502 · resolve_failed — this candidate died, try the next',
       '410 · failover_exhausted — nothing left, end the walk',
+      '429 · source_stream_cap — a policy refusal, end the walk',
     ],
   });
 
@@ -549,7 +556,7 @@ topology({
 
   b += pill(538, 492, ['/api/internal/resolve', 'loopback · x-masq-secret'], { color: C.teal });
   b += pill(538, 555, 'attempt', { color: C.amber });
-  b += pill(538, 757, 'grant · 502 · 410', { color: C.teal });
+  b += pill(538, 757, ['grant · 502', '410 · 429'], { color: C.teal });
   b += pill(170, 498, 'attempt + 1', { color: C.amber });
 
   /* 3 + 4 · the cursor and what it lights up */
@@ -574,7 +581,7 @@ topology({
   });
   b += cur.svg + curN.svg + obs.svg + obsN.svg;
 
-  b += text(W / 2, 1220, 'Failover can never mask a dead parent: the scheduled probe keeps probing hidden children, and probeAll resolves each channel itself (no attempt).', { fill: C.dim, size: 9.6, anchor: 'middle' });
+  b += text(W / 2, 1220, 'Failover can never mask a dead parent: the scheduled probe keeps probing hidden children (probeExempt sources aside), and probeAll resolves each channel itself (no attempt).', { fill: C.dim, size: 9.6, anchor: 'middle' });
   b += legend(32, 1252, [[C.ash, 'SPA / player'], [C.teal, 'Node — control plane'], [C.amber, 'Rust — data plane'], [C.green, 'Group state · recovery'], [C.risk, 'Failure path']]);
   write('failover-groups.svg', svg(W, H, b));
 }
@@ -592,7 +599,7 @@ topology({
   const HH = 82;
   const up = card({ x: 40, y: 150, w: 264, minH: HH, rail: C.dim, title: 'Upstream', sub: ['HLS playlist, or a', 'bare TS socket'] });
   const poll = card({ x: 40, y: 252, w: 264, minH: HH, rail: C.amber, title: 'follow + fetch', sub: ['poll · retry · failover', 'bare TS → PAT/PMT → cut at RAI'] });
-  const dec = card({ x: 40, y: 354, w: 264, minH: HH, rail: C.amber, title: 'decrypt AES-128', sub: ['key cached per rotation', 'ciphertext never enters the ring'] });
+  const dec = card({ x: 40, y: 354, w: 264, minH: HH, rail: C.amber, title: 'decrypt + unwrap', sub: ['AES-128 · key cached per rotation', 'no ciphertext or wrapper in the ring'] });
 
   const ring = card({
     x: 348, y: 300, w: 244, minH: 92, rail: C.green, fill: C.carbon,
@@ -600,7 +607,7 @@ topology({
   });
 
   const hls = card({ x: 636, y: 150, w: 264, minH: HH, rail: C.teal, title: 'authored manifest', sub: ['our MEDIA-SEQUENCE / EXTINF', 'no keys · no vendor tags · no hops'] });
-  const ts = card({ x: 636, y: 262, w: 264, minH: HH, rail: C.teal, title: 'raw TS concat + weave', sub: ['one continuous video/mp2t', 'a demuxed pair is interleaved'] });
+  const ts = card({ x: 636, y: 262, w: 264, minH: HH, rail: C.teal, title: 'raw TS concat + weave', sub: ['one video/mp2t · joins on a keyframe', 'a demuxed pair is interleaved'] });
   const cl = card({ x: 636, y: 400, w: 264, minH: HH, rail: C.ash, title: 'N viewers', sub: ['a 2nd viewer costs', 'NO extra upstream'] });
 
   b += edge([[172, 232], [172, 251]], { color: 'amber' });
@@ -618,6 +625,7 @@ topology({
   b += text(32, 545, 'Ingress and egress are now INDEPENDENT: one ingest feeds N viewers, so ingest bytes are reported separately (kind:"iop") and never folded into egress counts.', { fill: C.dim, size: 9.6 });
   b += text(32, 569, 'Off by default — with originEnabled false the engine proxies the upstream playlist exactly as before and this whole path is skipped.', { fill: C.dim, size: 9.6 });
   b += text(32, 593, 'Discontinuity is emitted only where the upstream tags one, or a media-sequence gap proves segments were missed — never guessed from URL shape.', { fill: C.dim, size: 9.6 });
-  b += legend(32, 625, [[C.dim, 'Upstream'], [C.amber, 'Side-1 · ingest (iop)'], [C.green, 'Ring · RAM'], [C.teal, 'Side-2 · serve (oop)'], [C.ash, 'Clients']]);
+  b += text(32, 617, 'A re-signed token whose window continues ours keeps the ring (no reset, no replay); a re-resolve that must reset it tags the join #EXT-X-DISCONTINUITY.', { fill: C.dim, size: 9.6 });
+  b += legend(32, 649, [[C.dim, 'Upstream'], [C.amber, 'Side-1 · ingest (iop)'], [C.green, 'Ring · RAM'], [C.teal, 'Side-2 · serve (oop)'], [C.ash, 'Clients']]);
   write('local-origin.svg', svg(W, H, b));
 }

@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream';
+import { Readable, pipeline } from 'node:stream';
 import type { Response, NextFunction } from 'express';
 import type { AuthRequest } from '../middleware/auth.js';
 import { PROXY_HOST, PROXY_PORT } from './sidecar.js';
@@ -33,10 +33,22 @@ export async function proxyRelay(req: AuthRequest, res: Response, _next: NextFun
   const range = req.headers['range'];
   if (typeof range === 'string') headers['range'] = range;
 
+  // The viewer can leave at any point — while the sidecar is still answering (an origin join can hold a request
+  // for seconds) or mid-body. Closing the loopback request is the ONLY way the sidecar learns of it: a raw-TS
+  // socket's producer holds the channel's ring lease, and with it the upstream ingest, until its connection
+  // goes. Merely unpiping (what `.pipe()` does on a closed client) leaves that request open and paused, so the
+  // ingest kept polling upstream for a viewer long gone. `destroyed` covers a client that left before this ran.
+  const gone = new AbortController();
+  res.once('close', () => {
+    if (!res.writableFinished) gone.abort();
+  });
+  if (res.destroyed) gone.abort();
+
   let upstream: Awaited<ReturnType<typeof fetch>>;
   try {
-    upstream = await fetch(target, { method: req.method, headers, redirect: 'manual' });
+    upstream = await fetch(target, { method: req.method, headers, redirect: 'manual', signal: gone.signal });
   } catch (err) {
+    if (gone.signal.aborted) return; // the viewer left before the sidecar answered — nobody to tell
     logger.warn('proxy', `sidecar relay failed (${target.slice(0, 80)}): ${(err as Error).message}`);
     if (!res.headersSent) res.status(502).type('text/plain').send('stream engine unavailable');
     return;
@@ -51,10 +63,10 @@ export async function proxyRelay(req: AuthRequest, res: Response, _next: NextFun
     res.end();
     return;
   }
+  // `pipeline`, not `.pipe()`: it destroys BOTH ends when either fails or the client closes early, which cancels
+  // the body and so the loopback request (the abort above does the same; either alone would do).
   const body = Readable.fromWeb(upstream.body as Parameters<typeof Readable.fromWeb>[0]);
-  body.on('error', (err) => {
-    logger.warn('proxy', `sidecar stream error: ${err.message}`);
-    res.destroy(err);
+  pipeline(body, res, (err) => {
+    if (err && !gone.signal.aborted) logger.warn('proxy', `sidecar stream error: ${err.message}`);
   });
-  body.pipe(res);
 }

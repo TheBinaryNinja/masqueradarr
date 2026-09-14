@@ -1865,4 +1865,39 @@ mod tests {
         let after = n.rewrite(&seg, None, true).unwrap();
         assert_eq!(scan(&after).unwrap().first_dts, scan(&seg).unwrap().first_dts, "offset is zero again");
     }
+
+    // ── DSG: why the unwrap runs BEFORE this pass, never after ──────────────────────────────────────────
+
+    /// A normalisable segment grown to 97 packets with padding: 18 236 bytes, which is 0x473C — so the
+    /// disguise's little-endian size fields each carry a 0x47 (the ~0.45 %-of-segments case, pinned).
+    fn segment_of_97_packets() -> Vec<u8> {
+        let mut s = side(0x100, 0x101, None, 10_000_000);
+        while s.len() < 97 * PKT {
+            s.extend(pkt(0x1FFF, false, None, &[]));
+        }
+        s
+    }
+
+    /// THE REGRESSION PIN. `packets` resyncs on a LONE 0x47, so a size-field 0x47 in the wrapper frames a
+    /// bogus packet whose 188 bytes run straight over the segment's only PAT — the program is unreadable and
+    /// the splice declines. Ingest used to ring such a segment verbatim, with its upstream PMT pid, between
+    /// neighbours on the canonical one. If this ever starts passing, the walkers learned to corroborate; until
+    /// then, unwrapping first is the only thing standing between a disguised source and this decline.
+    #[test]
+    fn a_disguised_segment_with_a_sync_byte_in_its_size_fields_declines() {
+        let wrapped = crate::tsseg::webp_disguise(&segment_of_97_packets());
+        assert_eq!((wrapped[5], wrapped[39]), (SYNC, SYNC), "fixture sanity: a 0x47 in each size field");
+        assert!(Splicer::new().normalize(&wrapped).is_none(), "the PAT is swallowed by a packet that is not one");
+    }
+
+    /// …and the same bytes, unwrapped the way ingest now does it, normalise like any other segment.
+    #[test]
+    fn the_same_segment_normalises_once_unwrapped() {
+        let seg = segment_of_97_packets();
+        let wrapped = crate::tsseg::webp_disguise(&seg);
+        let n = crate::tsseg::disguise_prefix_len(&wrapped).expect("the disguise is seen through");
+        let out = Splicer::new().normalize(&wrapped[n..]).expect("clean TS normalises");
+        assert_eq!(out.len(), seg.len(), "length-invariant, as ever");
+        assert_eq!(published_video_pid(&out), Some(OUT_VIDEO_PID));
+    }
 }

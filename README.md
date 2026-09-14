@@ -138,9 +138,10 @@ drives a Rust **data-plane** sidecar (`masq-proxy`) for stream bytes:
 Key subsystems:
 
 - **Sources adapter framework** — a source-agnostic core (sync → normalize → dedupe → resolve) with
-  ~17 per-provider adapters, plus proxy-only sources — **direct** (passes user-imported stream URLs
-  straight through) and **hdhomerun** (imports a local tuner's channel lineup; playback is dormant
-  pending remux support in the video engine) — that back bring-your-own playlists.
+  17 built-in provider adapters, plus proxy-only sources — **direct** (passes user-imported stream URLs
+  straight through), **hdhomerun** (imports a local tuner's channel lineup; playback is dormant
+  pending remux support in the video engine) and **local** (Local Now's per-market playlists) — that back
+  bring-your-own playlists.
 - **Channel model** — a pristine synced reference (`sourcechannels`) projected into an editable,
   UI-facing store (`playlistchannels`); user edits survive re-syncs.
 - **EPG + scheduler** — multiple guide ingesters behind one shared sync path — **Gracenote**,
@@ -254,15 +255,29 @@ creating the **first admin account**. After that:
    rebrand that left a 301 behind; a hard cut-over has to be typed in), and **Test** probes a candidate
    without saving it. Saving a *changed* domain **signs the dulo session out** — a captured session belongs
    to the site it came from — so re-pair afterwards.
-3. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
+3. **ZLive** has two operator settings of its own (Settings → Advanced → ZLive), and it is worth reading
+   the [ZLive notes](#zlive-operator-notes) before adding it:
+   - **Domain** (`zliveDomain`, default `zlive.st`) — the one domain its public channel catalog
+     (`cast.<domain>`) and its stream resolver (`iptv.<domain>`) live under. Stored channels are host-free
+     `zlive://<slug>` entries, so a domain change never breaks a channel or an exported M3U line; sync the
+     playlist afterwards to refresh its channel list. **Test** fetches only the candidate's public catalog —
+     never the stream resolver — and reports a redirect rather than following it.
+   - **Concurrent channels** (`zliveMaxStreams`, default **2**, `0` = no limit) — how many *different*
+     ZLive channels may play at once, ZLive backups in failover groups included. Viewers of one channel count
+     once; a new channel over the limit is refused with a plain-text `429` the player shows, until one stops —
+     unless it heads a failover group with a backup from another provider, which then plays instead.
+4. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
    **Channel Mapping** screen.
-4. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
+5. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
    URL** for their IPTV client.
 
 ### Configuration
 
 All runtime settings live in **MongoDB** and are editable on the **Settings** screen (domain, DNS
-nameservers, video configuration, backups, …). The `.env` only **bootstraps infrastructure on first
+nameservers, video configuration, backups, …). The **DNS nameservers** govern both halves of the engine:
+Node's outbound fetches *and* the Rust data plane's upstream lookups ask the configured servers first and
+fall back to the OS resolver on any failure (so `.local` / LAN names keep working), and a change reaches the
+running sidecar on its next flush to Node, no restart. The `.env` only **bootstraps infrastructure on first
 boot**:
 
 | Variable | Purpose |
@@ -307,7 +322,8 @@ cd server && npm install && npm run dev
 ```
 
 There is **no test runner and no linter** — correctness is verified by `npm run build` (type-check) in
-each package and by running the app.
+each package and by running the app. The Rust `proxy/` crate is the exception: CI builds it, lints it
+(`cargo clippy -- -D warnings`) and runs its in-file `cargo test` suites.
 
 # Pluggable sources
 
@@ -320,18 +336,20 @@ each package and by running the app.
 | FreeLiveSports | `makeFastSource` · Unreel/PowR sports catalog · direct-HLS masters bearing Unreel VAST macros (`[DEVICE_ID]/[CB]/[REF]/[UA]/…`) · per-play macro expansion via `resolveStream` |
 | LG Channels | `makeFastSource` · Public mirror via `schedulelist` (catalog + XMLTV guide in one call) · direct-HLS masters bearing `[DEVICE_ID]/[UA]/[NONCE]/…` VAST macros · per-play macro expansion via `resolveStream` |
 | (**Local Now**) | Sentinel-resolve adapter · `localnow://<id>?slug=<slug>` stored at sync · resolves to a fresh signed CDN master per play · market-scoped channel set imported via `local/import.ts` · US-only (geo-gated) |
-| Plex | _(planned)_ |
+| Plex | `makeFastSource` · sentinel+resolve · `/lineups/plex/channels` catalog yields channel ids + metadata · fully anonymous `X-Plex-Token` JWT (cached, no credentials) · per-play signed library/parts HLS master that 302s to AWS MediaTailor · self-EPG from a per-channel, per-day grid fanout |
 | DaddyLive | HTML catalog scraped from a runtime-selected rotating mirror (`mirrorDirectory.ts`) · `watch.php?id=<N>` entry sentinel · 3-hop, Referer-gated scrape per play to a fresh signed playlist · **six independent embed providers per channel** ("Player 1..6"), walked and learned per channel (`playerMemory.ts`) with a provider-agnostic hop-2 reader (`embedExtractors.ts`) · dynamic SSRF allow-set · self-EPG via schedule scrape + Gracenote crosswalk |
+| dulo.tv | **Authenticated** · Supabase session captured by a server-streamed Chromium (or pair / paste) and kept alive by the server, with dulo's Supabase config auto-discovered at runtime · `dulo://channel/<id>` sentinel → a device-bound, expiring playback session minted per play · operator-set domain (Settings → Advanced) · no committed snapshot · Gracenote crosswalk |
 | Pluto TV | `makeFastSource` · sentinel+resolve · `/v2/guide/channels` catalog yields channel IDs only · stateful per-region boot session (`boot.pluto.tv`) · per-play JWT-stitched HLS master from the stitcher CDN |
 | STIRR | `makeFastSource` · sentinel+resolve · `videos/list` catalog yields video IDs + provider-EPG pointers · per-play resolve via `POST /playable` · bundled provider guide |
 | Samsung TV+ | `makeFastSource` · Public mirror (`i.mjh.nz`) · no auth · jmp2.uk short-link redirect followed per play to a rotating CDN master · dynamic SSRF allow-set learned at play time |
 | TCL TV+ | `makeFastSource` · sentinel+resolve · `livetab → programlist` catalog via the ideonow.com gateway · per-play HLS master minted by a `format-stream-url` POST |
 | Roku Channel | `makeFastSource` · sentinel+resolve · `/api/v2/epg` catalog yields channel IDs and metadata only · stateful Cloudflare-sensitive anonymous session · per-play JWT-signed HLS master from Roku's OSM CDN |
-| Tubi TV | `window.__data` scrape of `/live` for channel catalog · per-channel EPG + short-lived JWT-signed HLS manifest from `/oz/epg/programming` · manifest minted per request (sentinel+resolve) · self-EPG written via `afterSync` |
+| Tubi TV | `window.__data` scrape of `/live` for channel catalog · per-channel EPG + short-lived JWT-signed HLS manifest from `/oz/epg/programming` · the stored entry is the stable `…/oz/epg/programming?content_id=<id>` URL, re-resolved per play (the manifest is minted per request) · Gracenote crosswalk for the curated US channels, then self-EPG via `afterSync` for the rest |
 | Vidaa Free TV | `makeFastSource` · direct-HLS (identity `resolveStream`) · client-config bootstrap (BOURL + tenant) · geo-qualified channel IDs · ad-DI macros stripped at catalog time |
 | Vizio WatchFree+ | `makeFastSource` · direct-HLS (identity `resolveStream`) · public anonymous catalog from `watchfreeplus-epg-prod.smartcasttv.com` · ad-DI macro placeholders substituted with privacy-neutral values at normalize time |
 | Whale TV+ | `makeFastSource` · macro-expansion · keyless auth bootstrap (apiToken → short-lived bearer) · Ottera/SSAI ad macros (`[did]/[session_id]/[cachebuster]/…`) expanded per play via `resolveStream` |
 | Xumo Play | `makeFastSource` · sentinel+resolve · Valencia catalog yields channel IDs only · 3-hop per-play resolve (broadcast → asset → HLS source → macro-fill) |
+| ZLive | `makeFastSource` · one GET of the public `cast.<domain>/channels.json` catalog (linear channels only; no logos, guide ids or numbers) · host-free `zlive://<slug>` sentinel → one resolver GET per play whose `302` names a signed, ~2.5 h media playlist, reused per channel until 10 min before it expires · segments are MPEG-TS disguised as RIFF/WEBP images, unwrapped by the data plane · **origin-forced**, probe-exempt, capped at 2 concurrent channels by default · operator-set domain · no committed snapshot · station-id guide crosswalk onto your Gracenote / Jesmann guides. See [ZLive notes](#zlive-operator-notes) |
 
 ## Custom playlists (bring your own)
 
@@ -476,6 +494,20 @@ You can add as many Local Now playlists as you want, **one per city/market**. Ea
 
 All adapters implement the `SourceAdapter` contract (`server/src/sources/types.ts`) and are registered in `server/src/sources/registry.ts`. The generic core (`buildSource`) never branches per source — every per-source difference is encapsulated in the adapter object. Each adapter's `resolveStream`/`proxy` are **live** — the Rust data-plane engine calls them per stream through the resolve seam (see [Video Proxy Engine](#video-proxy-engine)).
 
+When a source needs different behaviour from the core, it **declares a capability** rather than being special-cased by id — neither the Node core nor the Rust engine ever tests `source === '…'`:
+
+| Capability | Declared on | What the core does with it |
+|---|---|---|
+| `playerSelectable` | adapter | alternate-upstream stage before failover children; player picker in the UI |
+| `probeExempt` | adapter | the scheduled probe sweep skips the source's channels (per channel, on `origin ?? source`) |
+| `maxConcurrentStreams()` | adapter | the resolve seam counts each live stream against the adapter serving it (failover backups included) and refuses a NEW one over the cap — a definitive `429 source_stream_cap`, or a walkable `502` when a failover backup elsewhere could carry it |
+| `applyEpgLinks()` | adapter | re-run after every successful Gracenote / Jesmann guide sync — and after such a guide is added — for built-ins that crosswalk onto guides they don't own |
+| `adSignature` | `proxy` bag | rides the grant; the local origin's ad classifier for sources with no cue tags |
+| `originRequired` | `proxy` bag | forced into the grant's `proxyConfig.originEnabled`, whatever the proxy config says |
+| `segmentUnwrap` | `proxy` bag | rides the grant; the pass-through byte paths strip a disguised segment's container prefix |
+
+The `/api/sources` manifest publishes the flags the SPA needs (`playerSelectable`, `probeExempt`, `originRequired`), so the UI never hardcodes a source list either.
+
 <img src="docs/diagrams/adapter-taxonomy.svg" alt="Channel adapter taxonomy: every adapter registered in registry.ts, grouped by shape — synthetic, authenticated, and the four anonymous resolve strategies (scrape, API sentinel, macro-fill, identity).">
 
 ## Key Properties Summary
@@ -487,19 +519,27 @@ All adapters implement the `SourceAdapter` contract (`server/src/sources/types.t
 | `local` | Local Now | — | Sentinel → rotating CDN | — | — |
 | `dulo` | dulo.tv (default; operator-set) | session | `dulo://` sentinel → playbackUrl | — | yes |
 | `dlhd` | DaddyLive | — | `watch.php` → 3-hop scrape, 6 providers | yes | yes |
-| `tubi` | Tubi.TV | — | `tubi://` → Tubi API | yes (inline) | — |
-| `xumo` | Xumo Play | — | broadcast.json → 3-hop API | yes | — |
-| `stirr` | STIRR | — | `/playable` → 1-hop POST | yes | — |
-| `tcl` | TCL TV+ | — | `format-stream-url` → 1-hop POST | yes | — |
+| `tubi` | Tubi.TV | — | `…/oz/epg/programming?content_id=` → Tubi API (JWT manifest) | yes (inline) | yes |
+| `xumo` | Xumo Play | — | broadcast.json → 3-hop API | yes | yes (wired) |
+| `stirr` | STIRR | — | `/playable` → 1-hop POST | yes | yes (wired) |
+| `tcl` | TCL TV+ | — | `format-stream-url` → 1-hop POST | yes | yes (wired) |
 | `pluto` | Pluto TV | — | `pluto://` → region boot + URL | yes | yes (wired) |
-| `roku` | The Roku Channel | — | `roku://` → session + playId | yes | — |
+| `roku` | The Roku Channel | — | `roku://` → session + playId | yes | yes (wired) |
+| `plex` | Plex | — | `plex://` → anon JWT + signed master | yes | yes (wired) |
+| `zlive` | ZLive | — | `zlive://` → resolver `302` → signed playlist · origin-forced | — | station ids (Gracenote / Jesmann) |
 | `samsung` | Samsung TV Plus | — | jmp2.uk redirect | yes | yes (wired) |
-| `lg` | LG Channels | — | `{MACRO}` fill per play | yes | — |
-| `whale` | Whale TV+ | — | macro fill per play | yes | — |
-| `distro` | Distro TV | — | `__MACRO__` fill per play | yes | — |
-| `freelivesports` | FreeLiveSports | — | macro fill per play | yes | — |
-| `vizio` | Vizio WatchFree+ | — | Identity (direct HLS master) | yes (airings) | — |
+| `lg` | LG Channels | — | `{MACRO}` fill per play | yes | yes (wired) |
+| `whale` | Whale TV+ | — | macro fill per play | yes | yes (wired) |
+| `distro` | Distro TV | — | `__MACRO__` fill per play | yes | yes (wired) |
+| `freelivesports` | FreeLiveSports | — | macro fill per play | yes | yes (wired) |
+| `vizio` | Vizio WatchFree+ | — | Identity (direct HLS master) | yes (airings) | yes (wired) |
 | `vidaa` | Vidaa Free TV | — | Identity (macros pre-expanded) | yes | yes (wired) |
+
+**Gracenote XWalk:** *yes* — a committed `seed-data/<id>-playlist-addon.json` links channels onto your
+Gracenote guides after every sync (fill-only-if-untouched); *yes (wired)* — the call is in place but no addon
+is committed yet, so it no-ops (committing one is all it takes to turn it on); *station ids* — ZLive's rows pin
+a Gracenote station id and link to whichever of your Gracenote or Jesmann guides carries it (see
+[ZLive notes](#zlive-operator-notes)); *—* — no crosswalk hook at all.
 
 ## Lifecycle: how a built-in source reaches the UI
 
@@ -561,10 +601,18 @@ priority order, save.
   children **in order** via `attempt=1,2,…` resolves and serves the first one that answers, under the
   parent's URL and stream identity. The session then **sticks** to the winning child (the failover cursor
   never walks back to the dead parent mid-play); the pin resets a few idle minutes after playback stops.
-- **Cross-provider safe.** A child's grant carries its own adapter's headers under its own policy key
-  (`policySource`), so a dlhd parent backed by a pluto child never pollutes dlhd's other streams.
+  A `429 source_stream_cap` refusal is **not** a failure and never starts a walk, so the seam sends it only
+  when no backup could help: a capped parent whose group has a backup on another provider (with failover
+  enabled) is refused with a walkable `502` instead, and the walk reaches that backup. Backups count against
+  their **own** provider's limit — a ZLive backup under a DaddyLive parent takes a ZLive slot, and is skipped
+  (walkable `502`, next candidate) when ZLive is full; a ZLive parent carried by its DaddyLive backup takes none.
+- **Cross-provider safe.** A child's grant carries its own adapter's headers, capabilities and proxy config
+  under its own policy key (`policySource`), so a dlhd parent backed by a pluto child never pollutes dlhd's
+  other streams — and a ZLive child walked to from a plain pass-through parent is still unwrapped if it ends
+  up served on that pass-through path.
 - **Observability.** Active Streams badges a failed-over stream with `failover → <child>`; the scheduled
-  channel probe keeps probing hidden children, so a dead backup is visible before failover ever reaches it.
+  channel probe keeps probing hidden children (except those from a `probeExempt` source such as ZLive), so a
+  dead backup is visible before failover ever reaches it.
 - **Self-healing.** Any prune/delete that removes a group's parent (or its last child) auto-disbands the
   group; disbanding is also available in the Group modal — children keep their inherited EPG link but
   re-enter the export. Children must stay **Active** to remain probe-covered and candidate-eligible
@@ -575,7 +623,7 @@ Knobs: `failoverEnabled` (default **on** — configuring a group is the real opt
 Seamless mid-segment splicing is a future enhancement — a parent dying mid-play is caught on the player's
 next playlist refetch.
 
-<img src="docs/diagrams/failover-groups.svg" alt="Failover groups end to end: the group modal writes three fields on each channel doc and cascades the parent's EPG identity; compose exports only the parent; at play time a failed ENTRY establish sends the Rust data plane through failover_walk, resolving each ordered Active child through Node's seam (200 grant, 502 try-the-next, 410 exhausted) until one answers, after which the stream's cursor sticks to the winning candidate.">
+<img src="docs/diagrams/failover-groups.svg" alt="Failover groups end to end: the group modal writes three fields on each channel doc and cascades the parent's EPG identity; compose exports only the parent; at play time a failed ENTRY establish sends the Rust data plane through failover_walk, resolving each ordered Active child through Node's seam (200 grant, 502 try-the-next, 410 exhausted, 429 a stream-limit refusal that ends the walk) until one answers, after which the stream's cursor sticks to the winning candidate.">
 
 ## DaddyLive players (alternate upstreams)
 
@@ -612,13 +660,122 @@ plus the existing `DLHD_PLAYER` (source-wide default, also settable in the UI) a
 > design. When DaddyLive itself stops carrying a channel on **every** player, failover groups are the
 > durable answer.
 
+## ZLive operator notes
+
+ZLive is a free sports / linear restream site. Its catalog is ~177 linear channels with no logos, guide ids
+or channel numbers, grouped by zlive's own sport buckets (Sports, Kids, F1, Other). Only the 24/7 channels
+are imported — its one-off event streams are not.
+
+> [!IMPORTANT]
+> **zlive polices restreamers.** It keeps a hand-maintained IP / CIDR **leech list** and answers any address
+> on it with a **decoy** (an ad stream) instead of the channel asked for, and its own stats rank clients by
+> request volume and by *unique streams per IP*. If your server's address is listed, every ZLive channel
+> becomes the decoy — and so does ordinary browsing of zlive from that address (or, for a CIDR entry, from
+> its neighbours). masqueradarr **detects and reports** a suspected decoy. It **does not work around** a
+> listing — no alternate hosts, no header changes, no retries — and delisting is up to zlive.
+
+How ZLive is served. Each of these is a capability the adapter declares, not a ZLive branch in the core:
+
+- **Always through the [local origin](#local-origin--republishing-the-stream)** (`originRequired`). One
+  ingest per channel however many people watch, so zlive sees one client per channel rather than one per
+  viewer. Forced whatever the Default / Custom proxy config says; the proxy config panels show it as
+  *forced by ZLive*. (The exception: a ZLive channel reached as the failover backup of a non-ZLive parent
+  can ride that parent's pass-through stream — still unwrapped.)
+- **One resolver request per channel, not per poll.** A play is one `GET iptv.<domain>/<slug>`, whose `302`
+  names a signed media playlist valid for ~2.5 h. The adapter reuses that target until 10 min before it
+  expires (a quarter of its lifetime, for a token shorter than 40 min), shares one request between concurrent
+  joins, and passes the token's expiry to the data plane, which renews ahead of it instead of meeting a `403`
+  mid-stream. The lifetime is read on zlive's own clock (the signed expiry minus the `302`'s `Date`), so a
+  wrong clock on your server changes nothing. That comes to about one resolver request per channel per 2⅓ h of
+  viewing; a warn line says so if zlive ever starts signing much shorter-lived links.
+- **A rejected link is replaced, but not on every retry.** If the data plane reports that a link failed
+  before its expiry — the CDN refused it outright, or the ingest could not refresh its playlist — the adapter
+  drops the reused link and mints a new one — but only once the current link is at least 60 s old, and that
+  wait doubles (up to 15 min) while each replacement fails too, so a CDN that refuses every link from your
+  address costs a handful of resolver requests an hour rather than one per player retry.
+- **Never probed in bulk** (`probeExempt`). The scheduled channel probe skips ZLive channels, so their status
+  updates only while one is being watched; the Settings probe card names the exemption.
+- **A concurrent-channel limit** (`maxConcurrentStreams` ← Settings → Advanced → ZLive, default **2**). A new
+  channel over it gets a definitive `429 source_stream_cap`, relayed to the player as plain text — no failover
+  walk, no retry — unless it heads a failover group with a backup from another provider, which then plays
+  instead. A ZLive channel serving as a *backup* counts too, and is skipped for the next backup when the limit
+  is reached. A second viewer, a reconnect, or the ingest renewing its own token is never refused, and a
+  slot frees about 30 s after a channel's last viewer leaves. Raising it is your call; it is the number
+  zlive's stats rank clients by.
+- **Plain requests.** Catalog, resolver and media requests carry a browser User-Agent and nothing else — no
+  Origin / Referer posing as zlive's own player (proxy-config header overrides, if you add any, reach only the
+  media hops). A sync is one catalog GET; there is no committed snapshot, and a failed sync leaves the
+  playlist on *warn* with every channel it already had. So does a catalog under half the size of the last
+  one — the shape of zlive's own upstream re-sync coming back partial, which would otherwise prune your edited
+  channels; if zlive really did shrink, the playlist's **Restore Defaults** accepts the smaller list.
+- **Disguised segments are unwrapped.** zlive's segments are MPEG-TS hidden inside RIFF/WEBP images on a
+  TikTok CDN. The data plane strips the wrapper and relabels them `video/mp2t`, so ffmpeg-based clients
+  (Plex, Jellyfin, Channels, mpv) and `outputFormat: 'ts'` get a clean transport stream — see
+  [Signed URLs, disguised segments and keyframe joins](#signed-urls-disguised-segments-and-keyframe-joins).
+- **One duplicate starts disabled.** The manual `skysportsf1-uk` row resolves to the same feed as
+  `sky-sports-f1`; both Active would spend two of the capped streams on one picture. Enabling it sticks.
+
+**When zlive refuses or decoys.** The adapter vets every `302` before the data plane sees it: https only,
+zlive's signed-URL shape (or the same registrable domain as the last good answer), and a host that resolves
+only to public addresses — IPv6 forms that embed an IPv4 address (NAT64, 6to4, Teredo, IPv4-mapped) included.
+That address check is an early refusal, not a guarantee: the data plane resolves the host again when it
+connects and itself checks only IP literals, so a DNS answer that changes between the two lookups, or a
+private host named inside the signed playlist, is not caught by it. When the resolver answers the **same**
+playlist file for **3 or more** channels that are not known aliases of each other — the decoy's signature —
+that file is **latched for 30 minutes**: its channels fail with `zlive_decoy_suspected` without contacting
+zlive, and a warn line names them.
+
+Failures are not retried at zlive's expense either. A **refusal** (`401` / `403` / `429` from the resolver) is
+about your address, not one channel, so it starts a **cool-down** during which no ZLive channel contacts the
+resolver: the resolver's own `Retry-After` when it sends one (honoured up to an hour), otherwise 60 s, doubling
+with each refusal in a row up to 15 min, and reset by the next good answer. Links already minted keep playing
+through it. Any other failed resolve — the resolver down (`5xx`), unreachable or timing out, a DNS failure, an
+answer that fails vetting — is not retried for that channel for 30 s. Refusals, unreachable/unavailable and
+unexpected answers are reported as separate classes. A failed resolve is an ordinary resolve failure, so a
+channel's [failover group](#failover-groups-channel-backups) backups take over if it has any. All of it shows
+live on **Settings → Advanced → ZLive** (limit usage, upstream host, last error, any latch or cool-down, and
+how many retries were held back) and in the logs — the `playlists` category for the resolver (tag `zlive`),
+`proxy` for limit refusals.
+
+**Guide data.** zlive publishes no guide. A committed station-id crosswalk
+(`seed-data/zlive-playlist-addon.json`) links its channels onto guides **you already have** — it never fetches
+one itself:
+
+1. Add the guides it targets. **Add EPG Source → Gracenote** with a New York City ZIP (e.g. `10001`), picking
+   the **DIRECTV** national lineup (`DITV` — most US cable networks) and the **Local Over the Air Broadcast**
+   lineup (`OTA` — ABC, CBS, FOX, CW and Telemundo map to the New York stations, so an OTA lineup for another
+   market links none of them rather than the wrong ones). For the foreign channels, add **Jesmann** country
+   guides in their **7-day Standard** download — the IPTV variants key channels by name, not station id, and
+   never match.
+2. That's it: adding or syncing any Gracenote / Jesmann guide — manually or on a schedule — re-links ZLive on
+   its own, and so does a ZLive playlist sync.
+
+Linking is fill-only-if-untouched, so a link you made or cleared on the Channel Mapping screen is never
+overwritten. Deleting a guide counts as clearing: the channels that were linked to it are left *unmatched*,
+and the crosswalk will not re-link them to another guide that carries the same station. After replacing one
+guide with another (say a Jesmann US guide with DITV), re-link those channels on Channel Mapping or use the
+playlist's **Restore Defaults**.
+
+As committed, the crosswalk links 134 channels at high confidence: 76 US channels pinned to DITV or NYC OTA,
+and 58 matched by name inside a country-scoped Jesmann guide (UK, Ireland, France, Germany, Italy, Spain,
+Poland, Australia, Canada, US). Seven medium-confidence rows are kept for review and never applied —
+Brazil's only row, Premiere, is one of them. The remaining 36 are unmatched: 29 have no known station-id
+guide (New Zealand ×10, Portugal ×6, India ×5, the Baltics ×3, four streaming-only feeds, and Puerto Rico's
+WAPA Deportes), and 7 are in markets that have a guide but were not found in it (Poland: CANAL+ Extra 1/2,
+CANAL+ Sport 6, Eleven Sports 4; Spain: Movistar Deportes 2/3, Movistar Plus).
+
+**DNS.** The data plane's upstream fetches — ZLive's playlist and segment hops included — now resolve through
+the Settings **DNS nameservers**, as Node's resolve already did, with the OS resolver as the fallback.
+
 ## Playlists + EPG Sources with Playlist Binding
 
 Guide data reaches a playlist through **two distinct mechanisms** — keep them separate:
 
 1. **Channel-level guide linking (the everyday case).** EPG attaches to a playlist through its *channels*,
    not the playlist row. Each channel carries a 2-factor **`(tvg_id, epg)`** link — set on the **Channel
-   Mapping** screen (or self-linked by sources that ship their own EPG). At compose time the guide is built
+   Mapping** screen, self-linked by sources that ship their own EPG, or crosswalked by a built-in's committed
+   map onto guides you already have (dlhd / dulo / tubi by `(epg, tvg_id)` pair, ZLive by Gracenote station
+   id). At compose time the guide is built
    from exactly the channels that carry a link, so "which EPG sources feed this playlist" is simply
    *whichever sources its channels are mapped to* — many sources can contribute to one playlist's guide.
 2. **Playlist-bound EPG sources (`playlistBinding`). **Built-in** carry their *own* inline guide.
@@ -686,6 +843,11 @@ The `source` discriminator (stored lowercase):
   owns the cadence.
 - Either way, the *binding between guide data and a playlist's channels* is the channel-level
   **`(tvg_id, epg)`** link — Channel Mapping for user-added sources, self-linked for channel-adapter built-in sources.
+- **Built-ins that link onto *your* guides are re-linked after every guide sync.** A built-in whose committed
+  crosswalk targets guides it does not own (`applyEpgLinks` — ZLive) would otherwise wait for its own next
+  playlist sync to pick up a guide you just added. So every successful **gracenote** or **jesmann** sync —
+  manual, scheduled, or the first one that runs when you add the guide — re-runs the crosswalk for each such
+  built-in you have added, fill-only-if-untouched and never failing the guide sync.
 
 ## How EPG Sources are ingested into playlists during a compose
 
@@ -716,11 +878,11 @@ Per composed surface:
 > **Scope:** how masqueradarr actually serves video — a **remux-free Rust data-plane sidecar** (replacing an
 > older transcode engine) that resolves each stream on demand and pipes it durably to the player. This
 > section covers the two-plane split, the internal seams, the request path, the durability features,
-> [local origin mode](#local-origin-republishing-the-stream), the tunable config, and the opt-in public-edge
+> [local origin mode](#local-origin--republishing-the-stream), the tunable config, and the opt-in public-edge
 > topology.
 >
 > **Remux-free is still true; "passthrough" no longer is.** Nothing is ever re-encoded — but with
-> [local origin](#local-origin-republishing-the-stream) enabled the engine stops forwarding the provider's
+> [local origin](#local-origin--republishing-the-stream) enabled the engine stops forwarding the provider's
 > playlist and publishes one it wrote itself, from segments it ingested, decrypted and cached in RAM.
 
 ## Two planes: Node control plane · Rust data plane
@@ -729,15 +891,33 @@ Video is split across **two processes** that ship in the same container:
 
 - **Node — the control plane (the brains).** Everything stateful and provider-specific stays in TypeScript:
   per-source auth (dulo's Supabase session + device fingerprint), scraping (dlhd's rotating-mirror, 3-hop
-  Referer-gated resolve), the SSRF allow-set, the stream-token gate, telemetry authority, and config storage.
+  Referer-gated resolve), vetting upstream-supplied URLs (ZLive's resolver redirect), per-source stream
+  limits, the stream-token gate, telemetry authority, and config storage.
 - **Rust — the data plane (the muscle).** A small standalone binary, **`masq-proxy`** (the `proxy/` crate),
-  does the byte work: fetch upstream, follow redirects, rewrite `.m3u8` manifests, and pipe segments — fast,
-  multi-threaded, near-zero-copy. It is **driven per stream by a "grant"** from Node; it never re-derives
-  provider logic.
+  does the byte work: fetch upstream, follow redirects, rewrite `.m3u8` manifests, enforce the SSRF gate,
+  and pipe segments — fast, multi-threaded, near-zero-copy. It is **driven per stream by a "grant"** from
+  Node; it never re-derives provider logic or branches on which provider it is serving — what a source needs
+  arrives as declared grant fields.
 
 Node spawns and supervises `masq-proxy` as a child process (auto-restart with backoff). A missing or crashed
 sidecar is **non-fatal** — the app keeps managing playlists / EPG / channels / users and serving M3U / XMLTV
 downloads; only live playback pauses until it's back.
+
+**The data plane's SSRF gate.** On the pass-through path every upstream fetch — the entry included — must be
+`http(s)` and must not be a private IP literal unless its grant sets `allowPrivate`, which no grant does today
+(imported playlists included); a hop named inside a manifest must also be in the stream's allow-set (see
+*resolve* below). The local origin's ingest and the raw-TS producer apply the same private-literal check to
+every segment and key they pull. "Private" means RFC 1918, loopback, link-local and unspecified IPv4, IPv6
+loopback / ULA / link-local, IPv4-mapped IPv6 spellings of any of those, and the whole `localhost` zone. The
+check reads literals only — it never resolves a hostname. Two consequences for imported (`direct`) playlists:
+
+- **Bracketed IPv6 literals are now judged, and a private one is refused.** A URL hands an IPv6 host over as
+  `[fd7a:…]`, and earlier builds never matched that form against the IPv6 rules, so `http://[::1]/` or a
+  tailnet's `http://[fd7a:115c:a1e0::…]:8089/` passed unchecked. Import a tailnet box that you reach over IPv6
+  by its **MagicDNS hostname** instead of its address.
+- **The shared `100.64.0.0/10` range stays allowed** for data-plane hops — it is carrier-grade NAT space, not
+  RFC 1918, and it holds every Tailscale IPv4 address, so an import of `http://100.x.y.z:8089/…` plays as it
+  did before. (ZLive vets its own resolver hosts in Node, and refuses that range there.)
 
 ## The internal seams (loopback, shared-secret)
 
@@ -747,8 +927,18 @@ Node and Rust talk over one private loopback channel — `POST /api/internal/*`,
 <img src="docs/diagrams/internal-seams.svg" alt="The internal seams: Rust calls Node over loopback POST /api/internal/* with a shared x-masq-secret for resolve, telemetry, log, and (edge mode only) authorize.">
 
 - **resolve** (`/api/internal/resolve`) — Rust asks Node to resolve a stream; Node runs the adapter logic and
-  returns a per-stream **grant** (`masterUrl`, `upstreamHeaders`, `allowHosts`, segment relabel, the resolved
-  `proxyConfig`, …) that Rust replays for the whole stream.
+  returns a per-stream **grant** that Rust replays for the whole stream: the resolved `target`, the
+  `upstreamHeaders` for every hop, `relabelSegment`, `allowPrivate`, the resolved `proxyConfig`, the
+  adapter's declared capabilities (`playerSelectable`, `adSignature`, `segmentUnwrap`), the target's own
+  `expiresAtMs` when the adapter knows it, and `policySource` / `failover` for a failover candidate. There is
+  no host list in it: Rust seeds its per-source SSRF allow-set from `target` and grows it from the hosts it
+  finds in the manifests it rewrites. Two non-grant answers are terminal: `410 failover_exhausted` ends a
+  failover walk, and `429 source_stream_cap` (a source at its concurrent-stream limit) is relayed to the
+  player as-is — no walk, no retry. Node sends that `429` only where no candidate could carry the stream
+  instead; a limit a failover backup can route around is answered as an ordinary walkable `502`, and its
+  error is never `source_stream_cap`. A re-resolve the data plane makes *because* its target failed carries a
+  `reason`; `target_rejected` and `refresh_failed` ask the adapter for a freshly resolved target rather than
+  one it cached (`ResolveStreamOptions.fresh`), while a scheduled renewal carries none.
 - **telemetry** (`/api/internal/telemetry`) — Rust measures the true byte edge and reports batched
   viewer / byte / phase / close events; Node stays the telemetry authority (Active Streams WS,
   History / Metrics, persisted `ViewSession`).
@@ -757,8 +947,13 @@ Node and Rust talk over one private loopback channel — `POST /api/internal/*`,
 - **authorize** (`/api/internal/authorize`) — **edge mode only** (below): the per-request stream-token check
   when Rust owns the public socket.
 
-The telemetry + log responses both **echo the current log level**, so changing verbosity on the Settings
-screen reaches the sidecar within one flush — no restart.
+The telemetry + log responses both **echo `{ logLevel, nameservers }`**, so changing verbosity or the DNS
+nameservers on the Settings screen reaches the sidecar within one flush — no restart. Both are also stamped
+into the sidecar's environment at spawn (`MASQ_LOG_LEVEL`, `MASQ_NAMESERVERS`). The nameservers drive the
+data plane's **upstream** resolver with the same semantics as Node's `dns.ts` — configured servers first, the
+OS resolver on any failure (NXDOMAIN included, so `.local` / LAN names keep working), IP literals never
+resolved, A before AAAA — while Rust's own loopback calls to Node always stay on the system resolver, so no
+DNS setting can cut the data plane off from its control plane.
 
 ## How a stream request flows
 
@@ -772,8 +967,15 @@ screen reaches the sidecar within one flush — no restart.
    username) plus the shared secret.
 4. Inside Rust, the **first** request (ENTRY) resolves via the seam to get the grant + master URL; **child**
    requests (HOP — variant playlists, segments, keys) reuse the cached policy. Manifests are rewritten so
-   every child URL routes back through the proxy with the token re-embedded; segments are relabelled and piped
-   straight through.
+   every child URL routes back through the proxy with the token re-embedded; segments are relabelled — and,
+   for a source whose grant carries `segmentUnwrap`, stripped of their disguise — and piped straight through.
+5. A media **segment** whose upstream name a libavformat client would refuse (`.png`, `.image?…`, any
+   signed `?query`) gets a clean **media tail** on its hop URL — `…/h/<encoded upstream>/s.ts?token=…` —
+   that the router strips again before decoding. ffmpeg's HLS demuxer (mpv, Jellyfin, Plex, Channels) checks
+   every segment URL's extension against the format it detects in the bytes; hls.js, VHS and ExoPlayer never
+   did. The tail keeps the upstream's own extension when that one passes (`a.mp3?sig` → `/s.mp3`), uses
+   `/s.vtt` in a WebVTT playlist, and never touches keys, init sections or playlists; a plain `seg.ts` hop
+   keeps its old shape byte for byte, and hops minted before tails existed still route.
 
 ## Durability + raw-TS
 
@@ -791,6 +993,17 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
   engine walks the ordered children (`attempt=1,2,…` against the resolve seam) and serves the first live
   one under the parent's identity, then sticks to it for the session. See
   [Failover groups](#failover-groups-channel-backups).
+- **Signed-URL expiry** — a resolved target is normally reused for 60 s; when the grant says when it expires
+  (`expiresAtMs`), it is reused only until 60 s before that (never less than 5 s), so a reused signed URL never
+  lapses mid-poll. A definitive `401` / `403` / `410` on an ENTRY drops the cached target as well, so the next
+  request re-resolves instead of replaying a dead URL for the rest of the minute (at most once per entry per
+  minute). That re-resolve — and the origin ingest's re-resolve after a failed playlist refresh — tells Node
+  why, so an adapter that reuses its resolved targets (ZLive's signed links) mints a new one instead of handing
+  back the one that just failed, within its own rate limit.
+- **Stream-limit refusal** — a source at its concurrent-stream limit answers a new channel with
+  `429 source_stream_cap`. That is policy, not a fault: the player gets the `429` and Node's message as plain
+  text, with no failover walk, no retry loop and no upstream telemetry. When a failover backup on another
+  provider could carry the channel, Node answers a walkable `502` instead and the walk plays the backup.
 - **Stall detection** — an idle read timeout (`readTimeoutMs`) turns a silent upstream into a clean truncation
   instead of a hang.
 - **Read-ahead buffer** — a bounded in-memory buffer (`bufferSizeKb`) smooths jitter and fixes the
@@ -799,9 +1012,12 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
 - **Raw MPEG-TS** — with `outputFormat: 'ts'`, an external-mount stream is served as **one continuous
   `video/mp2t`** stream (segments concatenated, no remux) for players that prefer a flat TS pipe. On the
   passthrough path fMP4 / AES sources auto-fall back to HLS; with
-  [local origin](#local-origin-republishing-the-stream) enabled AES-128 is decrypted at ingest instead, so
+  [local origin](#local-origin--republishing-the-stream) enabled AES-128 is decrypted at ingest instead, so
   only fMP4 and `SAMPLE-AES` still decline. A **demuxed** source needs more than concatenation — origin mode
   [interleaves the pair](#demuxed-sources-and-the-interleaving-muxer) into one program rather than declining.
+  With local origin — and on the pass-through path for a `segmentUnwrap` source — a socket's **first** segment
+  is trimmed to start on a keyframe (see [keyframe joins](#signed-urls-disguised-segments-and-keyframe-joins)),
+  so a join never opens on seconds of undecodable picture.
 
 ## Local origin — republishing the stream
 
@@ -813,7 +1029,7 @@ With **`originEnabled`**, masqueradarr becomes the **origin** instead. One **ing
 viewer) follows the upstream, decrypts each segment, and pushes it into an in-memory **ring**; both output
 shapes are then rendered from that ring:
 
-<img src="docs/diagrams/local-origin.svg" alt="Local origin: Side-1 ingests once per channel (follow, fetch, decrypt) and pushes into a RAM ring; Side-2 reads the same ring to render either an authored HLS manifest or a continuous raw-TS socket for N viewers.">
+<img src="docs/diagrams/local-origin.svg" alt="Local origin: Side-1 ingests once per channel (follow, fetch, decrypt, unwrap) and pushes into a RAM ring; Side-2 reads the same ring to render either an authored HLS manifest or a continuous raw-TS socket for N viewers.">
 
 
 | | `originEnabled: false` | `originEnabled: true` |
@@ -918,6 +1134,48 @@ operation — manifest render, segment serve, TS concat), both under the `proxy`
 shows both sides per channel: `Delivery` is what viewers receive, `Ingest` / `Ring` / `Upstream pulled` is
 what the single shared ingest is doing.
 
+### Signed URLs, disguised segments and keyframe joins
+
+Some upstreams hand out URLs that expire, hide their media inside another container, or cut segments that do
+not start on a picture a decoder can show. [ZLive](#zlive-operator-notes) does all three; none of the handling
+below is keyed on it.
+
+- **Disguised segments.** A segment can arrive wrapped — ZLive's are RIFF/WEBP images from a TikTok CDN whose
+  EXIF chunk *is* the transport stream, 42 bytes in. The ingest unwraps **every** source's segments at fetch
+  time (a slice, not a remux — the TS bytes are untouched), so the splice scan, the ring and both renderers
+  only ever see clean TS; the wrapper is reported on the ingest's `iop` telemetry (`segmentWrapper`) and logged
+  once. Detection is structural, never a fixed offset: a body that already starts on a sync byte is left alone;
+  otherwise a RIFF/WEBP chunk walk takes an EXIF payload that starts on `0x47` and is a whole number of
+  188-byte packets; otherwise the first offset within 4 KiB where five sync bytes line up 188 bytes apart.
+  fMP4, ADTS audio, WebVTT, keys and HTML are never touched. The pass-through paths — the relay and the
+  pass-through raw-TS producer — strip a wrapper only for a policy whose grant carries `segmentUnwrap`
+  (streaming, holding at most ~5 KB), so every other source's bytes stay byte-identical; for those policies
+  the rewritten playlist also drops a false `#EXT-X-INDEPENDENT-SEGMENTS`.
+- **Token continuity.** When the ingest re-resolves the **same** candidate (not a failover escalation) and the
+  fresh window still lists — or abuts, or has slid at most 30 segments past — the segment it would have
+  fetched next, it keeps the ring, its generation, the splicers and the upstream cursor: the overlap is
+  deduped, a slide is still marked as a sequence gap, and viewers see nothing change. Anything else (a
+  different candidate, an escalation, a window renumbered below ours) resets the ring **and** forces
+  `#EXT-X-DISCONTINUITY` onto the first new segment. Before this, an expired signed URL dropped the whole ring:
+  every segment URL a client held turned `404`, every viewer waited for three segments to re-land, and the
+  overlap replayed as new media with no tag to warn the player.
+- **Renewal ahead of expiry.** With `expiresAtMs` in the grant, the ingest re-resolves 60 s before the target
+  expires (never sooner than 30 s after the resolve that scheduled it) through the keep-ring path above, while
+  the old target still plays; a failed renewal retries in 15 s.
+- **Bounded reads and backoff.** Every origin read — segment, key, playlist refresh, the entry, a bare-TS
+  socket's silence — is bounded by max(`readTimeoutMs`, 3 × target duration (capped at 120 s), 10 s); before,
+  a CDN connection that went quiet mid-body could park the ingest forever with the ring frozen. Repeated
+  failures back off 2 s → 4 → 8 … → 60 s and reset when media lands, but the **first** retry is immediate — so
+  a routine expiry `403` followed by a fresh resolve never waits.
+- **Refusals end promptly.** An ingest whose resolve is refused with `429 source_stream_cap` stops at once, and
+  clients asking for that channel get the `429` straight away instead of a `503` after waiting 20 s for a ring
+  that will never fill.
+- **Keyframe joins.** A raw-TS socket's first segment is cut to start at the PAT/PMT plus the packet that opens
+  the first keyframe (H.264 IDR, HEVC IRAP), found by a full NAL scan — ZLive sets the random-access flag on
+  every video PES, so the flag alone proves nothing. Only that socket's bytes are trimmed: the shared ring is
+  untouched, a segment with no keyframe is sent whole, and later segments stream as before. On the origin this
+  applies to every source; on the pass-through raw-TS path, to `segmentUnwrap` sources.
+
 ## Tuning knobs — the `proxyconfigs` subsystem
 
 The engine's knobs live in the `proxyconfigs` collection (the `videoconfig` successor), edited in the UI and
@@ -931,9 +1189,9 @@ resolved by Node into each grant (**Rust never reads MongoDB**). Two tiers, doc-
 |---|---|---|
 | `headerOverrides` | live | extra upstream headers, merged over the adapter's (operator wins) |
 | `connectTimeoutMs`, `maxRedirects` | live | per-config upstream HTTP client (cached in Rust) |
-| `readTimeoutMs`, `bufferSizeKb` | live | per-stream stall timeout + read-ahead buffer size |
+| `readTimeoutMs`, `bufferSizeKb` | live | per-stream stall timeout + read-ahead buffer size (on the origin, `readTimeoutMs` is one term of the ingest's read bound) |
 | `outputFormat` (`hls` \| `ts`) | live | distribution shape (`ts` = continuous MPEG-TS, external mount only) |
-| `originEnabled` | live | [local origin](#local-origin-republishing-the-stream): republish from our own ring instead of proxying the upstream playlist (default **off** = today's output byte-for-byte) |
+| `originEnabled` | live | [local origin](#local-origin--republishing-the-stream): republish from our own ring instead of proxying the upstream playlist (default **off** = today's output byte-for-byte). Forced **on** in the grant for a source that declares `originRequired` (ZLive), whatever the stored value — the panel shows *forced by <source>*, and keeps `originRingMb` / `spliceNormalize` editable even with its own toggle off, because those streams run on them |
 | `originRingMb` | live | per-channel ring cap in MiB (default **25**); a 3-segment floor still wins over it |
 | `failoverEnabled` | live | walk a channel's ordered failover children on an establish failure (default **on**) |
 | `failoverOnDefiniteError` | live | also treat a definitive upstream `4xx`/`5xx` as a failover trigger (default **off**) |

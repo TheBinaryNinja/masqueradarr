@@ -352,6 +352,12 @@ export interface SourceManifestEntry {
   // This source exposes several interchangeable upstream "players" per channel (DaddyLive), so the player
   // picker is rendered for its channels. Read it instead of hardcoding source ids — see playerSelectable().
   playerSelectable?: boolean;
+  // The scheduled channel probe skips this source's channels (its upstream polices bulk access); their status
+  // only updates while someone watches. Named on the Settings probe card. Optional: an older server omits it.
+  probeExempt?: boolean;
+  // The server forces the local origin on for this source's streams regardless of the proxy config, so the
+  // proxy config panels show "forced by source" instead of a toggle that would do nothing. Optional, as above.
+  originRequired?: boolean;
   // The Add Playlist "Built-In" summary (server fills DEFAULT_BUILTIN_META when an adapter omits it).
   builtinMeta: BuiltinPlaylistMeta;
 }

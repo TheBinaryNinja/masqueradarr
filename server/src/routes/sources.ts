@@ -10,8 +10,9 @@
 //
 // NOTE: the old always-on ffmpeg engine / slate / probe machinery were removed; the Rust masq-proxy now
 // serves video on the stream mounts (/api/v1 appPlayer + /api/ext/v1 externalPlayer). This router itself
-// covers only the catalog manifest, per-source status/metrics, sync/reset, built-in provisioning, and dulo
-// auth. Mounted at the app root (app.use(sourcesRouter)) because its paths span /api/sources.
+// covers only the catalog manifest, per-source status/metrics, sync/reset, built-in provisioning, the
+// operator-set-domain probes (dulo, zlive), and dulo auth. Mounted at the app root (app.use(sourcesRouter))
+// because its paths span /api/sources.
 
 import { Router } from 'express';
 import { logger } from '../sources/core/logger.js';
@@ -31,6 +32,13 @@ import {
   originFor,
 } from '../sources/adapters/dulo/config.js';
 import { scrapeSupabaseConfig } from '../sources/adapters/dulo/supabaseConfig.js';
+import {
+  UA as ZLIVE_UA,
+  catalogUrlFor as zliveCatalogUrlFor,
+  normalizeDomain as normalizeZliveDomain,
+  parseCatalog as parseZliveCatalog,
+  slugOf as zliveSlugOf,
+} from '../sources/adapters/zlive/config.js';
 import type { Request, Response } from 'express';
 import { Playlist } from '../models/Playlist.js';
 import { grantPlaylistToAdmins } from '../security/adminAccess.js';
@@ -61,6 +69,12 @@ sourcesRouter.get('/api/sources', (_req, res) => {
       // Published here so the SPA stops hardcoding a source-id list and a future playerSelectable adapter
       // lights up the UI for free.
       playerSelectable: s.playerSelectable === true,
+      // Capability flag: the scheduled probe sweep skips this source's channels (sources/probeAll.ts), so the
+      // Settings probe card can say so instead of promising "every active channel".
+      probeExempt: s.probeExempt === true,
+      // Capability flag: the resolve seam forces the local origin on for this source whatever the proxy config
+      // says, so the proxy config panels show "forced by source" rather than a toggle that has no effect.
+      originRequired: s.proxy.originRequired === true,
       // The Add Playlist "Built-In" summary (inherent, declarative; rendered before provisioning). Falls
       // back to the common-posture default when an adapter omits it.
       builtinMeta: s.builtinMeta ?? DEFAULT_BUILTIN_META,
@@ -219,6 +233,67 @@ sourcesRouter.post('/api/sources/dulo/domain/detect', async (_req, res, next) =>
       }
     }
     res.json({ detected: null, from: current, sameAsCurrent: true, tried });
+  } catch (err) {
+    next(err);
+  }
+});
+
+// ── zlive domain (Settings → Advanced → ZLive) ────────────────────────────────
+// zlive's catalog and stream resolver both live under one operator-set domain (Settings.zliveDomain). This only
+// HELPS the operator verify a candidate and PERSISTS NOTHING — the save goes through PUT /api/settings. It makes
+// exactly ONE request, to the candidate's public channel catalog, and deliberately never touches the stream
+// resolver: every resolver hit is logged per IP on zlive's side (it ranks clients by unique streams and keeps a
+// leech list), so a settings probe must not spend one. Redirects are reported, not followed — a moved domain
+// shows up as "redirects to X" (the operator's next candidate) and the probe never hops to a host nobody vetted.
+// SSRF: the candidate goes through the shared normalizeDomain() first (no IP literals, no private hosts).
+sourcesRouter.post('/api/sources/zlive/domain/test', async (req, res, next) => {
+  try {
+    const body = (req.body ?? {}) as Record<string, unknown>;
+    const parsed = normalizeZliveDomain(typeof body.domain === 'string' ? body.domain : '');
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+
+    const domain = parsed.domain;
+    const endpoint = zliveCatalogUrlFor(domain);
+    let httpStatus: number | null = null;
+    let channelCount: number | null = null;
+    let redirectTo: string | null = null;
+    let error: string | null = null;
+    try {
+      const r = await fetch(endpoint, {
+        redirect: 'manual',
+        headers: { 'User-Agent': ZLIVE_UA },
+        signal: AbortSignal.timeout(DOMAIN_PROBE_TIMEOUT_MS),
+      });
+      httpStatus = r.status;
+      if (r.status >= 300 && r.status < 400) {
+        redirectTo = r.headers.get('location');
+        error = `catalog redirects (HTTP ${r.status})${redirectTo ? ` to ${redirectTo.slice(0, 160)}` : ''}`;
+        await r.body?.cancel().catch(() => undefined);
+      } else if (r.ok) {
+        const rows = parseZliveCatalog(await r.json());
+        if (rows) {
+          // The same count a sync would produce: rows whose id yields a slug the resolver would sign.
+          channelCount = rows.filter((row) => zliveSlugOf(row.id) !== null).length;
+        } else {
+          error = 'catalog is not a JSON array — this does not look like zlive';
+        }
+      } else {
+        error = `catalog returned HTTP ${r.status}`;
+        await r.body?.cancel().catch(() => undefined);
+      }
+    } catch (err) {
+      error = (err as Error).message;
+    }
+
+    res.json({
+      domain,
+      endpoint,
+      ok: channelCount !== null && channelCount > 0,
+      httpStatus,
+      channelCount,
+      redirectTo,
+      error,
+    });
   } catch (err) {
     next(err);
   }

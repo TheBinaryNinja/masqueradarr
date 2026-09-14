@@ -8,16 +8,54 @@
 // and RESERVED (persisted + shipped in the grant, applied when a later phase gains the capability — segment
 // cache). See src/composables/useProxyConfig.ts + .claude/plans/durable-iptv-proxy.md.
 
-import { ref, onMounted, watch } from 'vue';
+import { ref, computed, onMounted, watch } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Segmented from './Segmented.vue';
 import Toggle from './Toggle.vue';
 import { useProxyConfig } from '../composables/useProxyConfig';
+import { SOURCES, PLAYLISTS } from '../data';
 
 const props = defineProps<{ configId: string; title?: string; flat?: boolean }>();
 
 const { state, loading, saveState, load } = useProxyConfig(props.configId);
+
+// "Forced by source" (display only). A source whose manifest entry says `originRequired` has its streams put on
+// the local origin by the server's resolve seam WHATEVER this config says, so a plain Off toggle would lie.
+// Nothing here writes state — the stored value stays exactly as the operator left it.
+//   · a built-in playlist's Custom panel (config id app_<playlistId>) for such a source → the toggle is moot:
+//     show it On and locked.
+//   · the Default panel, or a clone playlist's (its channels can come from any provider) → the toggle still
+//     governs everything else, so it stays live, with a line naming the sources it cannot turn off — and the
+//     ring-dependent knobs stay editable even with it Off, because those sources' streams run on them.
+// Only sources actually added here are named — the rest have no streams to force.
+const CUSTOM_PREFIX = 'app_';
+const originForcedSources = computed(() => {
+  const added = new Set(PLAYLISTS.value.map((p) => p.id));
+  return SOURCES.value.filter((s) => s.originRequired === true && added.has(s.id));
+});
+const panelPlaylist = computed(() =>
+  props.configId.startsWith(CUSTOM_PREFIX)
+    ? (PLAYLISTS.value.find((p) => p.id === props.configId.slice(CUSTOM_PREFIX.length)) ?? null)
+    : null,
+);
+const originForcedBy = computed(() => {
+  const pl = panelPlaylist.value;
+  if (!pl?.builtin || !pl.source) return null;
+  return originForcedSources.value.find((s) => s.id === pl.source)?.label ?? null;
+});
+const originForcedFor = computed(() => {
+  if (originForcedBy.value) return [];
+  if (props.configId.startsWith(CUSTOM_PREFIX) && panelPlaylist.value?.source !== 'clone') return [];
+  return originForcedSources.value.map((s) => s.label);
+});
+// The toggle's own state: on if the operator turned it on, or this panel's source forces it (locked on).
+const originToggleOn = computed(() => state.originEnabled || !!originForcedBy.value);
+// What the ring-dependent knobs (ring size, splice normalization) key off: they are LIVE whenever any stream
+// granted this config runs on the origin — including the forced sources named under an Off toggle here. In-app
+// playback carries no ?pl, so every in-app ZLive stream runs on the Default config's ring size and splice setting
+// with the Default toggle Off; greying them out would hide the values actually in effect.
+const originKnobsLive = computed(() => originToggleOn.value || originForcedFor.value.length > 0);
 
 // headerOverrides is edited as an ordered key/value row list, written back into the reactive state (whose deep
 // watcher fires the auto-save). state is the source of truth; rows are a view rebuilt whenever the id reloads.
@@ -162,14 +200,29 @@ watch(
         <div class="form-row">
           <div class="field-lbl">Local origin</div>
           <div class="row" style="align-items: center; gap: 10px;">
-            <Toggle :on="state.originEnabled" @change="(v) => (state.originEnabled = v)" />
-            <span class="muted" style="font-size: var(--fs-xs);">{{ state.originEnabled ? 'On' : 'Off' }}</span>
+            <Toggle :on="originToggleOn" :disabled="!!originForcedBy" @change="(v) => (state.originEnabled = v)" />
+            <span class="muted" style="font-size: var(--fs-xs);">
+              {{ originForcedBy ? `On · forced by ${originForcedBy}` : state.originEnabled ? 'On' : 'Off' }}
+            </span>
           </div>
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             Re-publish streams from masqueradarr instead of passing the provider's playlist through. One
             ingest per channel decrypts and caches segments in memory, and players receive a stream we
             authored — our own numbering, no encryption keys, no provider URLs. Extra viewers of the same
             channel then cost <b>no additional upstream bandwidth</b>. Off is exactly today's behaviour.
+          </div>
+          <div v-if="originForcedBy" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            <b>{{ originForcedBy }}</b> can only be served through the local origin, so it is always on for this
+            playlist.
+          </div>
+          <div v-else-if="originForcedFor.length" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+            Always on for <b>{{ originForcedFor.join(', ') }}</b> —
+            {{ originForcedFor.length === 1 ? 'that source' : 'those sources' }} can only be served through the
+            local origin, whatever this is set to.
+            <template v-if="!state.originEnabled">
+              <b>Ring size</b> and <b>Smooth ad transitions</b> below still apply to
+              {{ originForcedFor.length === 1 ? 'its' : 'their' }} streams.
+            </template>
           </div>
         </div>
         <div class="form-row">
@@ -178,7 +231,7 @@ watch(
           </div>
           <div class="input">
             <input type="number" min="1" max="4096" :value="state.originRingMb"
-                   :disabled="!state.originEnabled"
+                   :disabled="!originKnobsLive"
                    @input="setNum('originRingMb', ($event.target as HTMLInputElement).value)"
                    @blur="commitNum('originRingMb', 1, 4096)" />
           </div>
@@ -198,7 +251,7 @@ watch(
           <div class="row" style="align-items: center; gap: 10px;">
             <Toggle
               :on="state.spliceNormalize"
-              :disabled="!state.originEnabled"
+              :disabled="!originKnobsLive"
               @change="(v) => (state.spliceNormalize = v)"
             />
             <span class="muted" style="font-size: var(--fs-xs);">{{ state.spliceNormalize ? 'On' : 'Off' }}</span>

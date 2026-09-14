@@ -250,8 +250,10 @@ async function main(): Promise<void> {
   const dlhd = await SourceChannel.find({ source: 'dlhd' }, { _id: 1, name: 1 }).lean<
     { _id: string; name: string }[]
   >();
+  // The kind discriminator is lowercase 'gracenote' today (sources/seed.ts migrates legacy 'Gracenote' rows at
+  // boot) — match any casing so the script works against both a current and a pre-migration DB.
   const gracenoteIds = (
-    await EpgSource.find({ source: 'Gracenote' }, { id: 1 }).lean<{ id: string }[]>()
+    await EpgSource.find({ source: /^gracenote$/i }, { id: 1 }).lean<{ id: string }[]>()
   ).map((s) => s.id);
   const epg = await EpgChannel.find(
     { source: { $in: gracenoteIds } },
@@ -262,6 +264,15 @@ async function main(): Promise<void> {
     `[crosswalk] dlhd channels=${dlhd.length}  gracenote sources=${gracenoteIds.length} ` +
       `[${gracenoteIds.join(', ')}]  gracenote epgchannels=${epg.length}`,
   );
+  // Nothing to score against ⇒ every channel would be a miss and the write below would replace the committed
+  // addon with []. That is never a legitimate result (it means the DB has no synced Gracenote lineup), so stop.
+  if (!epg.length) {
+    throw new Error(`no Gracenote EPG channels loaded — refusing to overwrite ${OUT_PATH}`);
+  }
+  // Likewise with nothing to score: a DB where DaddyLive was never provisioned/synced has no dlhd channels.
+  if (!dlhd.length) {
+    throw new Error(`no dlhd source channels loaded (playlist never provisioned/synced?) — refusing to overwrite ${OUT_PATH}`);
+  }
 
   const rows: Row[] = [];
   const misses: { name: string; bucket: string }[] = [];
@@ -298,6 +309,8 @@ async function main(): Promise<void> {
   // Both tiers are written; sort strongest-first (then by name) so the high block leads and the medium
   // review candidates trail down to the 50 cutoff. The `confidence` field labels each row.
   rows.sort((a, b) => b.score - a.score || a.dlhd_name.localeCompare(b.dlhd_name));
+  // Last safety net: an empty crosswalk is never a result worth committing over the existing one.
+  if (!rows.length) throw new Error(`crosswalk produced 0 rows — refusing to overwrite ${OUT_PATH}`);
   writeFileSync(OUT_PATH, `${JSON.stringify(rows, null, 2)}\n`);
 
   const highRows = rows.filter((r) => r.confidence === 'high');

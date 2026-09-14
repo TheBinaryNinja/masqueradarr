@@ -6,12 +6,13 @@ import Toggle from '../components/Toggle.vue';
 import SettingsRow from '../components/SettingsRow.vue';
 import EndpointField from '../components/EndpointField.vue';
 import DuloAuthPanel from '../components/DuloAuthPanel.vue';
+import ZlivePanel from '../components/ZlivePanel.vue';
 import ProxyConfigPanel from '../components/ProxyConfigPanel.vue';
 import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
 import TagManager from '../components/TagManager.vue';
-import { type CronFrequency } from '../data';
+import { type CronFrequency, SOURCES, PLAYLISTS } from '../data';
 import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
 import {
@@ -27,7 +28,7 @@ const toast = useToast();
 
 // Settings is split into three tabs: General (General + Data), Video Config (Channel Probe Scheduler,
 // In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, DaddyLive Player Source,
-// Dulo.tv Authentication, Custom Tags).
+// Dulo.tv Authentication, ZLive, Custom Tags).
 const activeTab = ref<'general' | 'video' | 'advanced'>('general');
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
@@ -229,6 +230,13 @@ const probeRawCron = ref('0 */6 * * *');
 const probeSaving = ref(false);
 const probeSaveState = ref<'idle' | 'saved' | 'error'>('idle');
 const probeRunning = ref(false);
+// Sources the sweep skips (manifest `probeExempt` — an upstream that polices bulk access), limited to the
+// ones actually added here: the card says "every active channel", so it must name the exceptions an operator
+// can see, and only those. A built-in playlist's id IS its source id, which is what the lookup relies on.
+const probeExemptLabels = computed(() => {
+  const added = new Set(PLAYLISTS.value.map((p) => p.id));
+  return SOURCES.value.filter((s) => s.probeExempt === true && added.has(s.id)).map((s) => s.label);
+});
 
 onMounted(async () => {
   // Hydrate the probe schedule from its cronjob, if one exists (else the every-6-hours defaults stand).
@@ -429,6 +437,17 @@ async function fireReset() {
         Streams screens stay accurate even for channels nobody is watching. Each channel is resolved and probed
         through the video engine, so this runs at most once per hour.
       </div>
+      <div v-if="probeExemptLabels.length" class="muted"
+           style="font-size: var(--fs-xs); margin-top: -6px; margin-bottom: 14px;">
+        <template v-if="probeExemptLabels.length === 1">
+          <b>{{ probeExemptLabels[0] }}</b> is never probed — the source opts out of bulk checks, so its channel
+          status updates only while a channel is being watched.
+        </template>
+        <template v-else>
+          <b>{{ probeExemptLabels.join(', ') }}</b> are never probed — those sources opt out of bulk checks, so
+          their channel status updates only while a channel is being watched.
+        </template>
+      </div>
       <SettingsRow label="Automatic probe" hint="Sweep all channels on a schedule.">
         <template #right>
           <Toggle :on="probeAuto" @change="(v) => { probeAuto = v; saveProbeSchedule(); }" />
@@ -527,6 +546,8 @@ async function fireReset() {
     </div>
 
     <DuloAuthPanel v-if="activeTab === 'advanced'" />
+
+    <ZlivePanel v-if="activeTab === 'advanced'" />
 
     <div class="card" v-if="activeTab === 'advanced'">
       <h3 class="section-title">Custom Tags</h3>

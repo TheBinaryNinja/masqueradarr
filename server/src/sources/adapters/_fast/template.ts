@@ -16,6 +16,8 @@ import type {
   ArtifactType,
   BuiltinPlaylistMeta,
   RawListing,
+  ResolvedStream,
+  ResolveStreamOptions,
   SourceAdapter,
   SourceGrouping,
 } from '../../types.js';
@@ -31,6 +33,14 @@ export interface FastSourceOptions {
   status?: SourceAdapter['status'];
   afterSync?: SourceAdapter['afterSync'];
 
+  // ── capability flags — each absent by default, i.e. the posture every FAST source has today ──
+  /** Skip this source's channels in the scheduled probe sweep (see SourceAdapter.probeExempt). */
+  probeExempt?: boolean;
+  /** Cap on distinct concurrently-live channels (see SourceAdapter.maxConcurrentStreams). */
+  maxConcurrentStreams?: SourceAdapter['maxConcurrentStreams'];
+  /** Re-link onto external guides after a gracenote/jesmann sync (see SourceAdapter.applyEpgLinks). */
+  applyEpgLinks?: SourceAdapter['applyEpgLinks'];
+
   // ── the two per-source functions (always required) ──
   listChannels(): Promise<RawListing>;
   normalize(raw: any, ctx: { ingestedAt: string }): SourceChannelDoc | null;
@@ -40,11 +50,18 @@ export interface FastSourceOptions {
   allowedSuffixes: string[];
   upstreamHeaders?(url: string): Record<string, string>; // default {}
   isEntryUrl?(url: string): boolean; // default: pathname ends with .m3u8
-  resolveStream?(entryUrl: string): Promise<{ masterUrl: string }>; // default: identity
+  // default: identity. Takes the seam's per-resolve opts (`deep`, plus `fresh` when the data plane reports the last
+  // target failing early — makeFastSource never sets playerSelectable, so player/advance stay unset) and may report
+  // a signed target's expiry (`expiresAtMs`).
+  resolveStream?(entryUrl: string, opts?: ResolveStreamOptions): Promise<ResolvedStream>;
   isAllowedUpstream?(url: string): boolean; // default: scoped static suffix allowlist + private-IP block
   onPlaylistChildHost?: ((host: string) => void) | null; // default: null (static allowlist learns nothing)
   /** Ad-segment URI signature for a cue-tag-less stitcher (pluto). Default: undefined ⇒ no URI ad detection. */
   adSignature?: AdSignature;
+  /** Serve only through the local origin (see SourceProxy.originRequired). Default: undefined ⇒ operator decides. */
+  originRequired?: boolean;
+  /** Segments arrive wrapped in a container prefix to strip (see SourceProxy.segmentUnwrap). Default: verbatim. */
+  segmentUnwrap?: boolean;
   relabelSegmentContentType?(url: string, contentType: string, type?: ArtifactType): string;
   classifyArtifact?(url: string): ArtifactType;
 }
@@ -85,6 +102,8 @@ export function makeFastSource(opts: FastSourceOptions): SourceAdapter {
     grouping: opts.grouping,
     builtinMeta: opts.builtinMeta,
     status: opts.status,
+    probeExempt: opts.probeExempt,
+    maxConcurrentStreams: opts.maxConcurrentStreams,
     isEntryUrl: opts.isEntryUrl ?? defaultIsEntryUrl,
     resolveStream: opts.resolveStream ?? (async (entryUrl: string) => ({ masterUrl: entryUrl })),
     proxy: {
@@ -92,11 +111,14 @@ export function makeFastSource(opts: FastSourceOptions): SourceAdapter {
       isAllowedUpstream,
       onPlaylistChildHost: opts.onPlaylistChildHost ?? null,
       adSignature: opts.adSignature,
+      originRequired: opts.originRequired,
+      segmentUnwrap: opts.segmentUnwrap,
       relabelSegmentContentType:
         opts.relabelSegmentContentType ??
         ((_url: string, contentType: string) => contentType || 'application/octet-stream'),
       classifyArtifact: opts.classifyArtifact ?? defaultClassifyArtifact,
     },
     afterSync: opts.afterSync,
+    applyEpgLinks: opts.applyEpgLinks,
   };
 }
