@@ -3271,12 +3271,7 @@ async fn ts_ring_producer(
             sent_any = true;
             if tx.send(Ok(body)).await.is_err() {
                 // Client disconnected — the receiver dropped. Close out and release the lease.
-                log::info("oop", &ctx.rid, || format!("origin raw-TS client disconnected ({stream_id})"));
-                if pending_bytes > 0 {
-                    ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
-                }
-                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
-                return;
+                return client_gone(&ctx, &stream_id, pending_bytes, "origin raw-TS client disconnected");
             }
         }
         if pending_bytes > 0 && last_flush.elapsed() >= Duration::from_secs(1) {
@@ -3286,7 +3281,9 @@ async fn ts_ring_producer(
         }
         if !sent_any {
             // Nothing new yet — wait for the ingest to push rather than spinning on the ring.
-            let _ = tokio::time::timeout(Duration::from_secs(30), origin.wait_for_segment()).await;
+            if !await_segment_or_client_gone(&origin, &tx).await {
+                return client_gone(&ctx, &stream_id, pending_bytes, "origin raw-TS client disconnected while idle");
+            }
             // The ingest died (idle-stopped or the upstream ended) and drained: end the socket cleanly.
             if origin.stopping.load(Ordering::Relaxed) {
                 break;
@@ -3299,6 +3296,34 @@ async fn ts_ring_producer(
     }
     ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
     log::info("oop", &ctx.rid, || format!("origin raw-TS session close ({stream_id}, {close_reason})"));
+}
+
+/// Park a raw-TS producer until the ingest publishes (or 30 s pass — the caller re-reads `stopping`), and say
+/// whether the viewer is still there: `false` means its socket closed while we waited.
+///
+/// A failed `send` is how a producer normally learns its viewer left, and a producer with nothing to send never
+/// sends. That is the STALLED ingest — an upstream refusing, retrying on a backoff that grows toward a minute —
+/// and there the lease this producer holds is the only thing keeping the ingest alive: it would go on knocking
+/// on upstream for a viewer long gone, which against a source that polices restreamers is the worst kind of
+/// traffic. So the client's departure is watched too.
+async fn await_segment_or_client_gone(
+    origin: &Origin,
+    tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+) -> bool {
+    tokio::select! {
+        _ = tx.closed() => false,
+        _ = tokio::time::timeout(Duration::from_secs(30), origin.wait_for_segment()) => true,
+    }
+}
+
+/// Close out a raw-TS session whose viewer left: the bytes not yet reported, then the close. The caller returns
+/// straight after, which drops the lease.
+fn client_gone(ctx: &TsRingCtx, stream_id: &str, pending_bytes: u64, what: &str) {
+    log::info("oop", &ctx.rid, || format!("{what} ({stream_id})"));
+    if pending_bytes > 0 {
+        ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
+    }
+    ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
 }
 
 /// KEY: a ring segment as a socket JOINING on it should receive it — trimmed to its first keyframe
@@ -3436,12 +3461,7 @@ async fn ts_ring_pair_producer(
             sent_any = true;
             if tx.send(Ok(body)).await.is_err() {
                 // Client disconnected — the receiver dropped. Close out and release the lease.
-                log::info("oop", &ctx.rid, || format!("origin raw-TS interleaved client disconnected ({stream_id})"));
-                if pending_bytes > 0 {
-                    ctx.state.report(serde_json::json!({ "kind": "sbytes", "streamId": stream_id, "bytes": pending_bytes }));
-                }
-                ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": "client_gone" }));
-                return;
+                return client_gone(&ctx, &stream_id, pending_bytes, "origin raw-TS interleaved client disconnected");
             }
         }
         if pending_bytes > 0 && last_flush.elapsed() >= Duration::from_secs(1) {
@@ -3451,7 +3471,9 @@ async fn ts_ring_pair_producer(
         }
         if !sent_any {
             // Nothing new yet — wait for the ingest to push rather than spinning on the ring.
-            let _ = tokio::time::timeout(Duration::from_secs(30), origin.wait_for_segment()).await;
+            if !await_segment_or_client_gone(&origin, &tx).await {
+                return client_gone(&ctx, &stream_id, pending_bytes, "origin raw-TS interleaved client disconnected while idle");
+            }
             // The ingest died (idle-stopped or the upstream ended) and drained: end the socket cleanly.
             if origin.stopping.load(Ordering::Relaxed) {
                 break;
@@ -4998,5 +5020,36 @@ mod tests {
         assert_eq!(after.len(), seg.len(), "the segment after the join goes out whole");
         let ring = subscribe(&state, "zl", "zl://abc", None, &policy);
         assert!(ring.origin().window().iter().all(|s| s.bytes.len() == seg.len()), "the shared ring is never trimmed");
+    }
+
+    /// LEAK, end to end: a raw-TS viewer who leaves while the ingest has nothing new releases the channel at once.
+    /// A failed send used to be the producer's only way to learn it, so over a quiet ring — nothing to send — its
+    /// lease pinned the ingest, still polling upstream, for as long as the upstream stayed quiet (a stalled or
+    /// refusing upstream: indefinitely).
+    #[tokio::test]
+    async fn a_raw_ts_viewer_who_leaves_while_the_ring_is_quiet_releases_the_channel_at_once() {
+        let up = Mock::start(Seam::grant("/pl/a.m3u8", true)).await;
+        up.script(|s| {
+            // A window that never advances: once the viewer holds all of it, its producer has nothing to send.
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(media_playlist(100, 4, 1)));
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let resp = serve_ts(&state, &policy, "zl", "zl://abc", None, &viewer(), "t").await.expect("a ringable shape");
+        let mut socket = resp.into_body().into_data_stream();
+        for _ in 0..4 {
+            socket.next().await.expect("a held segment").expect("readable");
+        }
+        let origin = state.origins().lock_ok().get(&crate::state::target_key("zl", "zl://abc")).cloned().expect("a live origin");
+        assert_eq!(origin.subscribers.load(Ordering::Relaxed), 1, "the socket's producer holds the only lease");
+
+        tokio::time::sleep(Duration::from_millis(200)).await; // parked on the quiet ring
+        drop(socket);
+        until(Duration::from_secs(3), "the departed viewer's lease is released", || {
+            origin.subscribers.load(Ordering::Relaxed) == 0
+        })
+        .await;
     }
 }
