@@ -8,7 +8,7 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use crate::sync::{LockExt, RwExt};
 use serde::Deserialize;
@@ -30,8 +30,36 @@ const RING_REPORT_MS: u64 = 2500;
 /// media-playlist entry (so a few-second player poll doesn't re-mint a dulo playbackUrl / re-scrape dlhd
 /// every time), while staying well inside typical multi-minute token expiries. A master entry is fetched
 /// once (the player then polls the variant HOP, which never resolves), so this mainly guards media-playlist
-/// entries. (P3 could honor a per-grant `expiresAt` instead of a fixed cap.)
+/// entries. It is a CAP: a grant whose target carries its own expiry (`expiresAtMs`) is reused for less when
+/// that expiry comes sooner — see `target_ttl`.
 const TARGET_TTL: Duration = Duration::from_secs(60);
+
+/// EXP: how far ahead of a target's own expiry the cache stops handing it out. A reused target is fetched at
+/// once by the request that reused it, so this only has to outlast one fetch plus a player's poll — and a
+/// signed URL that lapses mid-poll is exactly the 403 this exists to avoid.
+const TARGET_EXPIRY_MARGIN: Duration = Duration::from_secs(60);
+
+/// EXP: the least a resolved target is ever reused for, however close its stated expiry. Without a floor, an
+/// adapter that keeps handing back a target already inside the margin would be re-resolved on EVERY poll — a
+/// resolver hammer built out of good intentions. A target this close to expiry that does lapse costs one
+/// rejected fetch, which the rejected-target refresh (`invalidate_rejected_target`) then clears.
+const MIN_TARGET_TTL: Duration = Duration::from_secs(5);
+
+/// The message a stream-cap refusal carries when Node's reply names none.
+const DEFAULT_REFUSAL: &str = "stream refused: this source is already at its concurrent-stream limit";
+
+/// REJ: the resolve `reason` for a re-resolve that follows the upstream REFUSING the target outright — a definitive
+/// 401/403/410 on the entry fetch. With `RETIRE_REFRESH_FAILED` it is one of Node's `FRESH_REASONS`
+/// (resolveSeam.ts): the adapter is asked for a FRESHLY resolved target rather than the one it cached — a caching
+/// resolver (zlive's per-slug Location) would otherwise hand back the very link that was just refused, for as long
+/// as its cache believes it. Never sent on a scheduled renewal: that target is still valid, and a cached answer
+/// is exactly right for it. Node rate-limits what it does with either, so an upstream that refuses every fresh
+/// target too cannot turn these into a resolver hammer.
+pub const RETIRE_TARGET_REJECTED: &str = "target_rejected";
+
+/// REJ: the resolve `reason` for the origin ingest's re-resolve after it could not refresh the playlist it was
+/// following through its target. See `RETIRE_TARGET_REJECTED`.
+pub const RETIRE_REFRESH_FAILED: &str = "refresh_failed";
 
 /// FOG (failover groups): how long a stream's failover cursor survives without ANY request (entry or hop)
 /// before it resets to the parent. The cursor pins a stream to its winning candidate for the WHOLE viewing
@@ -114,6 +142,26 @@ pub struct TargetEntry {
     policy_key: String,
     attempt: u32,
     last_access: Instant,
+    /// EXP: epoch ms at which `target` itself stops being valid, when the grant said (`expiresAtMs`). Already
+    /// folded into `expires` for the cache; kept so the origin ingest can schedule its own renewal off the
+    /// same number (`target_record`).
+    expires_at_ms: Option<u64>,
+    /// When a definitive upstream rejection last expired this ENTRY's target (`invalidate_rejected_target`).
+    /// Carried across re-resolves on purpose — see `record_target`.
+    rejected_at: Option<Instant>,
+    /// REJ: why the NEXT resolve of this entry is happening, when a rejection expired the target
+    /// (`RETIRE_TARGET_REJECTED`). Taken by that resolve — whichever caller makes it — and never carried across a
+    /// re-insert: once a resolve has replaced the refused target, the hint has said all it had to.
+    retire_hint: Option<&'static str>,
+}
+
+/// What a target record says about the resolve that wrote it — see `AppState::target_record`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TargetMeta {
+    /// The failover attempt the target was resolved at (0 = the channel itself).
+    pub attempt: u32,
+    /// Epoch ms at which the target stops being valid, when the adapter knew.
+    pub expires_at_ms: Option<u64>,
 }
 
 /// The target-cache key for a stream: (mount source, entry url) — NUL-joined like the log rid.
@@ -121,12 +169,35 @@ pub(crate) fn target_key(source: &str, entry: &str) -> String {
     format!("{source}\u{0}{entry}")
 }
 
+/// Wall-clock now, as the epoch milliseconds a grant's `expiresAtMs` is written in.
+pub(crate) fn epoch_ms() -> u64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+}
+
+/// EXP: how long a freshly resolved target may be reused — `TARGET_TTL`, or less when the grant says the target
+/// itself lapses sooner. Pure so the arithmetic can be pinned without a clock.
+fn target_ttl(expires_at_ms: Option<u64>, now_ms: u64) -> Duration {
+    let Some(exp) = expires_at_ms else {
+        return TARGET_TTL;
+    };
+    let left = Duration::from_millis(exp.saturating_sub(now_ms)).saturating_sub(TARGET_EXPIRY_MARGIN);
+    left.clamp(MIN_TARGET_TTL, TARGET_TTL)
+}
+
 /// A resolve-seam failure. `Exhausted` is Node's DISTINCT 410 `failover_exhausted` reply — the requested
-/// entry has no (more) failover candidates — which terminates a failover walk. Everything else (a dead
-/// candidate's resolve_failed 502, Node unreachable, a malformed grant, …) is `Other`: a walk advances
-/// past it, non-walk callers just log it.
+/// entry has no (more) failover candidates — which terminates a failover walk. `Refused` is Node's 429
+/// `source_stream_cap`: POLICY, not failure — see its own doc. Everything else (a dead candidate's
+/// resolve_failed 502, Node unreachable, a malformed grant, …) is `Other`: a walk advances past it, non-walk
+/// callers just log it.
 pub enum ResolveErr {
     Exhausted,
+    /// CAP: the source is at its concurrent-stream cap and this is a NEW channel. Definitive by contract: the seam
+    /// must send it only where no candidate could carry the stream instead — an ungrouped entry, or a group whose
+    /// backups all sit behind the same cap — and answer a channel whose backup COULD play with a walkable failure
+    /// (`Other`), which the walk routes around like any dead candidate. So every caller stops HERE — the relay
+    /// answers the client 429 with Node's message, an origin ingest ends, and a retry loop does not ask again
+    /// every couple of seconds. Carries that message, which names the source and the cap for the viewer.
+    Refused(String),
     Other(String),
 }
 
@@ -134,9 +205,37 @@ impl std::fmt::Display for ResolveErr {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ResolveErr::Exhausted => write!(f, "failover candidates exhausted"),
+            ResolveErr::Refused(why) => write!(f, "refused: {why}"),
             ResolveErr::Other(e) => write!(f, "{e}"),
         }
     }
+}
+
+/// Classify a non-2xx reply from the resolve seam. Pure so the wire contract can be pinned without a Node.
+fn seam_failure(status: u16, body: &str) -> ResolveErr {
+    // Node's DISTINCT exhausted reply (410 failover_exhausted) — the walk's terminator. Matched on both
+    // signals so neither a proxy in front nor a body tweak can turn it into an endless walk.
+    if status == 410 || body.contains("failover_exhausted") {
+        return ResolveErr::Exhausted;
+    }
+    // CAP: 429 `{ error: 'source_stream_cap', message }`. Also matched on the parsed error CODE, for the same
+    // reason as above — but on the field, not a substring: an adapter's own failure text is interpolated into
+    // a 502's body, and a stray mention there must not turn a walkable failure into a refusal.
+    let json = serde_json::from_str::<serde_json::Value>(body).ok();
+    let field = |k: &str| json.as_ref().and_then(|v| v.get(k)).and_then(|v| v.as_str());
+    if status == 429 || field("error") == Some("source_stream_cap") {
+        let message = field("message").map(str::trim).filter(|m| !m.is_empty()).unwrap_or(DEFAULT_REFUSAL);
+        return ResolveErr::Refused(message.to_string());
+    }
+    ResolveErr::Other(format!("resolve {status}: {body}"))
+}
+
+/// One successful seam resolve, as `resolve` hands it to `resolve_at`.
+struct Granted {
+    policy: Arc<SourcePolicy>,
+    policy_key: String,
+    target: String,
+    expires_at_ms: Option<u64>,
 }
 
 pub struct SourcePolicy {
@@ -200,6 +299,16 @@ pub struct SourcePolicy {
     /// FIX, so it defaults ON — off restores the un-normalised republishing whose pid churn freezes players
     /// mid-pod (see `tsnorm::Splicer`). Meaningless unless `origin_enabled`.
     pub splice_normalize: AtomicBool,
+    /// DSG: the SERVING adapter declares that its segments arrive disguised (a transport stream smuggled inside
+    /// an image — see `tsseg`'s DSG section), so the PASS-THROUGH byte paths strip the wrapper: the relay pump
+    /// (`stream::segment_body`) and the raw-TS producer (`tsmux`). It also drops the upstream's
+    /// `#EXT-X-INDEPENDENT-SEGMENTS` from rewritten playlists (`manifest::drop_independent_segments`).
+    ///
+    /// Adapter-declared and overwritten on every resolve, exactly like `relabel_segment`: whether a candidate's
+    /// segments are disguised is a fact about ITS provider, which is also why the pass-through paths read it
+    /// from the policy the stream is pinned to (a failover child's, via `&e=`), never the mount source's. The
+    /// origin ingest does not consult it at all — it unwraps universally, because the ring is TS by contract.
+    pub segment_unwrap: AtomicBool,
 }
 
 impl SourcePolicy {
@@ -222,6 +331,7 @@ impl SourcePolicy {
             origin_ring_mb: AtomicU64::new(crate::origin::DEFAULT_RING_MB),
             ad_uri_contains: RwLock::new(Vec::new()),
             splice_normalize: AtomicBool::new(true),
+            segment_unwrap: AtomicBool::new(false),
         }
     }
 }
@@ -255,6 +365,17 @@ pub struct Grant {
     /// a pre-CUE Node that omits the key entirely.
     #[serde(rename = "adSignature", default)]
     pub ad_signature: Option<AdSignatureWire>,
+    /// DSG: the serving adapter's segments arrive disguised and the pass-through paths must unwrap them
+    /// (Node's `SourceProxy.segmentUnwrap`). `default` → false → an older Node, and every adapter that did not
+    /// declare it, keep today's byte-exact pass-through.
+    #[serde(rename = "segmentUnwrap", default)]
+    pub segment_unwrap: bool,
+    /// EXP: epoch ms at which `target` stops being valid — a signed URL's own token expiry, when the adapter
+    /// knows it (Node's `ResolvedStream.expiresAtMs`). It shortens the relay's target reuse below `TARGET_TTL`
+    /// and schedules the origin ingest's renewal ahead of the lapse. `default` → None → an older Node, and every
+    /// adapter that knows no expiry, keep the fixed TTL and the reactive (refresh-failed) renewal.
+    #[serde(rename = "expiresAtMs", default, deserialize_with = "lenient_epoch_ms")]
+    pub expires_at_ms: Option<u64>,
     #[serde(rename = "policySource", default)]
     pub policy_source: Option<String>,
     /// FOG: failover context when this grant serves a candidate (attempt >= 1) — used for log attribution.
@@ -334,6 +455,19 @@ fn default_true() -> bool {
 }
 fn default_origin_ring_mb() -> u64 {
     crate::origin::DEFAULT_RING_MB
+}
+
+/// EXP: `expiresAtMs` as Node sends it (`number | null`), read without trusting its exact numeric shape. A grant
+/// that fails to parse fails the WHOLE resolve, so a fractional, negative or non-numeric value has to degrade
+/// to "no expiry known" — the fixed TTL every grant had before — and never to a dead stream.
+fn lenient_epoch_ms<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Option<u64>, D::Error> {
+    let ms = match Option::<serde_json::Value>::deserialize(d)? {
+        Some(serde_json::Value::Number(n)) => {
+            n.as_u64().or_else(|| n.as_f64().filter(|f| f.is_finite() && *f > 0.0).map(|f| f as u64))
+        }
+        _ => None,
+    };
+    Ok(ms.filter(|&ms| ms > 0))
 }
 
 impl Default for ProxyConfigWire {
@@ -477,6 +611,10 @@ impl AppState {
     /// result — pinning the stream's cursor to that attempt. attempt 0 = the channel itself (Node re-runs
     /// `resolveStream`, which drives dlhd `reprobeMirror()` — the pre-failover "mirror failover");
     /// attempt N >= 1 = the channel's Nth ordered failover child, resolved via the child's own adapter.
+    ///
+    /// `reason` tells Node why this resolve is happening, when the caller knows. With none given, a hint the
+    /// entry's record holds (`retire_hint` — set when a rejection expired the target) goes instead; either way
+    /// the hint is spent, since this resolve replaces the refused target.
     pub async fn resolve_at(
         &self,
         source: &str,
@@ -485,32 +623,88 @@ impl AppState {
         attempt: u32,
         reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
-        let (policy, policy_key, target) = self.resolve(source, entry, pl, attempt, reason).await?;
+        let pending = self.take_retire_hint(source, entry);
+        let reason = reason.or(pending);
+        let g = match self.resolve(source, entry, pl, attempt, reason).await {
+            Ok(g) => g,
+            // CAP: a refusal also retires whatever target this entry still has cached. Node said this channel
+            // may not stream now; letting `resolve_entry` keep serving the last grant for the rest of its TTL
+            // would admit it anyway, around the cap, on every poll that lands inside that window.
+            Err(ResolveErr::Refused(why)) => {
+                self.invalidate_target(source, entry);
+                return Err(ResolveErr::Refused(why));
+            }
+            Err(e) => return Err(e),
+        };
+        self.record_target(source, entry, &g.target, g.policy_key, attempt, g.expires_at_ms);
+        Ok((g.policy, g.target))
+    }
+
+    /// Write the target record for a successful resolve: the cached target (reused for `target_ttl`) plus the
+    /// stream's failover cursor, pinned to `attempt`.
+    fn record_target(
+        &self,
+        source: &str,
+        entry: &str,
+        target: &str,
+        policy_key: String,
+        attempt: u32,
+        expires_at_ms: Option<u64>,
+    ) {
         let now = Instant::now();
-        self.targets.lock_ok().insert(
-            target_key(source, entry),
+        let key = target_key(source, entry);
+        let mut m = self.targets.lock_ok();
+        // The rejected-target latch belongs to the ENTRY, not to one resolve of it, so it survives the
+        // re-insert. Re-arming it on every resolve would let an upstream that rejects each FRESH target too
+        // cost one resolve per poll — the very loop `invalidate_rejected_target` is bounded to prevent.
+        let rejected_at = m.get(&key).and_then(|e| e.rejected_at);
+        m.insert(
+            key,
             TargetEntry {
-                target: target.clone(),
-                expires: now + TARGET_TTL,
+                target: target.to_string(),
+                expires: now + target_ttl(expires_at_ms, epoch_ms()),
                 policy_key,
                 attempt,
                 last_access: now,
+                expires_at_ms,
+                rejected_at,
+                retire_hint: None,
             },
         );
-        Ok((policy, target))
+    }
+
+    /// REJ: take the entry's pending retire hint, if a rejection left one (see `TargetEntry::retire_hint`).
+    fn take_retire_hint(&self, source: &str, entry: &str) -> Option<&'static str> {
+        self.targets.lock_ok().get_mut(&target_key(source, entry)).and_then(|e| e.retire_hint.take())
+    }
+
+    /// The failover attempt and expiry recorded for `target` — `None` unless the entry's record still names
+    /// that very target.
+    ///
+    /// Keyed on the target and not just the entry because the record is SHARED: a concurrent resolve of the
+    /// same channel (a client's entry poll, a hop's async refresh, a relay walk) may have overwritten it with a
+    /// different candidate since. Attributing that candidate's attempt or expiry to our target would be a
+    /// guess; `None` makes the caller take its conservative path instead (origin: no continuity claim, no
+    /// scheduled renewal — the reactive one still covers it).
+    pub fn target_record(&self, source: &str, entry: &str, target: &str) -> Option<TargetMeta> {
+        let m = self.targets.lock_ok();
+        let e = m.get(&target_key(source, entry)).filter(|e| e.target == target)?;
+        Some(TargetMeta { attempt: e.attempt, expires_at_ms: e.expires_at_ms })
     }
 
     /// RSL failover: a fresh resolve at the stream's CURRENT pinned candidate (see resolve_at). Used by the
-    /// hop-failure async refresh + the tsmux producer, so a mid-session re-resolve never snaps a
-    /// failover-pinned stream back to its dead parent.
+    /// hop-failure async refresh + the origin ingest, so a mid-session re-resolve never snaps a
+    /// failover-pinned stream back to its dead parent. `reason` as for `resolve_at` — the origin names a failed
+    /// refresh or a refused target (`RETIRE_*`) so the adapter re-mints rather than re-serving its cache.
     pub async fn resolve_fresh(
         &self,
         source: &str,
         entry: &str,
         pl: Option<&str>,
+        reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let attempt = self.cursor_attempt(source, entry);
-        self.resolve_at(source, entry, pl, attempt, None).await
+        self.resolve_at(source, entry, pl, attempt, reason).await
     }
 
     /// Like `resolve_fresh`, but ADVANCES the stream's failover cursor first — "the candidate you last gave
@@ -567,6 +761,9 @@ impl AppState {
                         policy_key: source.to_string(),
                         attempt: 1,
                         last_access: now,
+                        expires_at_ms: None,
+                        rejected_at: None,
+                        retire_hint: None,
                     },
                 );
                 1
@@ -582,6 +779,33 @@ impl AppState {
         if let Some(e) = self.targets.lock_ok().get_mut(&target_key(source, entry)) {
             e.expires = now; // `expires > now` is strict — equal means stale
         }
+    }
+
+    /// REJ: expire a cached target the UPSTREAM just refused outright (401/403/410 on the ENTRY) — at most once
+    /// per entry per `TARGET_TTL`. Returns whether it did.
+    ///
+    /// Those statuses are the shape of a signed URL that lapsed, or a token the upstream revoked: re-serving
+    /// the same cached target for the rest of its TTL would earn the same refusal on every poll, where a fresh
+    /// resolve may mint a working one. The once-per-window bound is what keeps that from turning into a resolve
+    /// per poll when the upstream refuses FRESH targets too (an IP it has stopped serving): one extra resolve a
+    /// minute, then the cache's own TTL again.
+    ///
+    /// It also leaves the entry a `RETIRE_TARGET_REJECTED` hint for that re-resolve. Expiring OUR cache is not
+    /// enough on its own: an adapter that caches its own resolution (zlive keeps each channel's signed Location)
+    /// would hand the refused link straight back, and the "re-resolve" would change nothing until its cache aged.
+    pub fn invalidate_rejected_target(&self, source: &str, entry: &str) -> bool {
+        let now = Instant::now();
+        let mut m = self.targets.lock_ok();
+        let Some(e) = m.get_mut(&target_key(source, entry)) else {
+            return false;
+        };
+        if e.rejected_at.is_some_and(|t| now.duration_since(t) < TARGET_TTL) {
+            return false;
+        }
+        e.rejected_at = Some(now);
+        e.expires = now;
+        e.retire_hint = Some(RETIRE_TARGET_REJECTED);
+        true
     }
 
     /// FOG: the stream's current failover cursor (0 = the channel itself), after the idle reset.
@@ -667,10 +891,11 @@ impl AppState {
     }
 
     /// Call the Node resolve seam for an ENTRY url; update the SERVING adapter's policy (headers/relabel/
-    /// allow + seed the master host into the allowlist); return (policy, its cache key, the target to
-    /// fetch). FOG: `attempt` selects the failover candidate (0 = the channel itself); the policy is keyed
-    /// by the grant's `policySource` — the serving candidate's adapter — NOT the URL mount source, so a
-    /// cross-provider child's headers/relabel never overwrite the parent provider's shared policy.
+    /// allow + seed the master host into the allowlist); return the policy, its cache key, the target to
+    /// fetch and that target's own expiry. FOG: `attempt` selects the failover candidate (0 = the channel
+    /// itself); the policy is keyed by the grant's `policySource` — the serving candidate's adapter — NOT the
+    /// URL mount source, so a cross-provider child's headers/relabel never overwrite the parent provider's
+    /// shared policy.
     async fn resolve(
         &self,
         source: &str,
@@ -678,7 +903,7 @@ impl AppState {
         pl: Option<&str>,
         attempt: u32,
         reason: Option<&str>,
-    ) -> Result<(Arc<SourcePolicy>, String, String), ResolveErr> {
+    ) -> Result<Granted, ResolveErr> {
         let rid = crate::log::rid(source, entry_url);
         crate::log::trace("resolve", &rid, || {
             format!(
@@ -686,9 +911,11 @@ impl AppState {
                 crate::proxy::host_of(entry_url)
             )
         });
-        // `reason` rides along on an ESCALATING resolve so the adapter can record WHY the upstream it was
-        // serving is being retired. Without it every burn looks the same in the player memory, and "this
-        // provider 404s" is a different operational fact from "this provider serves undecodable video".
+        // `reason` says why the data plane is resolving again, when it knows. On an ESCALATING resolve it lets the
+        // adapter record WHY the upstream it was serving is being retired — without it every burn looks the same
+        // in the player memory, and "this provider 404s" is a different operational fact from "this provider
+        // serves undecodable video". `RETIRE_TARGET_REJECTED` / `RETIRE_REFRESH_FAILED` additionally ask for a
+        // freshly resolved target rather than a cached one (see there).
         let body = serde_json::json!({
             "source": source, "url": entry_url, "pl": pl, "attempt": attempt, "reason": reason,
         });
@@ -703,12 +930,7 @@ impl AppState {
         let status = resp.status();
         if !status.is_success() {
             let txt = resp.text().await.unwrap_or_default();
-            // Node's DISTINCT exhausted reply (410 failover_exhausted) — the walk's terminator. Matched on
-            // both signals so neither a proxy in front nor a body tweak can turn it into an endless walk.
-            if status.as_u16() == 410 || txt.contains("failover_exhausted") {
-                return Err(ResolveErr::Exhausted);
-            }
-            return Err(ResolveErr::Other(format!("resolve {}: {}", status.as_u16(), txt)));
+            return Err(seam_failure(status.as_u16(), &txt));
         }
         let grant: Grant = resp.json().await.map_err(|e| ResolveErr::Other(e.to_string()))?;
         let policy_key = grant.policy_source.clone().unwrap_or_else(|| source.to_string());
@@ -739,6 +961,9 @@ impl AppState {
             .origin_ring_mb
             .store(grant.proxy_config.origin_ring_mb.max(1), Ordering::Relaxed);
         policy.splice_normalize.store(grant.proxy_config.splice_normalize, Ordering::Relaxed);
+        // DSG: the adapter's "my segments arrive disguised" declaration. Stored, never merged — a re-resolve onto
+        // a candidate that declares nothing must switch the pass-through unwrap back off.
+        policy.segment_unwrap.store(grant.segment_unwrap, Ordering::Relaxed);
         // S3/CUE: the adapter's ad-URI signature. Normalized ONCE here (lowercased, blanks dropped) so the
         // ingest hot path is a plain `contains` — and REPLACED wholesale, never merged, so a re-resolve onto a
         // provider that declares none correctly clears the previous one.
@@ -762,8 +987,15 @@ impl AppState {
                 Some(f) => format!(" failover={}/{} (\"{}\")", f.attempt, f.total, f.candidate_name),
                 None => String::new(),
             };
+            // Named only when set, like `failover`: it is one adapter's declaration, not a knob every grant has.
+            let unwrap = if grant.segment_unwrap { " segmentUnwrap" } else { "" };
+            // …and the target's own lifetime, when the adapter knew it — the number both renewals run off.
+            let expiry = match grant.expires_at_ms {
+                Some(ms) => format!(" expiresIn={}s", ms.saturating_sub(epoch_ms()) / 1000),
+                None => String::new(),
+            };
             format!(
-                "grant: target={} policy={policy_key} relabel={} outputFormat={} streamInfRedux={} connectTimeout={}ms maxRedirects={}{failover}",
+                "grant: target={} policy={policy_key} relabel={} outputFormat={} streamInfRedux={} connectTimeout={}ms maxRedirects={}{unwrap}{expiry}{failover}",
                 crate::proxy::host_of(&grant.target),
                 policy.relabel_segment.read_ok().as_deref().unwrap_or("passthrough"),
                 policy.output_format.read_ok(),
@@ -772,7 +1004,7 @@ impl AppState {
                 policy.max_redirects.load(Ordering::Relaxed),
             )
         });
-        Ok((policy, policy_key, grant.target))
+        Ok(Granted { policy, policy_key, target: grant.target, expires_at_ms: grant.expires_at_ms })
     }
 
     /// Enqueue a telemetry event for the batched flusher (best-effort — a full queue DROPS the event so the byte
@@ -974,5 +1206,146 @@ mod tests {
         assert!(explicit_null.ad_signature.is_none(), "every non-pluto source sends null");
         let absent: Grant = serde_json::from_str(&format!("{base}}}")).unwrap();
         assert!(absent.ad_signature.is_none(), "a pre-CUE Node omits the key");
+    }
+
+    /// The DSG wire contract: Node's `ResolveGrant.segmentUnwrap` is a plain boolean on BOTH grant builders, and
+    /// a Node that predates it — or any adapter that never declared it — must keep the byte-exact pass-through.
+    #[test]
+    fn grant_carries_the_adapter_segment_unwrap_flag_and_defaults_it_off() {
+        let base = r#"{"target":"https://x/","upstreamHeaders":{},"relabelSegment":"video/mp2t",
+                       "allowPrivate":false,"isEntry":true,"proxyConfig":{}"#;
+        let flagged: Grant = serde_json::from_str(&format!("{base},\"segmentUnwrap\":true}}")).unwrap();
+        assert!(flagged.segment_unwrap, "the declaring adapter's grant turns it on");
+        let off: Grant = serde_json::from_str(&format!("{base},\"segmentUnwrap\":false}}")).unwrap();
+        assert!(!off.segment_unwrap);
+        let absent: Grant = serde_json::from_str(&format!("{base}}}")).unwrap();
+        assert!(!absent.segment_unwrap, "an older Node omits the key: nothing is unwrapped");
+        assert!(!SourcePolicy::empty().segment_unwrap.load(Ordering::Relaxed), "a cold policy unwraps nothing");
+    }
+
+    /// The EXP wire contract: Node sends `expiresAtMs: number | null` on BOTH grant builders. Any value it could
+    /// send must parse — a grant that fails to parse fails the whole resolve, i.e. a dead stream — and anything
+    /// that is not a usable epoch degrades to "no expiry known", which is exactly what every grant was before.
+    #[test]
+    fn grant_carries_the_target_expiry_and_no_shape_of_it_can_break_the_grant() {
+        let base = r#"{"target":"https://x/","upstreamHeaders":{},"relabelSegment":null,
+                       "allowPrivate":false,"isEntry":true,"proxyConfig":{}"#;
+        let exp = |tail: &str| serde_json::from_str::<Grant>(&format!("{base}{tail}}}")).expect("the grant parses").expires_at_ms;
+        assert_eq!(exp(r#","expiresAtMs":1786009000000"#), Some(1_786_009_000_000), "the integer Node's floor produces");
+        assert_eq!(exp(r#","expiresAtMs":1786009000000.75"#), Some(1_786_009_000_000), "a fraction is truncated, not fatal");
+        assert_eq!(exp(r#","expiresAtMs":null"#), None, "an adapter that knows no expiry");
+        assert_eq!(exp(""), None, "an older Node omits the key");
+        assert_eq!(exp(r#","expiresAtMs":-5"#), None);
+        assert_eq!(exp(r#","expiresAtMs":0"#), None);
+        assert_eq!(exp(r#","expiresAtMs":"soon""#), None, "a non-number is ignored, not fatal");
+    }
+
+    /// A target is reused for `TARGET_TTL` as before — or for less when it says it lapses sooner, stopping
+    /// `TARGET_EXPIRY_MARGIN` short of that. Never below the floor, or a nearly-expired target would be
+    /// re-resolved on every poll.
+    #[test]
+    fn a_target_is_reused_no_longer_than_its_own_expiry_allows() {
+        const NOW: u64 = 1_786_000_000_000;
+        assert_eq!(target_ttl(None, NOW), TARGET_TTL, "no stated expiry: the fixed cap, as before");
+        assert_eq!(target_ttl(Some(NOW + 9_000_000), NOW), TARGET_TTL, "a zlive token has hours left: the cap wins");
+        assert_eq!(target_ttl(Some(NOW + 90_000), NOW), Duration::from_secs(30), "90 s left: reuse stops 60 s short");
+        assert_eq!(target_ttl(Some(NOW + 61_000), NOW), MIN_TARGET_TTL, "inside the margin: the floor");
+        assert_eq!(target_ttl(Some(NOW - 1_000), NOW), MIN_TARGET_TTL, "already lapsed: still the floor, never zero");
+    }
+
+    /// CAP: the seam's refusal is classified as its own thing — on the 429 status or on the error CODE — and
+    /// carries Node's message, which the relay hands the viewer. The existing classes are unchanged around it.
+    #[test]
+    fn the_seam_s_refusal_is_told_apart_from_exhaustion_and_failure() {
+        let refusal = r#"{"error":"source_stream_cap","message":"ZLive already has 2 of 2 allowed concurrent stream(s) live — stop one before starting another"}"#;
+        match seam_failure(429, refusal) {
+            ResolveErr::Refused(m) => assert!(m.starts_with("ZLive already has 2 of 2"), "Node's own words: {m}"),
+            other => panic!("a 429 is a refusal, got: {other}"),
+        }
+        // The error code alone is enough — a proxy in front must not turn a refusal into a walk.
+        assert!(matches!(seam_failure(502, refusal), ResolveErr::Refused(_)));
+        // A 429 with no usable body still refuses, in a sentence of our own.
+        match seam_failure(429, "") {
+            ResolveErr::Refused(m) => assert_eq!(m, DEFAULT_REFUSAL),
+            other => panic!("got: {other}"),
+        }
+        // A MENTION of the code inside some other failure's text is not the code.
+        assert!(matches!(
+            seam_failure(502, r#"{"error":"resolve_failed","message":"upstream said source_stream_cap"}"#),
+            ResolveErr::Other(_)
+        ));
+        assert!(matches!(seam_failure(410, r#"{"error":"failover_exhausted"}"#), ResolveErr::Exhausted));
+        assert!(matches!(seam_failure(502, r#"{"error":"resolve_failed"}"#), ResolveErr::Other(_)));
+        // The cap refusal a backup CAN route around (a grouped parent, a capped child — resolveSeam.ts capRefusal)
+        // is Node's walkable form: the same sentence, but a 502 whose code is not `source_stream_cap`. It must
+        // stay a plain failure, or the walk would end on a cap that only binds this one candidate.
+        let walkable = r#"{"error":"resolve_failed: ZLive stream cap reached","message":"ZLive already has 2 of 2 allowed concurrent stream(s) live — stop one before starting another"}"#;
+        assert!(matches!(seam_failure(502, walkable), ResolveErr::Other(_)));
+    }
+
+    /// REJ: the rejected-target refresh expires a target at most once per `TARGET_TTL` — and the latch belongs
+    /// to the ENTRY, surviving the re-resolve it triggers. Were it re-armed by every resolve, an upstream that
+    /// refused each fresh target too would cost a resolve per poll.
+    #[tokio::test]
+    async fn a_rejected_target_is_dropped_at_most_once_per_window_across_re_resolves() {
+        let s = AppState::new("http://127.0.0.1:9".to_string(), String::new());
+        assert!(!s.invalidate_rejected_target("zl", "zl://abc"), "nothing cached, nothing to drop");
+
+        s.record_target("zl", "zl://abc", "https://a/1.m3u8", "zl".into(), 0, None);
+        assert!(s.invalidate_rejected_target("zl", "zl://abc"), "the first rejection drops the target");
+        assert!(s.target_expired("zl", "zl://abc"));
+
+        // The re-resolve that follows writes a fresh record — the latch rides across it.
+        s.record_target("zl", "zl://abc", "https://a/2.m3u8", "zl".into(), 0, None);
+        assert!(!s.invalidate_rejected_target("zl", "zl://abc"), "a second rejection inside the window is absorbed");
+        assert!(!s.target_expired("zl", "zl://abc"), "…and the fresh target stays cached");
+
+        // Once the window has passed, a rejection is news again.
+        if let Some(e) = s.targets.lock_ok().get_mut(&target_key("zl", "zl://abc")) {
+            e.rejected_at = Some(Instant::now() - TARGET_TTL - Duration::from_secs(1));
+        }
+        assert!(s.invalidate_rejected_target("zl", "zl://abc"));
+    }
+
+    /// REJ: a rejection leaves its reason for exactly the NEXT resolve of the entry — whichever caller makes it —
+    /// so the adapter re-mints instead of handing the refused target back from its own cache. The one after goes
+    /// out plain, and a caller's own reason is sent as given.
+    #[tokio::test]
+    async fn a_rejection_leaves_its_reason_for_exactly_the_next_resolve() {
+        use crate::testkit::{Mock, Seam};
+        let mock = Mock::start(Seam::grant("/pl/a.m3u8", false)).await;
+        let s = mock.state();
+        assert!(s.resolve_entry("zl", "zl://abc", None).await.is_ok(), "the stand-in grants");
+        assert!(s.invalidate_rejected_target("zl", "zl://abc"));
+        assert!(s.resolve_entry("zl", "zl://abc", None).await.is_ok(), "the next poll re-resolves the dropped target");
+        assert!(s.resolve_at("zl", "zl://abc", None, 0, None).await.is_ok());
+        assert!(s.resolve_fresh("zl", "zl://abc", None, Some(RETIRE_REFRESH_FAILED)).await.is_ok());
+        let reasons: Vec<Option<String>> = mock.calls().into_iter().map(|c| c.reason).collect();
+        assert_eq!(
+            reasons,
+            vec![None, Some(RETIRE_TARGET_REJECTED.to_string()), None, Some(RETIRE_REFRESH_FAILED.to_string())],
+            "the hint rides the one resolve that replaces the refused target, and no other"
+        );
+    }
+
+    /// `target_record` answers only for the target it is asked about: the record is shared by every resolve of
+    /// the channel, and another candidate's attempt or expiry must never be read as ours.
+    #[tokio::test]
+    async fn a_target_record_speaks_only_for_its_own_target() {
+        let s = AppState::new("http://127.0.0.1:9".to_string(), String::new());
+        s.record_target("zl", "zl://abc", "https://a/1.m3u8", "zl".into(), 2, Some(1_786_009_000_000));
+        assert_eq!(
+            s.target_record("zl", "zl://abc", "https://a/1.m3u8"),
+            Some(TargetMeta { attempt: 2, expires_at_ms: Some(1_786_009_000_000) })
+        );
+        assert_eq!(s.target_record("zl", "zl://abc", "https://b/other.m3u8"), None, "overwritten by another resolve");
+        assert_eq!(s.target_record("zl", "zl://other", "https://a/1.m3u8"), None);
+    }
+
+    impl AppState {
+        /// Test view: is this entry's cached target past its reuse window?
+        fn target_expired(&self, source: &str, entry: &str) -> bool {
+            self.targets.lock_ok().get(&target_key(source, entry)).is_none_or(|e| e.expires <= Instant::now())
+        }
     }
 }

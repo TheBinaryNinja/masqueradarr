@@ -14,7 +14,8 @@ use axum::extract::{OriginalUri, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::Response;
 use percent_encoding::percent_decode_str;
-use std::net::IpAddr;
+use std::borrow::Cow;
+use std::net::{IpAddr, Ipv4Addr};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -134,9 +135,11 @@ pub async fn serve_stream(
         }
         return crate::origin::serve_segment(&state, source, &entry, file, &id, &rid).await;
     }
-    // HOP if the segment after the source is the `h/` marker; else ENTRY.
+    // HOP if the segment after the source is the `h/` marker; else ENTRY. A segment hop may end in a media tail
+    // (`/s.ts`, …) that exists only for the client's extension check and was never part of the upstream URL, so
+    // it comes off BEFORE the decode — see `manifest::strip_hop_tail`. Only hops: an entry is Node's, never ours.
     let (is_hop, encoded) = match rest.split_once('/') {
-        Some(("h", e)) => (true, e),
+        Some(("h", e)) => (true, crate::manifest::strip_hop_tail(e)),
         _ => (false, rest),
     };
     let decoded = match dec(encoded) {
@@ -200,6 +203,12 @@ pub async fn serve_stream(
                 log::info("proxy", &rid, || "cold hop (no cached policy) — re-resolving from entry".to_string());
                 match state.resolve_entry(source, &entry, pl.as_deref()).await {
                     Ok((p, _)) => p,
+                    // CAP: policy, not a dead channel — no failure telemetry (a `failed` phase would be a lie, and
+                    // Node has already counted the refusal), just the refusal itself.
+                    Err(ResolveErr::Refused(why)) => {
+                        log::info("proxy", &rid, || format!("cold-hop re-resolve refused — {why}"));
+                        return text(429, &why);
+                    }
                     Err(err) => {
                         // A cold-hop re-resolve failed (session/mirror gone) — the channel can't produce a
                         // stream, so mark it failed (a resolve failure has no HTTP status → 502 sentinel).
@@ -218,6 +227,18 @@ pub async fn serve_stream(
             Ok((p, target)) => {
                 log::info("proxy", &rid, || format!("entry resolved → {}", host_of(&target)));
                 (p, target, decoded.clone())
+            }
+            // CAP: the source is at its concurrent-stream cap and this channel would be a NEW stream. Answered
+            // here, BEFORE the walk below: the walk exists to route around a failed candidate, and a refusal is
+            // terminal by contract — the seam answers 429 only where no candidate could carry the channel
+            // instead (an ungrouped entry, a group whose backups all sit behind the same cap, or failover
+            // switched off), and a walkable 502 where a backup COULD play, so the walk below reaches it
+            // (resolveSeam.ts buildGrant / capRefusal).
+            // Info, not error: Node warns once per refused channel, and a player retrying every few seconds
+            // would otherwise fill the issue log with the same sentence.
+            Err(ResolveErr::Refused(why)) => {
+                log::info("proxy", &rid, || format!("entry refused by the source's stream cap — {why}"));
+                return text(429, &why);
             }
             Err(err) => {
                 // The pinned candidate could not even RESOLVE (unknown source / dead upstream / expired
@@ -248,6 +269,7 @@ pub async fn serve_stream(
                         prefetched = Some(r);
                         (p, target, decoded.clone())
                     }
+                    WalkOutcome::Refused(why) => return text(429, &why),
                     WalkOutcome::Definitive(p, r) => {
                         // Every candidate exhausted; the last definitive upstream response is forwarded
                         // verbatim by the definitive branch below (it also reports noteFailed telemetry).
@@ -375,7 +397,7 @@ pub async fn serve_stream(
             let (st, src, ent, plc) =
                 (state.clone(), source.to_string(), stream_entry.clone(), pl.clone());
             tokio::spawn(async move {
-                let _ = st.resolve_fresh(&src, &ent, plc.as_deref()).await;
+                let _ = st.resolve_fresh(&src, &ent, plc.as_deref(), None).await;
             });
         }
     } else if !is_hop {
@@ -412,6 +434,7 @@ pub async fn serve_stream(
                     policy = p;
                     resp = Some(r); // forwarded verbatim by the definitive branch below
                 }
+                WalkOutcome::Refused(why) => return text(429, &why),
                 WalkOutcome::Dead => resp = None,
             }
         }
@@ -435,6 +458,16 @@ pub async fn serve_stream(
         // A DEFINITIVE non-2xx response (404 = not live, 403 = gate, 5xx = upstream error). Report it so the
         // phase machine drops straight to `failed` (a real status ⇒ noteFailed), then forward it verbatim.
         log::warn("proxy", &rid, || format!("upstream {status} (definitive) → forwarding verbatim"));
+        // REJ: an ENTRY target the upstream refused outright is most often a signed URL that lapsed (or a token it
+        // revoked) — and the cache would otherwise keep handing out that same dead target for the rest of its
+        // TTL, one refusal per poll. Expire it so the next poll re-resolves. Bounded to once per entry per TTL
+        // window inside the call, because an upstream that refuses FRESH targets too must not become a resolve
+        // per poll. Hops are untouched: a hop's URL came out of a manifest, not out of this cache.
+        if !is_hop && matches!(status, 401 | 403 | 410) && state.invalidate_rejected_target(source, &stream_entry) {
+            log::info("proxy", &rid, || {
+                format!("entry target rejected ({status}) — dropping the cached target so the next poll re-resolves")
+            });
+        }
         state.report(serde_json::json!({
             "kind": "upstream", "ok": false, "status": status, "source": source, "entryUrl": stream_entry.as_str(),
         }));
@@ -551,6 +584,19 @@ pub async fn serve_stream(
         } else {
             body
         };
+        // DSG: the source that declares its segments disguised also declares `#EXT-X-INDEPENDENT-SEGMENTS` falsely
+        // (they are cut mid-GOP), so the promise is dropped — see `manifest::drop_independent_segments`. `policy`
+        // is the one the stream is pinned to (hop_policy via `&e=`), so a failover child's declaration governs
+        // its own playlists. Only an OWNED result replaces `body`: a no-tag poll keeps the String it already has.
+        let dropped = if policy.segment_unwrap.load(Ordering::Relaxed) {
+            match crate::manifest::drop_independent_segments(&body) {
+                Cow::Owned(b) => Some(b),
+                Cow::Borrowed(_) => None,
+            }
+        } else {
+            None
+        };
+        let body = dropped.unwrap_or(body);
         // Grow the source's SSRF allowlist with every host referenced in the manifest (dynamic-allow).
         let grown = hosts.len();
         if !hosts.is_empty() {
@@ -638,11 +684,15 @@ pub async fn serve_stream(
         ua,
         username,
     };
+    // DSG: unwrap only where the serving adapter declared its segments disguised. The relabel above names the
+    // content; this makes the BYTES match it. Same pinned policy as the relabel, so a failover child's
+    // declaration applies to its own segments and never to the parent provider's.
+    let unwrap = policy.segment_unwrap.load(Ordering::Relaxed);
     Response::builder()
         .status(StatusCode::OK)
         .header("content-type", out_ct)
         .header("cache-control", "no-store")
-        .body(segment_body(resp, ctx, read_timeout_ms, buffer_size_kb))
+        .body(segment_body(resp, ctx, read_timeout_ms, buffer_size_kb, unwrap))
         .unwrap()
 }
 
@@ -656,6 +706,10 @@ pub(crate) enum WalkOutcome {
     Recovered(Arc<SourcePolicy>, String, reqwest::Response),
     /// Every candidate exhausted; the LAST definitive non-2xx response (+ its policy), forwarded verbatim.
     Definitive(Arc<SourcePolicy>, reqwest::Response),
+    /// CAP: the seam refused the stream outright (the source's concurrent-stream cap). Ends the walk on the spot
+    /// with Node's message: by contract the seam refuses only where no later candidate could serve instead — a
+    /// backup that could must be answered as a walkable failure, never a refusal. → 429.
+    Refused(String),
     /// Every candidate exhausted with nothing definitive to forward (transport failures all the way) → 502.
     Dead,
 }
@@ -781,6 +835,15 @@ pub(crate) async fn failover_walk(
                 state.reset_cursor(source, stream_entry);
                 break;
             }
+            // CAP: a refusal is about the STREAM, not this candidate. By contract the seam sends one only when
+            // walking on could not help (a candidate that is merely capped while a later one could play must be
+            // answered as a walkable 502, which lands in the `Other` arm below). The cursor is left where it is:
+            // nothing about any candidate was learned, and resetting it would throw away a pin a live session may
+            // still be riding.
+            Err(ResolveErr::Refused(why)) => {
+                log::info("failover", rid, || format!("candidate {attempt} refused by the source's stream cap — ending the walk"));
+                return WalkOutcome::Refused(why);
+            }
             Err(ResolveErr::Other(e)) => {
                 log::warn("failover", rid, || format!("candidate {attempt} resolve failed: {e}"));
             }
@@ -871,16 +934,40 @@ fn sniff_m3u8(bytes: &[u8]) -> bool {
     b[start..].starts_with(b"#EXTM3U")
 }
 
+/// Whether a URL host is a loopback / private / link-local / otherwise-internal LITERAL. Literal-only by
+/// design — no DNS here — so a name that merely resolves somewhere private is out of scope for this check.
+///
+/// "Private" is RFC 1918, loopback, link-local and unspecified IPv4 — exactly as on main — plus every IPv6
+/// loopback, ULA and link-local literal, and any IPv4-mapped IPv6 literal whose embedded address is one of
+/// those. A grant carrying `allowPrivate` re-opens all of it, and every gate that consults this function honours
+/// that: the entry and hop gates here, both origin ingest guards, and the raw-TS producer's segment and key
+/// guards. Node sends `allowPrivate: false` on every grant today, `direct` imports included — plumbing it on for
+/// `direct` would open RFC 1918 and every manifest-learned LAN hop for each public playlist an operator imports.
+///
+/// Deliberately NOT private: the RFC 6598 shared address space, 100.64.0.0/10. It is shared (carrier-grade NAT)
+/// space, not RFC 1918, and homelab operators reach a Channels DVR / xTeVe / Threadfin box over Tailscale by its
+/// raw 100.x address. Refusing it here regressed exactly those `direct` imports, which played on main — and with
+/// `allowPrivate` off for every grant, the operator had no way to re-open it. The trade is main's: a public-CDN
+/// source's manifest may name a 100.x host and have it fetched, as it always could. The one source whose upstream
+/// hosts come from a redirect it does not control — zlive — already refuses CGNAT (and every other non-public
+/// range) for its own Location hosts in Node, before a grant exists (zlive/resolver.ts isPublicAddress).
 pub(crate) fn is_private_host(host: &str) -> bool {
+    // `Url::host_str` hands IPv6 literals back BRACKETED (`[::1]`), and a bracketed string never parses as an
+    // address — so without this every IPv6 literal that arrived from a parsed URL read as a public hostname,
+    // loopback included, and the v6 rules below were unreachable from every real caller.
+    let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
     if host.eq_ignore_ascii_case("localhost") {
         return true;
     }
     if let Ok(ip) = host.parse::<IpAddr>() {
         return match ip {
-            IpAddr::V4(v4) => {
-                v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
-            }
+            IpAddr::V4(v4) => is_private_v4(v4),
             IpAddr::V6(v6) => {
+                // An IPv4-MAPPED address (`::ffff:a.b.c.d`) is dialled as the v4 address it embeds, so it is
+                // exactly as private as that address: `[::ffff:127.0.0.1]` is loopback by another spelling.
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    return is_private_v4(v4);
+                }
                 v6.is_loopback()
                     || v6.is_unspecified()
                     || (v6.segments()[0] & 0xfe00) == 0xfc00 // ULA fc00::/7
@@ -889,6 +976,12 @@ pub(crate) fn is_private_host(host: &str) -> bool {
         };
     }
     false
+}
+
+/// The IPv4 half of `is_private_host` — main's rule set, unchanged. 100.64.0.0/10 is left out on purpose (see
+/// `is_private_host`): tailnet addresses are how `direct` imports reach a homelab box.
+fn is_private_v4(v4: Ipv4Addr) -> bool {
+    v4.is_private() || v4.is_loopback() || v4.is_link_local() || v4.is_unspecified()
 }
 
 /// The SCHEME + PRIVATE-HOST half of the SSRF gate, WITHOUT the allowlist-membership check.
@@ -1057,5 +1150,213 @@ mod tests {
         assert!(!sniff_m3u8(b"")); // empty body
         assert!(!sniff_m3u8(&[0x47u8; 188])); // a raw MPEG-TS packet (0x47 sync) mislabeled as mpegurl
         assert!(!sniff_m3u8(b"#EXTINF:6.0,")); // starts with '#' but not the #EXTM3U tag
+    }
+
+    /// The host exactly as every real caller hands it over: through `Url::host_str`, which is what brackets an
+    /// IPv6 literal. Testing bare strings alone is how the bracket gap went unnoticed.
+    fn host(url: &str) -> String {
+        Url::parse(url).unwrap().host_str().unwrap().to_string()
+    }
+
+    #[test]
+    fn the_long_standing_private_literals_are_still_private() {
+        for h in ["localhost", "LOCALHOST", "127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.1", "169.254.169.254", "0.0.0.0"] {
+            assert!(is_private_host(h), "{h} must stay blocked");
+        }
+        for h in ["8.8.8.8", "cdn.example.com", "p16-common-sign.tiktokcdn-us.com"] {
+            assert!(!is_private_host(h), "{h} is a public upstream");
+        }
+    }
+
+    /// D1-01: RFC 6598's 100.64.0.0/10 (carrier-grade NAT — and every Tailscale address) is NOT private to this
+    /// gate, as on main: `direct` imports reach homelab boxes over a tailnet by raw 100.x IP, with no grant able
+    /// to re-open it for them. Pinned across the range and at both edges, in both spellings a caller hands over.
+    #[test]
+    fn the_shared_cgnat_range_is_not_private_to_the_data_plane_gate() {
+        for h in ["100.64.0.0", "100.100.100.100", "100.101.102.103", "100.127.255.255", "100.63.255.255", "100.128.0.0"] {
+            assert!(!is_private_host(h), "{h} must pass the gate, as it did on main");
+        }
+        assert!(!is_private_host(&host("http://100.101.102.103:8089/devices/ANY/channels/5/hls/master.m3u8")));
+        // …while RFC 1918 stays blocked exactly as before.
+        for h in ["10.0.0.1", "172.16.0.1", "192.168.1.10"] {
+            assert!(is_private_host(h), "{h} stays private");
+        }
+    }
+
+    /// An IPv4-mapped IPv6 literal is dialled as the v4 address inside it, so `[::ffff:127.0.0.1]` must be
+    /// exactly as blocked as `127.0.0.1` — in the bracketed form a parsed URL actually produces. "Exactly as" cuts
+    /// both ways: a mapped tailnet address is as reachable as the tailnet address.
+    #[test]
+    fn an_ipv4_mapped_ipv6_literal_is_as_private_as_the_address_it_embeds() {
+        for u in ["http://[::ffff:127.0.0.1]/", "http://[::ffff:10.0.0.1]/", "http://[::ffff:169.254.169.254]/"] {
+            assert!(is_private_host(&host(u)), "{u} → {} must be blocked", host(u));
+        }
+        assert!(!is_private_host(&host("http://[::ffff:8.8.8.8]/")), "a mapped PUBLIC address stays public");
+        assert!(!is_private_host(&host("http://[::ffff:100.64.1.1]/")), "a mapped tailnet address agrees with 100.64.1.1");
+        assert!(is_private_host("::ffff:192.168.0.1"), "…and the bare spelling agrees");
+    }
+
+    /// The bracket gap itself: every IPv6 rule was unreachable from a parsed URL until the brackets came off.
+    #[test]
+    fn bracketed_ipv6_literals_from_a_parsed_url_are_judged_at_all() {
+        assert_eq!(host("http://[::1]/"), "[::1]", "precondition: this is how url hands IPv6 over");
+        for u in ["http://[::1]/", "http://[fe80::1]/", "http://[fd00::5]/", "http://[::]/"] {
+            assert!(is_private_host(&host(u)), "{u} must be blocked");
+        }
+        assert!(!is_private_host(&host("http://[2606:4700::1111]/")), "a public v6 literal stays public");
+    }
+
+    /// The private-host gate is the GRANT's to open. A grant with allowPrivate off never reaches a bracketed IPv6
+    /// ULA literal — refused before anything is fetched (on main the brackets hid it from every v6 rule, so it
+    /// passed) — while the very same policy with allowPrivate on passes the gate. A tailnet's IPv6 box is reached
+    /// by its MagicDNS name instead: this check is literal-only. The pass side is judged AT the gate: dialling the
+    /// address for real would leave the machine.
+    #[tokio::test]
+    async fn a_bracketed_ula_target_is_reached_only_when_the_grant_allows_lan_reach() {
+        let target = "http://[fd7a:115c:a1e0::1]:8089/devices/ANY/channels/5/hls/master.m3u8";
+        let grant = serde_json::json!({
+            "target": target, "allowPrivate": false, "proxyConfig": { "originEnabled": false },
+        });
+        let up = Mock::start(Seam::grant_with("/unused", grant)).await;
+        let state = up.state();
+        let resp = play(&state).await;
+        assert_eq!(resp.status().as_u16(), 400, "a grant without allowPrivate is refused at the entry");
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("upstream host not allowed"), "by the SSRF gate");
+
+        let policy = state.get("zl").expect("the grant was cached");
+        assert!(!ssrf_public_ok(&policy, target), "private without allowPrivate");
+        policy.allow_private.store(true, Ordering::Relaxed);
+        assert!(ssrf_public_ok(&policy, target), "reachable once the grant allows LAN reach");
+    }
+
+    /// D1-01 regression: a `direct`-style grant — allowPrivate OFF, which is what Node sends for every source,
+    /// `direct` included — still reaches a raw tailnet IPv4 entry, as it did on main. Both gates it meets are
+    /// checked: the entry gate, and the hop gate for a segment on the same host (the entry host seeds the
+    /// allow-set). Judged at the gates on the policy a real resolve built — the resolve runs against the loopback
+    /// stand-in, and nothing ever dials 100.101.102.103.
+    #[tokio::test]
+    async fn a_direct_grant_without_allow_private_reaches_a_tailnet_ipv4_entry() {
+        let target = "http://100.101.102.103:8089/devices/ANY/channels/5/hls/master.m3u8";
+        let grant = serde_json::json!({
+            "target": target, "allowPrivate": false, "proxyConfig": { "originEnabled": false },
+        });
+        let up = Mock::start(Seam::grant_with("/unused", grant)).await;
+        let state = up.state();
+        let (policy, resolved) = match state.resolve_entry("zl", "zl://abc", None).await {
+            Ok(v) => v,
+            Err(e) => panic!("the stand-in grants it: {e}"),
+        };
+        assert_eq!(resolved, target, "the grant's target, verbatim");
+        assert!(!policy.allow_private.load(Ordering::Relaxed), "precondition: allowPrivate is off");
+        assert!(ssrf_public_ok(&policy, &resolved), "the entry gate lets a tailnet address through");
+        assert!(
+            ssrf_ok(&policy, "http://100.101.102.103:8089/devices/ANY/channels/5/hls/seg-1.ts"),
+            "…and so does the hop gate, for a segment on the same host"
+        );
+        // RFC 1918 is still refused on the very same policy — the regression fix re-opened CGNAT, nothing else.
+        assert!(!ssrf_public_ok(&policy, "http://192.168.1.10:8089/devices/ANY/channels/5/hls/master.m3u8"));
+    }
+
+    // ── end to end through the relay handler (testkit: a loopback Node + upstream) ───────────────────────
+
+    use crate::testkit::{Mock, Seam, Serve};
+
+    fn viewer() -> Identity {
+        Identity { ip: "127.0.0.1".into(), ua: "test".into(), username: None }
+    }
+
+    async fn play(state: &AppState) -> Response {
+        let path = format!("/api/v1/zl/{}", enc("zl://abc"));
+        serve_stream(state.clone(), Method::GET, &path, "", viewer()).await
+    }
+
+    /// CAP: a source at its stream cap refuses a NEW channel with 429, and the relay hands exactly that to the
+    /// client — Node's message included — after ONE question. The resolve-failure walk used to treat the
+    /// refusal as a dead candidate and re-ask the same cap at attempt 1, 2, … before answering a 502.
+    #[tokio::test]
+    async fn a_stream_cap_refusal_is_answered_429_without_walking_the_failover_chain() {
+        let refusal = r#"{"error":"source_stream_cap","message":"ZLive already has 2 of 2 allowed concurrent stream(s) live"}"#;
+        let up = Mock::start(Seam::Reply(429, refusal.to_string())).await;
+        let resp = play(&up.state()).await;
+        assert_eq!(resp.status().as_u16(), 429);
+        let body = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        assert!(String::from_utf8_lossy(&body).contains("2 of 2"), "the viewer is told why");
+        assert_eq!(up.resolves(), 1, "one question, one answer — no walk, no retry");
+    }
+
+    /// REJ: an entry target the upstream refuses outright (a lapsed signed URL) is dropped from the cache so the
+    /// next poll re-resolves — but at most once per window, so an upstream that refuses the FRESH target too
+    /// costs one extra resolve, not one per poll. Three polls: resolve, refused → drop; re-resolve, refused →
+    /// latched, kept; the third rides the cache. The re-resolve also SAYS why (`target_rejected`), so an adapter
+    /// that caches its own resolution re-mints the link rather than handing the refused one straight back.
+    #[tokio::test]
+    async fn a_rejected_entry_target_is_re_resolved_once_per_window_not_once_per_poll() {
+        let up = Mock::start(Seam::grant("/pl/gone.m3u8", false)).await;
+        up.script(|s| {
+            s.paths.insert("/pl/gone.m3u8".into(), Serve::Status(403));
+        });
+        let state = up.state();
+        for poll in 1..=3 {
+            assert_eq!(play(&state).await.status().as_u16(), 403, "poll {poll}: the refusal is still forwarded verbatim");
+        }
+        assert_eq!(up.resolves(), 2, "the first refusal re-resolved once; the second did not re-arm it");
+        let reasons: Vec<Option<String>> = up.calls().into_iter().map(|c| c.reason).collect();
+        assert_eq!(
+            reasons,
+            vec![None, Some(crate::state::RETIRE_TARGET_REJECTED.to_string())],
+            "the first resolve had nothing to say; the one after the refusal names it"
+        );
+    }
+
+    /// REJ is scoped to rejections that mean "this target is dead". A 404 (not live) or a 5xx keeps today's
+    /// forward-verbatim behaviour and the cached target.
+    #[tokio::test]
+    async fn only_a_rejection_status_drops_the_cached_entry_target() {
+        let up = Mock::start(Seam::grant("/pl/offair.m3u8", false)).await;
+        up.script(|s| {
+            s.paths.insert("/pl/offair.m3u8".into(), Serve::Status(404));
+        });
+        let state = up.state();
+        for _ in 0..3 {
+            assert_eq!(play(&state).await.status().as_u16(), 404);
+        }
+        assert_eq!(up.resolves(), 1, "a 404 is not a dead target: the cache rides on");
+    }
+
+    /// HOP TAIL, end to end through the relay: a `.png`-named segment and a signed one are both minted with
+    /// `/s.ts`, and each line, requested as a client would request it, reaches exactly the segment its playlist
+    /// named. The same hops WITHOUT the tail — what a session opened before the upgrade is holding — reach them
+    /// too. (The `.png` one is the discriminating case: an unstripped tail lands in ITS path, where the signed
+    /// one's would hide in a query this stand-in ignores.)
+    #[tokio::test]
+    async fn a_tailed_segment_hop_and_its_tail_less_twin_reach_the_same_upstream_segment() {
+        use crate::testkit::{tag_of, tagged_ts};
+        let up = Mock::start(Seam::grant("/pl/live.m3u8", false)).await;
+        up.script(|s| {
+            let body = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:7\n\
+                        #EXTINF:4.0,\n/pl/seg7.png\n#EXTINF:4.0,\n/pl/seg8.ts?sig=abc\n";
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(body.into()));
+            s.paths.insert("/pl/seg7.png".into(), Serve::Media(tagged_ts(7)));
+            s.paths.insert("/pl/seg8.ts".into(), Serve::Media(tagged_ts(8)));
+        });
+        let state = up.state();
+        let resp = play(&state).await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let manifest = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let manifest = String::from_utf8_lossy(&manifest);
+        let hops: Vec<&str> = manifest.lines().filter(|l| l.starts_with("/api/v1/zl/h/")).collect();
+        assert_eq!(hops.len(), 2, "{manifest}");
+
+        for (hop, (named, tag)) in hops.iter().zip([("seg7.png", 7u64), ("seg8.ts%3Fsig%3Dabc", 8)]) {
+            let (path, query) = hop.split_once('?').unwrap();
+            assert!(path.ends_with(&format!("{named}/s.ts")), "minted with a tail: {hop}");
+            for p in [path, path.strip_suffix("/s.ts").unwrap()] {
+                let seg = serve_stream(state.clone(), Method::GET, p, query, viewer()).await;
+                assert_eq!(seg.status().as_u16(), 200, "{p}");
+                let bytes = axum::body::to_bytes(seg.into_body(), 1 << 16).await.unwrap();
+                assert_eq!(tag_of(&bytes), tag, "{p} reached the segment its playlist named");
+            }
+        }
     }
 }

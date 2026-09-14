@@ -24,6 +24,8 @@ mod proxy;
 mod state;
 mod stream;
 mod sync;
+#[cfg(test)]
+mod testkit;
 mod tsmux;
 mod tsnorm;
 mod tsseg;
