@@ -82,7 +82,7 @@ pub(crate) struct Script {
     /// Answer every failover attempt past the channel itself (attempt >= 1) with Node's 410 `failover_exhausted`,
     /// whatever `seam` says — an UNGROUPED channel on a source with no alternate upstreams (zlive's shape).
     pub(crate) exhaust_advances: bool,
-    /// What both flush endpoints reply — Node's `{ logLevel }` echo. Empty by default: an echo that
+    /// What both flush endpoints reply — Node's `{ logLevel, nameservers }` echo. Empty by default: an echo that
     /// says nothing changes nothing, so every test that does not script one runs on the sidecar's own settings.
     pub(crate) echo: serde_json::Value,
 }
@@ -133,6 +133,11 @@ impl Mock {
     /// A data plane whose Node is this stand-in.
     pub(crate) fn state(&self) -> AppState {
         AppState::new(format!("http://{}", self.shared.addr), String::new())
+    }
+
+    /// The loopback port this stand-in listens on — for a test that must reach it by a NAME, not the literal.
+    pub(crate) fn port(&self) -> u16 {
+        self.shared.addr.port()
     }
 
     /// Re-script the stand-in. Takes effect on the very next request.

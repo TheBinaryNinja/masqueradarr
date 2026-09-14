@@ -15,6 +15,7 @@
 //!
 //! See `.claude/plans/durable-iptv-proxy.md`.
 
+mod dns;
 mod edge;
 mod log;
 mod manifest;

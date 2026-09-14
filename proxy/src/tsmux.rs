@@ -426,7 +426,7 @@ pub(crate) fn encryption_method(body: &str) -> String {
 /// AES-128-CBC + PKCS7 decrypt one whole HLS segment. None on a bad length / padding ⇒ the caller drops the
 /// segment (all-or-nothing: a valid TS packet stream can't be reconstructed from a partial/garbled decrypt).
 pub(crate) fn decrypt_aes128_cbc(key: &[u8; 16], iv: &[u8; 16], ct: &[u8]) -> Option<Vec<u8>> {
-    if ct.is_empty() || ct.len() % 16 != 0 {
+    if ct.is_empty() || !ct.len().is_multiple_of(16) {
         return None;
     }
     Aes128CbcDec::new_from_slices(key, iv)

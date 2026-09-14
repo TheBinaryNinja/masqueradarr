@@ -956,7 +956,10 @@ pub(crate) fn is_private_host(host: &str) -> bool {
     // address — so without this every IPv6 literal that arrived from a parsed URL read as a public hostname,
     // loopback included, and the v6 rules below were unreachable from every real caller.
     let host = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
-    if host.eq_ignore_ascii_case("localhost") {
+    // The whole `localhost.` zone, not just the one name: the upstream resolver (dns.rs) and many others answer
+    // `anything.localhost` — and `localhost.` — with loopback, so as far as this gate is concerned they are
+    // loopback literals in all but spelling. Before, only the exact string `localhost` was refused.
+    if crate::dns::in_localhost_zone(host) {
         return true;
     }
     if let Ok(ip) = host.parse::<IpAddr>() {
@@ -1204,6 +1207,20 @@ mod tests {
             assert!(is_private_host(&host(u)), "{u} must be blocked");
         }
         assert!(!is_private_host(&host("http://[2606:4700::1111]/")), "a public v6 literal stays public");
+    }
+
+    /// The whole `localhost.` zone is loopback to this gate. The upstream resolver answers `anything.localhost`
+    /// with loopback on its own (RFC 6761, hickory), so a manifest child named `x.localhost` passed a gate that
+    /// knew only the exact string `localhost` — and the old `localhost.` (root dot) gap with it.
+    #[test]
+    fn every_name_in_the_localhost_zone_is_private() {
+        for h in ["localhost", "LOCALHOST", "localhost.", "x.localhost", "evil.localhost.", "a.b.LOCALHOST."] {
+            assert!(is_private_host(h), "{h} must be blocked");
+        }
+        assert!(is_private_host(&host("http://x.localhost:3000/seg.ts")), "as a parsed URL hands it over");
+        for h in ["localhost.example.com", "notlocalhost", "mylocalhost.net", "localhost.cdn.test"] {
+            assert!(!is_private_host(h), "{h} is an ordinary public name");
+        }
     }
 
     /// The private-host gate is the GRANT's to open. A grant with allowPrivate off never reaches a bracketed IPv6

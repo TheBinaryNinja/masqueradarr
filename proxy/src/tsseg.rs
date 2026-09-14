@@ -797,7 +797,7 @@ fn riff_exif_payload(head: &[u8]) -> Option<usize> {
         let size = u32::from_le_bytes([head[pos + 4], head[pos + 5], head[pos + 6], head[pos + 7]]) as usize;
         let payload = pos + 8;
         if &head[pos..pos + 4] == b"EXIF" {
-            let whole_packets = size > 0 && size % PKT == 0;
+            let whole_packets = size > 0 && size.is_multiple_of(PKT);
             let opens_on_sync = head.get(payload) == Some(&SYNC);
             return (payload <= MAX_DISGUISE_PREFIX && whole_packets && opens_on_sync).then_some(payload);
         }
