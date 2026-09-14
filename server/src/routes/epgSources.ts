@@ -16,7 +16,7 @@ import {
   type GracenoteProvider,
 } from '../epg/gracenote.js';
 import { fetchRegions, summarizeEpgpw } from '../epg/epgpw.js';
-import { syncPrograms, syncEpgpwSource, syncEpgSource } from '../epg/syncEpgSource.js';
+import { syncPrograms, syncEpgpwSource, syncEpgSource, relinkAfterGuideWrite } from '../epg/syncEpgSource.js';
 import {
   validateXmltv,
   validateXmltvUrl,
@@ -465,6 +465,9 @@ epgSourcesRouter.post('/jesmann/create', async (req, res, next) => {
         send({ phase: 'error', error: 'upsert_failed' });
         return;
       }
+      // Link built-ins that crosswalk onto Jesmann guides (ZLive) now, not at some later sync. After the upsert
+      // (the crosswalk finds guides through their EpgSource row); non-fatal, and finished before `done`.
+      await relinkAfterGuideWrite('jesmann', id);
       // offsetDefaulted rides INSIDE the source so the SPA's warnIfOffsetDefaulted reads it off the doc.
       send({ phase: 'done', source: { ...doc, offsetDefaulted } });
     });
@@ -621,7 +624,10 @@ epgSourcesRouter.post('/', async (req, res, next) => {
       // syncXmltvUrl streams a byte-based % through `progress` (importing on connect, then % per batch).
       return await runCreate(req, res, next, { classify: classifyXmltvError, offsetDefaulted }, async (progress) => {
         const counts = await syncXmltvUrl(id, url, offset, progress);
-        return upsertXmltvUrlSource({ id, name, url, source, counts, interval, order });
+        const doc = await upsertXmltvUrlSource({ id, name, url, source, counts, interval, order });
+        // A Jesmann guide is a crosswalk target (ZLive); a 'remote url' one is not, so this no-ops for it.
+        if (doc) await relinkAfterGuideWrite(source, id);
+        return doc;
       });
     }
 
@@ -655,7 +661,7 @@ epgSourcesRouter.post('/', async (req, res, next) => {
     const displayName = provider.name + (provider.location ? ` — ${provider.location}` : '');
     await runCreate(req, res, next, { classify: () => ({ code: 'gracenote_unreachable' }), offsetDefaulted }, async (progress) => {
       const counts = await syncPrograms(id, urlTemplate, offset, progress);
-      return (await EpgSource.findOneAndUpdate(
+      const doc = (await EpgSource.findOneAndUpdate(
         { id },
         {
           $set: {
@@ -688,6 +694,10 @@ epgSourcesRouter.post('/', async (req, res, next) => {
         },
         { upsert: true, new: true, projection: { _id: 0 } },
       ).lean()) as EpgSourceDoc | null;
+      // Link built-ins that crosswalk onto Gracenote lineups (ZLive's DITV / NYC OTA pins) now, not at some later
+      // sync — after the upsert, since the crosswalk finds guides through their EpgSource row. Never throws.
+      if (doc) await relinkAfterGuideWrite('gracenote', id);
+      return doc;
     });
   } catch (err) {
     next(err);

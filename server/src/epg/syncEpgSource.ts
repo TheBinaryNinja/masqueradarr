@@ -3,8 +3,15 @@
 // `syncPrograms` is the low-level Gracenote grid-fetch + Program replace (also used at create time, before
 // the EpgSource doc exists); `syncEpgpwSource` is the EPG-PW equivalent (channel list → per-channel guide);
 // `syncEpgSource` is the source-level wrapper that dispatches on src.source. See restapi.md + schemas.md §3.4/§3.13.
+// After a successful gracenote/jesmann sync it also runs the built-ins' EPG re-link (applyBuiltinEpgLinks) —
+// those are the guides a built-in crosswalks its channels onto, so a fresh one should link without waiting
+// for that playlist's next sync. The guide CREATE paths (routes/epgSources.ts) run it too, via
+// relinkAfterGuideWrite.
 
 import { logger } from '../sources/core/logger.js';
+import { logTrace } from '../logs/tier.js';
+import { SOURCES } from '../sources/registry.js';
+import { Playlist } from '../models/Playlist.js';
 import { EpgSource, type EpgSourceDoc } from '../models/EpgSource.js';
 import { EpgChannel, type EpgChannelDoc } from '../models/EpgChannel.js';
 import { Program, type ProgramDoc } from '../models/Program.js';
@@ -174,10 +181,62 @@ export async function syncEpgpwSource(
   return { channels: channels.length, programs: docs.length };
 }
 
+// The guide kinds a built-in's station-id crosswalk links onto: the operator's own Gracenote lineups and the
+// Jesmann gracenote-id XMLTV files. A sync of any other kind (a bound self-EPG, epg-pw, a remote URL) cannot
+// create a link target a SourceAdapter.applyEpgLinks is looking for, so it doesn't pay for the re-link pass.
+const RELINK_KINDS = new Set(['gracenote', 'jesmann']);
+
+/**
+ * Re-run SourceAdapter.applyEpgLinks for every PROVISIONED built-in that declares it. A built-in whose channels
+ * are linked onto guides it does not own (by station id) would otherwise stay unlinked to a newly added or
+ * refreshed guide until its own playlist's next sync — afterSync is the only other caller of the same link.
+ *
+ * Provisioned = its (Default) Playlist row exists: a source never added as a playlist has no channels to link,
+ * and the hook must not be what makes one appear. Safe to repeat because the hooks are fill-only-if-untouched.
+ * NEVER throws — a guide sync that succeeded must not report failure because a follow-on re-link didn't, so
+ * each adapter is isolated and every failure is logged. `trigger` names the guide for the log line.
+ */
+export async function applyBuiltinEpgLinks(trigger: string): Promise<void> {
+  try {
+    const hooked = SOURCES.filter((s) => !s.synthetic && typeof s.applyEpgLinks === 'function');
+    if (!hooked.length) return;
+    const rows = await Playlist.find(
+      { id: { $in: hooked.map((s) => s.id) }, builtin: true },
+      { id: 1, _id: 0 },
+    ).lean();
+    const provisioned = new Set(rows.map((r) => r.id));
+    for (const adapter of hooked) {
+      if (!provisioned.has(adapter.id)) continue;
+      try {
+        await adapter.applyEpgLinks?.(adapter.id);
+        // Level-3 lineage: an EPG cascade, noise at the default verbosity (the hook logs its own outcome).
+        logTrace('epg', `[${adapter.id}] EPG re-link ran after ${trigger} synced`);
+      } catch (err) {
+        logger.warn('epg', `[${adapter.id}] EPG re-link after ${trigger} synced failed: ${(err as Error).message}`);
+      }
+    }
+  } catch (err) {
+    logger.warn('epg', `built-in EPG re-link after ${trigger} synced failed: ${(err as Error).message}`);
+  }
+}
+
+/**
+ * The same re-link for a guide written OUTSIDE syncEpgSource — the create paths in routes/epgSources.ts, which
+ * run their own inline first sync and upsert the EpgSource row themselves. Without it, adding the very guide a
+ * crosswalk targets (Add EPG Source → Gracenote DITV / Jesmann) would leave those channels unlinked until some
+ * later sync. Call it AFTER the row is upserted: a crosswalk finds its target guides through EpgSource, so a guide
+ * whose row does not exist yet is invisible to it. Only the RELINK_KINDS pay for it; never throws.
+ */
+export async function relinkAfterGuideWrite(kind: string, id: string): Promise<void> {
+  if (!RELINK_KINDS.has(kind.toLowerCase())) return;
+  await applyBuiltinEpgLinks(id);
+}
+
 // Source-level: load the EpgSource, re-sync its programs (dispatched on src.source), persist the new
 // counts/lastSync/status. Increments the lifetime sync outcome counters (syncSuccessCount on success,
 // syncFailCount on failure). Marks the source status 'error' and rethrows on failure so the scheduler can
-// record lastError (and the route can map it to the right 502 code).
+// record lastError (and the route can map it to the right 502 code). A successful gracenote/jesmann sync then
+// re-links the built-ins that crosswalk onto such guides (applyBuiltinEpgLinks — non-fatal, never throws).
 export async function syncEpgSource(
   id: string,
 ): Promise<{ source: EpgSourceDoc; offsetDefaulted: boolean }> {
@@ -291,5 +350,9 @@ export async function syncEpgSource(
     { new: true, projection: { _id: 0 } },
   ).lean()) as EpgSourceDoc | null;
   logger.info('epg', `synced ${src.id}: ${counts.channels} channels, ${counts.programs} programs`);
+  // AFTER the replace above, so the crosswalks resolve against this sync's fresh EpgChannel rows. Awaited, not
+  // fired off: it is DB-only and bounded by the built-in catalogs, and awaiting means a sync's side effects are
+  // finished by the time its caller (the Sync-now route, the scheduler) reports success.
+  if (RELINK_KINDS.has(kind)) await applyBuiltinEpgLinks(src.id);
   return { source: doc as EpgSourceDoc, offsetDefaulted };
 }

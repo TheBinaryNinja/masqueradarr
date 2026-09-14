@@ -36,6 +36,14 @@ export const dlhdPlayer = ref(0);
 // domain signs the dulo session out server-side, so a debounced keystroke watcher would sign the operator
 // out mid-typing. The Dulo panel writes it explicitly through saveDuloDomain() instead.
 export const duloDomain = ref('dulo.tv');
+// The domain zlive is on (bare host, e.g. 'zlive.st'): its public catalog is cast.<domain> and its stream resolver
+// iptv.<domain>. EXPLICIT-save like duloDomain (saveZliveDomain, from the ZLive panel): a debounced keystroke
+// watcher would switch the live adapter onto every half-typed value that happens to be a valid name ("zlive.s"),
+// and each switch also resets the server's resolver cache.
+export const zliveDomain = ref('zlive.st');
+// Max DISTINCT zlive channels live at once (viewers of one channel count once); 0 = unlimited. Auto-persisted like
+// the refs above — the ZLive panel only assigns it a validated whole number, on blur.
+export const zliveMaxStreams = ref(2);
 export const epgPath = ref('/_global/epg/playlist.xml');
 // Outbound-fetch DNS: comma-separated resolver IP(s) (blank => OS resolver). Persists like any other field;
 // the server re-applies it to the live undici dispatcher on save (server/src/dns.ts via settings/applyDns.ts).
@@ -92,6 +100,8 @@ export async function loadSettings(): Promise<void> {
       videoPlayer: VideoPlayerMode;
       dlhdPlayer: number;
       duloDomain: string;
+      zliveDomain: string;
+      zliveMaxStreams: number;
       nameservers: string | null;
       logLevel: number;
       maxmindAccountId: string | null;
@@ -107,6 +117,8 @@ export async function loadSettings(): Promise<void> {
     if (s.videoPlayer && VIDEO_PLAYER_MODES.includes(s.videoPlayer)) videoPlayer.value = s.videoPlayer;
     if (typeof s.dlhdPlayer === 'number') dlhdPlayer.value = s.dlhdPlayer;
     if (typeof s.duloDomain === 'string' && s.duloDomain) duloDomain.value = s.duloDomain;
+    if (typeof s.zliveDomain === 'string' && s.zliveDomain) zliveDomain.value = s.zliveDomain;
+    if (typeof s.zliveMaxStreams === 'number') zliveMaxStreams.value = s.zliveMaxStreams;
     if (s.nameservers !== undefined) nameservers.value = s.nameservers ?? '';
     if (typeof s.logLevel === 'number') logLevel.value = s.logLevel;
     if (s.maxmindAccountId !== undefined) maxmindAccountId.value = s.maxmindAccountId ?? '';
@@ -157,6 +169,9 @@ watch(timezone, (v) => persist({ timezone: v }));
 watch(darkMode, (v) => persist({ darkMode: v }));
 watch(videoPlayer, (v) => persist({ videoPlayer: v }));
 watch(dlhdPlayer, (v) => persist({ dlhdPlayer: v }));
+watch(zliveMaxStreams, (v) => {
+  if (Number.isInteger(v) && v >= 0) persist({ zliveMaxStreams: v }); // the server re-validates (0..100)
+});
 watch(nameservers, (v) => persist({ nameservers: v.trim() === '' ? null : v.trim() }));
 watch(logLevel, (v) => persist({ logLevel: v }));
 watch(maxmindAccountId, (v) => persist({ maxmindAccountId: v.trim() === '' ? null : v.trim() }));
@@ -200,6 +215,25 @@ export async function saveDuloDomain(next: string): Promise<{ ok: boolean; error
     const body = (await res.json().catch(() => ({}))) as { duloDomain?: string; error?: string };
     if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}` };
     if (typeof body.duloDomain === 'string' && body.duloDomain) duloDomain.value = body.duloDomain;
+    return { ok: true };
+  } catch (e) {
+    return { ok: false, error: (e as Error).message };
+  }
+}
+
+// Explicit (un-debounced) PUT of the zlive domain, from the Save button on the ZLive panel — see zliveDomain above
+// for why this is not a watcher. Surfaces the server's validation message (the shared domain normalizer rejects IP
+// literals, private hosts and malformed names) so the panel can say why a value was refused.
+export async function saveZliveDomain(next: string): Promise<{ ok: boolean; error?: string }> {
+  try {
+    const res = await fetch('/api/settings', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ zliveDomain: next }),
+    });
+    const body = (await res.json().catch(() => ({}))) as { zliveDomain?: string; error?: string };
+    if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}` };
+    if (typeof body.zliveDomain === 'string' && body.zliveDomain) zliveDomain.value = body.zliveDomain;
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };

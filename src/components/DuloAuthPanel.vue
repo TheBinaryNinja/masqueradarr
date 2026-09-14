@@ -423,6 +423,7 @@ onUnmounted(() => {
         <Icon name="globe" :size="14" />
         <input
           v-model="domainInput"
+          aria-label="dulo domain"
           placeholder="dulo.tv"
           spellcheck="false"
           autocapitalize="off"
@@ -462,14 +463,18 @@ onUnmounted(() => {
         </span>
       </div>
 
+      <!-- Always-mounted live region, so a screen reader announces the Test / Auto-detect / Save result. -->
       <div
-        v-if="domainMsg"
-        style="font-size: var(--fs-xs); margin-top: 8px;"
-        :style="{ color: domainMsg.tone === 'good' ? 'var(--good)' : domainMsg.tone === 'bad' ? 'var(--bad)' : 'var(--warn, var(--text-2))' }"
+        role="status"
+        aria-live="polite"
+        style="font-size: var(--fs-xs);"
+        :style="domainMsg
+          ? { marginTop: '8px', color: domainMsg.tone === 'good' ? 'var(--good)' : domainMsg.tone === 'bad' ? 'var(--bad)' : 'var(--warn, var(--text-2))' }
+          : undefined"
       >
-        {{ domainMsg.text }}
+        <template v-if="domainMsg">{{ domainMsg.text }}</template>
       </div>
-      <div v-else class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
+      <div v-if="!domainMsg" class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
         The site dulo runs on today. Everything dulo-facing derives from it — catalog, sign-in, and stream
         resolution. <b>Test</b> checks a domain without saving it.
       </div>

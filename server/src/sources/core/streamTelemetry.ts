@@ -961,6 +961,36 @@ export interface ClientTelemetry {
   countryCode?: string | null;
 }
 
+/** One stream with a viewer right now, as the data plane reported it (see `liveStreams`). */
+export interface LiveStream {
+  /** The MOUNT source — the adapter id in the URL the viewer requested, not necessarily the one serving it. */
+  source: string;
+  entryUrl: string;
+}
+
+/**
+ * Every DISTINCT stream that has a viewer right now — a poll client inside its recency TTL, or a raw-TS socket
+ * inside its idle backstop — keyed by its channelKey (`streamKey(source, entryUrl)`). Read by the resolve seam's
+ * per-source stream cap (proxy/resolveSeam.ts), which is ENFORCEMENT, not display — so it reads `clients`, the
+ * core's own definition of "watching", and never a `displayMap` (those are pruned only while an admin socket is
+ * open, which would make the cap depend on someone having Active Streams on screen). The TTL is re-checked here
+ * rather than trusting the 2 s sweep, so a client that went stale between ticks is not counted.
+ *
+ * Keyed like everything in this file: `source` is the MOUNT source the data plane reported. For a failover
+ * stream that is the PARENT's (source, entry) even while a child from another provider carries it, so this
+ * cannot say which adapter is serving — every stream is returned, unfiltered, and the seam attributes each one
+ * to the adapter its last grant went to.
+ */
+export function liveStreams(): Map<string, LiveStream> {
+  const now = Date.now();
+  const out = new Map<string, LiveStream>();
+  for (const c of clients.values()) {
+    if (now - c.lastSeen > (c.socketBound ? SOCKET_IDLE_MS : CLIENT_TTL_MS)) continue;
+    if (!out.has(c.channelKey)) out.set(c.channelKey, { source: c.source, entryUrl: c.entryUrl });
+  }
+  return out;
+}
+
 /** The per-client connection list for one channel (drives the "Connected sessions" card). */
 export function clientsFor(channelKey: string): ClientTelemetry[] {
   return clientsOnChannel(channelKey).map((c) => ({

@@ -20,6 +20,8 @@ export const TAG_CATEGORY: Record<string, LogCategory> = {
   playlists: 'playlists',
   dulo: 'playlists', 'dulo:stream': 'playlists', dlhd: 'playlists', 'dlhd:stream': 'playlists', tubi: 'playlists',
   local: 'playlists',
+  // zlive's resolver (per-play resolve, Location vetting, decoy latches). A 'zlive:*' sub-tag resolves here too.
+  zlive: 'playlists',
   build: 'playlists',
   stats: 'active', telemetry: 'active', geoip: 'active',
   // The Rust video DATA PLANE (masq-proxy) + its Node-side supervisor/relay/resolve seam log under the
