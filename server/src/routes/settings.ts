@@ -4,6 +4,7 @@ import { envDefaults, toRuntimeSettings, toExternalPatch } from '../settings/tra
 import { applyDnsFromSettings } from '../settings/applyDns.js';
 import { applyDlhdPlayerFromSettings } from '../settings/applyDlhdPlayer.js';
 import { applyDuloDomainFromSettings } from '../settings/applyDuloDomain.js';
+import { applyZliveFromSettings } from '../settings/applyZlive.js';
 import { cascadePlaylistUrls } from './playlists.js';
 import { logger } from '../sources/core/logger.js';
 
@@ -100,6 +101,17 @@ settingsRouter.put('/', async (req, res, next) => {
         await applyDuloDomainFromSettings('update');
       } catch (err) {
         logger.error('settings', `dulo domain re-apply failed (continuing): ${(err as Error).message}`);
+      }
+    }
+
+    // Push zlive's domain + stream cap into the adapter's caches: the catalog/resolver retarget and the new cap
+    // applies to the next stream start, both live. A changed domain also resets the resolver's per-slug cache and
+    // decoy state (see settings/applyZlive.ts). Best-effort, same contract as the cascades above.
+    if ('zliveDomain' in $set || 'zliveMaxStreams' in $set) {
+      try {
+        await applyZliveFromSettings('update');
+      } catch (err) {
+        logger.error('settings', `zlive settings re-apply failed (continuing): ${(err as Error).message}`);
       }
     }
 

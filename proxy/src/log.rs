@@ -13,8 +13,9 @@
 //!    coalesces + POSTs `{ events:[...] }` to `{node}/api/internal/log`. Best-effort — a full queue DROPS the
 //!    event (never blocks the byte path); a transport failure is ignored.
 //!  · The level is kept LIVE: every flush response (this endpoint AND /api/internal/telemetry) carries the
-//!    current `{ logLevel }`, which `apply_level_response` reads back into the atomic — so an operator's
-//!    Settings change reaches the sidecar within one flush cycle, no restart (see server/src/proxy/logLevel.ts).
+//!    current `{ logLevel, nameservers }`, which `apply_flush_echo` reads back — the level into the atomic here,
+//!    the nameserver list into the upstream resolver (dns.rs) — so an operator's Settings change reaches the
+//!    sidecar within one flush cycle, no restart (see server/src/proxy/logLevel.ts + nameservers.ts).
 //!  · Level ladder: 1 = error/warn only · 2 = + info (milestones) · 3 = + trace (full per-stage/hop/segment
 //!    lineage). The persisted level is only info|warn|error — Rust's `trace` tier collapses to `info` on ship
 //!    (the verbosity distinction is the Rust-side GATE, not a fourth persisted level).
@@ -23,18 +24,20 @@
 //! module logs without threading state. `init()` is called once from `AppState::new` (which runs once).
 
 use std::sync::atomic::{AtomicU8, Ordering};
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
+
+use crate::dns::UpstreamDns;
 
 // Batching knobs — same shape as the telemetry flusher (state.rs).
 const LOG_QUEUE: usize = 4096;
 const LOG_MAX_BATCH: usize = 256;
 const LOG_FLUSH_MS: u64 = 250;
 
-// The global log level (1..3). Seeded from MASQ_LOG_LEVEL at init; kept live by apply_level_response.
+// The global log level (1..3). Seeded from MASQ_LOG_LEVEL at init; kept live by apply_flush_echo.
 static LEVEL: AtomicU8 = AtomicU8::new(2);
 
 // The global log sink — the Sender half of the batched flusher's channel. None until init() installs it; a
@@ -47,29 +50,33 @@ pub fn level() -> u8 {
     LEVEL.load(Ordering::Relaxed)
 }
 
-/// Store the current global log level (clamped 1..3). Called from init (env seed) + apply_level_response.
+/// Store the current global log level (clamped 1..3). Called from init (env seed) + apply_flush_echo.
 pub fn set_level(n: u8) {
     LEVEL.store(n.clamp(1, 3), Ordering::Relaxed);
 }
 
 /// Install the log sink + spawn the batched flusher, and seed the level from MASQ_LOG_LEVEL. Idempotent (a
-/// second call is a no-op via the OnceLock). Must run inside the tokio runtime (AppState::new does).
-pub fn init(client: reqwest::Client, url: String, secret: String) {
+/// second call is a no-op via the OnceLock). Must run inside the tokio runtime (AppState::new does). `dns` is the
+/// upstream resolver the flush echo retargets (see `apply_flush_echo`).
+pub fn init(client: reqwest::Client, url: String, secret: String, dns: Arc<UpstreamDns>) {
     let env_level = std::env::var("MASQ_LOG_LEVEL").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(2);
     set_level(env_level);
     let (tx, rx) = mpsc::channel::<Value>(LOG_QUEUE);
     if SINK.set(tx).is_ok() {
-        tokio::spawn(log_flusher(rx, client, url, secret));
+        tokio::spawn(log_flusher(rx, client, url, secret, dns));
     }
 }
 
-/// Read `{ logLevel }` out of a flush response and update the atomic — the live level-change path. Called by
-/// BOTH the log flusher (below) and the telemetry flusher (state.rs), so either flow keeps the level current.
-pub async fn apply_level_response(resp: reqwest::Response) {
+/// Read the seam's flush echo `{ logLevel, nameservers }` and apply both live settings it carries: the level into
+/// the atomic here, the nameserver list into the upstream resolver (`UpstreamDns::apply_echo` — which ignores an
+/// echo that repeats the list in force, i.e. nearly all of them). Called by BOTH the log flusher (below) and the
+/// telemetry flusher (state.rs), so either flow alone keeps the sidecar current.
+pub async fn apply_flush_echo(resp: reqwest::Response, dns: &UpstreamDns) {
     if let Ok(v) = resp.json::<Value>().await {
         if let Some(n) = v.get("logLevel").and_then(|x| x.as_u64()) {
             set_level(n as u8);
         }
+        dns.apply_echo(&v);
     }
 }
 
@@ -138,9 +145,15 @@ pub fn trace(tag: &str, rid: &str, f: impl FnOnce() -> String) {
     }
 }
 
-// ── the batched flusher (clone of state.rs::telemetry_flusher, + the level echo-back) ─────────────────────
+// ── the batched flusher (clone of state.rs::telemetry_flusher, + the settings echo-back) ──────────────────
 
-async fn log_flusher(mut rx: mpsc::Receiver<Value>, client: reqwest::Client, url: String, secret: String) {
+async fn log_flusher(
+    mut rx: mpsc::Receiver<Value>,
+    client: reqwest::Client,
+    url: String,
+    secret: String,
+    dns: Arc<UpstreamDns>,
+) {
     loop {
         let first = match rx.recv().await {
             Some(ev) => ev,
@@ -160,7 +173,7 @@ async fn log_flusher(mut rx: mpsc::Receiver<Value>, client: reqwest::Client, url
         }
         let body = json!({ "events": batch });
         if let Ok(resp) = client.post(url.as_str()).header("x-masq-secret", &secret).json(&body).send().await {
-            apply_level_response(resp).await;
+            apply_flush_echo(resp, &dns).await;
         }
     }
 }

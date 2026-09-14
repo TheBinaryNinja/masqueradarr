@@ -20,6 +20,12 @@
 import { isIP } from 'node:net';
 import type { SettingsDoc } from '../models/Settings.js';
 import { DULO_DEFAULT_DOMAIN, normalizeDomain } from '../sources/adapters/dulo/config.js';
+import {
+  ZLIVE_DEFAULT_DOMAIN,
+  ZLIVE_DEFAULT_MAX_STREAMS,
+  ZLIVE_MAX_STREAMS_LIMIT,
+  normalizeDomain as normalizeZliveDomain,
+} from '../sources/adapters/zlive/config.js';
 import { zoneOffsetString } from './zoneOffset.js';
 
 // First-provision default for the outbound-fetch DNS resolver(s). Hardcoded (the NAMESERVER env was
@@ -38,6 +44,12 @@ export type VideoPlayerMode = (typeof VIDEO_PLAYER_MODES)[number];
 
 function asVideoPlayerMode(v: unknown): VideoPlayerMode {
   return VIDEO_PLAYER_MODES.includes(v as VideoPlayerMode) ? (v as VideoPlayerMode) : 'inapp';
+}
+
+// zliveMaxStreams: an integer 0..ZLIVE_MAX_STREAMS_LIMIT, where 0 means unlimited. Shared by the read projection
+// and the write validator. NOT a `||` fallback on read — 0 is a real value an operator chooses.
+function isZliveMaxStreams(v: unknown): v is number {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= ZLIVE_MAX_STREAMS_LIMIT;
 }
 
 // Internal runtime shape returned by the API. Diverges from SettingsData by REDACTING the secret MaxMind
@@ -67,6 +79,10 @@ export function envDefaults(): SettingsData {
     // config (the old DULO_API / DULO_API_BASE overrides were retired with this field), so the committed
     // default seeds first boot and the operator edits it on the Settings screen thereafter.
     duloDomain: DULO_DEFAULT_DOMAIN,
+    // zlive's domain + stream cap: committed defaults, deliberately not env-derived (same reasoning as duloDomain —
+    // a provider's identity is operator data, edited on the Settings screen, not infra config).
+    zliveDomain: ZLIVE_DEFAULT_DOMAIN,
+    zliveMaxStreams: ZLIVE_DEFAULT_MAX_STREAMS,
     // nameservers: hardcoded first-provision default (no longer env-derived — the NAMESERVER env was
     // dropped). 8.8.8.8,8.8.4.4 (Google public DNS) is written into the singleton on first insert so a
     // working outbound-fetch resolver is ALWAYS present out of the box; the operator edits it on the
@@ -98,6 +114,9 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     videoPlayer: asVideoPlayerMode(doc.videoPlayer),
     dlhdPlayer: typeof doc.dlhdPlayer === 'number' ? doc.dlhdPlayer : 0, // source-wide default DaddyLive player (0 = Auto)
     duloDomain: doc.duloDomain || DULO_DEFAULT_DOMAIN, // bare host; not secret — returned for the Settings UI
+    // Both absent on a doc seeded before the fields existed (lean reads skip schema defaults) → the defaults.
+    zliveDomain: doc.zliveDomain || ZLIVE_DEFAULT_DOMAIN,
+    zliveMaxStreams: isZliveMaxStreams(doc.zliveMaxStreams) ? doc.zliveMaxStreams : ZLIVE_DEFAULT_MAX_STREAMS,
     nameservers: doc.nameservers ?? null, // not secret — returned verbatim for the Settings UI
     logLevel: typeof doc.logLevel === 'number' ? doc.logLevel : 2,
     maxmindAccountId: doc.maxmindAccountId ?? null,
@@ -168,6 +187,21 @@ export function toExternalPatch(body: unknown): PatchResult {
     const parsed = normalizeDomain(b.duloDomain);
     if (!parsed.ok) return { ok: false, error: `duloDomain: ${parsed.error}` };
     $set.duloDomain = parsed.domain;
+  }
+  // zliveDomain: the host zlive's catalog + resolver live under. Same shared normalizer (and SSRF gate) as
+  // duloDomain — the catalog sync, the resolver and the Test endpoint all fetch from whatever lands here.
+  if (b.zliveDomain !== undefined) {
+    if (typeof b.zliveDomain !== 'string') return { ok: false, error: 'zliveDomain (string) required' };
+    const parsed = normalizeZliveDomain(b.zliveDomain);
+    if (!parsed.ok) return { ok: false, error: `zliveDomain: ${parsed.error}` };
+    $set.zliveDomain = parsed.domain;
+  }
+  // zliveMaxStreams: distinct zlive channels allowed live at once; 0 = unlimited.
+  if (b.zliveMaxStreams !== undefined) {
+    if (!isZliveMaxStreams(b.zliveMaxStreams)) {
+      return { ok: false, error: `zliveMaxStreams (integer 0..${ZLIVE_MAX_STREAMS_LIMIT}; 0 = unlimited) required` };
+    }
+    $set.zliveMaxStreams = b.zliveMaxStreams;
   }
   // nameservers: optional comma-separated resolver IP(s). null or '' clears it (stored null → OS resolver);
   // a non-empty string must be a comma list of valid IPs (isIP), else 400 — a bad value never reaches dns.ts.

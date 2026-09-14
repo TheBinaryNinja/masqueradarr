@@ -155,3 +155,17 @@ export const ROKU_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'roku-playlist-addon.j
  * until it lands, so plex's grid self-EPG is the guide in the meantime. Same shape + apply sequence as dlhd's.
  */
 export const PLEX_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'plex-playlist-addon.json');
+
+/**
+ * The zlive→station-id EPG-link crosswalk (committed seed data). zlive carries no guide of its own, so its linear
+ * channels link to EXISTING station-id guides the operator already has. Unlike the dlhd/dulo/tubi addons, a row
+ * pins a Gracenote STATION id (`tvg_id`) rather than a whole `(epg, tvg_id)` pair: it is applied by the
+ * station-aware applier (epgCrosswalk.ts applyStationCrosswalk), which links a channel to its pinned `epg` when
+ * that pair exists, else to whichever present gracenote / jesmann guide carries the station (DITV › other
+ * gracenote › jesmann). That is what lets the foreign channels resolve against a Jesmann country guide, whose
+ * source id is operator-named (`jesmann:<slug of the name>`) and so can never be hardcoded. Only HIGH rows
+ * auto-apply; medium rows (unconfirmed channel identity) are review-only. Generated Mongo-free from a saved zlive
+ * catalog + curated tables + Jesmann `<channel>` headers by scripts/zlive-station-crosswalk.ts
+ * (npm run crosswalk:zlive-stations).
+ */
+export const ZLIVE_EPG_ADDON_FILE = resolve(SEED_DATA_DIR, 'zlive-playlist-addon.json');

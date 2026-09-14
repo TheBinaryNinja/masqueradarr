@@ -1,5 +1,6 @@
 import { Schema, model } from 'mongoose';
 import { DULO_DEFAULT_DOMAIN } from '../sources/adapters/dulo/config.js';
+import { ZLIVE_DEFAULT_DOMAIN, ZLIVE_DEFAULT_MAX_STREAMS } from '../sources/adapters/zlive/config.js';
 
 // Settings — a single application-settings document. Deterministic _id ('app') makes every read/write
 // a singleton upsert (same idempotency rule as the synced collections). It holds operator-facing values
@@ -38,6 +39,10 @@ import { DULO_DEFAULT_DOMAIN } from '../sources/adapters/dulo/config.js';
 //                    (0 = Auto/first; 1..N = a specific player). A per-channel override (PlaylistChannel.playerPref)
 //                    wins over it. Cached into the dlhd resolver at boot + on every save (settings/applyDlhdPlayer.ts)
 //                    so the hot resolve path reads it with no DB hit.
+//   - zliveDomain / zliveMaxStreams — the domain zlive's catalog + stream resolver live under, and the cap on
+//                    DISTINCT zlive channels live at once (0 = unlimited). Both cached into the adapter's config leaf
+//                    (settings/applyZlive.ts) at boot, on save and after a restore, because the resolve seam reads the
+//                    cap synchronously on every live resolve.
 // (Per-source sync/auto-match is governed by the cronjobs scheduler, not by a global settings flag.)
 // These are APP settings (persisted in Mongo); they are distinct from infra config
 // (mongoUri/port/logLevel in config.json via MASQUERADARR_CONFIG — see config.ts). First-boot values are seeded
@@ -61,6 +66,12 @@ export interface SettingsDoc {
   // Settings -> Advanced -> Dulo.tv Authentication; pushed into the adapter cache by
   // settings/applyDuloDomain.ts. NOT to be confused with `domain` above, which is masqueradarr's OWN base URL.
   duloDomain: string;
+  // The domain zlive is on, as a bare host (e.g. 'zlive.st'): its catalog is cast.<domain>, its stream resolver
+  // iptv.<domain>. Edited on Settings -> Advanced -> ZLive; pushed into the adapter cache by settings/applyZlive.ts.
+  zliveDomain: string;
+  // Max DISTINCT zlive channels live at once (viewers of one channel count once); 0 = unlimited. Default 2. Read by
+  // the adapter's maxConcurrentStreams() on every live resolve (proxy/resolveSeam.ts refuses a new channel over it).
+  zliveMaxStreams: number;
   nameservers: string | null; // comma-separated outbound-fetch resolver IP(s); null/blank = OS resolver (DEFAULT_NAMESERVERS 8.8.8.8,8.8.4.4 seeds first boot)
   logLevel: number; // GLOBAL 1|2|3 log verbosity — app + Rust proxy engine (default 2; formerly dnsLogLevel)
   maxmindAccountId: string | null; // MaxMind GeoLite2 web-service account id (null = geo disabled)
@@ -86,6 +97,8 @@ const SettingsSchema = new Schema<SettingsDoc>(
     videoPlayer: { type: String, required: true, default: 'inapp' },
     dlhdPlayer: { type: Number, required: true, default: 0 }, // 0 = Auto; 1..N = source-wide default DaddyLive player
     duloDomain: { type: String, required: true, default: DULO_DEFAULT_DOMAIN },
+    zliveDomain: { type: String, required: true, default: ZLIVE_DEFAULT_DOMAIN },
+    zliveMaxStreams: { type: Number, required: true, default: ZLIVE_DEFAULT_MAX_STREAMS }, // 0 = unlimited
     nameservers: { type: String, default: null },
     logLevel: { type: Number, required: true, default: 2 },
     maxmindAccountId: { type: String, default: null },

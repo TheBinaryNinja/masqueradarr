@@ -15,7 +15,7 @@
 // settings/applyDuloDomain.ts (same split as dlhd/config.ts <- settings/applyDlhdPlayer.ts).
 
 import { createDynamicAllow, type DynamicAllow } from '../_fast/dynamicAllow.js';
-import { isPrivateHost } from '../../core/ssrf.js';
+import { normalizeDomain as normalizeSourceDomain, type DomainParse } from '../../core/domain.js';
 
 /** The committed default — dulo's domain as last known. Also the Settings.duloDomain schema default. */
 export const DULO_DEFAULT_DOMAIN = 'dulo.tv';
@@ -120,31 +120,12 @@ export const duloAllow: DynamicAllow = createDynamicAllow([
  * Accepts "dulo.tv", "https://Dulo.TV/", "HTTPS://dulo.tv/live?x=1" — scheme, path, query, userinfo and
  * port are all stripped. Rejects IP literals and private/loopback targets: the Test and Auto-detect
  * endpoints (routes/sources.ts) server-side-fetch whatever comes back from here, so this is a real SSRF
- * boundary, not cosmetic validation.
+ * boundary, not cosmetic validation. The rules themselves live in the shared core/domain.ts (every
+ * operator-set source domain runs the same gate); this binds dulo's name into the one source-specific
+ * message, so the error text is what it has always been.
  */
-export function normalizeDomain(raw: string): { ok: true; domain: string } | { ok: false; error: string } {
-  const v = String(raw ?? '').trim();
-  if (!v) return { ok: false, error: 'domain is required' };
-  let u: URL;
-  try {
-    u = new URL(/^[a-z][a-z0-9+.-]*:\/\//i.test(v) ? v : `https://${v}`);
-  } catch {
-    return { ok: false, error: `"${v}" is not a valid domain` };
-  }
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') {
-    return { ok: false, error: 'only http(s) domains are supported' };
-  }
-  const host = u.hostname.toLowerCase(); // hostname drops userinfo + port; IPv6 stays bracketed
-  if (!host) return { ok: false, error: `"${v}" is not a valid domain` };
-  if (isPrivateHost(host)) return { ok: false, error: `"${host}" is a private or loopback address` };
-  if (host.includes(':') || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host)) {
-    return { ok: false, error: 'an IP address is not a valid dulo domain — use a hostname' };
-  }
-  // At least one dot and a plausible TLD label (allows punycode "xn--…" TLDs).
-  if (!/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+[a-z][a-z0-9-]*$/.test(host)) {
-    return { ok: false, error: `"${host}" is not a valid domain name` };
-  }
-  return { ok: true, domain: host };
+export function normalizeDomain(raw: string): DomainParse {
+  return normalizeSourceDomain(raw, 'dulo');
 }
 
 /**

@@ -15,8 +15,10 @@
 //
 // Guardrails: one in-process `running` guard (the scheduler tick + a manual run can never overlap); a small
 // Node-side resolve concurrency cap (upstreams are auth-gated / rate-limited); auth-required playlists with no
-// session are skipped wholesale (never falsely marked "down"). Clone playlists are never walked — filled by
-// propagation. Transport-free: progress is a plain snapshot (getProbeStatus), read by GET /api/probe/status.
+// session are skipped wholesale (never falsely marked "down"); channels whose source opts out of probing
+// (SourceAdapter.probeExempt — an upstream that polices bulk access) are skipped per channel. Clone playlists
+// are never walked — filled by propagation. Transport-free: progress is a plain snapshot (getProbeStatus),
+// read by GET /api/probe/status.
 
 import { Playlist } from '../models/Playlist.js';
 import { PlaylistChannel } from '../models/PlaylistChannel.js';
@@ -25,6 +27,7 @@ import { PROXY_HOST, PROXY_PORT } from '../proxy/sidecar.js';
 import { PROXY_SECRET, PROXY_SECRET_HEADER } from '../proxy/secret.js';
 import { humanResolution } from './core/decodeLabels.js';
 import { logger } from './core/logger.js';
+import { getSource } from './registry.js';
 
 const tag = 'probe';
 
@@ -150,10 +153,22 @@ export async function probeAllChannels(): Promise<void> {
     // by propagation in writeResult, never walked. $nin both casings so a pre-normalization 'Clone' is excluded.
     const playlists = await Playlist.find({ source: { $nin: ['clone', 'Clone'] } }).lean();
     for (const pl of playlists) {
-      const channels = (await PlaylistChannel.find(
+      const active = (await PlaylistChannel.find(
         { source: pl.id, status: 'Active' },
         { id: 1, source: 1, origin: 1, streamEntryUrl: 1, tvg_name: 1, _id: 0 },
       ).lean()) as ChannelDoc[];
+
+      // Generic adapter opt-out (no per-source code): drop channels whose PROXY source declares probeExempt.
+      // Per channel, on the same `origin ?? source` key the resolve phase uses below, so an import/mixed
+      // playlist is judged by each channel's real provider rather than by the playlist. Counted as skipped
+      // (never "down") — they keep the status live playback last wrote. Deliberately not gated in buildGrant:
+      // that seam is shared with live playback.
+      const channels = active.filter((ch) => getSource(ch.origin ?? ch.source)?.probeExempt !== true);
+      const exempt = active.length - channels.length;
+      if (exempt) {
+        logger.info(tag, `[${pl.id}] skipped ${exempt} channel(s) — source opts out of probing`);
+        skipped += exempt;
+      }
       if (!channels.length) continue;
 
       // Generic auth gate (no per-source code): an auth-required playlist with no active session can't resolve
