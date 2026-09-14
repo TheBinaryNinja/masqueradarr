@@ -11,7 +11,8 @@
     "rebuild:seed": "tsx scripts/rebuild-source-seed.ts",
     "crosswalk:dulo-epg": "tsx scripts/dulo-epg-crosswalk.ts",
     "crosswalk:dlhd-epg": "tsx scripts/dlhd-epg-crosswalk.ts",
-    "crosswalk:tubi-epg": "tsx scripts/tubi-epg-crosswalk.ts"
+    "crosswalk:tubi-epg": "tsx scripts/tubi-epg-crosswalk.ts",
+    "crosswalk:zlive-stations": "tsx scripts/zlive-station-crosswalk.ts"
   },
   "dependencies": {
     "croner": "^9.1.0",

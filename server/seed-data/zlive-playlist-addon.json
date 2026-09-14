@@ -1,0 +1,1837 @@
+[
+  {
+    "source": "zlive",
+    "id": "zlive:abc",
+    "tvg_id": "20453",
+    "epg": "gracenote:lineupId:USA-lineupId-DEFAULT",
+    "zlive_name": "ABC",
+    "match_name": "WABC-DT",
+    "call_sign": "WABCDT",
+    "regions": [
+      "United States",
+      "United States - Locals"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:acc-network",
+    "tvg_id": "111871",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "ACC Network",
+    "match_name": "ACC Network",
+    "call_sign": "ACC",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:ae-network",
+    "tvg_id": "10035",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "AE",
+    "match_name": "A&E",
+    "call_sign": "AETV",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "zlive \"AE\" = A&E"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:amc",
+    "tvg_id": "10021",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "AMC",
+    "match_name": "AMC",
+    "call_sign": "AMC",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:american-heroes-channel",
+    "tvg_id": "18284",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "American Heroes Channel",
+    "match_name": "American Heroes Channel",
+    "call_sign": "AHC",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:animal-planet",
+    "tvg_id": "57394",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Animal Planet",
+    "match_name": "Animal Planet HD",
+    "call_sign": "APLHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:axs-tv",
+    "tvg_id": "28506",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "AXS TV",
+    "match_name": "AXS TV",
+    "call_sign": "AXSTV",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bbc-america",
+    "tvg_id": "64492",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "BBC America",
+    "match_name": "BBC America HD",
+    "call_sign": "BBCAHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bbc-one-london",
+    "tvg_id": "121745",
+    "zlive_name": "BBC One London",
+    "match_name": "BBC One London HD",
+    "call_sign": "BBC1LDHV",
+    "regions": [
+      "United Kingdom"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bbc-two",
+    "tvg_id": "50059",
+    "zlive_name": "BBC Two",
+    "match_name": "BBC Two HD",
+    "call_sign": "BBC2HD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bein-sports-francais-1",
+    "tvg_id": "90470",
+    "zlive_name": "beIN Sports Francais 1",
+    "match_name": "BeIN SPORTS 1 HD",
+    "call_sign": "BEINSHD",
+    "regions": [
+      "France"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bein-sports-francais-2",
+    "tvg_id": "87224",
+    "zlive_name": "beIN Sports Francais 2",
+    "match_name": "BeIN SPORTS 2 HD",
+    "call_sign": "BEIS2HD",
+    "regions": [
+      "France"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bein-sports-francais-3",
+    "tvg_id": "87241",
+    "zlive_name": "beIN Sports Francais 3",
+    "match_name": "BeIN SPORTS 3 HD",
+    "call_sign": "BEIN3HD",
+    "regions": [
+      "France"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:big-ten-network",
+    "tvg_id": "56783",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Big Ten Network",
+    "match_name": "Big Ten Network",
+    "call_sign": "BIGTEN",
+    "regions": [
+      "Canada",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:boomerang",
+    "tvg_id": "21883",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Boomerang",
+    "match_name": "Boomerang",
+    "call_sign": "BOOM",
+    "regions": [
+      "Ireland",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bravo",
+    "tvg_id": "10057",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Bravo",
+    "match_name": "Bravo",
+    "call_sign": "BRAVO",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:canal-sport-2-pl",
+    "tvg_id": "118297",
+    "zlive_name": "CANAL+ Sport 2 PL",
+    "match_name": "Canal+ Sport 2 HD",
+    "call_sign": "CSP2PL",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:canal-sport-3-pl",
+    "tvg_id": "151456",
+    "zlive_name": "CANAL+ Sport 3 PL",
+    "match_name": "CANAL+ Sport 3 HD",
+    "call_sign": "CSP3PL",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:canal-sport-4-pl",
+    "tvg_id": "151457",
+    "zlive_name": "CANAL+ Sport 4 PL",
+    "match_name": "CANAL+ Sport 4 HD",
+    "call_sign": "CSP4PL",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:canal-sport-5-pl",
+    "tvg_id": "118304",
+    "zlive_name": "CANAL+ Sport 5 PL",
+    "match_name": "CANAL+ SPORT 5 HD",
+    "call_sign": "CSP5PL",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:canal-sport-pl",
+    "tvg_id": "118299",
+    "zlive_name": "CANAL+ Sport PL",
+    "match_name": "Canal+ Sport HD",
+    "call_sign": "CSPPL",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:cartoon-network",
+    "tvg_id": "60048",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Cartoon Network",
+    "match_name": "Cartoon Network HD",
+    "call_sign": "TOONHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:cbeebies",
+    "tvg_id": "83283",
+    "zlive_name": "CBeebies",
+    "match_name": "CBeebies HD",
+    "call_sign": "CBEEBHD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:cbs",
+    "tvg_id": "16689",
+    "epg": "gracenote:lineupId:USA-lineupId-DEFAULT",
+    "zlive_name": "CBS",
+    "match_name": "WCBS-DT",
+    "call_sign": "WCBSDT",
+    "regions": [
+      "United States",
+      "United States - Locals"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:cbs-sports-network",
+    "tvg_id": "16365",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "CBS Sports Network",
+    "match_name": "CBS Sports Network",
+    "call_sign": "CBSSN",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:cnbc",
+    "tvg_id": "10139",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "CNBC",
+    "match_name": "CNBC",
+    "call_sign": "CNBC",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:comedy-central",
+    "tvg_id": "10149",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Comedy Central",
+    "match_name": "Comedy Central",
+    "call_sign": "COMEDY",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:cw",
+    "tvg_id": "20373",
+    "epg": "gracenote:lineupId:USA-lineupId-DEFAULT",
+    "zlive_name": "CW",
+    "match_name": "WPIX-DT",
+    "call_sign": "WPIXDT",
+    "regions": [
+      "Canada",
+      "United States",
+      "United States - Locals"
+    ],
+    "confidence": "high",
+    "note": "WPIX local news (10pm ET) may differ from the network feed"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-1-germany",
+    "tvg_id": "111745",
+    "zlive_name": "DAZN 1 Germany",
+    "match_name": "DAZN 1 HD",
+    "call_sign": "DAZN1HD",
+    "regions": [
+      "Germany"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-1-italia",
+    "tvg_id": "112545",
+    "zlive_name": "DAZN 1 Italia",
+    "match_name": "DAZN 1 HD Italy",
+    "call_sign": "DAZN1IT",
+    "regions": [
+      "Italy"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-1-spain",
+    "tvg_id": "130089",
+    "zlive_name": "DAZN 1 Spain",
+    "match_name": "DAZN 1",
+    "call_sign": "DAZN1ES",
+    "regions": [
+      "Spain"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-2-germany",
+    "tvg_id": "111746",
+    "zlive_name": "DAZN 2 Germany",
+    "match_name": "DAZN 2 HD",
+    "call_sign": "DAZN2HD",
+    "regions": [
+      "Germany"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-2-spain",
+    "tvg_id": "130090",
+    "zlive_name": "DAZN 2 Spain",
+    "match_name": "DAZN 2",
+    "call_sign": "DAZN2ES",
+    "regions": [
+      "Spain"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-f1",
+    "tvg_id": "130093",
+    "zlive_name": "DAZN F1",
+    "match_name": "DAZN F1",
+    "call_sign": "DAZNF1ES",
+    "regions": [
+      "Spain"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:dazn-laliga",
+    "tvg_id": "131663",
+    "zlive_name": "DAZN LaLiga",
+    "match_name": "DAZN La Liga",
+    "call_sign": "DAZNLLES",
+    "regions": [
+      "Spain"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:discovery-channel",
+    "tvg_id": "11150",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Discovery Channel",
+    "match_name": "Discovery Channel",
+    "call_sign": "DSC",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:discovery-family",
+    "tvg_id": "16618",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Discovery Family",
+    "match_name": "Discovery Family Channel",
+    "call_sign": "DFC",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:disney-channel",
+    "tvg_id": "59684",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Disney Channel",
+    "match_name": "Disney Channel HD",
+    "call_sign": "DISNHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:disney-junior",
+    "tvg_id": "74885",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Disney Junior",
+    "match_name": "Disney Junior HD",
+    "call_sign": "DJCHHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:disney-xd",
+    "tvg_id": "60006",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Disney XD",
+    "match_name": "Disney XD HD",
+    "call_sign": "DXDHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:espn",
+    "tvg_id": "10179",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "ESPN",
+    "match_name": "ESPN",
+    "call_sign": "ESPN",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:espn-deportes",
+    "tvg_id": "25595",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "ESPN Deportes",
+    "match_name": "ESPN Deportes",
+    "call_sign": "ESPND",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:espn2",
+    "tvg_id": "12444",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "ESPN2",
+    "match_name": "ESPN2",
+    "call_sign": "ESPN2",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:espnews",
+    "tvg_id": "16485",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "ESPNEWS",
+    "match_name": "ESPNEWS",
+    "call_sign": "ESPNEWS",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:espnu",
+    "tvg_id": "45654",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "ESPNU",
+    "match_name": "ESPNU",
+    "call_sign": "ESPNU",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:food-network",
+    "tvg_id": "12574",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Food Network",
+    "match_name": "Food Network",
+    "call_sign": "FOOD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox",
+    "tvg_id": "20360",
+    "epg": "gracenote:lineupId:USA-lineupId-DEFAULT",
+    "zlive_name": "Fox",
+    "match_name": "WNYW-DT",
+    "call_sign": "WNYWDT",
+    "regions": [
+      "United States",
+      "United States - Locals"
+    ],
+    "confidence": "high",
+    "note": "no national FOX feed exists; WNYW"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-deportes",
+    "tvg_id": "15377",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Fox Deportes",
+    "match_name": "Fox Deportes",
+    "call_sign": "FXDEP",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-1",
+    "tvg_id": "82547",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Fox Sports 1",
+    "match_name": "FS1 HD",
+    "call_sign": "FS1HD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-2",
+    "tvg_id": "59305",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Fox Sports 2",
+    "match_name": "FS2 HD",
+    "call_sign": "FS2HD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-501-cricket",
+    "tvg_id": "103068",
+    "zlive_name": "Fox Sports 501 (Cricket)",
+    "match_name": "FOX Cricket HD",
+    "call_sign": "501HANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-502-league",
+    "tvg_id": "103065",
+    "zlive_name": "Fox Sports 502 (League)",
+    "match_name": "FOX League HD",
+    "call_sign": "FXLHANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-503",
+    "tvg_id": "103070",
+    "zlive_name": "Fox Sports 503",
+    "match_name": "FOX SPORTS 503 HD",
+    "call_sign": "503HANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-504-footy",
+    "tvg_id": "103064",
+    "zlive_name": "Fox Sports 504 (Footy)",
+    "match_name": "FOX FOOTY HD",
+    "call_sign": "FTHDANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-505",
+    "tvg_id": "103075",
+    "zlive_name": "Fox Sports 505",
+    "match_name": "FOX SPORTS 505 HD",
+    "call_sign": "505HANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-506",
+    "tvg_id": "103078",
+    "zlive_name": "Fox Sports 506",
+    "match_name": "FOX SPORTS 506 HD",
+    "call_sign": "506HANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fox-sports-507",
+    "tvg_id": "103081",
+    "zlive_name": "Fox Sports 507",
+    "match_name": "FOX SPORTS 507 HD",
+    "call_sign": "FSMHANZ",
+    "regions": [
+      "Australia"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:freeform",
+    "tvg_id": "10093",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Freeform",
+    "match_name": "Freeform",
+    "call_sign": "FREEFRM",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fx",
+    "tvg_id": "14321",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "FX",
+    "match_name": "FX",
+    "call_sign": "FX",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fxm",
+    "tvg_id": "14988",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "FXM",
+    "match_name": "FXM",
+    "call_sign": "FXM",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:fxx",
+    "tvg_id": "17927",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "FXX",
+    "match_name": "FXX",
+    "call_sign": "FXX",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:golf-channel",
+    "tvg_id": "14899",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "GOLF Channel",
+    "match_name": "Golf Channel",
+    "call_sign": "GOLF",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:hbo",
+    "tvg_id": "10240",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "HBO",
+    "match_name": "HBO",
+    "call_sign": "HBO",
+    "regions": [
+      "Canada",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:hbo-comedy",
+    "tvg_id": "59839",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "HBO Comedy",
+    "match_name": "HBO Comedy HD",
+    "call_sign": "HBOCHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "the scorer picks Comedy Central at 79"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:hbo-drama",
+    "tvg_id": "10243",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "HBO Drama",
+    "match_name": "HBO Drama",
+    "call_sign": "HBODRMA",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "ex HBO Signature"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:hbo-latino",
+    "tvg_id": "24553",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "HBO Latino",
+    "match_name": "HBO Latino",
+    "call_sign": "HBOLAT",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:hbo-movies",
+    "tvg_id": "59845",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "HBO Movies",
+    "match_name": "HBO Movies",
+    "call_sign": "HBOMVHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "ex HBO Zone"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:hgtv",
+    "tvg_id": "14902",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "HGTV",
+    "match_name": "Home & Garden Television",
+    "call_sign": "HGTV",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:mlb-network",
+    "tvg_id": "62085",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "MLB Network",
+    "match_name": "MLB Network HD Alternate",
+    "call_sign": "MLBHDA",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:movistar-deportes",
+    "tvg_id": "87010",
+    "zlive_name": "Movistar Deportes",
+    "match_name": "Movistar Deportes HD",
+    "call_sign": "MDEP1HD",
+    "regions": [
+      "Spain"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:movistar-laliga",
+    "tvg_id": "114223",
+    "zlive_name": "Movistar LaLiga",
+    "match_name": "Movistar LaLiga",
+    "call_sign": "MOLIGA",
+    "regions": [
+      "Spain"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:mtv",
+    "tvg_id": "10986",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "MTV",
+    "match_name": "MTV - Music Television",
+    "call_sign": "MTV",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nba-tv",
+    "tvg_id": "32281",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "NBA TV",
+    "match_name": "NBA TV",
+    "call_sign": "NBATV",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nbc",
+    "tvg_id": "109718",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "NBC",
+    "match_name": "NBC East Stream",
+    "call_sign": "NBCESTR",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nbc-sports-bay-area",
+    "tvg_id": "63138",
+    "zlive_name": "NBC Sports Bay Area",
+    "match_name": "NBC Sports Bay Area HD",
+    "call_sign": "NBCSBAH",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nbc-sports-philadelphia",
+    "tvg_id": "32571",
+    "zlive_name": "NBC Sports Philadelphia",
+    "match_name": "NBC Sports Philadelphia HD",
+    "call_sign": "NBCSPAH",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nfl-network",
+    "tvg_id": "45399",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "NFL Network",
+    "match_name": "NFL Network HD",
+    "call_sign": "NFLHD",
+    "regions": [
+      "France",
+      "Germany",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nhl-network",
+    "tvg_id": "58690",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "NHL Network",
+    "match_name": "NHL Network HD",
+    "call_sign": "NHLHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nick-jr",
+    "tvg_id": "19211",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Nick Jr.",
+    "match_name": "Nick Jr",
+    "call_sign": "NICJR",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nickelodeon",
+    "tvg_id": "59432",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Nickelodeon",
+    "match_name": "Nickelodeon HD",
+    "call_sign": "NIKHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:nicktoons",
+    "tvg_id": "30420",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Nicktoons",
+    "match_name": "Nicktoons",
+    "call_sign": "NIKTON",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:polsat-sport-1",
+    "tvg_id": "118861",
+    "zlive_name": "Polsat Sport 1",
+    "match_name": "Polsat Sport 1 HD",
+    "call_sign": "PLSSPO1HD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:polsat-sport-2",
+    "tvg_id": "118862",
+    "zlive_name": "Polsat Sport 2",
+    "match_name": "Polsat Sport 2 HD",
+    "call_sign": "PLSSPO2HD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:polsat-sport-3",
+    "tvg_id": "118863",
+    "zlive_name": "Polsat Sport 3",
+    "match_name": "Polsat Sport 3 HD",
+    "call_sign": "PLSSPO3HD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:polsat-sport-fight",
+    "tvg_id": "118865",
+    "zlive_name": "Polsat Sport Fight",
+    "match_name": "Polsat Sport Fight HD",
+    "call_sign": "PLSSPFHD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:premier-sports-1-ie",
+    "tvg_id": "125231",
+    "zlive_name": "Premier Sports 1 IE",
+    "match_name": "Premier Sports 1 ROI",
+    "call_sign": "PRS1IR",
+    "regions": [
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:premier-sports-2-ie",
+    "tvg_id": "125232",
+    "zlive_name": "Premier Sports 2 IE",
+    "match_name": "Premier Sports 2 ROI",
+    "call_sign": "PRS2IR",
+    "regions": [
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:racer-network",
+    "tvg_id": "61036",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "RACER Network",
+    "match_name": "RACER Network HD",
+    "call_sign": "RACERHD",
+    "regions": [
+      "Canada",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:showtime",
+    "tvg_id": "11115",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Showtime",
+    "match_name": "Paramount+ with Showtime",
+    "call_sign": "PARSHO",
+    "regions": [
+      "Canada",
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "now Paramount+ with Showtime"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:showtime-2",
+    "tvg_id": "11116",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Showtime 2",
+    "match_name": "SHO 2",
+    "call_sign": "SHO2",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:showtime-extreme",
+    "tvg_id": "18086",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Showtime Extreme",
+    "match_name": "Showtime Extreme",
+    "call_sign": "SHOWX",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:showtime-family-zone",
+    "tvg_id": "103892",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Showtime Family Zone",
+    "match_name": "Showtime Familyzone HD",
+    "call_sign": "FAMZHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:showtime-next",
+    "tvg_id": "68342",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Showtime Next",
+    "match_name": "Showtime Next HD",
+    "call_sign": "NEXTHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:showtime-women",
+    "tvg_id": "68338",
+    "zlive_name": "Showtime Women",
+    "match_name": "Showtime Women HD",
+    "call_sign": "WOMENHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sport-24",
+    "tvg_id": "109495",
+    "zlive_name": "Sky Sport 24",
+    "match_name": "Sky Sport 24 HD",
+    "call_sign": "SKY24HD",
+    "regions": [
+      "Italy"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sport-bundesliga",
+    "tvg_id": "125282",
+    "zlive_name": "Sky Sport Bundesliga",
+    "match_name": "Sky Sport Bundesliga HD",
+    "call_sign": "SKYBUNHD",
+    "regions": [
+      "Germany"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sport-uno",
+    "tvg_id": "162429",
+    "zlive_name": "Sky Sport Uno",
+    "match_name": "Sky Sport Uno",
+    "call_sign": "SSP1SKY",
+    "regions": [
+      "Italy"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-action",
+    "tvg_id": "59533",
+    "zlive_name": "Sky Sports Action",
+    "match_name": "Sky Sports Action HD",
+    "call_sign": "SSPOACD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-cricket",
+    "tvg_id": "51204",
+    "zlive_name": "Sky Sports Cricket",
+    "match_name": "Sky Sports Cricket HD",
+    "call_sign": "SSPOCRH",
+    "regions": [
+      "United Kingdom",
+      "Ireland",
+      "Germany"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-f1",
+    "tvg_id": "87578",
+    "zlive_name": "Sky Sports F1",
+    "match_name": "Sky Sports F1 HD",
+    "call_sign": "SSPOF1H",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:skysportsf1-uk",
+    "tvg_id": "87578",
+    "zlive_name": "SKY Sports F1 UK (New)",
+    "match_name": "Sky Sports F1 HD",
+    "call_sign": "SSPOF1H",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-football",
+    "tvg_id": "104327",
+    "zlive_name": "Sky Sports Football",
+    "match_name": "Sky Sports Football HD",
+    "call_sign": "SSPOFBH",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-golf",
+    "tvg_id": "67695",
+    "zlive_name": "Sky Sports Golf",
+    "match_name": "Sky Sports Golf HD",
+    "call_sign": "SSPOGOD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-main-event",
+    "tvg_id": "49609",
+    "zlive_name": "Sky Sports Main Event",
+    "match_name": "Sky Sports Main Event HD",
+    "call_sign": "SSPOMEH",
+    "regions": [
+      "United Kingdom",
+      "Ireland",
+      "Germany"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-mix",
+    "tvg_id": "100264",
+    "zlive_name": "Sky Sports Mix",
+    "match_name": "Sky Sports Mix HD",
+    "call_sign": "SSPOMXH",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-news",
+    "tvg_id": "68347",
+    "zlive_name": "Sky Sports News",
+    "match_name": "Sky Sports News HD",
+    "call_sign": "SSPONED",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-premier-league",
+    "tvg_id": "116645",
+    "zlive_name": "Sky Sports Premier League",
+    "match_name": "Sky Sports Premier League HD",
+    "call_sign": "SPLHD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-racing",
+    "tvg_id": "30505",
+    "zlive_name": "Sky Sports Racing",
+    "match_name": "Sky Sports Racing HD",
+    "call_sign": "SSPORAC",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-tennis",
+    "tvg_id": "147889",
+    "zlive_name": "Sky Sports Tennis",
+    "match_name": "Sky Sports Tennis HD",
+    "call_sign": "SKYSPTUK",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sky-sports-plus",
+    "tvg_id": "104324",
+    "zlive_name": "Sky Sports+",
+    "match_name": "Sky Sports+ HD",
+    "call_sign": "SPLUSHDVM",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:sportdigital-fussball",
+    "tvg_id": "92464",
+    "zlive_name": "SPORTDIGITAL FUSSBALL",
+    "match_name": "SPORTDIGITAL FUSSBALL HD",
+    "call_sign": "SPODHD",
+    "regions": [
+      "Germany"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:starz",
+    "tvg_id": "12719",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "STARZ",
+    "match_name": "Starz",
+    "call_sign": "STARZ",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:starz-cinema",
+    "tvg_id": "67236",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "STARZ Cinema",
+    "match_name": "Starz Cinema HD",
+    "call_sign": "STRZCIH",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:starz-comedy",
+    "tvg_id": "57569",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "STARZ Comedy",
+    "match_name": "Starz Comedy HD",
+    "call_sign": "STZCHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:starz-kids-and-family",
+    "tvg_id": "57581",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "STARZ Kids and Family",
+    "match_name": "Starz Kids & Family HD",
+    "call_sign": "STZKHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:syfy",
+    "tvg_id": "11097",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "SYFY",
+    "match_name": "SYFY",
+    "call_sign": "SYFY",
+    "regions": [
+      "Brazil",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tbs",
+    "tvg_id": "11867",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "TBS",
+    "match_name": "TBS",
+    "call_sign": "TBS",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:teenick",
+    "tvg_id": "59036",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Teenick",
+    "match_name": "Teen Nick",
+    "call_sign": "TNCK",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:telemundo",
+    "tvg_id": "54437",
+    "epg": "gracenote:lineupId:USA-lineupId-DEFAULT",
+    "zlive_name": "Telemundo",
+    "match_name": "WNJU-DT",
+    "call_sign": "WNJUDT",
+    "regions": [
+      "United States",
+      "United States - Locals"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tennis-channel",
+    "tvg_id": "33395",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Tennis Channel",
+    "match_name": "Tennis Channel",
+    "call_sign": "TENNIS",
+    "regions": [
+      "United Kingdom"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tennis-channel",
+    "tvg_id": "60316",
+    "zlive_name": "Tennis Channel",
+    "match_name": "Tennis Channel HD",
+    "call_sign": "TENISHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "alternate station for guides without 33395"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:the-weather-channel",
+    "tvg_id": "11187",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "The Weather Channel",
+    "match_name": "The Weather Channel",
+    "call_sign": "WEATH",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "the scorer picks FOX WEATHER"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tnt",
+    "tvg_id": "11164",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "TNT",
+    "match_name": "TNT",
+    "call_sign": "TNT",
+    "regions": [
+      "Canada",
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tnt-sports-1",
+    "tvg_id": "82450",
+    "zlive_name": "TNT Sports 1",
+    "match_name": "TNT Sports 1 HD",
+    "call_sign": "TNTSP1HD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tnt-sports-2",
+    "tvg_id": "82451",
+    "zlive_name": "TNT Sports 2",
+    "match_name": "TNT Sports 2 HD",
+    "call_sign": "TNTSP2HD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tnt-sports-3",
+    "tvg_id": "95772",
+    "zlive_name": "TNT Sports 3",
+    "match_name": "TNT Sports 3 HD",
+    "call_sign": "TNTSP3HD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tnt-sports-4",
+    "tvg_id": "64572",
+    "zlive_name": "TNT Sports 4",
+    "match_name": "TNT Sports 4 HD",
+    "call_sign": "TNTSB4HD",
+    "regions": [
+      "United Kingdom",
+      "Ireland"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:trutv",
+    "tvg_id": "10153",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "TruTV",
+    "match_name": "truTV",
+    "call_sign": "TRUTV",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tsn1",
+    "tvg_id": "11182",
+    "zlive_name": "TSN1",
+    "match_name": "TSN 1",
+    "call_sign": "TSN1",
+    "regions": [
+      "Canada"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tudn",
+    "tvg_id": "75176",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "TUDN",
+    "match_name": "TUDN",
+    "call_sign": "TUDNU",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:tyc-sports-internacional",
+    "tvg_id": "111046",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "TYC Sports Internacional",
+    "match_name": "TyC Sports Internacional USA",
+    "call_sign": "TYCINUH",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:usa-network",
+    "tvg_id": "11207",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "USA Network",
+    "match_name": "USA Network",
+    "call_sign": "USA",
+    "regions": [
+      "Canada",
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "the scorer picks MYNETWORKTV"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:wapa-america",
+    "tvg_id": "44322",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "WAPA America",
+    "match_name": "WAPA America",
+    "call_sign": "WAPAUS",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:willow-cricket",
+    "tvg_id": "80621",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Willow Cricket",
+    "match_name": "Willow Cricket HD",
+    "call_sign": "WLLOHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high",
+    "note": "resolver alias willow-usa"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:willow-cricket-2",
+    "tvg_id": "100316",
+    "epg": "gracenote:DITV:USA-DITV-DEFAULT",
+    "zlive_name": "Willow Cricket 2",
+    "match_name": "Willow 2",
+    "call_sign": "WILLOW2",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "high"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:bein-sports",
+    "tvg_id": "76950",
+    "zlive_name": "beIN Sports",
+    "match_name": "beIN Sports HD",
+    "call_sign": "BEIN1HD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (beIN SPORTS USA; beIN runs in many markets)"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:discovery-turbo",
+    "tvg_id": "31046",
+    "zlive_name": "Discovery Turbo",
+    "match_name": "DISCOVERY TURBO HD",
+    "call_sign": "MTHD",
+    "regions": [
+      "United States"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (US Discovery Turbo, not a LatAm/AU/BR feed)"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:eleven-sports-1",
+    "tvg_id": "117897",
+    "zlive_name": "Eleven Sports 1",
+    "match_name": "Eleven Sports HD 1",
+    "call_sign": "ELSPO1HD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (Eleven Sports, Poland)"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:eleven-sports-2",
+    "tvg_id": "117898",
+    "zlive_name": "Eleven Sports 2",
+    "match_name": "Eleven Sports HD 2",
+    "call_sign": "ELSPO2HD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (Eleven Sports, Poland)"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:eleven-sports-3",
+    "tvg_id": "117899",
+    "zlive_name": "Eleven Sports 3",
+    "match_name": "Eleven Sports HD 3",
+    "call_sign": "ELSPO3HD",
+    "regions": [
+      "Poland"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (Eleven Sports, Poland)"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:motogp-channel",
+    "tvg_id": "108659",
+    "zlive_name": "MotoGP Channel",
+    "match_name": "Sky Sport MotoGP HD",
+    "call_sign": "SKMTGPH",
+    "regions": [
+      "Italy"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (Sky Sport MotoGP, Italy)"
+  },
+  {
+    "source": "zlive",
+    "id": "zlive:premiere",
+    "tvg_id": "99021",
+    "zlive_name": "Premiere",
+    "match_name": "Premiere Clubes HD",
+    "call_sign": "PFCLHD",
+    "regions": [
+      "Brazil"
+    ],
+    "confidence": "medium",
+    "note": "channel identity assumed, not confirmed (Premiere Clubes, Brazil)"
+  }
+]

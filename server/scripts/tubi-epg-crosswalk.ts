@@ -77,14 +77,20 @@ async function main(): Promise<void> {
   const { mongoUri } = loadConfig();
   await connect(mongoUri);
 
-  // Every loaded Gracenote lineup's channels: build tmsid (channelId) → the lineup source id(s).
+  // Every loaded Gracenote lineup's channels: build tmsid (channelId) → the lineup source id(s). The kind is
+  // lowercase 'gracenote' today (sources/seed.ts migrates legacy 'Gracenote' rows at boot) — match any casing.
   const gracenoteIds = (
-    await EpgSource.find({ source: 'Gracenote' }, { id: 1 }).lean<{ id: string }[]>()
+    await EpgSource.find({ source: /^gracenote$/i }, { id: 1 }).lean<{ id: string }[]>()
   ).map((s) => s.id);
   const epgChannels = await EpgChannel.find(
     { source: { $in: gracenoteIds } },
     { channelId: 1, source: 1 },
   ).lean<{ channelId: string; source: string }[]>();
+  // With no lineup loaded every row would be "defaulted" to DITV — the rewrite would silently discard each row's
+  // resolved lineup. Refuse instead of degrading the committed file (it means no Gracenote source is synced).
+  if (!epgChannels.length) {
+    throw new Error(`no Gracenote EPG channels loaded — refusing to overwrite ${OUT_PATH}`);
+  }
 
   const byTmsid = new Map<string, string[]>();
   for (const e of epgChannels) {
