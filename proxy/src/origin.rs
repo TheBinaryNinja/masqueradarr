@@ -3252,8 +3252,9 @@ async fn ts_ring_producer(
     // viewer joins the ring at a different point and therefore sits on its own timeline.
     let mut splicer = crate::tsnorm::Splicer::new();
     let mut warned_splice = false;
-    // KEY: the next segment is a JOIN — the decoder behind this socket holds no reference picture — so it is
-    // trimmed to its first keyframe. True for the first segment, and again after a skip ahead on the ring.
+    // KEY: the next segment is a JOIN — the decoder behind this socket holds no reference picture it may use — so
+    // it is trimmed to its first keyframe. True for the first segment, again after a skip ahead on the ring, and
+    // at every segment the ring publishes on a splice.
     let mut joining = true;
     // Two paths reach the close emit now — the ingest-stopping `break` and the lane-changed `break 'outer`
     // — so the reason has to be threaded, exactly as the pair producer threads its own.
@@ -3301,6 +3302,14 @@ async fn ts_ring_producer(
                 });
                 close_reason = "lane_changed";
                 break 'outer;
+            }
+            // KEY: a segment published on a splice — the first after a ring reset (a failover, a window that did not
+            // continue), or a boundary the ingest could not absorb — opens another encode, and the pictures this
+            // socket's decoder holds are the old one's. It is a join too: sent whole, its pre-keyframe pictures were
+            // decoded against the dead stream's references, while the splicer below rebased it seamlessly onto the
+            // old clock — up to a GOP of corrupted video with nothing in the stream to explain it.
+            if seg.discontinuity {
+                joining = true;
             }
             // KEY: a join starts at the segment's first keyframe, BEFORE normalisation, so the timeline the splicer
             // anchors on this segment is the one the client actually receives. The trimmed segment keeps its
@@ -5202,6 +5211,59 @@ mod tests {
         assert_eq!(after.len(), seg.len(), "the segment after the join goes out whole");
         let ring = subscribe(&state, "zl", "zl://abc", None, &policy);
         assert!(ring.origin().window().iter().all(|s| s.bytes.len() == seg.len()), "the shared ring is never trimmed");
+    }
+
+    /// KEY, end to end: a raw-TS viewer already caught up when the ingest RESETS the ring onto another upstream (a
+    /// window that cannot continue ours) is sent that upstream's first segment as a join — opening on its keyframe
+    /// — and the segment after it whole. The trim used to be armed only at the socket's first segment and after a
+    /// fell-behind skip, so the new upstream's mid-GOP head went out whole, rebased onto the old clock: pictures
+    /// decoded against the dead stream's references, up to a GOP of corrupted video.
+    #[tokio::test]
+    async fn after_a_ring_reset_the_next_segment_is_a_join_again() {
+        use crate::tsseg::PKT;
+        let (seg, cut) = crate::tsseg::mid_gop_segment();
+        let up = Mock::start(Seam::grant("/pl/a.m3u8", true)).await;
+        let listing = |ms: u32, names: &[&str]| {
+            let mut p = format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:{ms}\n");
+            for n in names {
+                p.push_str(&format!("#EXTINF:1.0,\n/pl/{n}\n"));
+            }
+            p
+        };
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(listing(0, &["g0.ts", "g1.ts", "g2.ts"])));
+            for g in ["g0.ts", "g1.ts", "g2.ts", "h0.ts", "h1.ts", "h2.ts"] {
+                s.paths.insert(format!("/pl/{g}"), Serve::Media(seg.clone()));
+            }
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        let resp = serve_ts(&state, &policy, "zl", "zl://abc", None, &viewer(), "t").await.expect("a ringable shape");
+        let mut socket = resp.into_body().into_data_stream();
+        let joined = 2 * PKT + (seg.len() - cut);
+        let mut got = Vec::new();
+        for _ in 0..3 {
+            got.push(socket.next().await.expect("a held segment").expect("readable").len());
+        }
+        assert_eq!(got, vec![joined, seg.len(), seg.len()], "precondition: the join, then the window whole");
+
+        // The playlist stops refreshing; the re-resolve lands on a window far past ours — the ring resets.
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Status(403));
+            s.paths.insert("/pl/c.m3u8".into(), Serve::Body(listing(900, &["h0.ts", "h1.ts", "h2.ts"])));
+            s.seam = Seam::grant("/pl/c.m3u8", true);
+        });
+        let after_reset = tokio::time::timeout(Duration::from_secs(10), socket.next())
+            .await
+            .expect("the new upstream's first segment")
+            .expect("a chunk")
+            .expect("readable");
+        let next = socket.next().await.expect("the segment after it").expect("readable");
+        assert_eq!(after_reset.len(), joined, "the new upstream's first segment opens on its keyframe");
+        assert_eq!(crate::tsseg::first_keyframe(&after_reset).map(|(at, _)| at), Some(2 * PKT));
+        assert_eq!(next.len(), seg.len(), "and only that one is trimmed");
     }
 
     /// LEAK, end to end: a raw-TS viewer who leaves while the ingest has nothing new releases the channel at once.

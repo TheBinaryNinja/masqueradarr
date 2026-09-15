@@ -871,7 +871,9 @@ async fn ts_producer(
     // Latch for the one-shot line saying a segment host was refused as private — a playlist that names one names
     // it on every poll.
     let mut private_logged = false;
-    // KEY: whether the client has been sent any media yet. Until it has, the next segment is its JOIN.
+    // KEY: whether the client has been sent any media yet. Until it has, the next segment is its JOIN — and it is
+    // cleared again whenever the upstream changes under the socket (a re-resolve, a playlist that restarts its
+    // numbering, a discontinuity), where the decoder's reference pictures stop applying.
     let mut joined = false;
 
     'outer: loop {
@@ -907,6 +909,9 @@ async fn ts_producer(
                     Ok((u, b)) => {
                         media_url = u;
                         media_body = b;
+                        // KEY: another upstream (or a re-signed session of this one) — possibly a segmentUnwrap child
+                        // under a plain parent — so its first segment is a join, trimmed when the policy asks.
+                        joined = false;
                     }
                     Err(reason) => {
                         // Issue-level (≥1) when the chain is exhausted; a cap refusal was already named above.
@@ -929,6 +934,7 @@ async fn ts_producer(
         // that will never arrive.
         if prev_media_seq >= 0 && mp.media_sequence < prev_media_seq {
             next_seq = mp.media_sequence;
+            joined = false; // a restarted playlist is a new session: its first segment is a join (KEY)
         }
         prev_media_seq = mp.media_sequence;
         if next_seq < 0 {
@@ -1035,6 +1041,9 @@ async fn ts_producer(
             // DSG: read per SEGMENT, not per session. A failover swaps `ctx.policy` onto the winning candidate's,
             // and whether ITS segments arrive disguised is that adapter's declaration, not the parent's.
             let unwrap = ctx.policy.segment_unwrap.load(Ordering::Relaxed);
+            if seg.discontinuity {
+                joined = false; // a splice opens another encode: the decoder's references are the old one's (KEY)
+            }
             // KEY: the source that declares its segments disguised also cuts them mid-GOP — the same declaration
             // drops its false `#EXT-X-INDEPENDENT-SEGMENTS` — so this socket's FIRST segment would start the
             // client's decoder on pictures it cannot reconstruct. That one segment is held back only until its
@@ -1882,5 +1891,48 @@ mod tests {
         assert!(first.len() < 2 * JOIN_HOLD_CAP, "…and not a byte-hoard past it ({} B)", first.len());
         let next = tokio::time::timeout(Duration::from_secs(5), socket.next()).await;
         assert!(matches!(next, Ok(Some(Ok(_)))), "the rest streams behind it");
+    }
+
+    /// KEY: after a re-resolve swaps the socket onto another upstream session (here: the playlist stops refreshing,
+    /// and the pinned candidate re-resolves onto a new one), that session's first segment is a join again —
+    /// opening on its keyframe — and the one after it streams whole. `joined` used to stay set for the life of the
+    /// socket, so the new session's mid-GOP head went out whole onto a decoder holding the old session's pictures.
+    #[tokio::test]
+    async fn after_a_re_resolve_the_next_segment_is_a_join_again() {
+        let (gop, cut) = crate::tsseg::mid_gop_segment();
+        let disguised = crate::tsseg::webp_disguise(&gop);
+        let unwrap = serde_json::json!({ "segmentUnwrap": true });
+        let up = Mock::start(raw_ts_grant(unwrap.clone())).await;
+        let listing = |ms: u32, names: &[&str]| {
+            let mut p = format!("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:{ms}\n");
+            for n in names {
+                p.push_str(&format!("#EXTINF:2.0,\n/pl/{n}\n"));
+            }
+            p
+        };
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(listing(0, &["g0.ts", "g1.ts"])));
+            for g in ["g0.ts", "g1.ts", "h0.ts", "h1.ts"] {
+                s.paths.insert(format!("/pl/{g}"), Serve::Media(disguised.clone()));
+            }
+        });
+        let mut socket = open_socket(&up.state()).await;
+        let join = 2 * PKT + (gop.len() - cut);
+        let first = read_until(&mut socket, join + gop.len(), Duration::from_secs(5)).await;
+        assert_eq!(first.len(), join + gop.len(), "precondition: the join, then the next segment whole");
+
+        // The playlist stops refreshing; the re-resolve hands the socket a new session, numbered past the old one.
+        let mut grant = serde_json::json!({ "proxyConfig": { "originEnabled": false, "outputFormat": "ts" } });
+        if let (Some(g), serde_json::Value::Object(x)) = (grant.as_object_mut(), unwrap) {
+            g.extend(x);
+        }
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Status(403));
+            s.paths.insert("/pl/next.m3u8".into(), Serve::Body(listing(10, &["h0.ts", "h1.ts"])));
+            s.seam = Seam::grant_with("/pl/next.m3u8", grant);
+        });
+        let next = read_until(&mut socket, join + gop.len(), Duration::from_secs(10)).await;
+        assert_eq!(next.len(), join + gop.len(), "the new session's first segment trimmed, the one after it whole");
+        assert_eq!(crate::tsseg::first_keyframe(&next).map(|(at, _)| at), Some(2 * PKT), "opening on its keyframe");
     }
 }
