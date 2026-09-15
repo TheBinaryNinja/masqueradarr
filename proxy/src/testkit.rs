@@ -87,6 +87,8 @@ pub(crate) struct Script {
     pub(crate) echo: serde_json::Value,
     /// How many requests each scripted path (under `/pl/`) has had — for a test about who keeps polling what.
     pub(crate) hits: HashMap<String, u32>,
+    /// A failover attempt answered differently from `seam` — the channel's backups, each its own grant.
+    pub(crate) by_attempt: HashMap<u32, Seam>,
 }
 
 #[derive(Clone)]
@@ -116,6 +118,7 @@ impl Mock {
                 exhaust_advances: false,
                 echo: serde_json::json!({}),
                 hits: HashMap::new(),
+                by_attempt: HashMap::new(),
             })),
         };
         let app = Router::new()
@@ -171,7 +174,8 @@ async fn resolve(State(s): State<Shared>, Json(asked): Json<serde_json::Value>) 
         let mut sc = s.script.lock_ok();
         sc.resolves += 1;
         sc.calls.push(Call { at: s.started.elapsed(), attempt, reason });
-        (sc.seam.clone(), sc.exhaust_advances && attempt >= 1)
+        let seam = sc.by_attempt.get(&attempt).cloned().unwrap_or_else(|| sc.seam.clone());
+        (seam, sc.exhaust_advances && attempt >= 1)
     };
     if exhausted {
         return (StatusCode::GONE, r#"{"error":"failover_exhausted"}"#).into_response();

@@ -303,31 +303,13 @@ pub async fn serve_stream(
     // passes renditions through for the player to fetch, so the channel plays WITH sound where the ring could
     // only have served it silent. (Before this seam a decline meant an empty ring, a `READY_TIMEOUT` wait and
     // a 503 — a dead channel.)
+    let ident = Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() };
     if !is_hop && policy.origin_enabled.load(Ordering::Relaxed) {
-        let want_ts = policy.output_format.read_ok().as_str() == "ts" && mount_path == "/api/ext/v1";
-        let ident = Identity { ip: ip.clone(), ua: ua.clone(), username: username.clone() };
-        if want_ts {
-            log::info("proxy", &rid, || "originEnabled + outputFormat=ts — serving raw TS from the ring".to_string());
-            if let Some(r) = crate::origin::serve_ts(&state, &policy, source, &stream_entry, pl.as_deref(), &ident, &rid).await {
-                return r;
-            }
-        } else {
-            log::info("proxy", &rid, || "originEnabled — serving the authored manifest from the ring".to_string());
-            if let Some(r) = crate::origin::serve_entry(
-                &state,
-                &policy,
-                mount_path,
-                source,
-                &stream_entry,
-                token.as_deref(),
-                pl.as_deref(),
-                &ident,
-                &rid,
-            )
-            .await
-            {
-                return r;
-            }
+        if let Some(r) =
+            serve_from_origin(&state, &policy, mount_path, source, &stream_entry, token.as_deref(), pl.as_deref(), &ident, &rid)
+                .await
+        {
+            return r;
         }
     }
 
@@ -428,6 +410,32 @@ pub async fn serve_stream(
                 WalkOutcome::Recovered(p, target, r) => {
                     policy = p;
                     fetch_url = target;
+                    // S3/ORIGIN — the walk carried the channel onto another candidate, and the origin dispatch
+                    // above was decided on the policy that just failed. A candidate whose policy puts it on the
+                    // origin (an originRequired backup — zlive — under a plain parent) is served from the ring
+                    // from its first request: served pass-through instead, it pulled the upstream per viewer (for
+                    // a raw-TS socket, for the whole session) against the one-ingest-per-channel contract
+                    // originRequired declares, and the next entry poll — resolving onto the same backup — then
+                    // flipped an HLS player onto the ring's numbering mid-session. The response the walk fetched
+                    // is dropped; a decline still falls through to the rewrite with it, exactly as above.
+                    if policy.origin_enabled.load(Ordering::Relaxed) {
+                        log::info("proxy", &rid, || "the recovered candidate runs on the origin — serving from the ring".to_string());
+                        if let Some(served) = serve_from_origin(
+                            &state,
+                            &policy,
+                            mount_path,
+                            source,
+                            &stream_entry,
+                            token.as_deref(),
+                            pl.as_deref(),
+                            &ident,
+                            &rid,
+                        )
+                        .await
+                        {
+                            return served;
+                        }
+                    }
                     resp = Some(r);
                 }
                 WalkOutcome::Definitive(p, r) => {
@@ -723,6 +731,31 @@ fn failover_knobs(state: &AppState, source: &str) -> (bool, bool) {
             p.failover_on_definite_error.load(Ordering::Relaxed),
         ),
         None => (true, false),
+    }
+}
+
+/// S3/ORIGIN — answer an ENTRY from the channel's ring rather than the upstream manifest, on `policy`'s output
+/// shape: raw TS on the external mount when it selects `ts`, the authored HLS manifest otherwise. `None` when the
+/// renderer DECLINES the upstream's shape, which the caller answers with the ordinary rewrite (see the dispatch
+/// in `serve_stream`).
+#[allow(clippy::too_many_arguments)]
+async fn serve_from_origin(
+    state: &AppState,
+    policy: &Arc<SourcePolicy>,
+    mount_path: &str,
+    source: &str,
+    stream_entry: &str,
+    token: Option<&str>,
+    pl: Option<&str>,
+    ident: &Identity,
+    rid: &str,
+) -> Option<Response> {
+    if policy.output_format.read_ok().as_str() == "ts" && mount_path == "/api/ext/v1" {
+        log::info("proxy", rid, || "originEnabled + outputFormat=ts — serving raw TS from the ring".to_string());
+        crate::origin::serve_ts(state, policy, source, stream_entry, pl, ident, rid).await
+    } else {
+        log::info("proxy", rid, || "originEnabled — serving the authored manifest from the ring".to_string());
+        crate::origin::serve_entry(state, policy, mount_path, source, stream_entry, token, pl, ident, rid).await
     }
 }
 
@@ -1339,6 +1372,27 @@ mod tests {
             assert_eq!(play(&state).await.status().as_u16(), 404);
         }
         assert_eq!(up.resolves(), 1, "a 404 is not a dead target: the cache rides on");
+    }
+
+    /// S3/ORIGIN + FOG: the channel's own entry resolves but its upstream cannot be reached, and the walk recovers
+    /// onto a backup whose grant runs on the origin (an originRequired provider under a plain parent). That first
+    /// request is answered from the ring — the authored manifest, segments under `/o/` — where it used to be the
+    /// backup's upstream playlist rewritten pass-through, which the next poll then swapped for the ring's numbering.
+    #[tokio::test]
+    async fn a_backup_recovered_after_a_failed_entry_fetch_is_served_from_the_origin() {
+        let dead = serde_json::json!({ "target": "http://127.0.0.1:1/dead.m3u8", "proxyConfig": { "originEnabled": false } });
+        let up = Mock::start(Seam::grant_with("/unused", dead)).await;
+        up.script(|s| {
+            s.by_attempt.insert(1, Seam::grant_with("/pl/live.m3u8", serde_json::json!({ "policySource": "child" })));
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(crate::testkit::media_playlist(100, 4, 1)));
+        });
+        let resp = play(&up.state()).await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let manifest = axum::body::to_bytes(resp.into_body(), 1 << 16).await.unwrap();
+        let manifest = String::from_utf8_lossy(&manifest);
+        assert!(manifest.contains("/api/v1/zl/o/"), "segments come from the ring:\n{manifest}");
+        assert!(!manifest.contains("/api/v1/zl/h/"), "not the backup's playlist rewritten pass-through:\n{manifest}");
+        assert!(up.calls().iter().any(|c| c.attempt == 1), "precondition: the walk reached the backup");
     }
 
     /// HOP TAIL, end to end through the relay: a `.png`-named segment and a signed one are both minted with
