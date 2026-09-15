@@ -860,6 +860,11 @@ impl Origin {
         self.notify.notified().await;
     }
 
+    /// No subscriber, and nothing has read the ring for IDLE_GRACE: the ingest has nobody left to feed.
+    fn idle(&self) -> bool {
+        self.subscribers.load(Ordering::Relaxed) == 0 && self.last_access.lock_ok().elapsed() >= IDLE_GRACE
+    }
+
     fn ring_depth(&self) -> usize {
         self.ring.read_ok().len()
     }
@@ -1148,9 +1153,7 @@ async fn ingest(ctx: IngestCtx) {
         // with a long target duration still releases promptly.
         if last_idle_check.elapsed() >= IDLE_TICK {
             last_idle_check = Instant::now();
-            if ctx.origin.subscribers.load(Ordering::Relaxed) == 0
-                && ctx.origin.last_access.lock_ok().elapsed() >= IDLE_GRACE
-            {
+            if ctx.origin.idle() {
                 log::info("iop", &rid, || {
                     format!("ingest idle {}/{} — stopping", ctx.source, crate::proxy::host_of(&ctx.entry))
                 });
@@ -1339,6 +1342,13 @@ async fn ingest(ctx: IngestCtx) {
                         // A splice pending from the resolve (a reset's, or a renewal that landed on a socket) rides
                         // on the session's first cut, exactly as the HLS path puts it on its first segment.
                         let session = ingest_raw_ts(&ctx, &rid, stream, first, read_timeout_ms, forced.is_some()).await;
+                        if session.idle {
+                            // The session ended because nobody is left to feed: stop, don't judge or reconnect it.
+                            log::info("iop", &rid, || {
+                                format!("ingest idle {}/{} — stopping", ctx.source, crate::proxy::host_of(&ctx.entry))
+                            });
+                            break;
+                        }
                         let produced = session.produced;
                         if produced > 0 {
                             forced = None;
@@ -2417,6 +2427,8 @@ struct RawSession {
     media_span: Duration,
     /// The shortest a live session runs: the silence bound, three target durations at least.
     min_session: Duration,
+    /// It ended because the ingest went idle (`Origin::idle`) — nobody left to feed, nothing to judge.
+    idle: bool,
 }
 
 /// What a finished bare-TS session says about the candidate that served it.
@@ -2443,10 +2455,10 @@ fn raw_verdict(s: &RawSession) -> RawVerdict {
 
 /// Ingest a BARE TS socket: cut it into segments locally and push them into the same ring the HLS path fills.
 ///
-/// Runs until the socket ends, falls silent for longer than the ingest's I/O bound, or the ingest is stopping
-/// — unlike the HLS path there is nothing to poll, so this is one long read rather than a loop over playlist
-/// refreshes. Returns what the caller judges the session by (`RawSession`, `raw_verdict`): a live socket
-/// delivers in real time, so one whose media stopped sooner than the silence bound was a finite clip, a
+/// Runs until the socket ends, falls silent for longer than the ingest's I/O bound, the ingest goes idle, or it
+/// is stopping — unlike the HLS path there is nothing to poll, so this is one long read rather than a loop over
+/// playlist refreshes. Returns what the caller judges the session by (`RawSession`, `raw_verdict`): a live
+/// socket delivers in real time, so one whose media stopped sooner than the silence bound was a finite clip, a
 /// dropped connection or a socket gone quiet — a failure, not a reconnect.
 ///
 /// `mark_first`: a splice is pending (the ring was reset for this socket, or a renewal landed on one), so the
@@ -2476,6 +2488,8 @@ async fn ingest_raw_ts(
     // The session's media span runs from its first bytes (in hand already) to the last chunk that arrived.
     let opened = Instant::now();
     let mut last_bytes = opened;
+    let mut idle = false;
+    let mut last_idle_check = opened;
 
     for cut in seg.push(&first) {
         push_cut(ctx, cut, std::mem::take(&mut disc));
@@ -2494,6 +2508,17 @@ async fn ingest_raw_ts(
         };
         if ctx.origin.stopping.load(Ordering::Relaxed) {
             break;
+        }
+        // The ingest loop's idle shutdown lives at its head, which this read never returns to while the upstream
+        // keeps sending — and `stopping` is only ever set by the ingest's own teardown. So a bare TS socket (a
+        // tuner, an xtream/udpxy `.ts`) kept its upstream connection, and its ring's RAM, for good after the last
+        // viewer left. Checked here too, on the same tick.
+        if last_idle_check.elapsed() >= IDLE_TICK {
+            last_idle_check = Instant::now();
+            if ctx.origin.idle() {
+                idle = true;
+                break;
+            }
         }
         match item {
             Ok(b) => {
@@ -2516,7 +2541,7 @@ async fn ingest_raw_ts(
     }
     log::info("iop", rid, || format!("raw-TS session ended — {produced} segment(s) cut"));
     report_iop(ctx, "closed");
-    RawSession { produced, media_span: last_bytes.duration_since(opened), min_session: silence }
+    RawSession { produced, media_span: last_bytes.duration_since(opened), min_session: silence, idle }
 }
 
 /// Push a locally-cut segment into the ring. Within a session `discontinuity` is false: a bare TS socket is one
@@ -4847,6 +4872,7 @@ mod tests {
             produced,
             media_span: Duration::from_millis(span_ms),
             min_session: Duration::from_millis(min_ms),
+            idle: false,
         };
         assert_eq!(raw_verdict(&s(40, 3_600_000, 15_000)), RawVerdict::Reconnect, "an hour of media, then an end");
         assert_eq!(raw_verdict(&s(3, 15_000, 15_000)), RawVerdict::Reconnect, "exactly the bar");
@@ -4862,14 +4888,7 @@ mod tests {
     #[tokio::test]
     async fn a_socket_that_goes_silent_is_judged_by_the_media_it_carried_not_by_the_wait() {
         let up = Mock::start(Seam::grant("/pl/x.ts", true)).await; // only its telemetry sink is used
-        let ctx = IngestCtx {
-            state: up.state(),
-            origin: Arc::new(Origin::new(10_000)),
-            source: "zl".into(),
-            entry: "zl://abc".into(),
-            pl: None,
-            key: "zl|zl://abc".into(),
-        };
+        let ctx = raw_ctx(&up);
         ctx.origin.target_duration_ms.store(1000, Ordering::Relaxed); // a 1 s target: the 10 s silence floor binds
         let ts = crate::tsseg::tuner_ts(3);
         let half = ts.len() / crate::tsseg::PKT / 2 * crate::tsseg::PKT;
@@ -4884,6 +4903,49 @@ mod tests {
         assert!(s.produced >= 1, "what arrived was cut into the ring");
         assert!(s.media_span < Duration::from_secs(1), "media flowed for {:?}; the wait is not part of it", s.media_span);
         assert_eq!(raw_verdict(&s), RawVerdict::Short, "a failure, not a reconnect");
+    }
+
+    /// An ingest context over `up` (whose telemetry sink takes what the raw session reports), with a fresh origin.
+    fn raw_ctx(up: &Mock) -> IngestCtx {
+        IngestCtx {
+            state: up.state(),
+            origin: Arc::new(Origin::new(10_000)),
+            source: "zl".into(),
+            entry: "zl://abc".into(),
+            pl: None,
+            key: "zl|zl://abc".into(),
+        }
+    }
+
+    /// A bare TS socket that keeps streaming — a tuner, an xtream/udpxy `.ts` — with nobody left subscribed: the
+    /// session ends on the idle check and says so. It used to read on for good: the ingest loop's idle shutdown
+    /// sits at its head, which this read never returns to while bytes keep coming, so the upstream connection (a
+    /// physical tuner, a provider's connection slot) and the ring's RAM were held until the upstream dropped.
+    #[tokio::test]
+    async fn a_streaming_socket_with_nobody_subscribed_ends_on_the_idle_check() {
+        let up = Mock::start(Seam::grant("/pl/x.ts", true)).await; // only its telemetry sink is used
+        let endless = || -> std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>> {
+            let unit = Bytes::from(crate::tsseg::tuner_ts(1));
+            Box::pin(tokio_stream::iter(std::iter::repeat_with(move || Ok(unit.clone()))).throttle(Duration::from_millis(20)))
+        };
+        let long_ago = Instant::now().checked_sub(IDLE_GRACE + Duration::from_secs(1)).expect("a monotonic clock that old");
+        let first = || Bytes::from(crate::tsseg::tuner_ts(1));
+
+        // The control: a subscriber is still watching, so the socket is read on past the idle tick.
+        let watched = raw_ctx(&up);
+        watched.origin.subscribers.store(1, Ordering::Relaxed);
+        *watched.origin.last_access.lock_ok() = long_ago;
+        let still = tokio::time::timeout(IDLE_TICK + Duration::from_secs(1), ingest_raw_ts(&watched, "t", endless(), first(), 0, false)).await;
+        assert!(still.is_err(), "a watched socket keeps streaming");
+
+        // Nobody subscribed, nothing read for IDLE_GRACE: the session ends within a tick or two.
+        let left = raw_ctx(&up);
+        *left.origin.last_access.lock_ok() = long_ago;
+        let ended = tokio::time::timeout(IDLE_TICK * 2 + Duration::from_secs(1), ingest_raw_ts(&left, "t", endless(), first(), 0, false))
+            .await
+            .expect("the session ends once nobody is left to feed");
+        assert!(ended.idle, "and says it went idle, so the ingest stops rather than reconnecting");
+        assert!(ended.produced > 0, "it was carrying media right up to then");
     }
 
     /// CNT, end to end, on a bare TS socket: a reconnect after the ring holds media resets the ring — and the new
