@@ -25,7 +25,7 @@
 // shaped like one household's, and never tries to disguise it:
 //   · originRequired — one refcounted ingest per channel however many viewers; forced whatever the proxy config.
 //   · probeExempt    — the scheduled probe sweep never resolves zlive channels in bulk.
-//   · maxConcurrentStreams — at most Settings.zliveMaxStreams distinct channels live (default 2; 0 = unlimited).
+//   · maxConcurrentStreams — at most `zlive.extendedProperties.concurrency` distinct channels live (default 2; 0 = unlimited).
 //   · a decoy answer is detected and SURFACED (status(), warn log), never routed around.
 //
 // EPG: zlive has no guide. A committed station-id crosswalk (seed-data/zlive-playlist-addon.json) links channels
@@ -51,6 +51,7 @@ import {
   type CatalogRow,
 } from './zlive/config.js';
 import { createZliveResolver } from './zlive/resolver.js';
+import { probeZliveDomain } from './zlive/probe.js';
 import { ZLIVE_EPG_ADDON_FILE } from '../paths.js';
 import { applyStationCrosswalk } from '../epgCrosswalk.js';
 import { logger } from '../core/logger.js';
@@ -194,7 +195,7 @@ function classifyArtifact(url: string): ArtifactType {
   }
 }
 
-// Stream-cap usage + resolver state, for GET /api/sources/zlive/status and the Settings ZLive panel. The cap
+// Stream-cap usage + resolver state, for GET /api/sources/zlive/status (operator diagnostics). The cap
 // bookkeeping lives in the resolve seam, which imports the registry, which imports this module — so it is
 // imported at CALL time: a static import would make the registry's SOURCES read this adapter before it exists
 // whenever something loads the adapter ahead of the registry (a script, a test, a future import order).
@@ -239,6 +240,8 @@ const zliveAdapter = makeFastSource({
   normalize,
   defaultDisabled: (ch) => isDuplicateSlug(ch.sourceChannelId),
   status,
+  // Playlist-config Test: ONE catalog GET against a candidate domain (never the resolver).
+  testDomain: probeZliveDomain,
 
   // ── capabilities (see the header) ──
   probeExempt: true,

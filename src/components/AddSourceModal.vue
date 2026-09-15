@@ -22,11 +22,12 @@ const router = useRouter();
 const { banner } = useToast();
 
 // Built-in sources the user can add = the manifest sources NOT already provisioned as a Playlist row (an
-// added built-in disappears from the picker). The manifest enumerates the full registry even when no row
+// added built-in disappears from the picker) and not hidden by the playlist configuration (`enable: false`,
+// Settings → Playlist Domain / Configuration). The manifest enumerates the full registry even when no row
 // exists yet (built-ins are now user-initiated), so this drives the dropdown directly.
 const availableBuiltins = computed(() => {
   const added = new Set(PLAYLISTS.value.map((p) => p.id));
-  return SOURCES.value.filter((s) => !added.has(s.id));
+  return SOURCES.value.filter((s) => !added.has(s.id) && s.enabled !== false);
 });
 
 const name = ref('');

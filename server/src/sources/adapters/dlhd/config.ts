@@ -1,26 +1,30 @@
 // config.ts — the single place that knows where the dlhd content mirror lives. Ported from
 // ../d-combine/sources/dlhd/config.mjs.
 //
-// dlhd is only a MIRROR and the domain rotates. The active base is NOT a static const: it is resolved at
-// runtime (see ./mirrorDirectory.ts, which reads DaddyLive's directory site, probes the advertised
-// mirrors, and calls setBase() with the best one). Everything that points at the mirror reads it through
-// getBase()/getReferer()/getMirrorHost() at USE time — never captured at import — so a setBase() hop is
-// honored everywhere instantly. Manual override wins: env DLHD_BASE pins a base and skips the directory.
+// dlhd is only a MIRROR and the domain rotates. The active base is an OPERATOR SETTING: `daddylive.domain` in
+// the playlist configuration (Settings → Advanced → Playlist Domain / Configuration), pushed in through
+// setBase() by settings/applyPlaylistConfig.ts at boot, on every save and after a restore. It is PINNED — there
+// is no directory scrape or mirror probing any more; when DaddyLive moves, the operator changes the domain.
+// Everything that points at the mirror reads it through getBase()/getReferer()/getMirrorHost() at USE time —
+// never captured at import — so a setBase() hop is honored everywhere instantly.
 //
 // The rotating DOWNSTREAM hosts (player domain, CDN, segment host) are NOT hardcoded into the flow — they
 // are discovered at runtime by the resolver (./resolveStream.ts) and the proxy. UPSTREAM_ALLOW below is
 // only the SSRF allowlist seed; the proxy auto-extends it at runtime with every host it sees inside a
 // resolved playlist, and setBase() keeps the mirror host in it.
 
+/** The committed default — DaddyLive's content mirror as last known. Also the playlist config default. */
+export const DLHD_DEFAULT_DOMAIN = 'dlive.sx';
+
 function cleanBase(u: string): string {
   return String(u || '').trim().replace(/\/+$/, ''); // strip trailing slash(es)
 }
 
-// The active content-mirror base. Initial default matches the historical static value; a runtime resolve
-// (or env DLHD_BASE) replaces it via setBase(). Read it only through getBase().
-let _base = cleanBase(process.env.DLHD_BASE || 'https://dlhd.pk');
+// The active content-mirror base. Starts at the committed default; the playlist config replaces it via
+// setBase(). Read it only through getBase().
+let _base = cleanBase(`https://${DLHD_DEFAULT_DOMAIN}`);
 
-/** The active mirror base, e.g. "https://dlhd.pk". Always read at use time. */
+/** The active mirror base, e.g. "https://dlive.sx". Always read at use time. */
 export function getBase(): string {
   return _base;
 }
@@ -30,17 +34,17 @@ export function getReferer(): string {
   return `${_base}/`;
 }
 
-/** The hostname of the active mirror, e.g. "dlhd.pk". */
+/** The hostname of the active mirror, e.g. "dlive.sx". */
 export function getMirrorHost(): string {
   try {
     return new URL(_base).hostname;
   } catch {
-    return 'dlhd.pk';
+    return DLHD_DEFAULT_DOMAIN;
   }
 }
 
-/** Switch the active mirror (called by mirrorDirectory after probing). Keeps the SSRF allowlist in sync so
- * the new mirror host is immediately proxyable. Returns the committed base. */
+/** Switch the active mirror (called by the playlist-config bridge). Keeps the SSRF allowlist in sync so the
+ * new mirror host is immediately proxyable. Returns the committed base. */
 export function setBase(url: string): string {
   const next = cleanBase(url);
   if (!next) return _base;
@@ -73,7 +77,8 @@ export const PLAYER_PREFIXES = ['stream', 'cast', 'watch', 'plus', 'casting', 'p
 
 // The source-wide DEFAULT player (0 = Auto/first; 1..N = a specific player) for every dlhd channel that
 // carries no per-channel override. Cached module-level (like _base) so the hot resolve path reads it with NO
-// DB hit; refreshed from the Settings singleton at boot + on every settings save (settings/applyDlhdPlayer.ts).
+// DB hit; refreshed from the playlist config (`daddylive.extendedProperties.defaultPlayer`) at boot + on every
+// save (settings/applyPlaylistConfig.ts).
 let _playerDefault = 0;
 /** The source-wide default player index (0 = Auto). Read at resolve time by the resolve seam. */
 export function getPlayerDefault(): number {

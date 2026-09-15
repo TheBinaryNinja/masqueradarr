@@ -20,6 +20,7 @@ import { EpgSource } from '../models/EpgSource.js';
 import { EpgChannel, type EpgChannelDoc } from '../models/EpgChannel.js';
 import { Program, type ProgramDoc } from '../models/Program.js';
 import { fetchDlhdSchedule, type DlhdSchedule } from '../sources/adapters/dlhd/schedule.js';
+import { getReferer } from '../sources/adapters/dlhd/config.js';
 
 // The schedule is labeled "UK GMT" but follows UK wall-clock (BST in summer), so resolve via a DST-aware
 // zone. Override with DLHD_SCHEDULE_TZ. Each discrete event blocks DEFAULT_DURATION_MS unless the next
@@ -168,7 +169,6 @@ export async function syncDlhdEpg(
 }
 
 export const DLHD_EPG_NAME = 'DaddyLive TV Schedule';
-export const DLHD_EPG_URL = 'https://dlhd.pk/';
 
 /**
  * Create-or-update the 'dlhd' EpgSource row — called by the dlhd playlist-sync hook so the EPG source appears
@@ -186,7 +186,7 @@ export async function upsertDlhdEpgSource(
     {
       $set: {
         name: DLHD_EPG_NAME,
-        url: DLHD_EPG_URL,
+        url: getReferer(), // display only: the configured mirror (the 'dlhd' guide kind syncs through getBase())
         source: 'dlhd', // sync discriminator + the SOURCE chip; the (separate) id is the composite namespace
         channels: counts.channels,
         programs: counts.programs,

@@ -1,6 +1,7 @@
 import { ref, computed, watch, nextTick } from 'vue';
 import { useTweaks } from './useTweaks';
-import { reloadPlaylists } from '../data';
+import { bus } from './bus';
+import { reloadPlaylists, reloadSources } from '../data';
 
 // Operator settings the SPA shares with the server. Persisted fields are hydrated once from
 // GET /api/settings (loadSettings) and PUT back, debounced, on edit. epgPath stays SPA-local
@@ -27,23 +28,27 @@ export const darkMode = ref(true);
 export type VideoPlayerMode = 'inapp' | 'ultimate' | 'debug';
 export const VIDEO_PLAYER_MODES: readonly VideoPlayerMode[] = ['inapp', 'ultimate', 'debug'];
 export const videoPlayer = ref<VideoPlayerMode>('inapp');
-// Source-wide default DaddyLive (dlhd) player for channels without a per-channel override: 0 = Auto (use
-// Player 1, falling back to the rest on failure), 1..N = prefer that player. Persisted on the Settings
-// singleton; the server caches it into the dlhd resolver. A per-channel override (ChannelDrawer) wins over it.
-export const dlhdPlayer = ref(0);
-// The domain dulo is currently on, as a bare host (e.g. 'dulo.tv'). dulo rebrands periodically, so every
-// dulo-facing hop derives from this. DELIBERATELY NOT auto-persisted like the refs above: saving a changed
-// domain signs the dulo session out server-side, so a debounced keystroke watcher would sign the operator
-// out mid-typing. The Dulo panel writes it explicitly through saveDuloDomain() instead.
-export const duloDomain = ref('dulo.tv');
-// The domain zlive is on (bare host, e.g. 'zlive.st'): its public catalog is cast.<domain> and its stream resolver
-// iptv.<domain>. EXPLICIT-save like duloDomain (saveZliveDomain, from the ZLive panel): a debounced keystroke
-// watcher would switch the live adapter onto every half-typed value that happens to be a valid name ("zlive.s"),
-// and each switch also resets the server's resolver cache.
-export const zliveDomain = ref('zlive.st');
-// Max DISTINCT zlive channels live at once (viewers of one channel count once); 0 = unlimited. Auto-persisted like
-// the refs above — the ZLive panel only assigns it a validated whole number, on blur.
-export const zliveMaxStreams = ref(2);
+// The Playlist Domain / Configuration JSON (Settings → Advanced): per source an `enable` visibility switch (false
+// hides it from the Add Playlist picker and hides its Settings card), the `domain` it lives on, and its own
+// `extendedProperties` (daddylive's default player, zlive's distinct-channel cap). Mirrors the server's
+// sources/core/playlistConfig.ts shape + defaults. DELIBERATELY NOT auto-persisted: it is saved as a whole, once,
+// from the editor's Save button (savePlaylistConfig) — a changed dulo domain signs the dulo session out, and a
+// changed zlive domain resets its resolver, so a debounced keystroke watcher would be wrong twice over.
+export interface PlaylistSourceConfig<E extends object = Record<string, unknown>> {
+  enable: boolean;
+  domain: string;
+  extendedProperties: E;
+}
+export interface PlaylistConfig {
+  daddylive: PlaylistSourceConfig<{ defaultPlayer: 'auto' | number }>;
+  dulo: PlaylistSourceConfig<Record<string, never>>;
+  zlive: PlaylistSourceConfig<{ concurrency: number }>;
+}
+export const playlistConfig = ref<PlaylistConfig>({
+  daddylive: { enable: true, domain: 'dlive.sx', extendedProperties: { defaultPlayer: 'auto' } },
+  dulo: { enable: true, domain: 'dulo.gd', extendedProperties: {} },
+  zlive: { enable: true, domain: 'zlive.st', extendedProperties: { concurrency: 2 } },
+});
 export const epgPath = ref('/_global/epg/playlist.xml');
 // Outbound-fetch DNS: comma-separated resolver IP(s) (blank => OS resolver). Persists like any other field;
 // the server re-applies it to the live undici dispatcher on save (server/src/dns.ts via settings/applyDns.ts).
@@ -98,10 +103,7 @@ export async function loadSettings(): Promise<void> {
       offset: string;
       darkMode: boolean;
       videoPlayer: VideoPlayerMode;
-      dlhdPlayer: number;
-      duloDomain: string;
-      zliveDomain: string;
-      zliveMaxStreams: number;
+      playlistConfig: PlaylistConfig;
       nameservers: string | null;
       logLevel: number;
       maxmindAccountId: string | null;
@@ -115,10 +117,7 @@ export async function loadSettings(): Promise<void> {
     if (typeof s.offset === 'string') offset.value = s.offset;
     if (typeof s.darkMode === 'boolean') darkMode.value = s.darkMode;
     if (s.videoPlayer && VIDEO_PLAYER_MODES.includes(s.videoPlayer)) videoPlayer.value = s.videoPlayer;
-    if (typeof s.dlhdPlayer === 'number') dlhdPlayer.value = s.dlhdPlayer;
-    if (typeof s.duloDomain === 'string' && s.duloDomain) duloDomain.value = s.duloDomain;
-    if (typeof s.zliveDomain === 'string' && s.zliveDomain) zliveDomain.value = s.zliveDomain;
-    if (typeof s.zliveMaxStreams === 'number') zliveMaxStreams.value = s.zliveMaxStreams;
+    if (s.playlistConfig && typeof s.playlistConfig === 'object') playlistConfig.value = s.playlistConfig;
     if (s.nameservers !== undefined) nameservers.value = s.nameservers ?? '';
     if (typeof s.logLevel === 'number') logLevel.value = s.logLevel;
     if (s.maxmindAccountId !== undefined) maxmindAccountId.value = s.maxmindAccountId ?? '';
@@ -168,10 +167,6 @@ watch(domain, (v) => persist({ domain: v }));
 watch(timezone, (v) => persist({ timezone: v }));
 watch(darkMode, (v) => persist({ darkMode: v }));
 watch(videoPlayer, (v) => persist({ videoPlayer: v }));
-watch(dlhdPlayer, (v) => persist({ dlhdPlayer: v }));
-watch(zliveMaxStreams, (v) => {
-  if (Number.isInteger(v) && v >= 0) persist({ zliveMaxStreams: v }); // the server re-validates (0..100)
-});
 watch(nameservers, (v) => persist({ nameservers: v.trim() === '' ? null : v.trim() }));
 watch(logLevel, (v) => persist({ logLevel: v }));
 watch(maxmindAccountId, (v) => persist({ maxmindAccountId: v.trim() === '' ? null : v.trim() }));
@@ -200,41 +195,80 @@ export function clearMaxmindLicenseKey(): Promise<boolean> {
   return saveMaxmindLicenseKey('');
 }
 
-// Explicit (un-debounced) PUT of the dulo domain, from the Save button on the Dulo panel. Not a watcher:
-// the server treats a CHANGED domain as a provider change and signs the dulo session out, so this must fire
-// once, on an intentional click — never per keystroke. Surfaces the server's validation message (the shared
-// normalizer rejects IP literals, private hosts and malformed names) so the panel can show why a value was
-// refused, unlike the silent debounced persist() above.
-export async function saveDuloDomain(next: string): Promise<{ ok: boolean; error?: string }> {
+// Explicit (un-debounced) PUT of the whole playlist configuration, from the editor's Save button — see
+// playlistConfig above for why this is not a watcher. `next` is the operator's parsed JSON, sent as-is: the server's
+// strict validator is the authority, and its path-prefixed `errors` come back for the editor to list. On success the
+// server's canonical config (domains normalized, defaults filled) is adopted, the source manifest is re-pulled (an
+// `enable` flip changes the Add Playlist picker), and a changed dulo domain — which signed the session out
+// server-side — is broadcast so playlist auth badges refresh.
+export async function savePlaylistConfig(next: unknown): Promise<{ ok: boolean; error?: string; errors?: string[] }> {
+  const prevDulo = playlistConfig.value.dulo.domain;
   try {
     const res = await fetch('/api/settings', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ duloDomain: next }),
+      body: JSON.stringify({ playlistConfig: next }),
     });
-    const body = (await res.json().catch(() => ({}))) as { duloDomain?: string; error?: string };
-    if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}` };
-    if (typeof body.duloDomain === 'string' && body.duloDomain) duloDomain.value = body.duloDomain;
+    const body = (await res.json().catch(() => ({}))) as {
+      playlistConfig?: PlaylistConfig;
+      error?: string;
+      errors?: string[];
+    };
+    if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}`, errors: body.errors };
+    if (body.playlistConfig) playlistConfig.value = body.playlistConfig;
+    void reloadSources().catch(() => undefined);
+    if (playlistConfig.value.dulo.domain !== prevDulo) bus.emit('tvapp:auth-changed', { source: 'dulo' });
     return { ok: true };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }
 }
 
-// Explicit (un-debounced) PUT of the zlive domain, from the Save button on the ZLive panel — see zliveDomain above
-// for why this is not a watcher. Surfaces the server's validation message (the shared domain normalizer rejects IP
-// literals, private hosts and malformed names) so the panel can say why a value was refused.
-export async function saveZliveDomain(next: string): Promise<{ ok: boolean; error?: string }> {
+// One probed source from POST /api/sources/playlist-config/test.
+export interface PlaylistConfigTestResult {
+  key: string;
+  sourceId: string;
+  label: string;
+  enable: boolean;
+  domain: string;
+  /** The tested domain differs from the one the running app uses (the edit is not saved yet). */
+  unsaved: boolean;
+  ok: boolean;
+  endpoint: string | null;
+  httpStatus: number | null;
+  ms: number;
+  channelCount: number | null;
+  redirectTo: string | null;
+  notes: string[];
+  error: string | null;
+}
+
+// Probe every domain in a (usually unsaved) playlist configuration. Persists nothing server-side. A config the
+// server's validator refuses comes back as { ok:false, errors } without any probe having run.
+export interface PlaylistConfigTestOutcome {
+  ok: boolean;
+  testedAt?: string;
+  results?: PlaylistConfigTestResult[];
+  error?: string;
+  errors?: string[];
+}
+export async function testPlaylistConfig(config: unknown): Promise<PlaylistConfigTestOutcome> {
   try {
-    const res = await fetch('/api/settings', {
-      method: 'PUT',
+    const res = await fetch('/api/sources/playlist-config/test', {
+      method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ zliveDomain: next }),
+      body: JSON.stringify({ config }),
     });
-    const body = (await res.json().catch(() => ({}))) as { zliveDomain?: string; error?: string };
-    if (!res.ok) return { ok: false, error: body.error || `HTTP ${res.status}` };
-    if (typeof body.zliveDomain === 'string' && body.zliveDomain) zliveDomain.value = body.zliveDomain;
-    return { ok: true };
+    const body = (await res.json().catch(() => ({}))) as {
+      testedAt?: string;
+      results?: PlaylistConfigTestResult[];
+      error?: string;
+      errors?: string[];
+    };
+    if (!res.ok || !Array.isArray(body.results)) {
+      return { ok: false, error: body.error || `HTTP ${res.status}`, errors: body.errors };
+    }
+    return { ok: true, testedAt: body.testedAt ?? new Date().toISOString(), results: body.results };
   } catch (e) {
     return { ok: false, error: (e as Error).message };
   }

@@ -58,8 +58,8 @@ Below that are the editable fields:
   directly. Changing a normal channel's TVG-ID unlinks any existing guide match.
 - **Group** — the category group this channel is filed under (see below).
 - **Player source** — for **DaddyLive** channels only, picks which of DaddyLive's interchangeable players the
-  channel uses (**Auto**, or Player **1–6**), or leaves it on the workspace default set in **Settings →
-  Advanced**. Channels from other sources don't show this field.
+  channel uses (**Auto**, or Player **1–6**), or leaves it on the workspace default (`defaultPlayer` in
+  **Settings → Advanced → Playlist Domain / Configuration**). Channels from other sources don't show this field.
 - **Tags** — the app-wide labels on this channel; add or remove them from the chip picker (type a name to
   create a new one on the spot). See **Custom Tags**.
 

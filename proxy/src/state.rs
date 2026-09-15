@@ -641,7 +641,7 @@ impl AppState {
 
     /// FOG: force a FRESH resolve of a SPECIFIC candidate (bypass the target cache) and re-cache the
     /// result — pinning the stream's cursor to that attempt. attempt 0 = the channel itself (Node re-runs
-    /// `resolveStream`, which drives dlhd `reprobeMirror()` — the pre-failover "mirror failover");
+    /// `resolveStream`, e.g. dlhd's player walk against its configured mirror);
     /// attempt N >= 1 = the channel's Nth ordered failover child, resolved via the child's own adapter.
     ///
     /// `reason` tells Node why this resolve is happening, when the caller knows. With none given, a hint the

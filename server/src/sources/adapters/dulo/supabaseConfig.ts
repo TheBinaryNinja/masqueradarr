@@ -30,12 +30,12 @@ const tag = 'dulo:auth';
 // last-resort fallback (same role as each adapter's committed *.snapshot.json): discoverSupabaseConfig()
 // supersedes it at runtime. Bump it only if discovery is ever blocked (bot-gate) AND dulo has migrated —
 // re-scrape from <configured dulo domain>/assets/index-*.js. NOTE this is the Supabase PROJECT seed, and
-// is independent of Settings.duloDomain (dulo can rebrand without migrating its Supabase project).
+// is independent of the configured dulo domain (dulo can rebrand without migrating its Supabase project).
 const SEED_SUPABASE_URL = 'https://wsudbodtjjfenprwsagd.supabase.co';
 const SEED_ANON_KEY = 'sb_publishable_521pnlSRNoR0xpBn6uiuHw_f78kT63_';
 
 // Discovery is REACTIVE (only fired by auth.ts on a key-gate 401) and cooldown-gated so a burst of failed
-// refreshes can't hammer dulo's site. Mirrors the dlhd mirrorDirectory reprobe-cooldown idiom.
+// refreshes can't hammer dulo's site.
 const DISCOVERY_COOLDOWN_MS = Number(process.env.DULO_DISCOVERY_COOLDOWN_MS || 300_000); // 5 min
 const DISCOVERY_MAX_BUNDLES = 6; // scan at most this many /assets/*.js chunks per attempt
 const DISCOVERY_FETCH_TIMEOUT_MS = 10_000; // per-request abort so discovery can't hang a refresh
@@ -69,8 +69,8 @@ export function currentSupabaseUrl(): string {
   return discovered?.supabaseUrl || SEED_SUPABASE_URL;
 }
 
-// Drop the discovered pair AND the cooldown. Called when the operator changes Settings.duloDomain
-// (settings/applyDuloDomain.ts): the cached config was scraped from the OLD site and may belong to a
+// Drop the discovered pair AND the cooldown. Called when the operator changes dulo's domain
+// (settings/applyPlaylistConfig.ts): the cached config was scraped from the OLD site and may belong to a
 // decommissioned project, and the cooldown would otherwise suppress a re-scrape for up to
 // DISCOVERY_COOLDOWN_MS. After this, the next key-gate 401 rediscovers against the new domain.
 export function resetSupabaseDiscovery(): void {

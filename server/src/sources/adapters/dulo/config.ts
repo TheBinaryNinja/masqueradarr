@@ -3,8 +3,8 @@
 // dulo periodically REBRANDS onto a new domain. Previously `dulo.tv` was a compile-time const repeated in
 // five files, so a rebrand broke the catalog fetch, the playback-session mint, the Supabase bundle scrape,
 // the pairing bookmarklet and the streamed login all at once — and the only fix was a code change plus a
-// redeploy. The active domain is now an OPERATOR SETTING (Settings.duloDomain, edited on
-// Settings -> Advanced -> Dulo.tv Authentication) cached here at module level.
+// redeploy. The active domain is now an OPERATOR SETTING (`dulo.domain` in the playlist configuration,
+// edited on Settings -> Advanced -> Playlist Domain / Configuration) cached here at module level.
 //
 // Everything that points at dulo reads it through the getters below at USE time — never captured at
 // import — so a setDomain() hop is honored everywhere instantly. The module-level cache (rather than a
@@ -12,13 +12,13 @@
 // isAllowedUpstream() are synchronous and sit on the hot proxy path, so they cannot await the DB.
 //
 // This is a Mongo-FREE leaf — it must never import the models layer. The Settings bridge lives in
-// settings/applyDuloDomain.ts (same split as dlhd/config.ts <- settings/applyDlhdPlayer.ts).
+// settings/applyPlaylistConfig.ts (the one bridge for every operator-set source domain).
 
 import { createDynamicAllow, type DynamicAllow } from '../_fast/dynamicAllow.js';
 import { normalizeDomain as normalizeSourceDomain, type DomainParse } from '../../core/domain.js';
 
-/** The committed default — dulo's domain as last known. Also the Settings.duloDomain schema default. */
-export const DULO_DEFAULT_DOMAIN = 'dulo.tv';
+/** The committed default — dulo's domain as last known (dulo.tv stopped resolving). Also the playlist config default. */
+export const DULO_DEFAULT_DOMAIN = 'dulo.gd';
 
 // The active dulo domain, as a bare lowercase host (no scheme, no path, no port). Read it only through
 // the getters; write it only through setDomain().
@@ -118,8 +118,8 @@ export const duloAllow: DynamicAllow = createDynamicAllow([
  * Normalize an operator-typed domain into a bare lowercase host.
  *
  * Accepts "dulo.tv", "https://Dulo.TV/", "HTTPS://dulo.tv/live?x=1" — scheme, path, query, userinfo and
- * port are all stripped. Rejects IP literals and private/loopback targets: the Test and Auto-detect
- * endpoints (routes/sources.ts) server-side-fetch whatever comes back from here, so this is a real SSRF
+ * port are all stripped. Rejects IP literals and private/loopback targets: the playlist-config Test
+ * endpoint (routes/sources.ts) server-side-fetches whatever comes back from here, so this is a real SSRF
  * boundary, not cosmetic validation. The rules themselves live in the shared core/domain.ts (every
  * operator-set source domain runs the same gate); this binds dulo's name into the one source-specific
  * message, so the error text is what it has always been.
@@ -130,8 +130,8 @@ export function normalizeDomain(raw: string): DomainParse {
 
 /**
  * Switch the active dulo domain. Keeps the SSRF allow-set in sync so the new apex is immediately
- * proxyable. Called at boot and on every Settings save that touches duloDomain
- * (settings/applyDuloDomain.ts). Returns true when the value actually CHANGED — the caller uses that to
+ * proxyable. Called at boot, on every playlist-config save and after a restore
+ * (settings/applyPlaylistConfig.ts). Returns true when the value actually CHANGED — the caller uses that to
  * decide whether to reset Supabase discovery and force a re-authentication.
  */
 export function setDomain(next: string): boolean {

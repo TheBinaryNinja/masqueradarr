@@ -2,9 +2,7 @@ import { Router } from 'express';
 import { Settings, SETTINGS_ID, type SettingsDoc } from '../models/Settings.js';
 import { envDefaults, toRuntimeSettings, toExternalPatch } from '../settings/translate.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
-import { applyDlhdPlayerFromSettings } from '../settings/applyDlhdPlayer.js';
-import { applyDuloDomainFromSettings } from '../settings/applyDuloDomain.js';
-import { applyZliveFromSettings } from '../settings/applyZlive.js';
+import { applyPlaylistConfigFromSettings } from '../settings/applyPlaylistConfig.js';
 import { cascadePlaylistUrls } from './playlists.js';
 import { logger } from '../sources/core/logger.js';
 
@@ -39,7 +37,7 @@ settingsRouter.get('/', async (_req, res, next) => {
 settingsRouter.put('/', async (req, res, next) => {
   try {
     const patch = toExternalPatch(req.body);
-    if (!patch.ok) return res.status(400).json({ error: patch.error });
+    if (!patch.ok) return res.status(400).json({ error: patch.error, ...(patch.errors ? { errors: patch.errors } : {}) });
     const $set = patch.$set;
 
     // Read the current domain before the write so a domain change can cascade to playlist urls.
@@ -81,37 +79,16 @@ settingsRouter.put('/', async (req, res, next) => {
       }
     }
 
-    // Push the source-wide DaddyLive default player into the dlhd resolver's cache so it takes effect live
-    // (next stream start), no restart. Best-effort — a cache-sync hiccup must not fail the write.
-    if ('dlhdPlayer' in $set) {
+    // Push the playlist configuration into every source's cache so it applies live (daddylive's mirror + default
+    // player, zlive's domain + cap on the next stream start; dulo's hops retarget at once) and rewrite the
+    // playlist-config.json mirror. A CHANGED dulo domain also resets Supabase discovery and signs the dulo session
+    // out — a session belongs to the domain it was captured on. Best-effort: a cascade hiccup must not fail the
+    // write (same contract as the domain cascade above).
+    if ('playlistConfig' in $set) {
       try {
-        await applyDlhdPlayerFromSettings('update');
+        await applyPlaylistConfigFromSettings('update');
       } catch (err) {
-        logger.error('settings', `dlhd player default re-apply failed (continuing): ${(err as Error).message}`);
-      }
-    }
-
-    // Push the dulo domain into the adapter's cache so every dulo hop (catalog, playback-session, Supabase
-    // discovery, pairing, streamed login) retargets live. A CHANGED domain also resets Supabase discovery
-    // and signs the dulo session out — a session belongs to the domain it was captured on, so the operator
-    // is sent back through pairing rather than hitting an opaque playback failure later. Best-effort: a
-    // cascade hiccup must not fail the write (same contract as the domain cascade above).
-    if ('duloDomain' in $set) {
-      try {
-        await applyDuloDomainFromSettings('update');
-      } catch (err) {
-        logger.error('settings', `dulo domain re-apply failed (continuing): ${(err as Error).message}`);
-      }
-    }
-
-    // Push zlive's domain + stream cap into the adapter's caches: the catalog/resolver retarget and the new cap
-    // applies to the next stream start, both live. A changed domain also resets the resolver's per-slug cache and
-    // decoy state (see settings/applyZlive.ts). Best-effort, same contract as the cascades above.
-    if ('zliveDomain' in $set || 'zliveMaxStreams' in $set) {
-      try {
-        await applyZliveFromSettings('update');
-      } catch (err) {
-        logger.error('settings', `zlive settings re-apply failed (continuing): ${(err as Error).message}`);
+        logger.error('settings', `playlist config re-apply failed (continuing): ${(err as Error).message}`);
       }
     }
 

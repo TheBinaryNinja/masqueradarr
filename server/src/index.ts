@@ -40,9 +40,7 @@ import { systemStatsRouter } from './routes/systemStats.js';
 import { logsRouter } from './routes/logs.js';
 import { startLogStore, stopLogStore, attachLogs, closeAllLogs } from './logs/logStore.js';
 import { applyDnsFromSettings } from './settings/applyDns.js';
-import { applyDlhdPlayerFromSettings } from './settings/applyDlhdPlayer.js';
-import { applyDuloDomainFromSettings } from './settings/applyDuloDomain.js';
-import { applyZliveFromSettings } from './settings/applyZlive.js';
+import { applyPlaylistConfigFromSettings } from './settings/applyPlaylistConfig.js';
 import { logger } from './sources/core/logger.js';
 import { startProxySidecar, stopProxySidecar, EDGE } from './proxy/sidecar.js';
 import { internalRouter } from './routes/internal.js';
@@ -98,30 +96,15 @@ async function main() {
     logger.error('startup', `dns settings apply error (continuing): ${(err as Error).message}`);
   }
 
-  // Seed the dlhd resolver's cached source-wide default player from the persisted settings, so a value set
-  // before a restart is honored without waiting for the next Settings save. Non-fatal (defaults to Auto).
+  // Hydrate every source's cached domain + knobs from the persisted playlist configuration (daddylive's mirror +
+  // default player, dulo's domain, zlive's domain + stream cap) and write the playlist-config.json mirror. MUST run
+  // before the scheduler can start a sync, before startDuloKeepalive() below (so its first token refresh already
+  // targets the configured domain), and before the sidecar can ask for a resolve. Boot never signs the dulo session
+  // out — it only mirrors what is already stored. Non-fatal (falls back to the committed defaults).
   try {
-    await applyDlhdPlayerFromSettings('mongo');
+    await applyPlaylistConfigFromSettings('mongo');
   } catch (err) {
-    logger.error('startup', `dlhd player default apply error (continuing): ${(err as Error).message}`);
-  }
-
-  // Hydrate the dulo adapter's domain cache from the persisted settings. MUST run before
-  // startDuloKeepalive() below, so the keepalive's first token refresh already targets the configured
-  // domain. Boot never signs the session out — it only mirrors what is already stored. Non-fatal
-  // (falls back to the committed default domain).
-  try {
-    await applyDuloDomainFromSettings('mongo');
-  } catch (err) {
-    logger.error('startup', `dulo domain apply error (continuing): ${(err as Error).message}`);
-  }
-
-  // Hydrate the zlive adapter's domain + stream-cap caches, before the scheduler can start a sync or the sidecar
-  // can ask for a resolve. Non-fatal (falls back to the committed default domain and cap).
-  try {
-    await applyZliveFromSettings('mongo');
-  } catch (err) {
-    logger.error('startup', `zlive settings apply error (continuing): ${(err as Error).message}`);
+    logger.error('startup', `playlist config apply error (continuing): ${(err as Error).message}`);
   }
 
   // Register persisted cron jobs (cronjobs collection) with the scheduler. Non-fatal: a scheduler

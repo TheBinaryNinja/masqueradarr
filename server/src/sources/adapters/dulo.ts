@@ -18,13 +18,14 @@
 // (see routes/sources.ts).
 //
 // dulo REBRANDS periodically, so no dulo URL is a const here: the domain is an operator setting
-// (Settings.duloDomain) and every endpoint/header is derived from ./dulo/config.ts at use time.
+// (`dulo.domain` in the playlist config) and every endpoint/header is derived from ./dulo/config.ts at use time.
 
 import { readFileSync } from 'node:fs';
 import { snapshotFile, DULO_EPG_ADDON_FILE } from '../paths.js';
 import { applyEpgCrosswalk } from '../epgCrosswalk.js';
 import { duloAuth } from './dulo/auth.js';
 import { getCatalogUrl, browserHeaders, duloAllow } from './dulo/config.js';
+import { probeDuloDomain } from './dulo/probe.js';
 import type { SourceAdapter } from '../types.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
 
@@ -47,7 +48,7 @@ const duloAdapter: SourceAdapter = {
   // (The catalog is metadata-only now — no stream URLs — so this needs no auth; the stream is resolved
   // lazily at play time via resolveStream().)
   async listChannels() {
-    const endpoint = getCatalogUrl(); // follows Settings.duloDomain — reported in meta so a sync shows it
+    const endpoint = getCatalogUrl(); // follows the configured dulo domain — reported in meta so a sync shows it
     try {
       const res = await fetch(endpoint, { headers: browserHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -122,6 +123,8 @@ const duloAdapter: SourceAdapter = {
   },
 
   status: () => duloAuth.status(),
+  // Playlist-config Test: catalog + frontend-bundle check against a candidate domain.
+  testDomain: probeDuloDomain,
 
   isEntryUrl(url: string) {
     return typeof url === 'string' && url.startsWith(ENTRY_PREFIX);

@@ -2,16 +2,17 @@
 // serves every source by iterating the registry — adding a source needs zero route changes.
 //
 //   GET  /api/sources               manifest (drives the SPA; one entry per registered source)
-//   GET  /api/sources/:id/status    runtime provenance (dlhd: live mirror; null otherwise)
+//   GET  /api/sources/:id/status    runtime provenance (dlhd: configured mirror; dulo: session; zlive: resolver)
 //   GET  /api/sources/:id/metrics   per-source proxy counters
 //   POST /api/sources/:id/sync      live refresh → upsert channels + Playlist sync metadata
 //   POST /api/sources/:id/reset     Restore defaults: drop channels + re-sync from upstream
 //   POST /api/sources/:id/provision provision a built-in (Default) source playlist on demand
+//   POST /api/sources/playlist-config/test  probe every domain in a (possibly unsaved) playlist configuration
 //
 // NOTE: the old always-on ffmpeg engine / slate / probe machinery were removed; the Rust masq-proxy now
 // serves video on the stream mounts (/api/v1 appPlayer + /api/ext/v1 externalPlayer). This router itself
 // covers only the catalog manifest, per-source status/metrics, sync/reset, built-in provisioning, the
-// operator-set-domain probes (dulo, zlive), and dulo auth. Mounted at the app root (app.use(sourcesRouter))
+// playlist-configuration domain Test, and dulo auth. Mounted at the app root (app.use(sourcesRouter))
 // because its paths span /api/sources.
 
 import { Router } from 'express';
@@ -22,23 +23,14 @@ import { createMetrics, snapshotOne, type Metrics } from '../sources/core/metric
 import { syncLive, resetSource, ensureShellRow } from '../sources/seed.js';
 import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { duloPairing, buildBookmarklet, buildSnippet } from '../sources/adapters/dulo/pairing.js';
+import { getOrigin } from '../sources/adapters/dulo/config.js';
 import {
-  DULO_DEFAULT_DOMAIN,
-  browserHeadersFor,
-  catalogUrlFor,
-  getDomain,
-  getOrigin,
-  normalizeDomain,
-  originFor,
-} from '../sources/adapters/dulo/config.js';
-import { scrapeSupabaseConfig } from '../sources/adapters/dulo/supabaseConfig.js';
-import {
-  UA as ZLIVE_UA,
-  catalogUrlFor as zliveCatalogUrlFor,
-  normalizeDomain as normalizeZliveDomain,
-  parseCatalog as parseZliveCatalog,
-  slugOf as zliveSlugOf,
-} from '../sources/adapters/zlive/config.js';
+  PLAYLIST_CONFIG_KEYS,
+  PLAYLIST_CONFIG_SOURCES,
+  getPlaylistConfig,
+  isSourceEnabled,
+  validatePlaylistConfig,
+} from '../sources/core/playlistConfig.js';
 import type { Request, Response } from 'express';
 import { Playlist } from '../models/Playlist.js';
 import { grantPlaylistToAdmins } from '../security/adminAccess.js';
@@ -54,7 +46,9 @@ for (const adapter of SOURCES) {
 
 // ── Manifest ────────────────────────────────────────────────────────────────
 // Synthetic (proxy-only) sources like `direct` are OMITTED — they have no catalog and are not syncable
-// playlists; the SPA must not list them as sources.
+// playlists; the SPA must not list them as sources. A source HIDDEN by the playlist configuration
+// (`enable: false`) stays listed with enabled:false — its existing playlists still need their manifest entry;
+// only the Add Playlist picker drops it.
 sourcesRouter.get('/api/sources', (_req, res) => {
   res.json(
     SOURCES.filter((s) => !s.synthetic).map((s) => ({
@@ -64,6 +58,9 @@ sourcesRouter.get('/api/sources', (_req, res) => {
       sourceUrl: `/api/channels?source=${s.id}`, // normalized catalog over Mongo
       proxyPrefix: `/api/v1/${s.id}/`, // in-app stream mount path (the byte-serving route is removed pending rebuild)
       statusUrl: s.status ? `/api/sources/${s.id}/status` : null,
+      // Playlist configuration `enable` (true for a source the configuration does not cover). false ⇒ the Add
+      // Playlist picker hides it and provisioning refuses it; existing playlists keep working.
+      enabled: isSourceEnabled(s.id),
       // Capability flag: this source exposes several interchangeable upstream "players" per channel, so the
       // SPA renders the player picker (source default in Settings, per-channel override in the drawer).
       // Published here so the SPA stops hardcoding a source-id list and a future playerSelectable adapter
@@ -131,6 +128,13 @@ sourcesRouter.post('/api/sources/:id/provision', async (req, res, next) => {
   try {
     const adapter = getSource(req.params.id);
     if (!adapter || adapter.synthetic) return res.status(404).json({ error: 'unknown_source' });
+    // Hidden by the playlist configuration (`enable: false`) — the picker doesn't offer it, so neither does the API.
+    if (!isSourceEnabled(adapter.id)) {
+      return res.status(409).json({
+        error: 'source_disabled',
+        message: `${adapter.label} is hidden by the playlist configuration (enable: false)`,
+      });
+    }
     await ensureShellRow(adapter);
     // Auto-grant the just-provisioned built-in to every admin (it hosts Global → allowedPlaylists). Best-
     // effort — a grant hiccup must not fail the provision (admins still pass the role bypass meanwhile).
@@ -145,155 +149,53 @@ sourcesRouter.post('/api/sources/:id/provision', async (req, res, next) => {
   }
 });
 
-// ── dulo domain (Settings → Advanced → Dulo.tv Authentication) ────────────────
-// dulo REBRANDS periodically, so the domain it lives on is an operator setting (Settings.duloDomain) rather
-// than a compile-time const. These two endpoints only HELP the operator find and verify a candidate —
-// NEITHER PERSISTS ANYTHING. The save goes through PUT /api/settings, which is where the cascade lives
-// (reset Supabase discovery + sign the dulo session out, since a session belongs to the domain it was
-// captured on). Admin-only via the /api/sources prefix (index.ts adminOnlyRoutes).
-//
-// SSRF: both fetch an OPERATOR-SUPPLIED host server-side, so every candidate goes through normalizeDomain()
-// first — it strips scheme/path/port/userinfo and rejects IP literals plus private/loopback targets. This
-// is the gate that actually runs on user input (the adapter's isAllowedUpstream is not wired up today).
-const DOMAIN_PROBE_TIMEOUT_MS = 10_000;
-
-// Probe a candidate domain: does it serve dulo's Live TV catalog, and is it a dulo frontend build? The
-// bundle scrape is the stronger signal — any site can 404, but only dulo's build carries an
-// `sb_publishable_` key next to a supabase.co project URL.
-sourcesRouter.post('/api/sources/dulo/domain/test', async (req, res, next) => {
+// ── Playlist configuration Test (Settings → Advanced → Playlist Domain / Configuration) ──
+// Probes every source domain in a playlist configuration — the editor's CURRENT text, usually unsaved — and
+// PERSISTS NOTHING (the save goes through PUT /api/settings, where the per-source cascades live). The body is
+// validated by the same strict gate the save uses, which runs every domain through the shared normalizeDomain
+// (no IP literals, no private/loopback hosts): these probes fetch operator-supplied hosts server-side, so that
+// gate is the SSRF boundary. Each probe is the adapter's own testDomain (one catalog request; zlive's never
+// touches its resolver), run concurrently. Admin-only via the /api/sources prefix (index.ts adminOnlyRoutes).
+sourcesRouter.post('/api/sources/playlist-config/test', async (req, res, next) => {
   try {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const parsed = normalizeDomain(typeof body.domain === 'string' ? body.domain : '');
-    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
-
-    const domain = parsed.domain;
-    const endpoint = catalogUrlFor(domain);
-    let httpStatus: number | null = null;
-    let channelCount: number | null = null;
-    let error: string | null = null;
-    try {
-      const r = await fetch(endpoint, {
-        headers: browserHeadersFor(originFor(domain)),
-        signal: AbortSignal.timeout(DOMAIN_PROBE_TIMEOUT_MS),
-      });
-      httpStatus = r.status;
-      if (r.ok) {
-        const parsedBody = (await r.json()) as { channels?: unknown[] };
-        channelCount = Array.isArray(parsedBody.channels) ? parsedBody.channels.length : 0;
-      } else {
-        error = `catalog returned HTTP ${r.status}`;
-      }
-    } catch (err) {
-      error = (err as Error).message;
+    const parsed = validatePlaylistConfig((req.body ?? {}).config);
+    if (!parsed.ok) {
+      return res.status(400).json({ error: `playlistConfig: ${parsed.errors.join('; ')}`, errors: parsed.errors });
     }
+    const candidate = parsed.config;
+    const active = getPlaylistConfig();
 
-    // Cache-free scrape (scrapeSupabaseConfig, not discoverSupabaseConfig) so probing a candidate can never
-    // poison the ACTIVE session's Supabase config.
-    const supabase = await scrapeSupabaseConfig(originFor(domain));
-
-    res.json({
-      domain,
-      endpoint,
-      ok: channelCount !== null && channelCount > 0,
-      httpStatus,
-      channelCount,
-      supabaseFound: !!supabase,
-      supabaseUrl: supabase?.supabaseUrl ?? null,
-      error,
-    });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Where did dulo move to? Follow redirects from the currently configured domain and, if different, from the
-// committed default. A rebrand that leaves a 301/302 on the old host is discoverable this way; a hard
-// cut-over (old host simply dead) is not — `detected: null` then, and the SPA says so.
-sourcesRouter.post('/api/sources/dulo/domain/detect', async (_req, res, next) => {
-  try {
-    const current = getDomain();
-    const candidates = [...new Set([current, DULO_DEFAULT_DOMAIN])];
-    const tried: Array<{ from: string; landed: string | null; httpStatus: number | null; error: string | null }> = [];
-
-    for (const from of candidates) {
-      try {
-        const r = await fetch(originFor(from), {
-          redirect: 'follow',
-          headers: browserHeadersFor(originFor(from)),
-          signal: AbortSignal.timeout(DOMAIN_PROBE_TIMEOUT_MS),
-        });
-        const landedParsed = normalizeDomain(new URL(r.url).hostname);
-        const landed = landedParsed.ok ? landedParsed.domain : null;
-        tried.push({ from, landed, httpStatus: r.status, error: null });
-        if (landed && landed !== from) {
-          return res.json({ detected: landed, from, sameAsCurrent: landed === current, tried });
+    const results = await Promise.all(
+      PLAYLIST_CONFIG_KEYS.map(async (key) => {
+        const sourceId = PLAYLIST_CONFIG_SOURCES[key];
+        const adapter = getSource(sourceId);
+        const entry = candidate[key];
+        const base = {
+          key,
+          sourceId,
+          label: adapter?.label ?? sourceId,
+          enable: entry.enable,
+          domain: entry.domain,
+          // The domain differs from the one the running app uses (i.e. the edit is not saved yet).
+          unsaved: entry.domain !== active[key].domain,
+        };
+        if (!adapter?.testDomain) {
+          return {
+            ...base,
+            ok: false,
+            endpoint: null,
+            httpStatus: null,
+            ms: 0,
+            channelCount: null,
+            redirectTo: null,
+            notes: [],
+            error: 'this source has no domain probe',
+          };
         }
-      } catch (err) {
-        tried.push({ from, landed: null, httpStatus: null, error: (err as Error).message });
-      }
-    }
-    res.json({ detected: null, from: current, sameAsCurrent: true, tried });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ── zlive domain (Settings → Advanced → ZLive) ────────────────────────────────
-// zlive's catalog and stream resolver both live under one operator-set domain (Settings.zliveDomain). This only
-// HELPS the operator verify a candidate and PERSISTS NOTHING — the save goes through PUT /api/settings. It makes
-// exactly ONE request, to the candidate's public channel catalog, and deliberately never touches the stream
-// resolver: every resolver hit is logged per IP on zlive's side (it ranks clients by unique streams and keeps a
-// leech list), so a settings probe must not spend one. Redirects are reported, not followed — a moved domain
-// shows up as "redirects to X" (the operator's next candidate) and the probe never hops to a host nobody vetted.
-// SSRF: the candidate goes through the shared normalizeDomain() first (no IP literals, no private hosts).
-sourcesRouter.post('/api/sources/zlive/domain/test', async (req, res, next) => {
-  try {
-    const body = (req.body ?? {}) as Record<string, unknown>;
-    const parsed = normalizeZliveDomain(typeof body.domain === 'string' ? body.domain : '');
-    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
-
-    const domain = parsed.domain;
-    const endpoint = zliveCatalogUrlFor(domain);
-    let httpStatus: number | null = null;
-    let channelCount: number | null = null;
-    let redirectTo: string | null = null;
-    let error: string | null = null;
-    try {
-      const r = await fetch(endpoint, {
-        redirect: 'manual',
-        headers: { 'User-Agent': ZLIVE_UA },
-        signal: AbortSignal.timeout(DOMAIN_PROBE_TIMEOUT_MS),
-      });
-      httpStatus = r.status;
-      if (r.status >= 300 && r.status < 400) {
-        redirectTo = r.headers.get('location');
-        error = `catalog redirects (HTTP ${r.status})${redirectTo ? ` to ${redirectTo.slice(0, 160)}` : ''}`;
-        await r.body?.cancel().catch(() => undefined);
-      } else if (r.ok) {
-        const rows = parseZliveCatalog(await r.json());
-        if (rows) {
-          // The same count a sync would produce: rows whose id yields a slug the resolver would sign.
-          channelCount = rows.filter((row) => zliveSlugOf(row.id) !== null).length;
-        } else {
-          error = 'catalog is not a JSON array — this does not look like zlive';
-        }
-      } else {
-        error = `catalog returned HTTP ${r.status}`;
-        await r.body?.cancel().catch(() => undefined);
-      }
-    } catch (err) {
-      error = (err as Error).message;
-    }
-
-    res.json({
-      domain,
-      endpoint,
-      ok: channelCount !== null && channelCount > 0,
-      httpStatus,
-      channelCount,
-      redirectTo,
-      error,
-    });
+        return { ...base, ...(await adapter.testDomain(entry.domain)) };
+      }),
+    );
+    res.json({ testedAt: new Date().toISOString(), results });
   } catch (err) {
     next(err);
   }
@@ -358,7 +260,7 @@ sourcesRouter.post('/api/sources/dulo/auth/pair', (req, res) => {
     code,
     expiresAt,
     callbackUrl,
-    duloUrl: getOrigin(), // follows Settings.duloDomain — the SPA links the user to the right site
+    duloUrl: getOrigin(), // follows the configured dulo domain — the SPA links the user to the right site
     bookmarklet: buildBookmarklet(code, callbackUrl),
     snippet: buildSnippet(code, callbackUrl),
   });

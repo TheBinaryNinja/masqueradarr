@@ -8,14 +8,13 @@
 //
 // KEYLESS by design: the documented `schedule-generated.php` is domain-gated ("allowed Domain only") and
 // `daddyapi.php` needs an API key, but the homepage schedule + the `schedule-api.php` fragments are exactly
-// what the site's own page fetches — reachable server-side with the existing Referer/UA gate. The active
-// mirror rotates, so everything reads getBase()/getReferer() at USE time (never captured at import).
+// what the site's own page fetches — reachable server-side with the existing Referer/UA gate. The configured
+// mirror can change at any save, so everything reads getBase()/getReferer() at USE time (never captured at import).
 //
-// A LEAF-ish module: imports only config + ensureMirror + the shared entity decoder + logger (no model,
-// no adapter) so the import graph stays acyclic (schedule ← epg/dlhd ← adapters/dlhd).
+// A LEAF-ish module: imports only config + the shared entity decoder + logger (no model, no adapter) so the
+// import graph stays acyclic (schedule ← epg/dlhd ← adapters/dlhd).
 
 import { UA, getBase, getReferer } from './config.js';
-import { ensureMirror } from './mirrorDirectory.js';
 import { decodeEntities } from './parseDirectory.js';
 import { logger } from '../../core/logger.js';
 
@@ -141,13 +140,12 @@ async function getText(url: string, headers: Record<string, string>): Promise<st
 }
 
 /**
- * Fetch + parse the dlhd schedule from the active mirror: the inline homepage schedule (primary) plus the
+ * Fetch + parse the dlhd schedule from the configured mirror: the inline homepage schedule (primary) plus the
  * secondary `/schedule-api.php?source=<src>` feeds (best-effort each). Returns all events across feeds
  * (the program builder dedupes per channel). Throws only if the PRIMARY (homepage) feed fails — a live-only
  * EPG sync should fail loudly rather than replace a good guide with a half-empty one.
  */
 export async function fetchDlhdSchedule(): Promise<DlhdSchedule> {
-  await ensureMirror().catch(() => undefined); // best-effort; getBase() falls back to the last/default base
   const base = getBase();
   const events: DlhdScheduleEvent[] = [];
   const sources: string[] = [];

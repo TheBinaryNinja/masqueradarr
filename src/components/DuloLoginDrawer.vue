@@ -9,7 +9,10 @@ import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import StatusDot from './StatusDot.vue';
-import { duloDomain } from '../composables/useSettings';
+import { playlistConfig } from '../composables/useSettings';
+
+// The configured dulo site (Settings → Playlist Domain / Configuration), for the reassurance copy.
+const duloDomain = computed(() => playlistConfig.value.dulo.domain);
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'captured'): void }>();
 

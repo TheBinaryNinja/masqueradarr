@@ -19,13 +19,7 @@
 
 import { isIP } from 'node:net';
 import type { SettingsDoc } from '../models/Settings.js';
-import { DULO_DEFAULT_DOMAIN, normalizeDomain } from '../sources/adapters/dulo/config.js';
-import {
-  ZLIVE_DEFAULT_DOMAIN,
-  ZLIVE_DEFAULT_MAX_STREAMS,
-  ZLIVE_MAX_STREAMS_LIMIT,
-  normalizeDomain as normalizeZliveDomain,
-} from '../sources/adapters/zlive/config.js';
+import { defaultPlaylistConfig, validatePlaylistConfig } from '../sources/core/playlistConfig.js';
 import { zoneOffsetString } from './zoneOffset.js';
 
 // First-provision default for the outbound-fetch DNS resolver(s). Hardcoded (the NAMESERVER env was
@@ -44,12 +38,6 @@ export type VideoPlayerMode = (typeof VIDEO_PLAYER_MODES)[number];
 
 function asVideoPlayerMode(v: unknown): VideoPlayerMode {
   return VIDEO_PLAYER_MODES.includes(v as VideoPlayerMode) ? (v as VideoPlayerMode) : 'inapp';
-}
-
-// zliveMaxStreams: an integer 0..ZLIVE_MAX_STREAMS_LIMIT, where 0 means unlimited. Shared by the read projection
-// and the write validator. NOT a `||` fallback on read — 0 is a real value an operator chooses.
-function isZliveMaxStreams(v: unknown): v is number {
-  return typeof v === 'number' && Number.isInteger(v) && v >= 0 && v <= ZLIVE_MAX_STREAMS_LIMIT;
 }
 
 // Internal runtime shape returned by the API. Diverges from SettingsData by REDACTING the secret MaxMind
@@ -73,16 +61,9 @@ export function envDefaults(): SettingsData {
     offset: zoneOffsetString(timezone),
     darkMode: true,
     videoPlayer: asVideoPlayerMode(process.env.VIDEO_PLAYER),
-    // Source-wide default DaddyLive player (0 = Auto). Seedable from DLHD_PLAYER; clamped to a non-negative int.
-    dlhdPlayer: Math.max(0, Math.trunc(Number(process.env.DLHD_PLAYER)) || 0),
-    // The domain dulo is currently on. Deliberately NOT env-derived: dulo identity is kept out of infra
-    // config (the old DULO_API / DULO_API_BASE overrides were retired with this field), so the committed
-    // default seeds first boot and the operator edits it on the Settings screen thereafter.
-    duloDomain: DULO_DEFAULT_DOMAIN,
-    // zlive's domain + stream cap: committed defaults, deliberately not env-derived (same reasoning as duloDomain —
-    // a provider's identity is operator data, edited on the Settings screen, not infra config).
-    zliveDomain: ZLIVE_DEFAULT_DOMAIN,
-    zliveMaxStreams: ZLIVE_DEFAULT_MAX_STREAMS,
+    // Per-source enable/domain/extendedProperties: the committed defaults, deliberately NOT env-derived — a
+    // provider's identity is operator data, edited on the Settings screen, not infra config.
+    playlistConfig: defaultPlaylistConfig(),
     // nameservers: hardcoded first-provision default (no longer env-derived — the NAMESERVER env was
     // dropped). 8.8.8.8,8.8.4.4 (Google public DNS) is written into the singleton on first insert so a
     // working outbound-fetch resolver is ALWAYS present out of the box; the operator edits it on the
@@ -112,11 +93,12 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
     offset: doc.offset ?? '+0000', // derived from timezone; surfaced read-only to the SPA
     darkMode: doc.darkMode,
     videoPlayer: asVideoPlayerMode(doc.videoPlayer),
-    dlhdPlayer: typeof doc.dlhdPlayer === 'number' ? doc.dlhdPlayer : 0, // source-wide default DaddyLive player (0 = Auto)
-    duloDomain: doc.duloDomain || DULO_DEFAULT_DOMAIN, // bare host; not secret — returned for the Settings UI
-    // Both absent on a doc seeded before the fields existed (lean reads skip schema defaults) → the defaults.
-    zliveDomain: doc.zliveDomain || ZLIVE_DEFAULT_DOMAIN,
-    zliveMaxStreams: isZliveMaxStreams(doc.zliveMaxStreams) ? doc.zliveMaxStreams : ZLIVE_DEFAULT_MAX_STREAMS,
+    // Not secret — returned for the Settings editor. A stored value that no longer validates (a hand-edited doc)
+    // reads as the defaults, the same fallback settings/applyPlaylistConfig.ts applies at runtime.
+    playlistConfig: (() => {
+      const parsed = validatePlaylistConfig(doc.playlistConfig);
+      return parsed.ok ? parsed.config : defaultPlaylistConfig();
+    })(),
     nameservers: doc.nameservers ?? null, // not secret — returned verbatim for the Settings UI
     logLevel: typeof doc.logLevel === 'number' ? doc.logLevel : 2,
     maxmindAccountId: doc.maxmindAccountId ?? null,
@@ -129,7 +111,7 @@ export function toRuntimeSettings(doc: SettingsDoc): RuntimeSettings {
 
 export type PatchResult =
   | { ok: true; $set: Partial<SettingsData> }
-  | { ok: false; error: string };
+  | { ok: false; error: string; errors?: string[] };
 
 // internal -> external. Validate a request body and build the $set patch persisted to Mongo. The single
 // whitelist/validation gate: unknown fields are ignored, every known field is type-checked, and a failure
@@ -170,38 +152,13 @@ export function toExternalPatch(body: unknown): PatchResult {
     }
     $set.videoPlayer = b.videoPlayer as VideoPlayerMode;
   }
-  // dlhdPlayer: source-wide default DaddyLive player. 0 = Auto; 1..N selects a specific player. A generous
-  // upper bound (out-of-range clamps to the lead player at resolve time, so the cap only bounds the dropdown).
-  if (b.dlhdPlayer !== undefined) {
-    const v = b.dlhdPlayer;
-    if (typeof v !== 'number' || !Number.isInteger(v) || v < 0 || v > 12) {
-      return { ok: false, error: 'dlhdPlayer (integer 0..12; 0 = Auto) required' };
-    }
-    $set.dlhdPlayer = v;
-  }
-  // duloDomain: the host dulo is currently on. Normalized (scheme/path/port/userinfo stripped, lowercased)
-  // and gated by the SAME validator the Test/Auto-detect endpoints use — it rejects IP literals and
-  // private/loopback targets, which matters because those endpoints server-side-fetch this value.
-  if (b.duloDomain !== undefined) {
-    if (typeof b.duloDomain !== 'string') return { ok: false, error: 'duloDomain (string) required' };
-    const parsed = normalizeDomain(b.duloDomain);
-    if (!parsed.ok) return { ok: false, error: `duloDomain: ${parsed.error}` };
-    $set.duloDomain = parsed.domain;
-  }
-  // zliveDomain: the host zlive's catalog + resolver live under. Same shared normalizer (and SSRF gate) as
-  // duloDomain — the catalog sync, the resolver and the Test endpoint all fetch from whatever lands here.
-  if (b.zliveDomain !== undefined) {
-    if (typeof b.zliveDomain !== 'string') return { ok: false, error: 'zliveDomain (string) required' };
-    const parsed = normalizeZliveDomain(b.zliveDomain);
-    if (!parsed.ok) return { ok: false, error: `zliveDomain: ${parsed.error}` };
-    $set.zliveDomain = parsed.domain;
-  }
-  // zliveMaxStreams: distinct zlive channels allowed live at once; 0 = unlimited.
-  if (b.zliveMaxStreams !== undefined) {
-    if (!isZliveMaxStreams(b.zliveMaxStreams)) {
-      return { ok: false, error: `zliveMaxStreams (integer 0..${ZLIVE_MAX_STREAMS_LIMIT}; 0 = unlimited) required` };
-    }
-    $set.zliveMaxStreams = b.zliveMaxStreams;
+  // playlistConfig: the whole per-source JSON, replaced as a unit. The strict validator normalizes every domain
+  // through the shared SSRF gate (the Test endpoint and each source's own fetches go to whatever lands here) and
+  // reports EVERY problem at once, path-prefixed, so the editor can list them.
+  if (b.playlistConfig !== undefined) {
+    const parsed = validatePlaylistConfig(b.playlistConfig);
+    if (!parsed.ok) return { ok: false, error: `playlistConfig: ${parsed.errors.join('; ')}`, errors: parsed.errors };
+    $set.playlistConfig = parsed.config;
   }
   // nameservers: optional comma-separated resolver IP(s). null or '' clears it (stored null → OS resolver);
   // a non-empty string must be a comma list of valid IPs (isIP), else 400 — a bad value never reaches dns.ts.

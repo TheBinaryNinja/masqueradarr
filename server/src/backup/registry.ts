@@ -12,6 +12,7 @@
 
 import type { Model } from 'mongoose';
 import { Settings } from '../models/Settings.js';
+import { upgradeLegacySettingsDoc } from '../sources/core/playlistConfig.js';
 import { ProxyConfig } from '../models/ProxyConfig.js';
 import { User } from '../models/User.js';
 import { Playlist } from '../models/Playlist.js';
@@ -38,11 +39,16 @@ export interface BackupSpec {
   // Dotted top-level field names redacted when a backup opts OUT of includeSecrets. (The default backup
   // INCLUDES secrets — a from-nothing restore needs the password hashes + auth tokens to be usable.)
   secretFields?: string[];
+  // Bring an OLDER backup's raw document up to the current schema before it is written. Needed wherever fields
+  // were retired: the restore writes through the model, and Mongoose's strict mode drops unknown fields, so a
+  // boot-time migration would never see them.
+  upgrade?: (doc: Record<string, unknown>) => Record<string, unknown>;
 }
 
 // Always-included config + editable mappings + auth. restoreOrder enforces the dependency sequence.
 export const CORE_BACKUP_SPECS: BackupSpec[] = [
-  { name: 'settings', model: Settings, restoreOrder: 10, secretFields: ['maxmindLicenseKey'] },
+  // upgrade: a pre-playlistConfig backup's dlhdPlayer/duloDomain/zliveDomain/zliveMaxStreams fold into playlistConfig.
+  { name: 'settings', model: Settings, restoreOrder: 10, secretFields: ['maxmindLicenseKey'], upgrade: upgradeLegacySettingsDoc },
   // Durable video-engine knobs (Default + per-playlist Custom). headerOverrides may carry an upstream auth
   // header, so it is redacted from a no-secrets (shareable) backup; the default from-nothing backup keeps it.
   { name: 'proxyconfigs', model: ProxyConfig, restoreOrder: 15, secretFields: ['headerOverrides'] },

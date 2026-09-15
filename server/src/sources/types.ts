@@ -166,6 +166,26 @@ export interface ResolvedStream {
   expiresAtMs?: number;
 }
 
+/** One adapter's answer to "does this candidate domain serve our catalog?" (SourceAdapter.testDomain). */
+export interface DomainProbe {
+  /** Did the domain serve a usable catalog? */
+  ok: boolean;
+  /** The URL actually requested. */
+  endpoint: string;
+  /** HTTP status of that request; null when it never got an answer. */
+  httpStatus: number | null;
+  /** Wall time of the probe, ms. */
+  ms: number;
+  /** Channels the catalog would yield on a sync; null when it could not be read. */
+  channelCount: number | null;
+  /** A redirect the probe reported rather than followed (zlive), else null. */
+  redirectTo: string | null;
+  /** Extra, source-specific observations for the operator (e.g. "dulo build confirmed"). */
+  notes: string[];
+  /** Why it failed; null on success. */
+  error: string | null;
+}
+
 export interface SourceAdapter {
   id: string;
   label: string;
@@ -199,8 +219,16 @@ export interface SourceAdapter {
    * sources, which are not listed as syncable playlists.
    */
   builtinMeta?: BuiltinPlaylistMeta;
-  /** Optional runtime provenance (dlhd: active mirror + probes). Absent → manifest statusUrl null. */
+  /** Optional runtime provenance (dlhd: active mirror; dulo: session; zlive: resolver + cap). Absent → manifest statusUrl null. */
   status?: () => unknown | Promise<unknown>;
+  /**
+   * Optional probe of a CANDIDATE home domain, for a source whose domain is operator-set (the playlist
+   * configuration's Test button, POST /api/sources/playlist-config/test). `domain` has already passed the shared
+   * normalizeDomain gate. Must be read-only and cheap — never persist, never touch the active session or caches,
+   * never fan out (one catalog request is the norm; zlive polices request volume per IP). Never throws — a
+   * failure is reported in the result.
+   */
+  testDomain?(domain: string): Promise<DomainProbe>;
   /**
    * Opt-in: this source exposes multiple interchangeable upstream "players" per channel that the operator can
    * PREFER (a source-wide default + per-channel override, honored + failed-over by resolveStream via opts.player).
