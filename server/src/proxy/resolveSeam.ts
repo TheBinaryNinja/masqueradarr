@@ -144,10 +144,11 @@ async function effectiveProxyConfig(adapter: SourceAdapter, pl?: string): Promis
 // Counts the DISTINCT live streams an adapter's upstream is carrying — the unit an upstream that ranks "unique
 // streams per client" sees; N viewers of one channel share one ingest and count once — and refuses a NEW one at
 // the cap. Two inputs, because neither alone is a cap:
-//   · telemetry (liveStreams): a stream with a viewer inside its recency TTL. Authoritative, but it LAGS: a
-//     viewer is only recorded on its first SUCCESSFUL manifest poll, which for an origin-served channel waits
-//     for the ring to fill (several target durations). Two channels opened inside that window would both read
-//     the same count and both be admitted.
+//   · telemetry (liveStreams): a stream with a viewer inside its recency TTL, an open raw-TS socket even while
+//     it is starved of bytes, or a channel a socket closed on moments ago (streamTelemetry CAP LIVENESS).
+//     Authoritative, but it LAGS: a viewer is only recorded on its first SUCCESSFUL manifest poll, which for an
+//     origin-served channel waits for the ring to fill (several target durations). Two channels opened inside
+//     that window would both read the same count and both be admitted.
 //   · admission holds (capHolds): every stream this seam admitted in the last CAP_HOLD_MS, stamped in the SAME
 //     synchronous step as the check — Node runs one request's check-then-reserve to completion before any
 //     other's, so two concurrent new channels cannot both slip under the cap. A reservation whose resolve
@@ -174,9 +175,10 @@ async function effectiveProxyConfig(adapter: SourceAdapter, pl?: string): Promis
 // that candidate rather than ending on a cap that only binds this one.
 //
 // Honest limits: in-memory (a restart forgets it — nothing is live after a restart either), and a channel
-// whose last viewer left keeps counting until its client TTL lapses (~30 s). That is also the window its
-// origin ingest keeps pulling upstream in its idle grace, so the refusal describes real upstream load; the
-// price is that zapping away from a channel frees its slot half a minute later, not at once.
+// whose last viewer left keeps counting for ~30 s: a poll client until its TTL lapses, a raw-TS socket for the
+// same window after its close. That is also the window its origin ingest keeps pulling upstream in its idle
+// grace, so the refusal describes real upstream load; the price is that zapping away from a channel frees its
+// slot half a minute later, not at once.
 const CAP_HOLD_MS = 30_000;
 /** serving adapter id → stream key → when it was admitted/granted, and the entry to list it under in status. */
 const capHolds = new Map<string, Map<string, CapHold>>();
