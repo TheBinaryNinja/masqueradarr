@@ -1129,8 +1129,8 @@ async fn ingest(ctx: IngestCtx) {
     // CNT: the failover attempt the ring's current content was resolved at, when the target record proved it.
     // A re-resolve may only CONTINUE the ring from the very same candidate (see `rejoin`).
     let mut serving_attempt: Option<u32> = None;
-    // UND: the SERVING candidate's policy — the grant's `policySource`, which is not the mount source's after a
-    // failover onto another provider. The undecodable watch reads its capability from here.
+    // The SERVING candidate's policy — the grant's `policySource`, which is not the mount source's after a failover
+    // onto another provider. Every poll reads its knobs from here, the undecodable watch's capability included.
     let mut serving_policy: Option<Arc<SourcePolicy>> = None;
     // EXP: when to renew the target ahead of its own expiry (None ⇒ the adapter stated none; the reactive
     // refresh-failed path still covers it).
@@ -1334,7 +1334,8 @@ async fn ingest(ctx: IngestCtx) {
                     // A bare TS socket has nothing to poll: hand off to the local segmenter for the whole
                     // session, then fall back into this loop (which re-checks stop/idle and re-resolves).
                     Some(Resolution { media: MediaSource::RawTs(stream, first), .. }) => {
-                        let read_timeout_ms = ctx.state.get(&ctx.source).map_or(0, |p| p.read_timeout_ms.load(Ordering::Relaxed));
+                        // The serving candidate's bound, as for every HLS poll below (set from this resolve above).
+                        let read_timeout_ms = serving_policy.as_ref().map_or(0, |p| p.read_timeout_ms.load(Ordering::Relaxed));
                         let started = Instant::now();
                         // A splice pending from the resolve (a reset's, or a renewal that landed on a socket) rides
                         // on the session's first cut, exactly as the HLS path puts it on its first segment.
@@ -1423,26 +1424,32 @@ async fn ingest(ctx: IngestCtx) {
             next_upstream_seq = mp.media_sequence; // first poll: start at the head of the live window
         }
 
-        let policy = match ctx.state.get(&ctx.source) {
-            Some(p) => p,
-            None => {
-                log::warn("iop", &rid, || "policy evicted mid-ingest — re-resolving".to_string());
-                media = None;
-                continue;
-            }
+        // Every knob this poll applies — client timeouts, headers, LAN reach, the observed-host set, the ad
+        // signature — belongs to the SERVING candidate: the policy its grant filed under its own `policySource`,
+        // which `resolve_media` fetched this very playlist with. After a failover onto another provider the mount
+        // source's cell is that other provider's (its headers and LAN reach on the child's media), and it need not
+        // exist at all: a parent that has not resolved once since the sidecar started has no cell, and looking it
+        // up here used to send the loop straight back into a resolve — no pause, a Node resolve plus an upstream
+        // playlist GET per pass, for as long as anyone was subscribed. For attempt 0 the two are the same object.
+        let Some(policy) = serving_policy.clone() else {
+            // `media` only ever comes from a resolve, which sets the serving policy — but never unpaced regardless.
+            log::warn("iop", &rid, || "no serving policy for the playlist being followed — re-resolving".to_string());
+            media = None;
+            media_failures = media_failures.saturating_add(1);
+            let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
+            back_off(&rid, wait, backoff.failures).await;
+            continue;
         };
         // S3/UND — the undecodable-upstream detector. Scoped to sources that HAVE alternates to walk to:
         // retiring an upstream is only useful where another one can take over, and on a single-upstream
         // source the retirement would just re-resolve the same dead provider on a 2 s loop. It used to be
         // `ctx.source == "dlhd"`, the crate's only hardcoded provider id.
         //
-        // Read off the SERVING candidate's policy — the one its grant filed under its own `policySource` —
-        // and deliberately not the mount's, unlike this loop's other knobs (headers, timeouts, allow_private).
-        // The capability describes the media being judged: a failover child from a provider whose segments
-        // legitimately open mid-GOP (their parameter sets sit past the scan cap) is NOT playerSelectable, and
-        // judging it by its dlhd parent's capability struck three healthy segments in a row and retired it.
-        // For attempt 0 the two are the same object, so nothing changes there.
-        let undecodable_watch = serving_policy.as_ref().is_some_and(|p| p.player_selectable.load(Ordering::Relaxed));
+        // The capability describes the media being judged, so it too is the SERVING candidate's: a failover
+        // child from a provider whose segments legitimately open mid-GOP (their parameter sets sit past the scan
+        // cap) is NOT playerSelectable, and judging it by its dlhd parent's capability struck three healthy
+        // segments in a row and retired it.
+        let undecodable_watch = policy.player_selectable.load(Ordering::Relaxed);
         let client = ctx.state.client_for(
             policy.connect_timeout_ms.load(Ordering::Relaxed),
             policy.max_redirects.load(Ordering::Relaxed),
@@ -4953,6 +4960,31 @@ mod tests {
         .await;
         until(Duration::from_secs(10), "the watch retires the upstream", || o.suspect_retires.load(Ordering::Relaxed) >= 1).await;
         assert_eq!(o.last_suspect.read_ok().as_deref(), Some(crate::tsseg::Suspect::NoVideoParameterSets.slug()));
+    }
+
+    /// A failover child whose grant files its policy under ITS OWN source, for a mount source that has no policy
+    /// cell at all — a parent that has not resolved once since the sidecar started (an expired dulo session, a
+    /// broken dlhd scrape) with a ZLive backup forcing the origin on. The ingest follows the child on the child's
+    /// policy: the ring fills and the seam hears two resolves. Looking the MOUNT's cell up instead found nothing,
+    /// dropped the playlist and re-resolved at once — a hot loop of Node resolves and upstream playlist GETs, with
+    /// the ring never filling.
+    #[tokio::test]
+    async fn a_failover_child_under_a_mount_with_no_policy_is_followed_on_its_own() {
+        let child = serde_json::json!({ "policySource": "child" });
+        let up = Mock::start(Seam::grant_with("/pl/a.m3u8", child)).await;
+        up.script(|s| {
+            s.paths.insert("/pl/a.m3u8".into(), Serve::Body(media_playlist(100, 4, 1)));
+        });
+        let state = up.state();
+        let Ok((policy, _)) = state.resolve_entry("zl", "zl://abc", None).await else {
+            panic!("the stand-in's seam grants");
+        };
+        assert!(state.get("zl").is_none(), "precondition: the mount source has no policy cell");
+        let lease = subscribe(&state, "zl", "zl://abc", None, &policy);
+        let o = lease.origin().clone();
+        until(Duration::from_secs(10), "the child's window rings", || o.ring_depth() >= 4).await;
+        tokio::time::sleep(Duration::from_millis(1500)).await; // a steady poll or two on the child
+        assert_eq!(up.resolves(), 2, "the entry's resolve and the ingest's first — no re-resolve loop");
     }
 
     /// CAP, end to end: the channel's own ingest is refused by the seam. The ingest ends, the waiting client is
