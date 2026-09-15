@@ -6,6 +6,7 @@ import { logger } from '../sources/core/logger.js';
 import { PROXY_SECRET } from './secret.js';
 import { getProxyLogLevel } from './logLevel.js';
 import { getProxyNameservers } from './nameservers.js';
+import { noteDataPlaneExit } from '../sources/core/streamTelemetry.js';
 
 // The masqueradarr durable video DATA PLANE is a separate Rust binary (repo `proxy/` crate → `masq-proxy`)
 // run as a LOOPBACK sidecar that Node spawns + supervises (plan topology "sidecar behind Node", staged to a
@@ -111,6 +112,8 @@ function spawnOnce(bin: string): void {
   proc.on('exit', (code, signal) => {
     alive = false;
     if (child === proc) child = null;
+    // Every stream the sidecar was carrying ended with it; the stream cap must not keep counting them.
+    noteDataPlaneExit();
     if (shuttingDown) return; // expected during graceful shutdown — don't respawn
     // A run that lasted a healthy while resets the restart budget (so a rare long-uptime crash doesn't
     // permanently exhaust it); a fast crash-loop counts against the cap and eventually gives up — a

@@ -614,6 +614,23 @@ export function getRingFootprint(): RingFootprint | null {
 // socket-close (with a no-byte backstop in tick()). Health still comes from the engine's -progress (it drives
 // phaseFor() exactly as the HLS engine does), observed by tick() step 2 like any other bound client.
 
+// CAP LIVENESS for raw-TS sockets. The per-source stream cap (proxy/resolveSeam.ts, via liveStreams) counts
+// what a source's upstream is CARRYING, and a socket tells that story differently from a poll client:
+//  · an OPEN socket is a stream being carried even while no bytes flow — a stalled ring, an ingest re-resolving
+//    or walking to a backup: the data plane holds its producer (and, origin-served, the ingest's lease) until
+//    the socket ends. The session's SOCKET_IDLE_MS backstop above is History's answer to a half-open socket; the
+//    cap instead keeps counting a socket until its `close` frame, bounded by SOCKET_CAP_IDLE_MS of silence in
+//    case that frame was lost (telemetry is best-effort) — a lost frame then holds a slot for minutes, not for
+//    good. Were it dropped at 60 s, the stalled stream's own re-resolve would be scored as a NEW stream and, at
+//    the cap, refused with the terminal 429 that ends its ingest.
+//  · an ENDED socket leaves its channel's origin ingest pulling upstream through its idle grace (30 s) — the
+//    window a poll client keeps counting after its last poll (CLIENT_TTL_MS) — so the channel keeps counting for
+//    that long after a socket on it closes. Dropping it at once let a zap A→B admit B while A was still pulled.
+// Both are forgotten the moment the sidecar exits (noteDataPlaneExit): nothing it held is still being carried.
+const SOCKET_CAP_IDLE_MS = 5 * 60_000;
+const capSockets = new Map<number, { channelKey: string; source: string; entryUrl: string; lastSign: number }>();
+const endedSocketChannels = new Map<string, { source: string; entryUrl: string; until: number }>();
+
 let socketConnSeq = 0;
 /** A fresh per-socket connection id (the key namespace `socket|<id>` never collides with poll clients). */
 export function nextSocketConnId(): number {
@@ -657,6 +674,7 @@ export function noteSocketViewerOpen(
     clientShortfallSince: null,
     socketBound: true,
   });
+  capSockets.set(connId, { channelKey, source, entryUrl, lastSign: now });
   // Mirror noteViewer: ensure the channel aggregate exists so phase/peak tracking covers TS-only channels.
   if (!channels.has(channelKey)) {
     channels.set(channelKey, { source, entryUrl, firstSeen: now, peakViewers: 0, lastPhase: phaseFor(channelKey).phase, bufferingSince: null });
@@ -666,6 +684,9 @@ export function noteSocketViewerOpen(
 /** Attribute egress bytes written to a raw-TS socket (called per ring-buffer write). Refreshes lastSeen so the
  *  idle backstop never fires while bytes flow. (`segments` stays 0 — TS has no segment concept.) */
 export function noteSocketBytes(connId: number, bytes: number): void {
+  // Before the reaped check: bytes resuming after the session backstop still prove the stream is carried.
+  const cs = capSockets.get(connId);
+  if (cs) cs.lastSign = Date.now();
   const c = clients.get(`socket|${connId}`);
   if (!c) return; // already reaped (socket closed / backstop) — ignore (defensive)
   c.bytes += bytes;
@@ -676,11 +697,33 @@ export function noteSocketBytes(connId: number, bytes: number): void {
  *  `reason` comes from the data plane's close frame (the only party that knows WHY the socket ended); absent
  *  for a sidecar that does not report one. */
 export function noteSocketViewerClose(connId: number, reason?: string | null): void {
+  const now = Date.now();
+  // Cap liveness first: the session backstop may have reaped the client already, the socket only ends now.
+  const cs = capSockets.get(connId);
+  if (cs) {
+    capSockets.delete(connId);
+    endedSocketChannels.set(cs.channelKey, { source: cs.source, entryUrl: cs.entryUrl, until: now + CLIENT_TTL_MS });
+  }
   const key = `socket|${connId}`;
   const c = clients.get(key);
   if (!c) return; // backstop already closed it
-  closeSession(c, Date.now(), reason || 'socket_close');
+  closeSession(c, now, reason || 'socket_close');
   clients.delete(key);
+}
+
+/**
+ * The sidecar exited: every socket and ingest it held is gone, and no `close` frame will ever report them. Drops
+ * their cap liveness at once rather than letting it lapse (their History sessions still end by the backstop).
+ */
+export function noteDataPlaneExit(): void {
+  capSockets.clear();
+  endedSocketChannels.clear();
+}
+
+/** Drop cap-liveness records that have lapsed (see CAP LIVENESS). Run by tick() and by every liveStreams() read. */
+function pruneCapLiveness(now: number): void {
+  for (const [id, s] of capSockets) if (now - s.lastSign > SOCKET_CAP_IDLE_MS) capSockets.delete(id);
+  for (const [key, e] of endedSocketChannels) if (e.until <= now) endedSocketChannels.delete(key);
 }
 
 // ── Tick: rolling rates, buffering-event detection, stale sweep ───────────────────────────────────────
@@ -865,6 +908,7 @@ export function tick(): void {
       clients.delete(key);
     }
   }
+  pruneCapLiveness(now);
 }
 
 // ── Read models (consumed by the stats hub / REST snapshot) ───────────────────────────────────────────
@@ -969,12 +1013,13 @@ export interface LiveStream {
 }
 
 /**
- * Every DISTINCT stream that has a viewer right now — a poll client inside its recency TTL, or a raw-TS socket
- * inside its idle backstop — keyed by its channelKey (`streamKey(source, entryUrl)`). Read by the resolve seam's
- * per-source stream cap (proxy/resolveSeam.ts), which is ENFORCEMENT, not display — so it reads `clients`, the
- * core's own definition of "watching", and never a `displayMap` (those are pruned only while an admin socket is
- * open, which would make the cap depend on someone having Active Streams on screen). The TTL is re-checked here
- * rather than trusting the 2 s sweep, so a client that went stale between ticks is not counted.
+ * Every DISTINCT stream being carried for a viewer right now — a poll client inside its recency TTL, an open
+ * raw-TS socket (until its close frame, bounded by SOCKET_CAP_IDLE_MS of silence), or a channel whose socket
+ * closed within the last CLIENT_TTL_MS (see CAP LIVENESS) — keyed by its channelKey (`streamKey(source,
+ * entryUrl)`). Read by the resolve seam's per-source stream cap (proxy/resolveSeam.ts), which is ENFORCEMENT, not
+ * display — so it reads the core's own records, and never a `displayMap` (those are pruned only while an admin
+ * socket is open, which would make the cap depend on someone having Active Streams on screen). The poll TTL is
+ * re-checked here rather than trusting the 2 s sweep, so a client that went stale between ticks is not counted.
  *
  * Keyed like everything in this file: `source` is the MOUNT source the data plane reported. For a failover
  * stream that is the PARENT's (source, entry) even while a child from another provider carries it, so this
@@ -983,10 +1028,18 @@ export interface LiveStream {
  */
 export function liveStreams(): Map<string, LiveStream> {
   const now = Date.now();
+  pruneCapLiveness(now);
   const out = new Map<string, LiveStream>();
   for (const c of clients.values()) {
-    if (now - c.lastSeen > (c.socketBound ? SOCKET_IDLE_MS : CLIENT_TTL_MS)) continue;
+    if (c.socketBound) continue; // sockets count from capSockets, which outlives the session backstop
+    if (now - c.lastSeen > CLIENT_TTL_MS) continue;
     if (!out.has(c.channelKey)) out.set(c.channelKey, { source: c.source, entryUrl: c.entryUrl });
+  }
+  for (const s of capSockets.values()) {
+    if (!out.has(s.channelKey)) out.set(s.channelKey, { source: s.source, entryUrl: s.entryUrl });
+  }
+  for (const [key, e] of endedSocketChannels) {
+    if (!out.has(key)) out.set(key, { source: e.source, entryUrl: e.entryUrl });
   }
   return out;
 }

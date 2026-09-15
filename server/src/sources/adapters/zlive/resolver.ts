@@ -20,9 +20,10 @@
 //
 //   · FAILURE BACKOFF. Nothing else about a failure is retried at zlive's expense either:
 //       - a resolver REFUSAL (401/403/429) is about this IP, not the slug, so it starts a GLOBAL cool-down — the
-//         Retry-After when zlive sends one, else 60 s doubling per consecutive refusal to 15 min, reset by the
-//         next good 302 — during which no slug contacts zlive. Cached targets are still handed out: tokens already
-//         minted stay usable, the refusal is the resolver's.
+//         Retry-After when zlive sends one of up to 1 h, else 60 s doubling per consecutive refusal to 15 min,
+//         reset by the next good 302 to a request sent after it began — during which no slug contacts zlive.
+//         Answers to requests already in flight when it began can lengthen it, never shorten or end it. Cached
+//         targets are still handed out: tokens already minted stay usable, the refusal is the resolver's.
 //       - any OTHER failed contact (a 5xx, a timeout, DNS, a rejected Location) is negative-cached for that slug
 //         for 30 s.
 //     So a player retrying a failed channel every few seconds costs zlive nothing extra.
@@ -37,11 +38,13 @@
 //
 //   · DECOY DETECTION — surface only, never evasion. zlive keeps a manual IP leech list whose members are served
 //     a decoy ad stream instead of the channel. The one signature visible from here is many unrelated channels
-//     suddenly resolving to the SAME file. So when one file is answered for ≥ 3 slugs that are not aliases of
-//     each other (config.ts ALIAS_TABLE), the file is LATCHED for 30 min: the slugs known to map to it fail with
-//     `zlive_decoy_suspected` WITHOUT contacting zlive, the latch is logged at warn and shown in status(). Nothing
-//     here tries to route around a listing — no alternate hosts, no header games, no retries; the operator is
-//     told, and the latch simply stops us re-asking in the meantime.
+//     suddenly resolving to the SAME feed — the signed file name, or for an off-shape Location its whole path
+//     less any token-like segments (a per-channel directory with a generic `index.m3u8` is many feeds, not one).
+//     So when one feed is answered for ≥ 3 slugs that are not aliases of each other (config.ts ALIAS_TABLE, or a
+//     file named after the slug, as espn → espn-usa), the feed is LATCHED for 30 min: the slugs known to map to
+//     it fail with `zlive_decoy_suspected` WITHOUT contacting zlive, the latch is logged at warn and shown in
+//     status(). Nothing here tries to route around a listing — no alternate hosts, no header games, no retries;
+//     the operator is told, and the latch simply stops us re-asking in the meantime.
 //
 // Errors carry one of four classes for status(): `refusal-403` (the resolver refused us: 403, or its 401/429
 // cousins — and every resolve refused locally during the cool-down that follows), `dns-connect` (the resolver or
@@ -151,14 +154,17 @@ interface DecoyLatch {
   slugs: string[];
 }
 
-/** The resolver refused this server; kept after it lapses so the next refusal doubles the wait (a 302 clears it). */
+/**
+ * The resolver refused this server; kept after it lapses so the next refusal doubles the wait (a 302 to a request
+ * sent after it began clears it).
+ */
 interface CoolDown {
   since: number;
   until: number;
   /** Consecutive refusals, 1-based. */
   step: number;
   httpStatus: number;
-  /** The resolver's own Retry-After, in ms, when it sent a readable one. */
+  /** The resolver's own Retry-After, in ms, when it sent a readable one within RETRY_AFTER_MAX_MS. */
   retryAfterMs: number | null;
 }
 
@@ -297,6 +303,39 @@ export function parseRetryAfter(value: string | null, serverNowMs: number): numb
   return Number.isFinite(at) ? Math.max(0, at - serverNowMs) : null;
 }
 
+// Off-shape path segments that carry a per-request signature rather than a feed name: long hex runs (tokens,
+// hashes) and long digit runs (expiries, timestamps).
+const TOKEN_SEGMENT_RE = /^(?:[0-9a-f]{16,}|\d{8,})$/i;
+
+/**
+ * The feed an off-shape Location names, for the decoy test: its path without `.m3u8` and without token-like
+ * segments (/live/espn/index.m3u8 → live/espn/index). The last segment alone would make every channel of a
+ * per-directory layout the same "index" feed.
+ */
+function offShapeFeed(pathname: string): string {
+  const segs = pathname.split('/').filter(Boolean);
+  if (segs.length) segs[segs.length - 1] = segs[segs.length - 1].replace(/\.m3u8$/i, '');
+  return segs.filter((s) => s && !TOKEN_SEGMENT_RE.test(s)).join('/') || pathname;
+}
+
+/** Lowercase alphanumerics only, for "is this file named after that slug". */
+function flat(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * The decoy test's class for `slug` answered `file`: the file itself when the slug is a listed alias of it, or the
+ * file is named after the slug (espn → espn-usa, bein-sports → beinsports-usa) — the resolver maps slugs to
+ * upstream files server-side and ALIAS_TABLE only records the mappings seen so far — else the slug's own class.
+ * A slug under 3 characters is too short to call a file named after it.
+ */
+function decoyClass(slug: string, file: string): string {
+  const cls = aliasClass(slug);
+  if (cls === file) return file;
+  const s = flat(slug);
+  return s.length >= 3 && flat(file).includes(s) ? file : cls;
+}
+
 /** How old the current token must be before a fresh request re-mints it, when `drops` re-mints already failed. */
 function freshFloor(drops: number): number {
   return Math.min(FRESH_MAX_INTERVAL_MS, FRESH_MIN_INTERVAL_MS * 2 ** Math.max(0, drops));
@@ -323,6 +362,11 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
   const warnedAt = new Map<string, number>();
   const notedRemaps = new Set<string>();
   let coolDown: CoolDown | null = null;
+  // Bumped whenever a refusal starts a new cool-down step. Each contact remembers the value it was SENT under: an
+  // answer to a request that left before the current cool-down began is part of the same burst (in-flight dedupe
+  // is per slug, so several channels can be mid-request when the resolver starts refusing). Such a refusal may only
+  // lengthen the wait — it is not another consecutive refusal — and such a 302 cannot end it.
+  let coolDownGen = 0;
   let lastGoodSuffix: string | null = null;
   let lastLocationHost: string | null = null;
   let lastLifetimeMs: number | null = null;
@@ -406,7 +450,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
 
   function decoyMessage(latch: DecoyLatch): string {
     const shown = latch.slugs.slice(0, 6).join(', ') + (latch.slugs.length > 6 ? ', …' : '');
-    const feeds = new Set(latch.slugs.map(aliasClass)).size;
+    const feeds = new Set(latch.slugs.map((s) => decoyClass(s, latch.file))).size;
     return (
       `zlive_decoy_suspected: the resolver answered ${latch.file}.m3u8 for ${latch.slugs.length} channels that ` +
       `should be ${feeds} different feeds (${shown}) — the signature of the decoy zlive serves to IPs on its leech ` +
@@ -414,9 +458,9 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
     );
   }
 
-  // Record this answer, then apply the decoy test to the file it named. Throws when the file is (or just became)
-  // latched. Slugs whose table entry maps them to one file are ONE class, so the known sky-sports-f1 /
-  // skysportsf1-uk pair can never count as two "unrelated" channels.
+  // Record this answer, then apply the decoy test to the feed it named. Throws when the feed is (or just became)
+  // latched. Slugs that are aliases of the answered file (decoyClass) are ONE class, so the known sky-sports-f1 /
+  // skysportsf1-uk pair, or rows zlive maps onto a file named after them, never count as "unrelated" channels.
   function observeAndCheckDecoy(slug: string, file: string, now: number): void {
     observations.set(slug, { file, at: now });
     const existing = latches.get(file);
@@ -425,7 +469,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
       throw fail('decoy', slug, decoyMessage(existing));
     }
     const members = [...observations].filter(([, o]) => o.file === file).map(([s]) => s);
-    const classes = new Set(members.map(aliasClass));
+    const classes = new Set(members.map((s) => decoyClass(s, file)));
     if (classes.size < DECOY_MIN_CLASSES) return;
     const latch: DecoyLatch = { file, since: now, until: now + DECOY_LATCH_MS, slugs: members };
     latches.set(file, latch);
@@ -475,6 +519,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
 
   async function contact(slug: string): Promise<ZliveResolved> {
     const epochAtStart = epoch;
+    const genAtSend = coolDownGen;
     const url = `${getResolverBase()}/${encodeURIComponent(slug)}`;
     // Failure bookkeeping belongs to the deployment the request was made for (see the commit below).
     const current = (): boolean => getDomainEpoch() === epochAtStart && epoch === epochAtStart;
@@ -517,17 +562,33 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
         res.headers.get('retry-after'),
         Number.isFinite(serverDate) ? serverDate : receivedAt,
       );
-      const step = (coolDown?.step ?? 0) + 1;
+      const sameBurst = coolDown !== null && genAtSend !== coolDownGen;
+      const step = sameBurst ? coolDown!.step : (coolDown?.step ?? 0) + 1;
       const backoff = Math.min(REFUSAL_COOLDOWN_MAX_MS, REFUSAL_COOLDOWN_MIN_MS * 2 ** (step - 1));
-      const wait = Math.max(backoff, Math.min(RETRY_AFTER_MAX_MS, retryAfterMs ?? 0));
+      // A Retry-After past the ceiling is junk (a block page's "come back tomorrow"): ignored, not clamped.
+      const honoured = retryAfterMs !== null && retryAfterMs <= RETRY_AFTER_MAX_MS ? retryAfterMs : null;
+      let wait = Math.max(backoff, honoured ?? 0);
       if (current()) {
-        coolDown = { since: receivedAt, until: receivedAt + wait, step, httpStatus: res.status, retryAfterMs };
+        if (!sameBurst) {
+          coolDown = { since: receivedAt, until: receivedAt + wait, step, httpStatus: res.status, retryAfterMs: honoured };
+          coolDownGen += 1;
+        } else if (receivedAt + wait > coolDown!.until) {
+          coolDown = { ...coolDown!, until: receivedAt + wait, httpStatus: res.status, retryAfterMs: honoured };
+        } else {
+          wait = coolDown!.until - receivedAt; // an earlier answer in this burst already asked for longer
+        }
       }
+      const retryNote =
+        retryAfterMs === null
+          ? ''
+          : honoured === null
+            ? ` (Retry-After ${Math.round(retryAfterMs / 1000)} s ignored — over the ${RETRY_AFTER_MAX_MS / 60_000} min ceiling)`
+            : ` (Retry-After ${Math.round(retryAfterMs / 1000)} s)`;
       throw fail(
         'refusal-403',
         slug,
         `zlive_resolver_refused: HTTP ${res.status} from ${url} — not contacting zlive for any channel for ` +
-          `${Math.round(wait / 1000)} s${retryAfterMs !== null ? ` (Retry-After ${Math.round(retryAfterMs / 1000)} s)` : ''}` +
+          `${Math.round(wait / 1000)} s${retryNote}` +
           (step > 1 ? `, refusal ${step} in a row` : ''),
         res.status,
       );
@@ -556,12 +617,22 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
       const life = signed.expSec * 1000 - (Number.isFinite(serverDate) ? serverDate : receivedAt);
       if (life > 0) {
         lifetimeMs = life;
+      } else if (Number.isFinite(serverDate)) {
+        // Expired on zlive's OWN clock the moment it was signed (signer/edge skew): a dead link, not one of unknown
+        // expiry. Reusing it would hand the data plane a 403 for as long as the cache and the fresh-request floor
+        // hold it, so it is a failed contact like any other bad answer — negative-cached, the channel's failover
+        // backups take over, and the next contact after the TTL asks for a new token.
+        throw failContact(
+          'shape',
+          `zlive_token_expired: the resolver signed a playlist that had already expired by its own clock (expiry ` +
+            `${isoOf(signed.expSec * 1000)}, answered at ${isoOf(serverDate)})`,
+        );
       } else {
+        // No Date header: the lifetime was measured on OUR clock, which may be the skewed one.
         warnThrottled(
           'expired',
-          `${slug}: the resolver signed a playlist that has already expired by its own clock (expiry ` +
-            `${isoOf(signed.expSec * 1000)}${Number.isFinite(serverDate) ? `, answered at ${isoOf(serverDate)}` : ''}) ` +
-            '— treating its expiry as unknown',
+          `${slug}: the resolver signed a playlist that looks expired by this server's clock (expiry ` +
+            `${isoOf(signed.expSec * 1000)}; the answer carried no Date) — treating its expiry as unknown`,
           receivedAt,
         );
       }
@@ -585,8 +656,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
             `${lastGoodSuffix ? ` or a URL under ${lastGoodSuffix}` : ''}): ${shown}`,
         );
       }
-      const lastSegment = u.pathname.split('/').filter(Boolean).pop() ?? '';
-      file = lastSegment.replace(/\.m3u8$/i, '') || u.pathname;
+      file = offShapeFeed(u.pathname);
       warnThrottled(
         `offshape:${suffix}`,
         `accepting an off-shape Location under ${suffix} (did the resolver's URL format change?): ${shown}`,
@@ -596,7 +666,8 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
 
     // Decoy test BEFORE any further work on the answer: a suspected decoy is refused as it stands.
     observeAndCheckDecoy(slug, file, deps.now());
-    if (Object.hasOwn(ALIAS_TABLE, slug) && ALIAS_TABLE[slug] !== file && !notedRemaps.has(`${slug}:${file}`)) {
+    // (On-shape only: the table records signed file names, which an off-shape feed path never equals.)
+    if (signed && Object.hasOwn(ALIAS_TABLE, slug) && ALIAS_TABLE[slug] !== file && !notedRemaps.has(`${slug}:${file}`)) {
       notedRemaps.add(`${slug}:${file}`);
       logMilestone(TAG, `${slug} now resolves to ${file}.m3u8 (was ${ALIAS_TABLE[slug]}.m3u8 when the alias table was recorded)`);
     }
@@ -641,8 +712,12 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
         }
         lastGoodSuffix = suffix;
       }
-      if (coolDown) logger.info(TAG, `the resolver is answering again — refusal backoff reset`);
-      coolDown = null;
+      if (coolDown && genAtSend === coolDownGen) {
+        logger.info(TAG, `the resolver is answering again — refusal backoff reset`);
+        coolDown = null;
+      } else if (coolDown) {
+        logTrace(TAG, `${slug}: a 302 to a request sent before the current refusal — cool-down kept`);
+      }
       negative.delete(slug);
       lastLocationHost = host;
       if (lifetimeMs !== undefined) lastLifetimeMs = lifetimeMs;

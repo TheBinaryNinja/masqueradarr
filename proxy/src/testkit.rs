@@ -85,6 +85,10 @@ pub(crate) struct Script {
     /// What both flush endpoints reply — Node's `{ logLevel, nameservers }` echo. Empty by default: an echo that
     /// says nothing changes nothing, so every test that does not script one runs on the sidecar's own settings.
     pub(crate) echo: serde_json::Value,
+    /// How many requests each scripted path (under `/pl/`) has had — for a test about who keeps polling what.
+    pub(crate) hits: HashMap<String, u32>,
+    /// A failover attempt answered differently from `seam` — the channel's backups, each its own grant.
+    pub(crate) by_attempt: HashMap<u32, Seam>,
 }
 
 #[derive(Clone)]
@@ -113,6 +117,8 @@ impl Mock {
                 calls: Vec::new(),
                 exhaust_advances: false,
                 echo: serde_json::json!({}),
+                hits: HashMap::new(),
+                by_attempt: HashMap::new(),
             })),
         };
         let app = Router::new()
@@ -154,6 +160,11 @@ impl Mock {
     pub(crate) fn calls(&self) -> Vec<Call> {
         self.shared.script.lock_ok().calls.clone()
     }
+
+    /// How many requests `path` (under `/pl/`) has had so far.
+    pub(crate) fn hits(&self, path: &str) -> u32 {
+        self.shared.script.lock_ok().hits.get(path).copied().unwrap_or(0)
+    }
 }
 
 async fn resolve(State(s): State<Shared>, Json(asked): Json<serde_json::Value>) -> Response {
@@ -163,7 +174,8 @@ async fn resolve(State(s): State<Shared>, Json(asked): Json<serde_json::Value>) 
         let mut sc = s.script.lock_ok();
         sc.resolves += 1;
         sc.calls.push(Call { at: s.started.elapsed(), attempt, reason });
-        (sc.seam.clone(), sc.exhaust_advances && attempt >= 1)
+        let seam = sc.by_attempt.get(&attempt).cloned().unwrap_or_else(|| sc.seam.clone());
+        (seam, sc.exhaust_advances && attempt >= 1)
     };
     if exhausted {
         return (StatusCode::GONE, r#"{"error":"failover_exhausted"}"#).into_response();
@@ -195,7 +207,12 @@ async fn sink(State(s): State<Shared>) -> Json<serde_json::Value> {
 }
 
 async fn playlist(State(s): State<Shared>, Path(name): Path<String>) -> Response {
-    let serve = s.script.lock_ok().paths.get(&format!("/pl/{name}")).cloned();
+    let path = format!("/pl/{name}");
+    let serve = {
+        let mut sc = s.script.lock_ok();
+        *sc.hits.entry(path.clone()).or_default() += 1;
+        sc.paths.get(&path).cloned()
+    };
     match serve {
         Some(Serve::Body(b)) => ([("content-type", "application/vnd.apple.mpegurl")], b).into_response(),
         Some(Serve::Media(b)) => ([("content-type", "video/mp2t")], b).into_response(),
