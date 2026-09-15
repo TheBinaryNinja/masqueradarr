@@ -38,11 +38,13 @@
 //
 //   · DECOY DETECTION — surface only, never evasion. zlive keeps a manual IP leech list whose members are served
 //     a decoy ad stream instead of the channel. The one signature visible from here is many unrelated channels
-//     suddenly resolving to the SAME file. So when one file is answered for ≥ 3 slugs that are not aliases of
-//     each other (config.ts ALIAS_TABLE), the file is LATCHED for 30 min: the slugs known to map to it fail with
-//     `zlive_decoy_suspected` WITHOUT contacting zlive, the latch is logged at warn and shown in status(). Nothing
-//     here tries to route around a listing — no alternate hosts, no header games, no retries; the operator is
-//     told, and the latch simply stops us re-asking in the meantime.
+//     suddenly resolving to the SAME feed — the signed file name, or for an off-shape Location its whole path
+//     less any token-like segments (a per-channel directory with a generic `index.m3u8` is many feeds, not one).
+//     So when one feed is answered for ≥ 3 slugs that are not aliases of each other (config.ts ALIAS_TABLE, or a
+//     file named after the slug, as espn → espn-usa), the feed is LATCHED for 30 min: the slugs known to map to
+//     it fail with `zlive_decoy_suspected` WITHOUT contacting zlive, the latch is logged at warn and shown in
+//     status(). Nothing here tries to route around a listing — no alternate hosts, no header games, no retries;
+//     the operator is told, and the latch simply stops us re-asking in the meantime.
 //
 // Errors carry one of four classes for status(): `refusal-403` (the resolver refused us: 403, or its 401/429
 // cousins — and every resolve refused locally during the cool-down that follows), `dns-connect` (the resolver or
@@ -301,6 +303,39 @@ export function parseRetryAfter(value: string | null, serverNowMs: number): numb
   return Number.isFinite(at) ? Math.max(0, at - serverNowMs) : null;
 }
 
+// Off-shape path segments that carry a per-request signature rather than a feed name: long hex runs (tokens,
+// hashes) and long digit runs (expiries, timestamps).
+const TOKEN_SEGMENT_RE = /^(?:[0-9a-f]{16,}|\d{8,})$/i;
+
+/**
+ * The feed an off-shape Location names, for the decoy test: its path without `.m3u8` and without token-like
+ * segments (/live/espn/index.m3u8 → live/espn/index). The last segment alone would make every channel of a
+ * per-directory layout the same "index" feed.
+ */
+function offShapeFeed(pathname: string): string {
+  const segs = pathname.split('/').filter(Boolean);
+  if (segs.length) segs[segs.length - 1] = segs[segs.length - 1].replace(/\.m3u8$/i, '');
+  return segs.filter((s) => s && !TOKEN_SEGMENT_RE.test(s)).join('/') || pathname;
+}
+
+/** Lowercase alphanumerics only, for "is this file named after that slug". */
+function flat(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+/**
+ * The decoy test's class for `slug` answered `file`: the file itself when the slug is a listed alias of it, or the
+ * file is named after the slug (espn → espn-usa, bein-sports → beinsports-usa) — the resolver maps slugs to
+ * upstream files server-side and ALIAS_TABLE only records the mappings seen so far — else the slug's own class.
+ * A slug under 3 characters is too short to call a file named after it.
+ */
+function decoyClass(slug: string, file: string): string {
+  const cls = aliasClass(slug);
+  if (cls === file) return file;
+  const s = flat(slug);
+  return s.length >= 3 && flat(file).includes(s) ? file : cls;
+}
+
 /** How old the current token must be before a fresh request re-mints it, when `drops` re-mints already failed. */
 function freshFloor(drops: number): number {
   return Math.min(FRESH_MAX_INTERVAL_MS, FRESH_MIN_INTERVAL_MS * 2 ** Math.max(0, drops));
@@ -415,7 +450,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
 
   function decoyMessage(latch: DecoyLatch): string {
     const shown = latch.slugs.slice(0, 6).join(', ') + (latch.slugs.length > 6 ? ', …' : '');
-    const feeds = new Set(latch.slugs.map(aliasClass)).size;
+    const feeds = new Set(latch.slugs.map((s) => decoyClass(s, latch.file))).size;
     return (
       `zlive_decoy_suspected: the resolver answered ${latch.file}.m3u8 for ${latch.slugs.length} channels that ` +
       `should be ${feeds} different feeds (${shown}) — the signature of the decoy zlive serves to IPs on its leech ` +
@@ -423,9 +458,9 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
     );
   }
 
-  // Record this answer, then apply the decoy test to the file it named. Throws when the file is (or just became)
-  // latched. Slugs whose table entry maps them to one file are ONE class, so the known sky-sports-f1 /
-  // skysportsf1-uk pair can never count as two "unrelated" channels.
+  // Record this answer, then apply the decoy test to the feed it named. Throws when the feed is (or just became)
+  // latched. Slugs that are aliases of the answered file (decoyClass) are ONE class, so the known sky-sports-f1 /
+  // skysportsf1-uk pair, or rows zlive maps onto a file named after them, never count as "unrelated" channels.
   function observeAndCheckDecoy(slug: string, file: string, now: number): void {
     observations.set(slug, { file, at: now });
     const existing = latches.get(file);
@@ -434,7 +469,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
       throw fail('decoy', slug, decoyMessage(existing));
     }
     const members = [...observations].filter(([, o]) => o.file === file).map(([s]) => s);
-    const classes = new Set(members.map(aliasClass));
+    const classes = new Set(members.map((s) => decoyClass(s, file)));
     if (classes.size < DECOY_MIN_CLASSES) return;
     const latch: DecoyLatch = { file, since: now, until: now + DECOY_LATCH_MS, slugs: members };
     latches.set(file, latch);
@@ -621,8 +656,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
             `${lastGoodSuffix ? ` or a URL under ${lastGoodSuffix}` : ''}): ${shown}`,
         );
       }
-      const lastSegment = u.pathname.split('/').filter(Boolean).pop() ?? '';
-      file = lastSegment.replace(/\.m3u8$/i, '') || u.pathname;
+      file = offShapeFeed(u.pathname);
       warnThrottled(
         `offshape:${suffix}`,
         `accepting an off-shape Location under ${suffix} (did the resolver's URL format change?): ${shown}`,
@@ -632,7 +666,8 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
 
     // Decoy test BEFORE any further work on the answer: a suspected decoy is refused as it stands.
     observeAndCheckDecoy(slug, file, deps.now());
-    if (Object.hasOwn(ALIAS_TABLE, slug) && ALIAS_TABLE[slug] !== file && !notedRemaps.has(`${slug}:${file}`)) {
+    // (On-shape only: the table records signed file names, which an off-shape feed path never equals.)
+    if (signed && Object.hasOwn(ALIAS_TABLE, slug) && ALIAS_TABLE[slug] !== file && !notedRemaps.has(`${slug}:${file}`)) {
       notedRemaps.add(`${slug}:${file}`);
       logMilestone(TAG, `${slug} now resolves to ${file}.m3u8 (was ${ALIAS_TABLE[slug]}.m3u8 when the alias table was recorded)`);
     }

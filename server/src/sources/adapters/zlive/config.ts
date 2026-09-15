@@ -235,7 +235,8 @@ export function parseSignedLocation(location: string): SignedLocation | null {
  * PAIR sky-sports-f1 / skysportsf1-uk: two catalog rows legitimately sharing one file.
  *
  * Used only by the decoy heuristic (resolver.ts): slugs mapping to the same file here are ONE alias class, and a
- * slug absent from the table is its own class. It is not a routing table — the resolver's live answer always
+ * slug absent from the table is its own class unless the file it is answered is named after it (resolver.ts
+ * decoyClass). It is not a routing table — the resolver's live answer always
  * wins — so a stale entry can only make the decoy check slightly more or less eager, never break playback.
  */
 export const ALIAS_TABLE: Readonly<Record<string, string>> = {
