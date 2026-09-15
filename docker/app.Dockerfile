@@ -57,10 +57,11 @@ RUN npm run build                       # vue-tsc -b && vite build -> /spa/dist
 FROM ${NODE_IMAGE} AS server-build
 WORKDIR /server
 COPY server/package.json server/package-lock.json ./
-RUN npm ci                              # devDeps (typescript) to compile the server
+RUN npm ci                              # devDeps (esbuild + typescript) to build the server
 COPY server/tsconfig.json ./
 COPY server/src/ ./src/
-RUN npm run build                       # tsc -p .  -> /server/dist
+COPY server/scripts/ ./scripts/         # bundle.mjs = esbuild build entry (+ tsx maintenance scripts)
+RUN npm run build                       # esbuild bundle -> /server/dist/index.js (minified, no maps)
 
 # ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) --------------
 # Debian bookworm base → glibc, matching the runtime stage so the binary loads (a musl/Alpine build would

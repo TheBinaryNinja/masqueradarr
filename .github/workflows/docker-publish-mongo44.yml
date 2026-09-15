@@ -117,7 +117,15 @@ jobs:
           - { arch: amd64, runner: ubuntu-latest }
           - { arch: arm64, runner: ubuntu-24.04-arm }
     steps:
+      # Pull the private `server` submodule (control plane) so the Docker build stage can compile it.
+      # HTTPS submodule URL + a token with contents:read on the private repo (fine-grained PAT or an
+      # App token) — checkout injects it for the submodule fetch. ssh-key is unusable here (it would
+      # force this public repo's own checkout over SSH too). Mirrors docker-publish.yml.
       - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          persist-credentials: true
+          token: ${{ secrets.SERVER_SUBMODULE_TOKEN }}
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3

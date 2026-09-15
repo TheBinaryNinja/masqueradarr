@@ -33,8 +33,9 @@ jobs:
         include:
           - name: frontend (SPA)
             dir: .
-          - name: backend (server)
-            dir: server
+          # backend (server) is a private submodule — its type-check (`npm run typecheck`) + build
+          # gate runs in that repo's own CI. It cannot run here: fork-originated PRs have no access
+          # to the private submodule (org secrets are withheld from forks). See docker/*.Dockerfile.
     steps:
       - uses: actions/checkout@v4
 
