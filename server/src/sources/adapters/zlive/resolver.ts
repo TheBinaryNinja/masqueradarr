@@ -582,12 +582,22 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
       const life = signed.expSec * 1000 - (Number.isFinite(serverDate) ? serverDate : receivedAt);
       if (life > 0) {
         lifetimeMs = life;
+      } else if (Number.isFinite(serverDate)) {
+        // Expired on zlive's OWN clock the moment it was signed (signer/edge skew): a dead link, not one of unknown
+        // expiry. Reusing it would hand the data plane a 403 for as long as the cache and the fresh-request floor
+        // hold it, so it is a failed contact like any other bad answer — negative-cached, the channel's failover
+        // backups take over, and the next contact after the TTL asks for a new token.
+        throw failContact(
+          'shape',
+          `zlive_token_expired: the resolver signed a playlist that had already expired by its own clock (expiry ` +
+            `${isoOf(signed.expSec * 1000)}, answered at ${isoOf(serverDate)})`,
+        );
       } else {
+        // No Date header: the lifetime was measured on OUR clock, which may be the skewed one.
         warnThrottled(
           'expired',
-          `${slug}: the resolver signed a playlist that has already expired by its own clock (expiry ` +
-            `${isoOf(signed.expSec * 1000)}${Number.isFinite(serverDate) ? `, answered at ${isoOf(serverDate)}` : ''}) ` +
-            '— treating its expiry as unknown',
+          `${slug}: the resolver signed a playlist that looks expired by this server's clock (expiry ` +
+            `${isoOf(signed.expSec * 1000)}; the answer carried no Date) — treating its expiry as unknown`,
           receivedAt,
         );
       }
