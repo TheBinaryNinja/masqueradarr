@@ -48,6 +48,7 @@ import {
   slugFromEntry,
   slugOf,
   zliveAllow,
+  type CatalogRow,
 } from './zlive/config.js';
 import { createZliveResolver } from './zlive/resolver.js';
 import { ZLIVE_EPG_ADDON_FILE } from '../paths.js';
@@ -88,6 +89,17 @@ async function priorChannelCount(): Promise<number | null> {
   }
 }
 
+// How many channels a sync would build from these rows: normalize keeps a row only when slugOf() accepts its id,
+// and buildSource dedupes on the slug-derived _id.
+function distinctSlugCount(rows: CatalogRow[]): number {
+  const slugs = new Set<string>();
+  for (const r of rows) {
+    const slug = slugOf(r.id);
+    if (slug) slugs.add(slug);
+  }
+  return slugs.size;
+}
+
 // ONE GET of the public catalog, User-Agent only, rows trimmed to {id, name, sport}. Redirects are NOT followed:
 // zlive has no reason to redirect a static JSON file, and when its domain moves a redirect is exactly what the
 // operator needs to see (named in the reason, pointing at the setting) rather than a silent hop to another host.
@@ -99,7 +111,9 @@ async function priorChannelCount(): Promise<number | null> {
 // comes back empty, the catalog still answers with its few manual rows, and accepting it would prune every other
 // channel — with the operator's renames, numbers, failover groups and EPG-link choices on them. A smaller catalog
 // that is REAL is accepted through the playlist's Restore Defaults, which clears the channels first (so there is
-// no prior count to compare against).
+// no prior count to compare against). Both sides count CHANNELS, not rows: the prior count is the deduped
+// SourceChannel set, and a catalog row only becomes a channel when its slug is signable and not a duplicate of
+// another row's (auto-x and x are one channel) — so a partial catalog padded with such rows cannot pass as whole.
 async function listChannels(): Promise<RawListing> {
   const endpoint = getCatalogUrl();
   try {
@@ -120,10 +134,12 @@ async function listChannels(): Promise<RawListing> {
     const raw = parseCatalog(await res.json());
     if (!raw) throw new Error('catalog is not a JSON array');
     if (!raw.length) throw new Error('empty channel list');
+    const channels = distinctSlugCount(raw);
+    if (!channels) throw new Error(`none of its ${raw.length} rows has a usable channel id`);
     const prior = await priorChannelCount();
-    if (prior !== null && prior >= SHRINK_GUARD_MIN_PRIOR && raw.length < prior * SHRINK_GUARD_RATIO) {
+    if (prior !== null && prior >= SHRINK_GUARD_MIN_PRIOR && channels < prior * SHRINK_GUARD_RATIO) {
       throw new Error(
-        `it lists only ${raw.length} channels, under half of the ${prior} last synced — zlive's own upstream ` +
+        `it lists only ${channels} channels, under half of the ${prior} last synced — zlive's own upstream ` +
           "sync looks partial, so nothing is removed. If zlive really dropped them, the playlist's Restore " +
           'Defaults accepts the smaller catalog',
       );
