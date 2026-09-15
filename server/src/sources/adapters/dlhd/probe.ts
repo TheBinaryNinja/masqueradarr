@@ -5,6 +5,7 @@
 
 import { UA } from './config.js';
 import { parseChannels } from './parseDirectory.js';
+import { transportKind, transportText, describeTransport } from './transport.js';
 import type { DomainProbe } from '../../types.js';
 
 const PROBE_TIMEOUT_MS = 10_000;
@@ -36,7 +37,10 @@ export async function probeDlhdDomain(domain: string): Promise<DomainProbe> {
         channelCount: null,
         redirectTo: null,
         notes,
-        error: `channel directory returned HTTP ${res.status}`,
+        error:
+          res.status === 429
+            ? describeTransport('throttled', domain)
+            : `channel directory returned HTTP ${res.status}`,
       };
     }
     const channels = parseChannels(await res.text()).length;
@@ -57,6 +61,9 @@ export async function probeDlhdDomain(domain: string): Promise<DomainProbe> {
           : `only ${channels} channels parsed — a working mirror lists hundreds`,
     };
   } catch (err) {
+    // "fetch failed" alone can't tell a moved domain from a server that is refusing THIS client — the answer
+    // decides whether trying another domain is worth it (./transport.ts).
+    const kind = transportKind(err);
     return {
       ok: false,
       endpoint,
@@ -65,7 +72,7 @@ export async function probeDlhdDomain(domain: string): Promise<DomainProbe> {
       channelCount: null,
       redirectTo: null,
       notes,
-      error: (err as Error).message,
+      error: kind ? `${describeTransport(kind, domain)} — ${transportText(err)}` : (err as Error).message,
     };
   }
 }
