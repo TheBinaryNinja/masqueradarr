@@ -20,9 +20,9 @@
 //
 //   · FAILURE BACKOFF. Nothing else about a failure is retried at zlive's expense either:
 //       - a resolver REFUSAL (401/403/429) is about this IP, not the slug, so it starts a GLOBAL cool-down — the
-//         Retry-After when zlive sends one, else 60 s doubling per consecutive refusal to 15 min, reset by the
-//         next good 302 — during which no slug contacts zlive. Cached targets are still handed out: tokens already
-//         minted stay usable, the refusal is the resolver's.
+//         Retry-After when zlive sends one of up to 1 h, else 60 s doubling per consecutive refusal to 15 min,
+//         reset by the next good 302 — during which no slug contacts zlive. Cached targets are still handed out:
+//         tokens already minted stay usable, the refusal is the resolver's.
 //       - any OTHER failed contact (a 5xx, a timeout, DNS, a rejected Location) is negative-cached for that slug
 //         for 30 s.
 //     So a player retrying a failed channel every few seconds costs zlive nothing extra.
@@ -158,7 +158,7 @@ interface CoolDown {
   /** Consecutive refusals, 1-based. */
   step: number;
   httpStatus: number;
-  /** The resolver's own Retry-After, in ms, when it sent a readable one. */
+  /** The resolver's own Retry-After, in ms, when it sent a readable one within RETRY_AFTER_MAX_MS. */
   retryAfterMs: number | null;
 }
 
@@ -519,15 +519,23 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
       );
       const step = (coolDown?.step ?? 0) + 1;
       const backoff = Math.min(REFUSAL_COOLDOWN_MAX_MS, REFUSAL_COOLDOWN_MIN_MS * 2 ** (step - 1));
-      const wait = Math.max(backoff, Math.min(RETRY_AFTER_MAX_MS, retryAfterMs ?? 0));
+      // A Retry-After past the ceiling is junk (a block page's "come back tomorrow"): ignored, not clamped.
+      const honoured = retryAfterMs !== null && retryAfterMs <= RETRY_AFTER_MAX_MS ? retryAfterMs : null;
+      const wait = Math.max(backoff, honoured ?? 0);
       if (current()) {
-        coolDown = { since: receivedAt, until: receivedAt + wait, step, httpStatus: res.status, retryAfterMs };
+        coolDown = { since: receivedAt, until: receivedAt + wait, step, httpStatus: res.status, retryAfterMs: honoured };
       }
+      const retryNote =
+        retryAfterMs === null
+          ? ''
+          : honoured === null
+            ? ` (Retry-After ${Math.round(retryAfterMs / 1000)} s ignored — over the ${RETRY_AFTER_MAX_MS / 60_000} min ceiling)`
+            : ` (Retry-After ${Math.round(retryAfterMs / 1000)} s)`;
       throw fail(
         'refusal-403',
         slug,
         `zlive_resolver_refused: HTTP ${res.status} from ${url} — not contacting zlive for any channel for ` +
-          `${Math.round(wait / 1000)} s${retryAfterMs !== null ? ` (Retry-After ${Math.round(retryAfterMs / 1000)} s)` : ''}` +
+          `${Math.round(wait / 1000)} s${retryNote}` +
           (step > 1 ? `, refusal ${step} in a row` : ''),
         res.status,
       );
