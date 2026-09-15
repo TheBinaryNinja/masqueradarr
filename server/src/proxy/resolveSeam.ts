@@ -152,6 +152,8 @@ async function effectiveProxyConfig(adapter: SourceAdapter, pl?: string): Promis
 //     synchronous step as the check — Node runs one request's check-then-reserve to completion before any
 //     other's, so two concurrent new channels cannot both slip under the cap. A reservation whose resolve
 //     then fails is released, so a dead upstream never occupies a slot; every re-grant refreshes the hold.
+//     Everything else a grant needs that can fail (the proxy-config read) runs BEFORE the reservation, so no
+//     path out of the seam leaves a reservation neither confirmed nor released.
 // A stream already counted is always admitted: an origin ingest renewing an expiring token, a second viewer,
 // a reconnect — none is a NEW stream, and refusing them would kill a channel that is legitimately playing.
 //
@@ -499,6 +501,18 @@ export async function buildGrant(
     return { ok: false, status: 403, error: 'unrecognized_entry' };
   }
 
+  // The effective proxy config for this stream: the Custom app_<pl> override → the Default app → env defaults,
+  // plus the adapter's originRequired force (effectiveProxyConfig). Resolved by the OWNING playlist id the
+  // composed M3U stamps as ?pl (=== the channel's source; see m3u/serialize.ts). The in-app appPlayer path
+  // carries no ?pl → the Default applies (CFG/PXY-2). Read, with the relabel probe, BEFORE the cap below
+  // reserves a slot: a throw between a reservation and its confirm/release (a transient Mongo error here)
+  // would leave a phantom hold refusing every other new stream for CAP_HOLD_MS.
+  const proxyConfig = await effectiveProxyConfig(adapter, pl);
+
+  // Probe the relabel rule generically: force-type iff the adapter rewrites our sentinel for a 'segment'.
+  const probed = adapter.proxy.relabelSegmentContentType('https://x/s.ts', RELABEL_PROBE, 'segment');
+  const relabelSegment = probed && probed !== RELABEL_PROBE ? probed : null;
+
   // PER-SOURCE STREAM CAP (adapter.maxConcurrentStreams). Live attempts only: the probe sweep (`attempt`
   // undefined) is not a stream and must never take or be refused a slot. Failover children were routed to
   // buildFailoverGrant above, which caps each against its OWN adapter. Checked BEFORE resolveStream, so a
@@ -529,6 +543,7 @@ export async function buildGrant(
   let isEntry = false;
   let expiresAtMs: number | null = null;
   let servingPlayer: { index: number; count: number } | null = null;
+  let upstreamHeaders: Record<string, string>;
   try {
     if (adapter.isEntryUrl(url)) {
       isEntry = true;
@@ -557,6 +572,13 @@ export async function buildGrant(
       capSlot?.release();
       return { ok: false, status: 502, error: 'resolve_failed: no alternate upstream for this entry' };
     }
+    // Snapshot the per-stream upstream headers against the resolved target (dlhd: the CDN-host branch →
+    // { Referer: playerReferer(), UA }; dulo: a constant map — it ignores the url arg), then merge the operator
+    // headerOverrides ON TOP (operator wins, CASE-INSENSITIVELY — HTTP header names are case-insensitive and Rust
+    // normalizes them, so a `referer` override must beat the adapter's `Referer`, not race it). This is the one
+    // proxy-config knob applied Node-side, so Rust replays the final set unchanged. Adapter code, so inside the
+    // guard: a throw releases the reservation like a failed resolve.
+    upstreamHeaders = mergeUpstreamHeaders(adapter.proxy.upstreamHeaders(target), proxyConfig.headerOverrides);
   } catch (err) {
     capSlot?.release();
     const msg = (err as Error).message;
@@ -567,23 +589,6 @@ export async function buildGrant(
     }
     return { ok: false, status: 502, error: `resolve_failed: ${msg}` };
   }
-
-  // The effective proxy config for this stream: the Custom app_<pl> override → the Default app → env defaults,
-  // plus the adapter's originRequired force (effectiveProxyConfig). Resolved by the OWNING playlist id the
-  // composed M3U stamps as ?pl (=== the channel's source; see m3u/serialize.ts). The in-app appPlayer path
-  // carries no ?pl → the Default applies (CFG/PXY-2).
-  const proxyConfig = await effectiveProxyConfig(adapter, pl);
-
-  // Snapshot the per-stream upstream headers against the resolved target (dlhd: the CDN-host branch →
-  // { Referer: playerReferer(), UA }; dulo: a constant map — it ignores the url arg), then merge the operator
-  // headerOverrides ON TOP (operator wins, CASE-INSENSITIVELY — HTTP header names are case-insensitive and Rust
-  // normalizes them, so a `referer` override must beat the adapter's `Referer`, not race it). This is the one
-  // proxy-config knob applied Node-side, so Rust replays the final set unchanged.
-  const upstreamHeaders = mergeUpstreamHeaders(adapter.proxy.upstreamHeaders(target), proxyConfig.headerOverrides);
-
-  // Probe the relabel rule generically: force-type iff the adapter rewrites our sentinel for a 'segment'.
-  const probed = adapter.proxy.relabelSegmentContentType('https://x/s.ts', RELABEL_PROBE, 'segment');
-  const relabelSegment = probed && probed !== RELABEL_PROBE ? probed : null;
 
   // Attribution. An alternate upstream is a failover in every sense the operator cares about — the channel
   // it asked for is being carried by something other than its usual provider — so it rides the SAME
@@ -721,6 +726,13 @@ async function buildFailoverGrant(
     return { ok: false, status: 502, error: `resolve_failed: unknown candidate adapter '${candSource}'` };
   }
 
+  // Keyed on the CHILD's adapter (its originRequired, not the parent's) — see effectiveProxyConfig. Read, with
+  // the relabel probe, BEFORE the cap reserves a slot, as in buildGrant: nothing that can throw may sit between
+  // a reservation and its confirm/release.
+  const proxyConfig = await effectiveProxyConfig(candAdapter, pl);
+  const probed = candAdapter.proxy.relabelSegmentContentType('https://x/s.ts', RELABEL_PROBE, 'segment');
+  const relabelSegment = probed && probed !== RELABEL_PROBE ? probed : null;
+
   // The CANDIDATE's stream cap, against the stream this grant would carry — the PARENT's (source, entry), which
   // is how every viewer event for it is keyed. A backup is not exempt: one from another provider is a NEW stream
   // to that provider's upstream, and letting it through uncounted was a way around the cap. One from the adapter
@@ -741,6 +753,7 @@ async function buildFailoverGrant(
   let target = cand.streamEntryUrl;
   let isEntry = false;
   let expiresAtMs: number | null = null;
+  let upstreamHeaders: Record<string, string>;
   try {
     if (candAdapter.isEntryUrl(target)) {
       isEntry = true;
@@ -758,6 +771,7 @@ async function buildFailoverGrant(
       // The CHILD's target expiry — it is the child's signed URL the data plane will be following.
       expiresAtMs = expiryOf(resolved.expiresAtMs);
     }
+    upstreamHeaders = mergeUpstreamHeaders(candAdapter.proxy.upstreamHeaders(target), proxyConfig.headerOverrides);
   } catch (err) {
     capSlot?.release();
     // This backup couldn't resolve its stream; the 502 advances the data plane to the next candidate.
@@ -768,15 +782,6 @@ async function buildFailoverGrant(
     );
     return { ok: false, status: 502, error: `resolve_failed: ${(err as Error).message}` };
   }
-
-  // Keyed on the CHILD's adapter (its originRequired, not the parent's) — see effectiveProxyConfig.
-  const proxyConfig = await effectiveProxyConfig(candAdapter, pl);
-  const upstreamHeaders = mergeUpstreamHeaders(
-    candAdapter.proxy.upstreamHeaders(target),
-    proxyConfig.headerOverrides,
-  );
-  const probed = candAdapter.proxy.relabelSegmentContentType('https://x/s.ts', RELABEL_PROBE, 'segment');
-  const relabelSegment = probed && probed !== RELABEL_PROBE ? probed : null;
 
   // Attribution: telemetry stays keyed on the PARENT's (source, entry) — record which child this grant
   // actually serves so Active Streams can show "failover → <child>" (see statsHub DisplayStream.failover).
