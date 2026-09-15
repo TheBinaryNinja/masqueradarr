@@ -47,7 +47,7 @@ import {
   getPlayerDefault,
   PLAYER_PREFIXES,
 } from './config.js';
-import { extractMasterUrls } from './embedExtractors.js';
+import { extractMasterUrls, type EmbedCandidate } from './embedExtractors.js';
 import { preferenceOrder, noteGood, noteBad, burnCurrent } from './playerMemory.js';
 import {
   cachedEmbeds,
@@ -80,6 +80,9 @@ const EMBED_RECHECK_MS = 120_000;
 // Hop-1 failures that are about the MIRROR, not the player: every other player page is on the same host and
 // would fail the same way, so the walk stops at the first one instead of knocking five more times.
 const MIRROR_STOP: ReadonlySet<TransportKind> = new Set<TransportKind>(['refused', 'dns', 'throttled']);
+// Some providers' embed page is only a frame around the real player page. One that yields no candidate but
+// frames another page is followed, at most this many levels deep.
+const MAX_FRAME_DEPTH = 2;
 
 export interface ResolvedStream {
   id: string;
@@ -194,23 +197,29 @@ const NON_PLAYER_RE = /(doubleclick|googletagmanager|google-analytics|googlesynd
  * `/premiumtv/` — as this did before — made Players 2/3/4 unreachable without a single network request.
  */
 function findEmbedUrls(html: string, pageUrl: string): string[] {
-  const out: string[] = [];
-  const add = (raw: string): void => {
-    if (!raw || /^(about:|data:|javascript:)/i.test(raw)) return;
-    let abs: string;
-    try {
-      abs = new URL(raw, pageUrl).href;
-    } catch {
-      return;
-    }
-    if (!/^https?:$/i.test(new URL(abs).protocol)) return;
-    if (NON_PLAYER_RE.test(abs)) return;
-    if (!out.includes(abs)) out.push(abs);
-  };
+  const premium = html.match(PREMIUMTV_RE)?.[0];
+  return [...new Set([...(premium ? [premium] : []), ...iframeSrcs(html, pageUrl)])];
+}
 
-  const premium = html.match(PREMIUMTV_RE);
-  if (premium) add(premium[0]);
-  for (const m of html.matchAll(/<iframe[^>]*\bsrc=["']([^"']+)["']/gi)) add(m[1]);
+/**
+ * A page's `<iframe src>` URLs, absolute and in DOM order — minus ad/analytics frames, and minus a src that a
+ * script assembles at runtime (`'<iframe src="' + window.location.href + '"…'`), which only looks like a URL
+ * to a regex.
+ */
+function iframeSrcs(html: string, pageUrl: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(/<iframe[^>]*\bsrc=["']([^"']+)["']/gi)) {
+    const raw = m[1].trim();
+    if (!raw || /^(about:|data:|javascript:)/i.test(raw) || /['"+\s]|window\./.test(raw)) continue;
+    let abs: URL;
+    try {
+      abs = new URL(raw, pageUrl);
+    } catch {
+      continue;
+    }
+    if (!/^https?:$/i.test(abs.protocol) || NON_PLAYER_RE.test(abs.href)) continue;
+    if (!out.includes(abs.href)) out.push(abs.href);
+  }
   return out;
 }
 
@@ -349,6 +358,46 @@ interface EmbedsOutcome {
   reachedPlaylist: boolean;
 }
 
+/**
+ * Hop 2: an embed page → its candidate playlist URLs. When the page only frames the real player page, that page
+ * is read instead (up to MAX_FRAME_DEPTH levels), and IT is the player page — the origin the CDN expects as
+ * Referer. Each hop sends the Referer a browser would under the default strict-origin-when-cross-origin policy
+ * (none of the observed pages sets another): the full URL within one origin, only the origin across origins.
+ * Null when nothing was found; the reason is recorded.
+ */
+async function readEmbed(
+  embedUrl: string,
+  reasons: string[],
+): Promise<{ playerUrl: string; candidates: EmbedCandidate[] } | null> {
+  let url = embedUrl;
+  let referer = getReferer();
+  for (let depth = 0; ; depth++) {
+    let d: Response;
+    try {
+      d = await hop(url, referer);
+    } catch (err) {
+      reasons.push(`${hostOf(url)}: ${shortErr(err)}`);
+      return null;
+    }
+    if (!d.ok) {
+      reasons.push(`${hostOf(url)}: embed HTTP ${d.status}`);
+      return null;
+    }
+    const html = await d.text();
+    const candidates = extractMasterUrls(html, url);
+    if (candidates.length) return { playerUrl: url, candidates };
+    const next = depth < MAX_FRAME_DEPTH ? iframeSrcs(html, url).find((u) => u !== url) : undefined;
+    if (!next) {
+      const nested = depth ? ` (${depth} frame${depth > 1 ? 's' : ''} deep)` : '';
+      reasons.push(`${hostOf(url)}: no playlist URL in the embed${nested}`);
+      return null;
+    }
+    const from = new URL(url);
+    referer = new URL(next).origin === from.origin ? url : `${from.origin}/`;
+    url = next;
+  }
+}
+
 /** Hops 2 + 3 over a player page's embeds, in order. Never throws: failures are collected as `reasons`. */
 async function tryEmbeds(
   embeds: string[],
@@ -360,35 +409,21 @@ async function tryEmbeds(
   const reasons: string[] = [];
   let reachedPlaylist = false;
   for (const embedUrl of embeds) {
-    // ── hop 2: the player provider's embed page ───────────────────────────────
-    let d: Response;
-    try {
-      d = await hop(embedUrl, getReferer());
-    } catch (err) {
-      reasons.push(`${hostOf(embedUrl)}: ${shortErr(err)}`);
-      continue;
-    }
-    if (!d.ok) {
-      reasons.push(`${hostOf(embedUrl)}: embed HTTP ${d.status}`);
-      continue;
-    }
-    const { urls, extractor } = extractMasterUrls(await d.text(), embedUrl);
-    if (!urls.length) {
-      reasons.push(`${hostOf(embedUrl)}: no playlist URL in the embed`);
-      continue;
-    }
+    const page = await readEmbed(embedUrl, reasons);
+    if (!page) continue;
+    const { playerUrl, candidates } = page;
 
     // The CDN's /secure/ gate folds the (rotating) player origin into the signature, so hop 3 needs it as
     // Referer. Held LOCALLY here: setPlayerOrigin writes a module global a concurrent resolve of another
     // channel could clobber across awaits, and we only want to commit it for the player that wins.
     let playerRef: string;
     try {
-      playerRef = `${new URL(embedUrl).origin}/`;
+      playerRef = `${new URL(playerUrl).origin}/`;
     } catch {
       playerRef = playerReferer();
     }
 
-    for (const candidate of urls) {
+    for (const { url: candidate, extractor } of candidates) {
       // ── hop 3: the signed playlist ──────────────────────────────────────────
       let m: Response;
       try {
@@ -434,13 +469,8 @@ async function tryEmbeds(
       }
 
       // Winner — commit the shared state now that this player is proven.
-      setPlayerOrigin(embedUrl);
-      try {
-        allowHost(new URL(embedUrl).hostname);
-      } catch {
-        /* ignore */
-      }
-      for (const u of [candidate, variantUrl]) {
+      setPlayerOrigin(playerUrl);
+      for (const u of [embedUrl, playerUrl, candidate, variantUrl]) {
         try {
           allowHost(new URL(u).hostname);
         } catch {
@@ -458,7 +488,7 @@ async function tryEmbeds(
 
       const stream: ResolvedStream = {
         id,
-        playerUrl: embedUrl,
+        playerUrl,
         masterUrl: candidate,
         variantUrl,
         token,

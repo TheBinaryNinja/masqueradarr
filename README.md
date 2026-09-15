@@ -653,10 +653,15 @@ So picking a player picks a **provider**, and which provider works varies per ch
 The resolver is built around that:
 
 - **Provider-agnostic hop 2.** Any `<iframe>` on the player page is a candidate (the `/premiumtv/` embed is
-  simply tried first), and the signed playlist URL is read by an ordered chain of extractors —
-  base64/`atob`, plaintext, an XOR-array `eval` blob, a p·a·c·k·e·d payload, hex escapes
-  (`sources/adapters/dlhd/embedExtractors.ts`). Each recovers whatever constants the page carries rather
-  than hardcoding them, so a key rotation self-heals; a genuinely new obfuscation is a ~10-line addition.
+  simply tried first). An embed page that only frames the real player page is followed up to two levels
+  deep, sending the Referer a browser would. The signed playlist URL is read by a chain of extractors that
+  ALL run and pool their candidates by rank, so a decoy `.m3u8` can't hide the real one: base64/`atob`, the
+  chunk-shuffled `_econfig` JSON config, an XOR-array `eval` blob, a p·a·c·k·e·d payload, base64 chunks
+  joined through a local `atob` decoder, a character array joined with DOM text, hex escapes, and plaintext
+  last (`sources/adapters/dlhd/embedExtractors.ts`). Each recovers whatever constants the page carries
+  rather than hardcoding them — the `_econfig` layout (chunk count, junk index, order) is recovered from the
+  payload itself — so a key rotation self-heals; a genuinely new obfuscation is a ~10-line addition.
+  `tsx scripts/dlhd-extractor-check.ts` (from `server/`) is the offline gate for every family.
 - **Both playlist shapes are valid.** Providers return either a master (`#EXT-X-STREAM-INF`) or a media
   playlist (`#EXTINF`) — an `#EXTM3U` with neither is now rejected instead of being served as an empty stream.
 - **Learned + sticky.** The winning player is remembered per channel (~30 min) and a failing one is burnt
