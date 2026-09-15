@@ -960,7 +960,9 @@ Node and Rust talk over one private loopback channel — `POST /api/internal/*`,
 
 - **resolve** (`/api/internal/resolve`) — Rust asks Node to resolve a stream; Node runs the adapter logic and
   returns a per-stream **grant** that Rust replays for the whole stream: the resolved `target`, the
-  `upstreamHeaders` for every hop, `relabelSegment`, `allowPrivate`, the resolved `proxyConfig`, the
+  `upstreamHeaders` for every hop (the ones the resolve reported for this stream when it has them — DaddyLive's
+  player-page `Referer`/`Origin` — else the adapter's rule; operator `headerOverrides` on top),
+  `relabelSegment`, `allowPrivate`, the resolved `proxyConfig`, the
   adapter's declared capabilities (`playerSelectable`, `adSignature`, `segmentUnwrap`), the target's own
   `expiresAtMs` when the adapter knows it, and `policySource` / `failover` for a failover candidate. There is
   no host list in it: Rust seeds its per-source SSRF allow-set from `target` and grows it from the hosts it

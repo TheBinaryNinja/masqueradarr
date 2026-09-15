@@ -42,8 +42,6 @@ import {
   getReferer,
   UA,
   allowHost,
-  setPlayerOrigin,
-  playerReferer,
   getPlayerDefault,
   PLAYER_PREFIXES,
 } from './config.js';
@@ -86,8 +84,10 @@ const MAX_FRAME_DEPTH = 2;
 
 export interface ResolvedStream {
   id: string;
-  /** The player-provider embed URL that produced this playlist (hop 2). Its origin is the Referer replayed downstream. */
+  /** The player page that produced this playlist (hop 2, or the page it framed). Its origin is the Referer replayed downstream. */
   playerUrl: string;
+  /** What the data plane replays on every hop of this stream — streamHeaders(playerUrl). */
+  upstreamHeaders: Record<string, string>;
   /** What the data plane fetches. Despite the name it may be a MASTER or a MEDIA playlist — see `shape`. */
   masterUrl: string;
   variantUrl: string;
@@ -159,12 +159,63 @@ export class DlhdPlayersExhausted extends Error {
   }
 }
 
-/** A bounded GET with the dlhd UA. Every hop in this file goes through here. */
-function hop(url: string, referer: string): Promise<Response> {
-  return fetch(url, {
-    headers: { Referer: referer, 'User-Agent': UA },
-    signal: AbortSignal.timeout(HOP_TIMEOUT_MS),
-  });
+/** A bounded GET. Every hop in this file goes through here, with headers from one of the builders below. */
+function hop(url: string, headers: Record<string, string>): Promise<Response> {
+  return fetch(url, { headers, signal: AbortSignal.timeout(HOP_TIMEOUT_MS) });
+}
+
+// ── What a browser sends at each hop ─────────────────────────────────────────────────────────────────────
+// watch.php frames the player page (same origin), the player page frames the provider's embed (cross-origin),
+// and the embed's player fetches the playlist and segments with XHR (cross-origin, CORS). Under the default
+// strict-origin-when-cross-origin policy — none of the observed pages sets another — a same-origin request
+// carries the full URL as Referer and a cross-origin one only the origin. Matching that, and the fetch-metadata
+// that goes with each kind of request, keeps these hops indistinguishable from a viewer's.
+const ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
+
+/** A page navigated to (`document`) or loaded into an <iframe>, from `referer` — already reduced to what the
+ * browser sends (see refererFor). */
+function pageHeaders(
+  referer: string,
+  site: 'same-origin' | 'cross-site',
+  dest: 'document' | 'iframe',
+): Record<string, string> {
+  return {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': ACCEPT_LANGUAGE,
+    Referer: referer,
+    'Sec-Fetch-Dest': dest,
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': site,
+    'Upgrade-Insecure-Requests': '1',
+  };
+}
+
+/**
+ * The player's own XHR to the CDN: playlist and segments. Hop 3 sends exactly this, and it is what the resolve
+ * hands the data plane to replay (ResolvedStream.upstreamHeaders), so a playlist that validated here is fetched
+ * the same way for the rest of the stream.
+ */
+export function streamHeaders(playerUrl: string): Record<string, string> {
+  const origin = new URL(playerUrl).origin;
+  return {
+    'User-Agent': UA,
+    Accept: '*/*',
+    'Accept-Language': ACCEPT_LANGUAGE,
+    Referer: `${origin}/`,
+    Origin: origin,
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site',
+  };
+}
+
+/** The Referer a browser sends from `from` to `to`: the full URL within one origin, only the origin across. */
+function refererFor(from: string, to: string): { referer: string; site: 'same-origin' | 'cross-site' } {
+  const a = new URL(from);
+  return new URL(to).origin === a.origin
+    ? { referer: from, site: 'same-origin' }
+    : { referer: `${a.origin}/`, site: 'cross-site' };
 }
 
 // fetch's own message is always "fetch failed"; transportText appends the code that explains it (ECONNREFUSED …).
@@ -268,7 +319,8 @@ async function listPlayerPages(id: string): Promise<PlayerPage[]> {
   const known = cachedPlayerPaths(base, id);
   if (known) return known.map((p, i) => ({ url: `${base}${p}`, playerIndex: i + 1 }));
   try {
-    const r = await hop(`${base}/watch.php?id=${id}`, getReferer());
+    // A viewer reaches watch.php from the channel directory.
+    const r = await hop(`${base}/watch.php?id=${id}`, pageHeaders(`${base}/24-7-channels.php`, 'same-origin', 'document'));
     if (r.ok) {
       const html = await r.text();
       const seen = new Set<string>();
@@ -305,7 +357,8 @@ class MirrorHopError extends Error {
 async function fetchEmbeds(streamPageUrl: string, id: string): Promise<string[]> {
   let s: Response;
   try {
-    s = await hop(streamPageUrl, getReferer());
+    // watch.php frames the player page, same origin — so the Referer is watch.php's full URL.
+    s = await hop(streamPageUrl, pageHeaders(`${getBase()}/watch.php?id=${id}`, 'same-origin', 'iframe'));
   } catch (err) {
     throw new MirrorHopError(`stream page unreachable: ${shortErr(err)}`, transportKind(err) ?? 'network');
   }
@@ -320,8 +373,7 @@ async function fetchEmbeds(streamPageUrl: string, id: string): Promise<string[]>
 /**
  * The full resolve against ONE player's stream page: hop 1 → every embed it offers → every playlist URL
  * each embed yields → the first one that fetches and validates. Throws so the caller falls through to the
- * next player. Seeds the dynamic SSRF allowlist and the player-origin Referer for the WINNER only — a
- * losing embed must not poison the module-global Referer the proxy replays.
+ * next player. Seeds the dynamic SSRF allowlist for the WINNER only.
  *
  * Hop 1 comes from the cache when it can. A cached list that never got as far as a playlist fetch may have gone
  * stale — the page now names another embed, or the old embed URL carried a token that lapsed — so it is re-read
@@ -336,14 +388,14 @@ async function resolveViaStreamPage(
 ): Promise<ResolvedStream> {
   const hit = cachedEmbeds(streamPageUrl);
   const embeds = hit?.embeds ?? (await fetchEmbeds(streamPageUrl, id));
-  const first = await tryEmbeds(embeds, id, playerIndex, playerCount, deep);
+  const first = await tryEmbeds(streamPageUrl, embeds, id, playerIndex, playerCount, deep);
   if (first.stream) return first.stream;
 
   if (hit && !first.reachedPlaylist && hit.ageMs >= EMBED_RECHECK_MS) {
     forgetEmbeds(streamPageUrl);
     const unseen = (await fetchEmbeds(streamPageUrl, id)).filter((u) => !embeds.includes(u));
     if (unseen.length) {
-      const second = await tryEmbeds(unseen, id, playerIndex, playerCount, deep);
+      const second = await tryEmbeds(streamPageUrl, unseen, id, playerIndex, playerCount, deep);
       if (second.stream) return second.stream;
       first.reasons.push(...second.reasons);
     }
@@ -361,20 +413,21 @@ interface EmbedsOutcome {
 /**
  * Hop 2: an embed page → its candidate playlist URLs. When the page only frames the real player page, that page
  * is read instead (up to MAX_FRAME_DEPTH levels), and IT is the player page — the origin the CDN expects as
- * Referer. Each hop sends the Referer a browser would under the default strict-origin-when-cross-origin policy
- * (none of the observed pages sets another): the full URL within one origin, only the origin across origins.
- * Null when nothing was found; the reason is recorded.
+ * Referer. Each frame is requested as the browser would from the page framing it (see refererFor). Null when
+ * nothing was found; the reason is recorded.
  */
 async function readEmbed(
+  parentUrl: string,
   embedUrl: string,
   reasons: string[],
 ): Promise<{ playerUrl: string; candidates: EmbedCandidate[] } | null> {
+  let from = parentUrl;
   let url = embedUrl;
-  let referer = getReferer();
   for (let depth = 0; ; depth++) {
+    const { referer, site } = refererFor(from, url);
     let d: Response;
     try {
-      d = await hop(url, referer);
+      d = await hop(url, pageHeaders(referer, site, 'iframe'));
     } catch (err) {
       reasons.push(`${hostOf(url)}: ${shortErr(err)}`);
       return null;
@@ -392,14 +445,14 @@ async function readEmbed(
       reasons.push(`${hostOf(url)}: no playlist URL in the embed${nested}`);
       return null;
     }
-    const from = new URL(url);
-    referer = new URL(next).origin === from.origin ? url : `${from.origin}/`;
+    from = url;
     url = next;
   }
 }
 
 /** Hops 2 + 3 over a player page's embeds, in order. Never throws: failures are collected as `reasons`. */
 async function tryEmbeds(
+  streamPageUrl: string,
   embeds: string[],
   id: string,
   playerIndex: number,
@@ -409,25 +462,19 @@ async function tryEmbeds(
   const reasons: string[] = [];
   let reachedPlaylist = false;
   for (const embedUrl of embeds) {
-    const page = await readEmbed(embedUrl, reasons);
+    const page = await readEmbed(streamPageUrl, embedUrl, reasons);
     if (!page) continue;
     const { playerUrl, candidates } = page;
 
-    // The CDN's /secure/ gate folds the (rotating) player origin into the signature, so hop 3 needs it as
-    // Referer. Held LOCALLY here: setPlayerOrigin writes a module global a concurrent resolve of another
-    // channel could clobber across awaits, and we only want to commit it for the player that wins.
-    let playerRef: string;
-    try {
-      playerRef = `${new URL(playerUrl).origin}/`;
-    } catch {
-      playerRef = playerReferer();
-    }
+    // Some CDNs' /secure/ gate folds the (rotating) player origin into the signature, so hop 3 goes out as the
+    // player's own XHR would — and the same headers ride the resolve to the data plane for the rest of the stream.
+    const headers = streamHeaders(playerUrl);
 
     for (const { url: candidate, extractor } of candidates) {
       // ── hop 3: the signed playlist ──────────────────────────────────────────
       let m: Response;
       try {
-        m = await hop(candidate, playerRef);
+        m = await hop(candidate, headers);
       } catch (err) {
         reasons.push(`${hostOf(candidate)}: ${shortErr(err)}`);
         continue;
@@ -462,14 +509,13 @@ async function tryEmbeds(
         }
         variantUrl = new URL(variantLine.trim(), candidate).href;
         streamInf = lines.find((l) => l.startsWith('#EXT-X-STREAM-INF')) ?? null;
-        if (deep && !(await variantHasMedia(variantUrl, playerRef))) {
+        if (deep && !(await variantHasMedia(variantUrl, headers))) {
           reasons.push(`${hostOf(candidate)}: variant carries no segments`);
           continue;
         }
       }
 
-      // Winner — commit the shared state now that this player is proven.
-      setPlayerOrigin(playerUrl);
+      // Winner — seed the SSRF allowlist now that this player is proven.
       for (const u of [embedUrl, playerUrl, candidate, variantUrl]) {
         try {
           allowHost(new URL(u).hostname);
@@ -489,6 +535,7 @@ async function tryEmbeds(
       const stream: ResolvedStream = {
         id,
         playerUrl,
+        upstreamHeaders: headers,
         masterUrl: candidate,
         variantUrl,
         token,
@@ -506,9 +553,9 @@ async function tryEmbeds(
 }
 
 /** Deep check: does this variant actually list media? Guards "resolves fine but never streams" players. */
-async function variantHasMedia(variantUrl: string, referer: string): Promise<boolean> {
+async function variantHasMedia(variantUrl: string, headers: Record<string, string>): Promise<boolean> {
   try {
-    const r = await hop(variantUrl, referer);
+    const r = await hop(variantUrl, headers);
     if (!r.ok) return false;
     return /^#EXTINF/m.test(await r.text());
   } catch {

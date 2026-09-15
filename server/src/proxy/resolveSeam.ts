@@ -19,8 +19,9 @@ import { logMilestone, logTrace } from '../logs/tier.js';
 // churn-prone provider logic in TypeScript; Rust just fetches + rewrites + pipes.
 //
 // Faithfulness notes (verified against the adapters):
-//  · upstreamHeaders is per-stream CONSTANT — snapshot once here (for dlhd this captures the rotating
-//    playerReferer per stream, which is MORE correct than the shared module global the old proxy replayed).
+//  · upstreamHeaders is per-stream CONSTANT — snapshot once here. An adapter whose headers depend on the resolve
+//    returns them with it (ResolvedStream.upstreamHeaders — dlhd's player-page Referer/Origin); the rest are the
+//    adapter's `proxy.upstreamHeaders(target)` rule.
 //    The (Default)/(Custom) proxy-config `headerOverrides` are merged ON TOP here (operator wins), so Rust
 //    replays the final header set unchanged — the one proxy-config knob applied Node-side (see CFG/PXY-2).
 //  · The SSRF allowlist is OBSERVATIONAL: Rust seeds it from the resolved target host and grows it from the
@@ -545,6 +546,7 @@ export async function buildGrant(
   let isEntry = false;
   let expiresAtMs: number | null = null;
   let servingPlayer: { index: number; count: number } | null = null;
+  let resolvedHeaders: Record<string, string> | undefined;
   let upstreamHeaders: Record<string, string>;
   try {
     if (adapter.isEntryUrl(url)) {
@@ -564,6 +566,7 @@ export async function buildGrant(
       const resolved = await adapter.resolveStream(url, opts);
       target = resolved.masterUrl;
       expiresAtMs = expiryOf(resolved.expiresAtMs);
+      resolvedHeaders = resolved.upstreamHeaders;
       if (typeof resolved.playerIndex === 'number') {
         servingPlayer = { index: resolved.playerIndex, count: resolved.playerCount ?? 0 };
       }
@@ -574,13 +577,17 @@ export async function buildGrant(
       capSlot?.release();
       return { ok: false, status: 502, error: 'resolve_failed: no alternate upstream for this entry' };
     }
-    // Snapshot the per-stream upstream headers against the resolved target (dlhd: the CDN-host branch →
-    // { Referer: playerReferer(), UA }; dulo: a constant map — it ignores the url arg), then merge the operator
-    // headerOverrides ON TOP (operator wins, CASE-INSENSITIVELY — HTTP header names are case-insensitive and Rust
-    // normalizes them, so a `referer` override must beat the adapter's `Referer`, not race it). This is the one
-    // proxy-config knob applied Node-side, so Rust replays the final set unchanged. Adapter code, so inside the
-    // guard: a throw releases the reservation like a failed resolve.
-    upstreamHeaders = mergeUpstreamHeaders(adapter.proxy.upstreamHeaders(target), proxyConfig.headerOverrides);
+    // The per-stream upstream headers: the ones the resolve reported for THIS stream when it has them (dlhd: the
+    // Referer/Origin of the player page its playlist came from), else the adapter's rule for the resolved target
+    // (dulo: a constant map — it ignores the url arg). Then the operator headerOverrides go ON TOP (operator wins,
+    // CASE-INSENSITIVELY — HTTP header names are case-insensitive and Rust normalizes them, so a `referer` override
+    // must beat the adapter's `Referer`, not race it). This is the one proxy-config knob applied Node-side, so Rust
+    // replays the final set unchanged. Adapter code, so inside the guard: a throw releases the reservation like a
+    // failed resolve.
+    upstreamHeaders = mergeUpstreamHeaders(
+      resolvedHeaders ?? adapter.proxy.upstreamHeaders(target),
+      proxyConfig.headerOverrides,
+    );
   } catch (err) {
     capSlot?.release();
     const msg = (err as Error).message;
@@ -755,6 +762,7 @@ async function buildFailoverGrant(
   let target = cand.streamEntryUrl;
   let isEntry = false;
   let expiresAtMs: number | null = null;
+  let resolvedHeaders: Record<string, string> | undefined;
   let upstreamHeaders: Record<string, string>;
   try {
     if (candAdapter.isEntryUrl(target)) {
@@ -772,8 +780,13 @@ async function buildFailoverGrant(
       target = resolved.masterUrl;
       // The CHILD's target expiry — it is the child's signed URL the data plane will be following.
       expiresAtMs = expiryOf(resolved.expiresAtMs);
+      resolvedHeaders = resolved.upstreamHeaders;
     }
-    upstreamHeaders = mergeUpstreamHeaders(candAdapter.proxy.upstreamHeaders(target), proxyConfig.headerOverrides);
+    // Same precedence as buildGrant: the child resolve's own per-stream headers, else its adapter's rule.
+    upstreamHeaders = mergeUpstreamHeaders(
+      resolvedHeaders ?? candAdapter.proxy.upstreamHeaders(target),
+      proxyConfig.headerOverrides,
+    );
   } catch (err) {
     capSlot?.release();
     // This backup couldn't resolve its stream; the 502 advances the data plane to the next candidate.

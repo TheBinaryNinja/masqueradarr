@@ -26,7 +26,6 @@ import {
   isAllowedHost,
   isPrivateHost,
   allowHost,
-  playerReferer,
 } from './dlhd/config.js';
 import { parseChannels } from './dlhd/parseDirectory.js';
 import { resolveStreamUrl, DlhdResolveError } from './dlhd/resolveStream.js';
@@ -205,9 +204,10 @@ const dlhdAdapter: SourceAdapter = {
     // also carries the PROVIDERS' connection errors, and a dead third-party embed host says nothing about the
     // mirror. transportKind is the fallback for a throw from anywhere else in the chain.
     try {
-      // 3-hop scrape + player walk; seeds the dynamic allowlist and remembers the winning player.
-      const { masterUrl, playerIndex, playerCount } = await resolveStreamUrl(entryUrl, opts);
-      return { masterUrl, playerIndex, playerCount };
+      // 3-hop scrape + player walk; seeds the dynamic allowlist and remembers the winning player. The headers
+      // name the player page this stream's playlist came from, so they ride the resolve to the grant.
+      const { masterUrl, playerIndex, playerCount, upstreamHeaders } = await resolveStreamUrl(entryUrl, opts);
+      return { masterUrl, playerIndex, playerCount, upstreamHeaders };
     } catch (err) {
       const kind = err instanceof DlhdResolveError ? err.mirrorKind : transportKind(err);
       const unreachable = err instanceof DlhdResolveError ? err.mirrorUnreachable : kind !== null;
@@ -223,14 +223,15 @@ const dlhdAdapter: SourceAdapter = {
   // ── proxy behavior ─────────────────────────────────────────────────────────────────
   proxy: {
     upstreamHeaders(url: string): Record<string, string> {
-      // Mirror hops need the dlhd Referer; CDN/segment hops replay the (rotating) player origin.
+      // Only the fallback now: a resolved dlhd stream carries its own headers (the Referer/Origin of the player
+      // page its playlist came from — ResolvedStream.upstreamHeaders), which the seam prefers. What's left to
+      // know without a resolve is the mirror's own Referer; any other host gets no guessed player origin.
       try {
-        const host = new URL(url).hostname;
-        const referer = host === getMirrorHost() ? getReferer() : playerReferer();
-        return { Referer: referer, 'User-Agent': UA };
+        if (new URL(url).hostname === getMirrorHost()) return { Referer: getReferer(), 'User-Agent': UA };
       } catch {
-        return { 'User-Agent': UA };
+        /* not a URL — the UA alone */
       }
+      return { 'User-Agent': UA };
     },
     isAllowedUpstream(url: string) {
       try {
