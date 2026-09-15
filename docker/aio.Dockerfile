@@ -47,9 +47,8 @@
 #   mongo:7.0.15  (jammy 22.04, glibc 2.35)  OpenSSL 3    node:22*-bookworm-slim     rust:1-bookworm
 #   mongo:4.4.30-focal (focal 20.04, glibc 2.31)  OpenSSL 1.1  node:22*-bullseye-slim  rust:1-bullseye
 #
-# (bullseye reaches EOL ~2026-08-31; once Debian moves it to archive.debian.org the runtime apt blocks
-# below will 404 on that variant only — fix is an sources.list rewrite to archive.debian.org plus
-# `-o Acquire::Check-Valid-Until=false`. The default bookworm build is unaffected.)
+# (bullseye went EOL 2026-08-31; the runtime stage's "EOL apt sources" block repoints that variant's apt at
+# archive.debian.org + a pinned snapshot.debian.org. The default bookworm build is unaffected.)
 ARG NODE_IMAGE=node:22.11.0-bookworm-slim
 ARG RUNTIME_IMAGE=node:22-bookworm-slim
 ARG RUST_IMAGE=rust:1-bookworm
@@ -130,6 +129,24 @@ ENV NODE_ENV=production \
     DISPLAY=:99
 WORKDIR /app
 ARG TARGETARCH
+
+# EOL apt sources — bullseye (the mongo4.4-* variant) ONLY; a no-op on the default bookworm base, and aio-only
+# because no other image has a bullseye variant. Debian 11 left LTS on 2026-08-31, after which the
+# bullseye-security POOL was deleted from the live mirrors while its index stayed up: `apt-get update` passes,
+# then the install 404s (deb.debian.org and security.debian.org are the same Fastly CDN, serving only what it
+# still has cached), and archive.debian.org has not picked the suite up yet. So main + updates come from
+# archive.debian.org (their permanent home) and security from snapshot.debian.org pinned at EOL — immutable, so
+# it can't rot, and the suite is frozen, so the pin loses nothing. That snapshot's Release carries an already-
+# expired Valid-Until, hence check-valid-until=no on that one line. Plain http is deliberate: the slim base has
+# no ca-certificates yet, and apt verifies every index against the Debian keyring regardless.
+RUN . /etc/os-release \
+ && if [ "$VERSION_CODENAME" = bullseye ]; then \
+      printf '%s\n' \
+        'deb http://archive.debian.org/debian bullseye main' \
+        'deb http://archive.debian.org/debian bullseye-updates main' \
+        'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/20260901T000000Z bullseye-security main' \
+        > /etc/apt/sources.list; \
+    fi
 
 # App runtime deps (MIRROR app.Dockerfile): tini (PID 1, forwards SIGTERM to graceful shutdown), ca-certificates,
 # xvfb (virtual X server for the dulo streamed-login browser, which runs HEADFUL — aio-entrypoint.sh starts Xvfb
