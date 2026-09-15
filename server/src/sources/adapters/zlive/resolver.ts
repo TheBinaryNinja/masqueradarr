@@ -21,8 +21,9 @@
 //   · FAILURE BACKOFF. Nothing else about a failure is retried at zlive's expense either:
 //       - a resolver REFUSAL (401/403/429) is about this IP, not the slug, so it starts a GLOBAL cool-down — the
 //         Retry-After when zlive sends one of up to 1 h, else 60 s doubling per consecutive refusal to 15 min,
-//         reset by the next good 302 — during which no slug contacts zlive. Cached targets are still handed out:
-//         tokens already minted stay usable, the refusal is the resolver's.
+//         reset by the next good 302 to a request sent after it began — during which no slug contacts zlive.
+//         Answers to requests already in flight when it began can lengthen it, never shorten or end it. Cached
+//         targets are still handed out: tokens already minted stay usable, the refusal is the resolver's.
 //       - any OTHER failed contact (a 5xx, a timeout, DNS, a rejected Location) is negative-cached for that slug
 //         for 30 s.
 //     So a player retrying a failed channel every few seconds costs zlive nothing extra.
@@ -151,7 +152,10 @@ interface DecoyLatch {
   slugs: string[];
 }
 
-/** The resolver refused this server; kept after it lapses so the next refusal doubles the wait (a 302 clears it). */
+/**
+ * The resolver refused this server; kept after it lapses so the next refusal doubles the wait (a 302 to a request
+ * sent after it began clears it).
+ */
 interface CoolDown {
   since: number;
   until: number;
@@ -323,6 +327,11 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
   const warnedAt = new Map<string, number>();
   const notedRemaps = new Set<string>();
   let coolDown: CoolDown | null = null;
+  // Bumped whenever a refusal starts a new cool-down step. Each contact remembers the value it was SENT under: an
+  // answer to a request that left before the current cool-down began is part of the same burst (in-flight dedupe
+  // is per slug, so several channels can be mid-request when the resolver starts refusing). Such a refusal may only
+  // lengthen the wait — it is not another consecutive refusal — and such a 302 cannot end it.
+  let coolDownGen = 0;
   let lastGoodSuffix: string | null = null;
   let lastLocationHost: string | null = null;
   let lastLifetimeMs: number | null = null;
@@ -475,6 +484,7 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
 
   async function contact(slug: string): Promise<ZliveResolved> {
     const epochAtStart = epoch;
+    const genAtSend = coolDownGen;
     const url = `${getResolverBase()}/${encodeURIComponent(slug)}`;
     // Failure bookkeeping belongs to the deployment the request was made for (see the commit below).
     const current = (): boolean => getDomainEpoch() === epochAtStart && epoch === epochAtStart;
@@ -517,13 +527,21 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
         res.headers.get('retry-after'),
         Number.isFinite(serverDate) ? serverDate : receivedAt,
       );
-      const step = (coolDown?.step ?? 0) + 1;
+      const sameBurst = coolDown !== null && genAtSend !== coolDownGen;
+      const step = sameBurst ? coolDown!.step : (coolDown?.step ?? 0) + 1;
       const backoff = Math.min(REFUSAL_COOLDOWN_MAX_MS, REFUSAL_COOLDOWN_MIN_MS * 2 ** (step - 1));
       // A Retry-After past the ceiling is junk (a block page's "come back tomorrow"): ignored, not clamped.
       const honoured = retryAfterMs !== null && retryAfterMs <= RETRY_AFTER_MAX_MS ? retryAfterMs : null;
-      const wait = Math.max(backoff, honoured ?? 0);
+      let wait = Math.max(backoff, honoured ?? 0);
       if (current()) {
-        coolDown = { since: receivedAt, until: receivedAt + wait, step, httpStatus: res.status, retryAfterMs: honoured };
+        if (!sameBurst) {
+          coolDown = { since: receivedAt, until: receivedAt + wait, step, httpStatus: res.status, retryAfterMs: honoured };
+          coolDownGen += 1;
+        } else if (receivedAt + wait > coolDown!.until) {
+          coolDown = { ...coolDown!, until: receivedAt + wait, httpStatus: res.status, retryAfterMs: honoured };
+        } else {
+          wait = coolDown!.until - receivedAt; // an earlier answer in this burst already asked for longer
+        }
       }
       const retryNote =
         retryAfterMs === null
@@ -649,8 +667,12 @@ export function createZliveResolver(deps: ResolverDeps): ZliveResolver {
         }
         lastGoodSuffix = suffix;
       }
-      if (coolDown) logger.info(TAG, `the resolver is answering again — refusal backoff reset`);
-      coolDown = null;
+      if (coolDown && genAtSend === coolDownGen) {
+        logger.info(TAG, `the resolver is answering again — refusal backoff reset`);
+        coolDown = null;
+      } else if (coolDown) {
+        logTrace(TAG, `${slug}: a 302 to a request sent before the current refusal — cool-down kept`);
+      }
       negative.delete(slug);
       lastLocationHost = host;
       if (lifetimeMs !== undefined) lastLifetimeMs = lifetimeMs;
