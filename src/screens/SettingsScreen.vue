@@ -6,7 +6,7 @@ import Toggle from '../components/Toggle.vue';
 import SettingsRow from '../components/SettingsRow.vue';
 import EndpointField from '../components/EndpointField.vue';
 import DuloAuthPanel from '../components/DuloAuthPanel.vue';
-import ZlivePanel from '../components/ZlivePanel.vue';
+import PlaylistConfigPanel from '../components/PlaylistConfigPanel.vue';
 import ProxyConfigPanel from '../components/ProxyConfigPanel.vue';
 import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
@@ -17,7 +17,7 @@ import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
 import {
   displayName, domain, epgPath,
-  timezone, darkMode, videoPlayer, dlhdPlayer,
+  timezone, darkMode, videoPlayer, playlistConfig,
   nameservers, logLevel,
   maxmindAccountId, maxmindLicenseKeySet,
   saveMaxmindLicenseKey, clearMaxmindLicenseKey,
@@ -27,8 +27,8 @@ import {
 const toast = useToast();
 
 // Settings is split into three tabs: General (General + Data), Video Config (Channel Probe Scheduler,
-// In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, DaddyLive Player Source,
-// Dulo.tv Authentication, ZLive, Custom Tags).
+// In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, Playlist Domain / Configuration,
+// Dulo.tv Authentication, Custom Tags).
 const activeTab = ref<'general' | 'video' | 'advanced'>('general');
 
 // Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
@@ -526,28 +526,12 @@ async function fireReset() {
       </div>
     </div>
 
-    <div class="card" v-if="activeTab === 'advanced'">
-      <h3 class="section-title">DaddyLive Player Source (Default)</h3>
-      <SettingsRow label="Default player"
-        hint="DaddyLive offers several players per channel, and each is an INDEPENDENT provider — they don’t all carry every channel, so the one that works varies per channel and changes over time. This is the default lead for every such channel; whichever you pick, the rest are tried when it fails and the winner is remembered for a while. “Auto” leads with Player 1. You can override it per channel in the channel editor.">
-        <template #right>
-          <Segmented :value="String(dlhdPlayer)" @change="(v) => dlhdPlayer = Number(v)"
-            :options="[
-              { value: '0', label: 'Auto' },
-              { value: '1', label: '1' },
-              { value: '2', label: '2' },
-              { value: '3', label: '3' },
-              { value: '4', label: '4' },
-              { value: '5', label: '5' },
-              { value: '6', label: '6' },
-            ]" />
-        </template>
-      </SettingsRow>
-    </div>
+    <!-- Per-source enable / domain / extendedProperties for DaddyLive, dulo and ZLive, edited as raw JSON with a
+         Test probe. Saved explicitly (a changed dulo domain signs the dulo session out). -->
+    <PlaylistConfigPanel v-if="activeTab === 'advanced'" />
 
-    <DuloAuthPanel v-if="activeTab === 'advanced'" />
-
-    <ZlivePanel v-if="activeTab === 'advanced'" />
+    <!-- Hidden while the playlist configuration has dulo disabled (enable: false). -->
+    <DuloAuthPanel v-if="activeTab === 'advanced' && playlistConfig.dulo.enable" />
 
     <div class="card" v-if="activeTab === 'advanced'">
       <h3 class="section-title">Custom Tags</h3>

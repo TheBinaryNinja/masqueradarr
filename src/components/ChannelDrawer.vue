@@ -399,7 +399,7 @@ onBeforeUnmount(() => {
           <div class="muted" style="font-size: var(--fs-xs); margin-top: 6px;">
             Which DaddyLive player to prefer for this channel. Each player is an independent provider, so
             they don’t all carry every channel — whichever one you pick, the rest are tried if it fails, and
-            the winner is remembered. “Auto” follows the source default (Settings → DaddyLive Player Source).
+            the winner is remembered. “Auto” follows the source default (Settings → Playlist Domain / Configuration, <code class="mono">defaultPlayer</code>).
             <template v-if="liveStream?.failover">
               <br /><span style="color: var(--text-1);">Now streaming via {{ liveStream.failover.candidateName }}.</span>
             </template>

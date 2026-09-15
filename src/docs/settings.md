@@ -10,8 +10,8 @@ Settings is split into three tabs. **General** holds the everyday knobs — your
 display name, time zone, DNS nameservers, and appearance — plus **backups** and **maintenance**.
 **Video Config** gathers everything about playback: the **channel probe scheduler**, the
 **video player** (standard, **Ultimate**, or **Debug**), and the default **video / proxy engine** every
-playlist inherits. **Advanced** holds **geolocation**, source sign-in, the **DaddyLive Player Source** default,
-and the **Custom Tags** manager. Changes save to the single application settings record.
+playlist inherits. **Advanced** holds **geolocation**, the **Playlist Domain / Configuration** JSON, source
+sign-in, and the **Custom Tags** manager. Changes save to the single application settings record.
 
 ## Key controls and where their effects ripple
 
@@ -52,11 +52,22 @@ and the **Custom Tags** manager. Changes save to the single application settings
 - **Source sign-in** — for sources that require an authenticated session, Settings is where you sign in.
   The app captures only the session tokens needed to resolve streams; your password goes straight to the
   provider, not into the app's database.
-- **DaddyLive Player Source** (on the **Advanced** tab) — DaddyLive channels each expose several
-  interchangeable **players** (redundant feeds of the same stream). This sets the workspace **default**:
-  **Auto** uses Player 1 and falls back through the rest if it's down, or you can pin a specific Player
-  **1–6**. Override it for one channel from the channel editor (**Playlists → open a channel → Player
-  source**).
+- **Playlist Domain / Configuration** (on the **Advanced** tab) — one JSON document, shown with syntax
+  colouring, holding the per-playlist settings for **DaddyLive**, **Dulo.tv** and **ZLive**. Each entry has:
+  - `enable` — `false` **hides** that playlist: it disappears from **Add Playlist** and its settings are hidden
+    (for Dulo.tv, the sign-in card). A playlist you already added keeps syncing and playing.
+  - `domain` — the site the provider runs on today (for example `dlive.sx`). When a provider moves, change it
+    here and re-Sync the playlist. For Dulo.tv, saving a new domain **signs the dulo session out** (you'll be
+    warned first) because a session belongs to the site it came from.
+  - `extendedProperties` — the provider's own options: DaddyLive's `defaultPlayer` (`"auto"` or a player
+    number — its players are independent providers, and a per-channel choice in the channel editor still
+    wins) and ZLive's `concurrency` (how many different ZLive channels may play at once; `0` = no limit).
+
+  **Test** checks every listed domain — using what's in the editor, saved or not — and reports, per provider,
+  the address tried, the HTTP status, the response time and how many channels it serves. **Save** applies the
+  whole document at once; mistakes are listed by path (for example `zlive.extendedProperties.concurrency`) and
+  nothing is saved until they're fixed. The saved document is kept with your settings and backups, and mirrored
+  to `playlist-config.json` on the server.
 - **Custom Tags** (on the **Advanced** tab) — create, rename, and delete the app-wide labels you assign to
   playlists, sources, and channels. See **Custom Tags** for the full picture.
 - **Backup & restore** — generate a **full-system backup** (a single gzip file you download) any time, or

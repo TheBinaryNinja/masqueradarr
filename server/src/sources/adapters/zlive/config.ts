@@ -1,16 +1,16 @@
 // config.ts — the single place that knows where zlive lives and what its answers look like. Mirrors
-// adapters/dulo/config.ts: a Mongo-FREE leaf imported by the adapter, its resolver, the Settings model + translate
-// layer (for the defaults and the validator) and the Settings "Test" route. It must never import the models layer
-// and must stay side-effect-free at import: dns.ts → settings/translate.ts → here loads before Mongo connects,
-// before anything is allowed to make a request.
+// adapters/dulo/config.ts: a Mongo-FREE leaf imported by the adapter, its resolver, the playlist-config module (for
+// the defaults and the validator) and the playlist-config "Test" probe. It must never import the models layer and
+// must stay side-effect-free at import: dns.ts → settings/translate.ts → core/playlistConfig.ts → here loads before
+// Mongo connects, before anything is allowed to make a request.
 //
-// Two OPERATOR SETTINGS are cached here at module level, hydrated by settings/applyZlive.ts at boot, on every
-// Settings save and after a backup restore:
-//   · the DOMAIN (Settings.zliveDomain). zlive's public catalog is cast.<domain> and its stream resolver is
+// Two OPERATOR SETTINGS are cached here at module level, hydrated from the playlist configuration by
+// settings/applyPlaylistConfig.ts at boot, on every save and after a backup restore:
+//   · the DOMAIN (`zlive.domain`). zlive's public catalog is cast.<domain> and its stream resolver is
 //     iptv.<domain>; every URL is derived at USE time through the getters, so a setDomain() applies at once. The
 //     stored channel entries are host-free `zlive://<slug>` sentinels, so a domain change never invalidates a
 //     stored channel or an exported M3U line.
-//   · the STREAM CAP (Settings.zliveMaxStreams): how many DISTINCT zlive channels may be live at once.
+//   · the STREAM CAP (`zlive.extendedProperties.concurrency`): how many DISTINCT zlive channels may be live at once.
 //     SourceAdapter.maxConcurrentStreams() reads it on every live resolve (proxy/resolveSeam.ts), and
 //     upstreamHeaders()/isAllowedUpstream() are synchronous too — which is why these are module caches, not
 //     per-call Mongo reads.
@@ -21,16 +21,16 @@
 import { createDynamicAllow, type DynamicAllow } from '../_fast/dynamicAllow.js';
 import { normalizeDomain as normalizeSourceDomain, type DomainParse } from '../../core/domain.js';
 
-/** The committed default — zlive's domain as last known. Also the Settings.zliveDomain schema default. */
+/** The committed default — zlive's domain as last known. Also the playlist config default. */
 export const ZLIVE_DEFAULT_DOMAIN = 'zlive.st';
 
 /**
- * Default cap on distinct concurrently-live zlive channels (Settings.zliveMaxStreams; 0 = unlimited). Two, because
- * zlive ranks clients by "unique streams per IP" and keeps a manual leech list — a household watching a couple of
- * channels is ordinary traffic, a server pulling a dozen is the profile it looks for.
+ * Default cap on distinct concurrently-live zlive channels (`concurrency`; 0 = unlimited). Two, because zlive ranks
+ * clients by "unique streams per IP" and keeps a manual leech list — a household watching a couple of channels is
+ * ordinary traffic, a server pulling a dozen is the profile it looks for.
  */
 export const ZLIVE_DEFAULT_MAX_STREAMS = 2;
-/** Upper bound the Settings validator accepts for zliveMaxStreams (a sanity bound, not a recommendation). */
+/** Upper bound the playlist-config validator accepts for `concurrency` (a sanity bound, not a recommendation). */
 export const ZLIVE_MAX_STREAMS_LIMIT = 100;
 
 // ── Domain ──────────────────────────────────────────────────────────────────────────────────────────────
@@ -98,8 +98,8 @@ export function normalizeDomain(raw: string): DomainParse {
 }
 
 /**
- * Switch the active zlive domain (boot, every Settings save touching zliveDomain, a backup restore — all via
- * settings/applyZlive.ts). Folds the new apex into the allow-set. Returns true when the value actually CHANGED.
+ * Switch the active zlive domain (boot, every playlist-config save, a backup restore — all via
+ * settings/applyPlaylistConfig.ts). Folds the new apex into the allow-set. Returns true when the value actually CHANGED.
  */
 export function setDomain(next: string): boolean {
   const parsed = normalizeDomain(next);

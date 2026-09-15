@@ -33,7 +33,7 @@ import { logger } from '../../core/logger.js';
 // discover the current pair from dulo's live bundle when a refresh 401s at the apikey gate. See supabaseConfig.ts.
 import { currentAnonKey, currentSupabaseUrl, discoverSupabaseConfig } from './supabaseConfig.js';
 // Where dulo lives today. dulo rebrands periodically, so the domain is an operator setting
-// (Settings.duloDomain) cached in ./config.ts — read through getApiBase()/browserHeaders() at USE time so
+// (`dulo.domain` in the playlist config) cached in ./config.ts — read through getApiBase()/browserHeaders() at USE time so
 // a domain change is honored without a restart. The old DULO_API_BASE env override is gone with it.
 import { getApiBase, browserHeaders } from './config.js';
 

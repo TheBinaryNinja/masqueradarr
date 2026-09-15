@@ -2,8 +2,8 @@
 // ../d-combine/sources/dlhd/parse-directory.mjs.
 //
 // A LEAF module with zero imports on purpose: it is shared by both
-//   · adapters/dlhd.ts                  (live listings: scrape ${BASE}/24-7-channels.php)
-//   · adapters/dlhd/mirrorDirectory.ts  (probe: "does this candidate mirror serve channels?")
+//   · adapters/dlhd.ts        (live listings: scrape ${BASE}/24-7-channels.php)
+//   · adapters/dlhd/probe.ts  (Test probe: "does this candidate domain serve channels?")
 // so "a mirror works" is decided by the EXACT same extractor that produces the catalog.
 
 /** One scraped directory card → the raw record listChannels() emits and normalize() consumes. */

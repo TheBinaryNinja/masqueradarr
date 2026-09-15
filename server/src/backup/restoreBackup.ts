@@ -11,8 +11,7 @@ import { bootInitSources } from '../sources/seed.js';
 import { startScheduler, removeAllCronjobs } from '../scheduler/index.js';
 import { duloAuth } from '../sources/adapters/dulo/auth.js';
 import { applyDnsFromSettings } from '../settings/applyDns.js';
-import { applyDuloDomainFromSettings } from '../settings/applyDuloDomain.js';
-import { applyZliveFromSettings } from '../settings/applyZlive.js';
+import { applyPlaylistConfigFromSettings } from '../settings/applyPlaylistConfig.js';
 import { logger } from '../sources/core/logger.js';
 
 // Thrown when an uploaded/stored buffer is not a recognizable backup — the routes map it to 400 bad_backup.
@@ -72,12 +71,15 @@ export async function restoreFromEnvelope(
   const report: RestoreReport = { restored: {}, skipped: [], errors: [] };
 
   for (const spec of backupSpecs({ includeHeavy: true })) {
-    const docs = env.collections[spec.name];
-    if (!Array.isArray(docs)) {
+    const raw = env.collections[spec.name];
+    if (!Array.isArray(raw)) {
       report.skipped.push(spec.name);
       continue;
     }
     try {
+      // An older backup's rows are brought up to the current schema first (retired fields folded in) — the
+      // model write below would silently drop them otherwise.
+      const docs = spec.upgrade ? raw.map((d) => spec.upgrade!(d as Record<string, unknown>)) : raw;
       if (mode === 'merge') {
         if (docs.length) {
           await spec.model.bulkWrite(
@@ -120,21 +122,16 @@ export async function applyPostRestore(): Promise<void> {
   } catch (err) {
     logger.warn('settings', `post-restore: dns re-apply failed (continuing): ${(err as Error).message}`);
   }
-  // A restored backup can carry a different Settings.duloDomain — re-hydrate the adapter cache from it.
-  // Phase 'mongo' deliberately, NOT 'update': the restore already replaced the playlistauths row wholesale
-  // (and invalidates the auth cache below), so signing the restored session out would be wrong.
+  // A restored backup can carry a different playlist configuration (an older backup's legacy dlhdPlayer /
+  // duloDomain / zliveDomain / zliveMaxStreams fields were folded into it by the settings spec's `upgrade`
+  // before the write) — re-hydrate every source cache and the file mirror from it. Phase 'mongo' deliberately, NOT 'update':
+  // the restore already replaced the playlistauths row wholesale (and invalidates the auth cache below), so
+  // signing the restored dulo session out would be wrong. (zlive's domain epoch still resets its resolver if the
+  // restored domain differs — that happens in the config leaf whatever the phase.)
   try {
-    await applyDuloDomainFromSettings('mongo');
+    await applyPlaylistConfigFromSettings('mongo');
   } catch (err) {
-    logger.warn('settings', `post-restore: dulo domain re-apply failed (continuing): ${(err as Error).message}`);
-  }
-  // A restored backup can carry a different Settings.zliveDomain / zliveMaxStreams — re-hydrate the adapter cache.
-  // Phase 'mongo': a restore is a hydrate, not an operator edit (the domain epoch still resets the resolver if the
-  // restored domain differs, since that happens in the config leaf whatever the phase).
-  try {
-    await applyZliveFromSettings('mongo');
-  } catch (err) {
-    logger.warn('settings', `post-restore: zlive settings re-apply failed (continuing): ${(err as Error).message}`);
+    logger.warn('settings', `post-restore: playlist config re-apply failed (continuing): ${(err as Error).message}`);
   }
   try {
     await startScheduler();

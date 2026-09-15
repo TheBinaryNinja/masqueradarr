@@ -1,5 +1,5 @@
 import { readFileSync, existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 
 export interface AppConfig {
   mongoUri: string;
@@ -52,4 +52,13 @@ export function loadConfig(): AppConfig {
   const logLevel = typeof obj.logLevel === 'string' ? obj.logLevel : 'info';
 
   return { mongoUri, port, logLevel };
+}
+
+/**
+ * The directory holding the active infra config file: /app/config in the standard image, /data in the AIO image,
+ * server/ in dev. Runtime-written config companions (the playlist-config.json mirror) live beside it — never under
+ * composeDir, which is served publicly.
+ */
+export function configDir(): string {
+  return dirname(resolveConfigPath());
 }

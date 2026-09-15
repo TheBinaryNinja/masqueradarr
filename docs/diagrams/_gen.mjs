@@ -202,7 +202,7 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   const x = card({ x: 672, y: 196, w: 228, rail: C.risk, title: '401 / 403', sub: ['plain text, so a media', 'player surfaces the reason'] });
   const r = card({ x: 250, y: 306, w: 340, rail: C.teal, title: 'proxyRelay', sub: ['→ 127.0.0.1:8787', 'inject client identity + secret'] });
   const res = card({ x: 40, y: 505, w: 300, rail: C.teal, title: 'resolve seam → grant', sub: ['target · upstreamHeaders · proxyConfig', 'segmentUnwrap · expiresAtMs · …'] });
-  const f = card({ x: 250, y: 615, w: 340, rail: C.amber, title: 'fetch upstream', sub: ['retry 502 / 503 / 504 · mirror failover', 'failover-group walk'] });
+  const f = card({ x: 250, y: 615, w: 340, rail: C.amber, title: 'fetch upstream', sub: ['retry 502 / 503 / 504 · re-resolve', 'failover-group walk'] });
   const rw = card({ x: 40, y: 824, w: 320, rail: C.amber, title: 'rewrite child URIs', sub: ['re-embed token + pl · /s.ts media tail', 'grow the SSRF allow-set'], minH: 70.8 });
   const seg = card({ x: 500, y: 824, w: 340, rail: C.amber, title: 'relabel + pipe bytes', sub: ['bounded read-ahead buffer', 'unwrap a disguised segment (segmentUnwrap)'], minH: 70.8 });
   const out = card({ x: 250, y: 934, w: 340, rail: C.ash, title: 'bytes → player', sub: ['durable HLS / raw-TS pipe'] });

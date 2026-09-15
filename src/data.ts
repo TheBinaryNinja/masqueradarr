@@ -358,6 +358,9 @@ export interface SourceManifestEntry {
   // The server forces the local origin on for this source's streams regardless of the proxy config, so the
   // proxy config panels show "forced by source" instead of a toggle that would do nothing. Optional, as above.
   originRequired?: boolean;
+  // The playlist configuration's `enable` (Settings → Playlist Domain / Configuration). false ⇒ the Add Playlist
+  // picker hides this source; its existing playlists keep working, so it stays in the manifest. Optional, as above.
+  enabled?: boolean;
   // The Add Playlist "Built-In" summary (server fills DEFAULT_BUILTIN_META when an adapter omits it).
   builtinMeta: BuiltinPlaylistMeta;
 }
@@ -583,6 +586,12 @@ export async function reorderEpgSources(orderedIds: string[]): Promise<void> {
     EPG_SOURCES.value = prev; // reconcile back to the known-good order on failure
     throw err;
   }
+}
+
+// Re-fetch the source manifest after a playlist-configuration save (an `enable` flip changes what the Add
+// Playlist picker offers).
+export async function reloadSources(): Promise<void> {
+  SOURCES.value = await getJson<SourceManifestEntry[]>('/api/sources');
 }
 
 // Re-fetch playlists after an out-of-band change (e.g. a dulo sign-in flips a playlist's isAuthenticated).

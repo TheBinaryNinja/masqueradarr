@@ -31,6 +31,8 @@ export interface FastSourceOptions {
   builtinMeta?: BuiltinPlaylistMeta;
   defaultDisabled?(channel: SourceChannelDoc): boolean;
   status?: SourceAdapter['status'];
+  /** Probe a candidate home domain for the playlist-config Test (see SourceAdapter.testDomain). */
+  testDomain?: SourceAdapter['testDomain'];
   afterSync?: SourceAdapter['afterSync'];
 
   // ── capability flags — each absent by default, i.e. the posture every FAST source has today ──
@@ -102,6 +104,7 @@ export function makeFastSource(opts: FastSourceOptions): SourceAdapter {
     grouping: opts.grouping,
     builtinMeta: opts.builtinMeta,
     status: opts.status,
+    testDomain: opts.testDomain,
     probeExempt: opts.probeExempt,
     maxConcurrentStreams: opts.maxConcurrentStreams,
     isEntryUrl: opts.isEntryUrl ?? defaultIsEntryUrl,

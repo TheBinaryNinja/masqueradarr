@@ -56,7 +56,7 @@ export function toPlaylistChannelDoc(src: SourceChannelDoc): PlaylistChannelDoc 
     failoverGroupId: null, // ungrouped at seed — failover groups are operator-configured post-sync
     failoverRole: null,
     failoverOrder: null,
-    playerPref: null, // no per-channel player override at seed — inherits the source-wide default (Settings.dlhdPlayer)
+    playerPref: null, // no per-channel player override at seed — inherits the source-wide default (the playlist config's daddylive defaultPlayer)
     tags: [], // no operator tags at seed — assigned post-sync via the channel edit route ($setOnInsert-only)
     stream: {
       initials: initialsFor(src.name),

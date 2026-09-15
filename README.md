@@ -152,7 +152,7 @@ Key subsystems:
 - **Composition + export** — composes Global, per-user, and custom `.m3u` playlists with matching
   XMLTV guide siblings for downstream clients.
 - **Video proxy engine — live.** A **remux-free Rust data-plane sidecar** (`masq-proxy`) resolves each
-  stream on demand and serves it over a durable HLS / raw-TS pipe (retry, mirror failover, read-ahead
+  stream on demand and serves it over a durable HLS / raw-TS pipe (retry, re-resolve, read-ahead
   buffering). Node stays the control plane (auth, resolve, token gate, telemetry authority); Rust moves
   the bytes. See [Video Proxy Engine](#video-proxy-engine).
 - **Backup & maintenance** — full-system gzip backup / restore, scheduled backups, and Mongo
@@ -248,24 +248,41 @@ creating the **first admin account**. After that:
    from your own browser (pair/paste), just **close that dulo tab — don't sign out**: signing out of
    dulo revokes the very session you handed over.
 
-   dulo also **rebrands onto new domains** periodically, and that one *is* operator-configurable: the
-   **Domain** field on the same panel (Settings → Advanced → Dulo.tv Authentication) drives every
-   dulo-facing hop — catalog fetch, playback-session mint, Supabase bundle scrape, the pairing bookmarklet,
-   the streamed login, and the SSRF apex. **Auto-detect** follows a redirect from the old domain (it finds a
-   rebrand that left a 301 behind; a hard cut-over has to be typed in), and **Test** probes a candidate
-   without saving it. Saving a *changed* domain **signs the dulo session out** — a captured session belongs
-   to the site it came from — so re-pair afterwards.
-3. **ZLive** has two operator settings of its own (Settings → Advanced → ZLive), and it is worth reading
-   the [ZLive notes](#zlive-operator-notes) before adding it:
-   - **Domain** (`zliveDomain`, default `zlive.st`) — the one domain its public channel catalog
-     (`cast.<domain>`) and its stream resolver (`iptv.<domain>`) live under. Stored channels are host-free
-     `zlive://<slug>` entries, so a domain change never breaks a channel or an exported M3U line; sync the
-     playlist afterwards to refresh its channel list. **Test** fetches only the candidate's public catalog —
-     never the stream resolver — and reports a redirect rather than following it.
-   - **Concurrent channels** (`zliveMaxStreams`, default **2**, `0` = no limit) — how many *different*
-     ZLive channels may play at once, ZLive backups in failover groups included. Viewers of one channel count
-     once; a new channel over the limit is refused with a plain-text `429` the player shows, until one stops —
-     unless it heads a failover group with a backup from another provider, which then plays instead.
+   dulo also **rebrands onto new domains** periodically, and that one *is* operator-configurable:
+   `dulo.domain` in the playlist configuration (below) drives every dulo-facing hop — catalog fetch,
+   playback-session mint, Supabase bundle scrape, the pairing bookmarklet, the streamed login, and the SSRF
+   apex. Saving a *changed* domain **signs the dulo session out** — a captured session belongs to the site it
+   came from — so re-pair afterwards.
+3. **Playlist Domain / Configuration** (Settings → Advanced) is one JSON document holding the per-provider
+   settings for the three providers whose home moves or needs tuning:
+
+   ```json
+   { "daddylive": { "enable": true, "domain": "dlive.sx", "extendedProperties": { "defaultPlayer": "auto" } },
+     "dulo":      { "enable": true, "domain": "dulo.gd",  "extendedProperties": {} },
+     "zlive":     { "enable": true, "domain": "zlive.st", "extendedProperties": { "concurrency": 2 } } }
+   ```
+
+   - **`enable`** — `false` **hides** the provider: it leaves the Add Playlist picker (provisioning refuses it)
+     and its settings card is hidden (dulo's sign-in). It is a visibility switch only — an existing playlist of
+     that provider keeps syncing and playing.
+   - **`domain`** — the site the provider runs on, as a bare host. DaddyLive's is its **content mirror**,
+     pinned (there is no mirror auto-picker — when DaddyLive moves, change it here and re-Sync). zlive's
+     public catalog (`cast.<domain>`) and stream resolver (`iptv.<domain>`) both live under its domain;
+     stored channels are host-free `zlive://<slug>` entries, so a domain change never breaks a channel or an
+     exported M3U line.
+   - **`extendedProperties`** — DaddyLive's **`defaultPlayer`** (`"auto"` or a player 1–12; see
+     [DaddyLive players](#daddylive-players-alternate-upstreams)); zlive's **`concurrency`** (default **2**, `0` = no limit) — how
+     many *different* ZLive channels may play at once, ZLive backups in failover groups included. Viewers of
+     one channel count once; a new channel over the limit is refused with a plain-text `429` the player shows,
+     until one stops — unless it heads a failover group with a backup from another provider, which then plays
+     instead. It is worth reading the [ZLive notes](#zlive-operator-notes) before adding ZLive.
+
+   The document is validated strictly on save (every problem listed by path; nothing saved until it's clean),
+   stored in the Settings record (so backups carry it), applied live, and mirrored to `playlist-config.json`
+   beside the infra config (`/app/config/`, `/data/` in the AIO image; `MASQUERADARR_PLAYLIST_CONFIG`
+   overrides the path — the file is a mirror, rewritten on every boot and save). **Test** probes every listed
+   domain with the editor's current, unsaved text — DaddyLive's 24/7 directory, dulo's catalog + frontend
+   bundle, zlive's public catalog only (never its stream resolver; a redirect is reported, not followed).
 4. **Sync now** to populate channels, then optionally add **EPG Sources** and link guide data on the
    **Channel Mapping** screen.
 5. Create **Users** with per-user access lists — each gets a personal **tokenized `.m3u` + XMLTV guide
@@ -337,8 +354,8 @@ each package and by running the app. The Rust `proxy/` crate is the exception: C
 | LG Channels | `makeFastSource` · Public mirror via `schedulelist` (catalog + XMLTV guide in one call) · direct-HLS masters bearing `[DEVICE_ID]/[UA]/[NONCE]/…` VAST macros · per-play macro expansion via `resolveStream` |
 | (**Local Now**) | Sentinel-resolve adapter · `localnow://<id>?slug=<slug>` stored at sync · resolves to a fresh signed CDN master per play · market-scoped channel set imported via `local/import.ts` · US-only (geo-gated) |
 | Plex | `makeFastSource` · sentinel+resolve · `/lineups/plex/channels` catalog yields channel ids + metadata · fully anonymous `X-Plex-Token` JWT (cached, no credentials) · per-play signed library/parts HLS master that 302s to AWS MediaTailor · self-EPG from a per-channel, per-day grid fanout |
-| DaddyLive | HTML catalog scraped from a runtime-selected rotating mirror (`mirrorDirectory.ts`) · `watch.php?id=<N>` entry sentinel · 3-hop, Referer-gated scrape per play to a fresh signed playlist · **six independent embed providers per channel** ("Player 1..6"), walked and learned per channel (`playerMemory.ts`) with a provider-agnostic hop-2 reader (`embedExtractors.ts`) · dynamic SSRF allow-set · self-EPG via schedule scrape + Gracenote crosswalk |
-| dulo.tv | **Authenticated** · Supabase session captured by a server-streamed Chromium (or pair / paste) and kept alive by the server, with dulo's Supabase config auto-discovered at runtime · `dulo://channel/<id>` sentinel → a device-bound, expiring playback session minted per play · operator-set domain (Settings → Advanced) · no committed snapshot · Gracenote crosswalk |
+| DaddyLive | HTML catalog scraped from an operator-set rotating mirror (`daddylive.domain`) · `watch.php?id=<N>` entry sentinel · 3-hop, Referer-gated scrape per play to a fresh signed playlist · **six independent embed providers per channel** ("Player 1..6"), walked and learned per channel (`playerMemory.ts`) with a provider-agnostic hop-2 reader (`embedExtractors.ts`) · dynamic SSRF allow-set · self-EPG via schedule scrape + Gracenote crosswalk |
+| dulo.tv | **Authenticated** · Supabase session captured by a server-streamed Chromium (or pair / paste) and kept alive by the server, with dulo's Supabase config auto-discovered at runtime · `dulo://channel/<id>` sentinel → a device-bound, expiring playback session minted per play · operator-set domain (`dulo.domain`) · no committed snapshot · Gracenote crosswalk |
 | Pluto TV | `makeFastSource` · sentinel+resolve · `/v2/guide/channels` catalog yields channel IDs only · stateful per-region boot session (`boot.pluto.tv`) · per-play JWT-stitched HLS master from the stitcher CDN |
 | STIRR | `makeFastSource` · sentinel+resolve · `videos/list` catalog yields video IDs + provider-EPG pointers · per-play resolve via `POST /playable` · bundled provider guide |
 | Samsung TV+ | `makeFastSource` · Public mirror (`i.mjh.nz`) · no auth · jmp2.uk short-link redirect followed per play to a rotating CDN master · dynamic SSRF allow-set learned at play time |
@@ -644,7 +661,7 @@ The resolver is built around that:
   playlist (`#EXTINF`) — an `#EXTM3U` with neither is now rejected instead of being served as an empty stream.
 - **Learned + sticky.** The winning player is remembered per channel (~30 min) and a failing one is burnt
   (~5 min), so the common case stays a **single** hop-1 fetch even when the winner isn't Player 1
-  (`playerMemory.ts`). The operator's pick — Settings → *DaddyLive Player Source*, or the per-channel
+  (`playerMemory.ts`). The operator's pick — `defaultPlayer` in *Playlist Domain / Configuration*, or the per-channel
   override in the channel drawer — always leads; the rest are the fallback order.
 - **Bounded.** Every hop has a timeout (`DLHD_HOP_TIMEOUT_MS`, 8 s) and the whole walk has a deadline
   (`DLHD_RESOLVE_BUDGET_MS`, 20 s) so a hanging provider can't outlast a player's manifest timeout.
@@ -654,7 +671,8 @@ The resolver is built around that:
   the result — `failover → Player 4`.
 
 Knobs: `DLHD_PLAYER_STICKY_MS`, `DLHD_PLAYER_BURN_MS`, `DLHD_HOP_TIMEOUT_MS`, `DLHD_RESOLVE_BUDGET_MS`,
-plus the existing `DLHD_PLAYER` (source-wide default, also settable in the UI) and `DLHD_BASE`.
+(The mirror itself and the source-wide default player are operator settings — `daddylive.domain` and
+`defaultPlayer` in *Playlist Domain / Configuration*; the old `DLHD_BASE` / `DLHD_PLAYER` env vars are gone.)
 
 > These providers are third parties that rotate — this layer is the most churn-prone part of the adapter by
 > design. When DaddyLive itself stops carrying a channel on **every** player, failover groups are the
@@ -695,7 +713,7 @@ How ZLive is served. Each of these is a capability the adapter declares, not a Z
   address costs a handful of resolver requests an hour rather than one per player retry.
 - **Never probed in bulk** (`probeExempt`). The scheduled channel probe skips ZLive channels, so their status
   updates only while one is being watched; the Settings probe card names the exemption.
-- **A concurrent-channel limit** (`maxConcurrentStreams` ← Settings → Advanced → ZLive, default **2**). A new
+- **A concurrent-channel limit** (`maxConcurrentStreams` ← `zlive.extendedProperties.concurrency`, default **2**). A new
   channel over it gets a definitive `429 source_stream_cap`, relayed to the player as plain text — no failover
   walk, no retry — unless it heads a failover group with a backup from another provider, which then plays
   instead. A ZLive channel serving as a *backup* counts too, and is skipped for the next backup when the limit
@@ -733,8 +751,8 @@ through it. Any other failed resolve — the resolver down (`5xx`), unreachable 
 answer that fails vetting — is not retried for that channel for 30 s. Refusals, unreachable/unavailable and
 unexpected answers are reported as separate classes. A failed resolve is an ordinary resolve failure, so a
 channel's [failover group](#failover-groups-channel-backups) backups take over if it has any. All of it shows
-live on **Settings → Advanced → ZLive** (limit usage, upstream host, last error, any latch or cool-down, and
-how many retries were held back) and in the logs — the `playlists` category for the resolver (tag `zlive`),
+in `GET /api/sources/zlive/status` (limit usage, upstream host, last error, any latch or cool-down, and how
+many retries were held back) and in the logs — the `playlists` category for the resolver (tag `zlive`),
 `proxy` for limit refusals.
 
 **Guide data.** zlive publishes no guide. A committed station-id crosswalk
@@ -984,8 +1002,8 @@ The Rust engine is built to keep a stream alive on flaky upstreams:
 - **Retry** — transient upstream failures (transport errors + `502` / `503` / `504`) are retried with bounded
   backoff; definitive `4xx` / `5xx` are forwarded verbatim (unless `failoverOnDefiniteError` routes them into
   the failover walk below).
-- **Mirror failover** — a dead resolved master forces a **fresh resolve**, driving dlhd to re-probe and
-  rotate to a live mirror mid-stream.
+- **Re-resolve** — a dead resolved master forces a **fresh resolve** of the same channel (a new signed URL;
+  for dlhd, a fresh player walk against its configured mirror).
 - **Alternate upstreams** — where a source exposes several interchangeable providers per channel (dlhd's
   Player 1..6), a failed establish first re-resolves the SAME channel through a **different provider**
   before any configured backup is considered. See [DaddyLive players](#daddylive-players-alternate-upstreams).

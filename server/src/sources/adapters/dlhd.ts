@@ -1,7 +1,7 @@
 // dlhd source adapter. Ported from ../d-combine/sources/dlhd/adapter.mjs.
 //
 // dlhd has no JSON catalog API, so listings are scraped from a server-rendered 24/7 directory on a mirror
-// whose DOMAIN ROTATES (resolved at runtime by ./dlhd/mirrorDirectory.ts). Each channel's entry is
+// whose DOMAIN ROTATES (operator-set: `daddylive.domain` in the playlist configuration). Each channel's entry is
 // `…/watch.php?id=N`, which must be RESOLVED server-side (a 3-hop scrape: stream-N.php → daddy<n>.php
 // player → base64-embedded signed master — see ./dlhd/resolveStream.ts) before it can be proxied. The
 // CDN/player/segment hosts also rotate, so the SSRF allowlist grows at runtime, and segments are MPEG-TS
@@ -30,7 +30,7 @@ import {
 } from './dlhd/config.js';
 import { parseChannels } from './dlhd/parseDirectory.js';
 import { resolveStreamUrl, DlhdResolveError } from './dlhd/resolveStream.js';
-import { getResolution, ensureMirror, reprobeMirror } from './dlhd/mirrorDirectory.js';
+import { probeDlhdDomain } from './dlhd/probe.js';
 import type { SourceAdapter, ArtifactType, ResolveStreamOptions } from '../types.js';
 import type { DlhdRawChannel } from './dlhd/parseDirectory.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
@@ -84,13 +84,11 @@ const dlhdAdapter: SourceAdapter = {
   label: 'DaddyLive.TV',
 
   // ── listings ───────────────────────────────────────────────────────────────────
-  // Ensure a live mirror is picked (lazy, TTL-gated), scrape the 24/7 directory, and fall back to the
-  // committed snapshot when offline / blocked. The snapshot covers the CATALOG only — stream resolution
-  // still needs a reachable mirror (resolveStream has no offline path).
+  // Scrape the 24/7 directory on the configured mirror, and fall back to the committed snapshot when offline /
+  // blocked. The snapshot covers the CATALOG only — stream resolution still needs a reachable mirror
+  // (resolveStream has no offline path).
   async listChannels() {
-    await ensureMirror().catch(() => undefined); // best-effort; getBase() falls back to the last/default base
     const directoryUrl = `${getBase()}/24-7-channels.php`;
-    const mirror = getResolution(); // provenance: which mirror was chosen + per-candidate status
     try {
       const res = await fetch(directoryUrl, { headers: { Referer: getReferer(), 'User-Agent': UA } });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -98,7 +96,7 @@ const dlhdAdapter: SourceAdapter = {
       if (!channels.length) throw new Error('no channels parsed (layout changed?)');
       return {
         raw: channels,
-        meta: { base: getBase(), endpoint: directoryUrl, live: true, mirror, fetchedAt: new Date().toISOString() },
+        meta: { base: getBase(), endpoint: directoryUrl, live: true, fetchedAt: new Date().toISOString() },
       };
     } catch (err) {
       const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8')) as { channels?: DlhdRawChannel[] };
@@ -109,8 +107,7 @@ const dlhdAdapter: SourceAdapter = {
           endpoint: directoryUrl,
           live: false,
           fallback: 'dlhd.snapshot.json',
-          reason: (err as Error).message,
-          mirror,
+          reason: `${(err as Error).message} — check daddylive.domain in Settings → Playlist Domain / Configuration`,
           fetchedAt: new Date().toISOString(),
         },
       };
@@ -159,12 +156,13 @@ const dlhdAdapter: SourceAdapter = {
     epgSyncSchedules: false,
   },
 
-  // Runtime provenance: which advertised mirror is active + each candidate's probe result. Pre-flights a
-  // resolve so an operator hitting /api/sources/dlhd/status sees fresh data. Null until the first resolve.
-  async status() {
-    await ensureMirror().catch(() => undefined);
-    return getResolution();
+  // Runtime provenance: the configured content mirror every dlhd hop is using.
+  status() {
+    return { base: getBase() };
   },
+
+  // Playlist-config Test: does a candidate domain serve the 24/7 channel directory?
+  testDomain: probeDlhdDomain,
 
   // ── stream resolution ────────────────────────────────────────────────────────────
   // DaddyLive offers Player 1..N per channel, each an INDEPENDENT third-party provider (not redundant embeds
@@ -181,12 +179,12 @@ const dlhdAdapter: SourceAdapter = {
     }
   },
   async resolveStream(entryUrl: string, opts?: ResolveStreamOptions) {
-    // A connection-level failure against the MIRROR means the active mirror is unreachable (dlhd domains
+    // A connection-level failure against the MIRROR means the configured mirror is unreachable (dlhd domains
     // rotate / get sinkholed) — distinct from a clean "not live" (no embed / no signed playlist in it).
     // resolveStreamUrl decides this explicitly (DlhdResolveError.mirrorUnreachable) rather than by
     // sniffing the message: its aggregated text now also carries the PROVIDERS' connection errors, and a
     // dead third-party embed host says nothing about the mirror. The regex stays as the fallback for a
-    // throw from anywhere else in the chain (e.g. ensureMirror itself).
+    // throw from anywhere else in the chain.
     const looksUnreachable = (err: unknown): boolean =>
       err instanceof DlhdResolveError
         ? err.mirrorUnreachable
@@ -194,36 +192,17 @@ const dlhdAdapter: SourceAdapter = {
             String((err as Error)?.message ?? ''),
           );
     try {
-      await ensureMirror();
       // 3-hop scrape + player walk; seeds the dynamic allowlist and remembers the winning player.
       const { masterUrl, playerIndex, playerCount } = await resolveStreamUrl(entryUrl, opts);
       return { masterUrl, playerIndex, playerCount };
     } catch (err) {
-      const msg = (err as Error).message;
       if (!looksUnreachable(err)) throw err; // a real "not live" / layout error already reads clearly
-
-      // The active mirror looks dead. Don't strand the stream until the 30-min mirror TTL lapses: force a
-      // fresh directory re-probe NOW and, if a live mirror gets committed, retry the resolve ONCE against it
-      // — a mid-stream mirror death then self-heals via failover instead of killing playback.
-      const deadBase = getBase();
-      logger.warn('dlhd', `resolve failed against ${deadBase} (${msg}) — re-probing mirrors`);
-      const res = await reprobeMirror().catch(() => null);
-      if (res && !res.degraded) {
-        try {
-          const { masterUrl, playerIndex, playerCount } = await resolveStreamUrl(entryUrl, opts);
-          if (res.chosen !== deadBase) logger.ok('dlhd', `mirror failover: ${deadBase} → ${res.chosen}`);
-          return { masterUrl, playerIndex, playerCount };
-        } catch (retryErr) {
-          if (!looksUnreachable(retryErr)) throw retryErr;
-          // still unreachable after failover → fall through to the actionable error below
-        }
-      }
-      // Nothing reachable (every advertised + seed mirror failed probing), or the failover mirror also
-      // refused. Surface an actionable error — getBase() may have changed during the re-probe above.
+      // The mirror is pinned (no auto-picker to fail over to), so say exactly what to change.
+      const msg = (err as Error).message;
+      logger.warn('dlhd', `resolve failed: cannot reach ${getBase()} (${msg})`);
       throw new Error(
-        `cannot reach any dlhd mirror (active: ${getBase()}; down, rotated, or geo-blocked). Mirrors are ` +
-          `auto-selected from the DaddyLive directory and re-probed on each failure; pin one with ` +
-          `DLHD_BASE=https://<current-mirror> and re-Sync. Underlying: ${msg}`,
+        `cannot reach DaddyLive at ${getBase()} (down, moved, or geo-blocked) — update daddylive.domain in ` +
+          `Settings → Playlist Domain / Configuration and re-Sync. Underlying: ${msg}`,
       );
     }
   },

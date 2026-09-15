@@ -27,7 +27,7 @@ import { getDomain, getLoginUrl, getLiveUrl } from './config.js';
 import { logger } from '../../core/logger.js';
 
 // dulo rebrands periodically, so the sign-in / live URLs and the app host are derived from the operator
-// setting (Settings.duloDomain, cached in ./config.ts) at NAVIGATION time, never captured at import.
+// setting (`dulo.domain` in the playlist config, cached in ./config.ts) at NAVIGATION time, never captured at import.
 const tag = 'dulo:login';
 const VIEWPORT_W = 1280;
 const VIEWPORT_H = 800;

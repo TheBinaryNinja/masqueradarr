@@ -19,7 +19,7 @@
 //! the PCR/PTS reset); a truly seamless splice would need RMX.
 //!
 //! Durability reuses the RSL layer: playlist + segment fetches go through `fetch_with_retry` (transient retry),
-//! and a persistent media-playlist failure re-resolves the entry (driving dlhd `reprobeMirror` failover).
+//! and a persistent media-playlist failure re-resolves the entry (a fresh adapter resolve, e.g. dlhd's player walk).
 //! Telemetry uses the SOCKET model (noteSocketViewer* — explicit open/close, a 60s no-byte backstop) rather
 //! than the 30s poll-recency model, since a continuous stream never polls: `open` → Node mints a connId; periodic
 //! `sbytes` → egress; `close` → session end.
@@ -756,7 +756,7 @@ const JOIN_FIRST_PROBE: usize = 64 << 10;
 const JOIN_HOLD_CAP: usize = 8 << 20;
 
 /// Failover: walk the stream's candidates (a fresh resolve of the PINNED candidate first — Node re-runs
-/// resolveStream → reprobeMirror, the pre-failover mirror rotation — then, when failoverEnabled, the next
+/// resolveStream, e.g. dlhd's player walk — then, when failoverEnabled, the next
 /// failover children via the shared proxy.rs walk) and derive the media playlist again from the winning
 /// master. Swaps the producer onto the winning candidate's policy + client (FOG: a cross-provider child's
 /// headers live under ITS adapter's policy). `Err` ⇒ the producer ends, and the value is its close reason:

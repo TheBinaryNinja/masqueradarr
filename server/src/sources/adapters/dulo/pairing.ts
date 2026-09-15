@@ -50,7 +50,7 @@ export const duloPairing = {
 function harvesterBody(code: string, callbackUrl: string): string {
   const CB = JSON.stringify(callbackUrl);
   const CODE = JSON.stringify(code);
-  const DOMAIN = JSON.stringify(getDomain()); // follows Settings.duloDomain — the mint is per-request
+  const DOMAIN = JSON.stringify(getDomain()); // follows the configured dulo domain — the mint is per-request
   return (
     `(function(){var CB=${CB},CODE=${CODE},D=${DOMAIN};` +
     `function f(){for(var i=0;i<localStorage.length;i++){var k=localStorage.key(i),v=localStorage.getItem(k);` +
