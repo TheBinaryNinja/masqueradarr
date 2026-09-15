@@ -1,6 +1,4 @@
 <script setup lang="ts">
-// Global-search results dropdown — grouped result tables rendered under the topbar search box. Owns its own
-// click-away backdrop + Escape handling; App.vue owns the query/fetch and the navigation on select.
 import { computed, onMounted, onBeforeUnmount } from 'vue';
 import Icon from './Icon.vue';
 import Pill from './Pill.vue';
@@ -35,7 +33,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
     <div v-if="loading" class="sr-empty">Searching…</div>
     <div v-else-if="isEmpty" class="sr-empty">No matches for "{{ query }}"</div>
     <template v-else-if="results">
-      <!-- Direct playlist / EPG-source name matches. -->
       <div v-if="results.topLevel.playlists.length" class="sr-group">
         <div class="sr-group-hd"><span>Playlists</span></div>
         <button v-for="r in results.topLevel.playlists" :key="'p:' + r.id" type="button" class="sr-row" @click="emit('select', r)">
@@ -53,7 +50,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
         </button>
       </div>
 
-      <!-- Channel / EPG-channel matches, grouped by their owning parent resource. -->
       <div v-for="g in results.groups" :key="g.kind + ':' + g.id" class="sr-group">
         <div class="sr-group-hd">
           <span>{{ g.label }}</span>
@@ -71,10 +67,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
 </template>
 
 <style scoped>
-/* Full-viewport click-away catcher. Relies on NO ancestor having a transform/filter/backdrop-filter:
-   any of those would become the containing block for this position:fixed element and shrink it to
-   their own box, silently killing click-to-dismiss. See the transform-free note on .topbar-search in
-   App.vue — the topbar's centering used to do exactly that. */
 .sr-backdrop {
   position: fixed;
   inset: 0;
@@ -84,7 +76,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey));
   position: absolute;
   top: calc(100% + 8px);
   left: 0;
-  right: 0;                 /* stretch to the .topbar-search container so it matches the input width */
+  right: 0;
   max-height: 66vh;
   overflow-y: auto;
   z-index: 91;

@@ -1,11 +1,3 @@
-//! The channel-probe endpoint (PRB, P1.3) — the successor to the removed streamProbe sweep; reads manifest-declared decode metadata.
-//!
-//! Node's `sources/probeAll.ts` RESOLVES every Active channel (dulo/dlhd adapter logic, throttled) then
-//! POSTs the resolved `{ id, target, upstreamHeaders }` batch here. This binary FETCHES each target
-//! concurrently (bounded), decides liveness (a 2xx that parses as a manifest = live), and extracts the
-//! declared decode metadata via the SAME parser the live proxy uses (`manifest::extract_media`). It writes
-//! nothing — it returns per-item results and Node persists them to `playlistchannels`. Loopback + shared
-//! secret, like the rest of the internal channel.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,11 +17,7 @@ use crate::manifest::extract_media;
 use crate::proxy::{check_secret, host_of, text};
 use crate::state::AppState;
 
-// Node already caps its resolve fan-out and batches per playlist; this bounds the actual upstream fetches so a
-// large batch can't open hundreds of sockets at once. Each probe is a single manifest GET, so it's quick.
 const PROBE_CONCURRENCY: usize = 8;
-// A probe must not hang on a half-open upstream — bound each fetch (the streaming proxy client has NO total
-// timeout, so this is set per-request here).
 const PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Deserialize)]
@@ -74,14 +62,14 @@ pub async fn probe(State(state): State<AppState>, headers: HeaderMap, Json(req):
         let state = state.clone();
         let sem = sem.clone();
         set.spawn(async move {
-            let _permit = sem.acquire_owned().await.ok(); // held for the fetch; bounds concurrency
+            let _permit = sem.acquire_owned().await.ok();
             probe_one(&state, item).await
         });
     }
     let mut results = Vec::new();
     while let Some(joined) = set.join_next().await {
         if let Ok(r) = joined {
-            results.push(r); // completion order — Node maps back by `id`, so order is irrelevant
+            results.push(r);
         }
     }
     let live = results.iter().filter(|r| r.live).count();
@@ -112,12 +100,12 @@ async fn probe_one(state: &AppState, item: ProbeItem) -> ProbeResult {
         Ok(r) => r,
         Err(_) => {
             log::trace("probe", "", || format!("probe {} DOWN (connect/resolve failed)", item.id));
-            return dead(item.id); // couldn't connect/resolve → down
+            return dead(item.id);
         }
     };
     if !resp.status().is_success() {
         log::trace("probe", "", || format!("probe {} DOWN ({})", item.id, resp.status().as_u16()));
-        return dead(item.id); // a non-2xx upstream → down
+        return dead(item.id);
     }
 
     let final_url = resp.url().clone();
@@ -132,8 +120,6 @@ async fn probe_one(state: &AppState, item: ProbeItem) -> ProbeResult {
         Err(_) => return dead(item.id),
     };
 
-    // A live HLS channel resolves to a parseable manifest. A 2xx manifest ⇒ live + extract decode; a 2xx that
-    // is NOT a manifest (a direct media/segment endpoint) still counts as live but carries no decode metadata.
     let is_manifest = ct.contains("mpegurl")
         || final_url.path().to_ascii_lowercase().ends_with(".m3u8")
         || body.trim_start().starts_with("#EXTM3U");

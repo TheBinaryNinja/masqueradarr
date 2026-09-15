@@ -31,15 +31,10 @@ const { subscribe, release } = useStreamStats();
 const router = useRouter();
 const route = useRoute();
 
-// App version — the Docker image tag baked in at SPA build time (VITE_APP_VERSION); 'dev' locally.
 const appVersion = import.meta.env.VITE_APP_VERSION || 'dev';
 
-// Non-failed active streams — the population that drives the nav pulse dot + breadcrumb.
 const activeCount = computed(() => ACTIVE_STREAMS.value.filter((s) => s.status !== 'bad').length);
 
-// Scroll-engaged glass: the topbar is a transparent overlay over the .screen scroll container; once
-// the user scrolls past a small threshold it gains the frosted `.is-stuck` glass that backdrop-filters
-// the content scrolling under it. .screen persists across routes, so navigation resets both.
 const screenEl = ref<HTMLElement | null>(null);
 const stuck = ref(false);
 function onScreenScroll() {
@@ -51,9 +46,6 @@ watch(() => route.fullPath, () => {
   closeSearch();
 });
 
-// ── Global search (topbar, admin-only) ──────────────────────────────────
-// Debounced 1.5s by SearchInput; the results dropdown deep-links to the matched resource on click. A channel
-// / EPG-channel result carries a `?focus=<id>` so the detail screen scrolls to + flashes the row.
 const searchQ = ref('');
 const searchResults = ref<SearchResponse | null>(null);
 const searchOpen = ref(false);
@@ -74,7 +66,7 @@ async function onSearch(v: string) {
   searchOpen.value = true;
   try {
     const r = await runSearch(q);
-    if (seq === searchSeq) searchResults.value = r; // ignore a stale response beaten by a newer query
+    if (seq === searchSeq) searchResults.value = r;
   } catch {
     if (seq === searchSeq) searchResults.value = { groups: [], topLevel: { playlists: [], epgSources: [] } };
   } finally {
@@ -93,14 +85,12 @@ function onSearchSelect(row: SearchRow) {
     router.push({ path: `/playlists/${encodeURIComponent(row.playlistId)}`, query: { focus: row.id } });
   else if (row.type === 'epg-channel' && row.epgSourceId)
     router.push(`/epg-sources/${encodeURIComponent(row.epgSourceId)}`);
-  // Clear the box + close the panel (the SearchInput adopts the reset `value` via its watch).
   searchQ.value = '';
   searchResults.value = null;
   searchOpen.value = false;
   channel.value = null;
 }
 
-// Cross-screen UI state
 const channel = ref<Channel | null>(null);
 const addOpen = ref<'playlist' | 'epg' | null>(null);
 const logsOpen = ref(false);
@@ -163,16 +153,10 @@ const screenFlex = computed(() =>
   (route.name === 'active')
     ? { display: 'flex', flexDirection: 'column' as const } : null);
 
-// Routes that adopt the masqueradarr brand stage background (the full-bleed
-// teal-aurora + vignette field shared with LoginScreen). On a stage route the
-// gradient runs edge-to-edge: .screen drops its own inset padding and the routed
-// component is wrapped in .mq-stage-content, which carries the inset above the field.
 const stageRoute = computed(() => route.name === 'dashboard' || route.name === 'active');
 
 function go(path: string) { router.push(path); channel.value = null; }
 
-// Any screen can deep-link into the Docs panel via the bus (e.g. a contextual "?"); the header button
-// opens it without a section, defaulting to the current screen.
 function onDocsOpen(payload: { section?: string }) {
   docsSection.value = payload?.section;
   docsOpen.value = true;
@@ -218,9 +202,8 @@ async function loadAppData() {
     bootstrapData().catch((err) => console.error('[bootstrap] failed:', err));
     loadSettings().catch((err) => console.error('[settings] load failed:', err));
     startCronWatch();
-    subscribe(); // keep /api/stream-stats live app-wide so the nav dot reflects real-time sessions
+    subscribe();
   } else {
-    // Scoped boot for standard users
     loadSettings().catch((err) => console.error('[settings] load failed:', err));
     try {
       await reloadPlaylists();
@@ -251,7 +234,7 @@ onBeforeUnmount(() => {
   bus.off('tvapp:restore-start', onRestoreStart);
   bus.off('tvapp:docs-open', onDocsOpen);
   stopCronWatch();
-  release(); // symmetric teardown
+  release();
 });
 </script>
 
@@ -390,27 +373,16 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* Absolutely centers the search box in the topbar (dead-center on every screen, independent of the
-   title/crumb on the left and the Docs/theme/Add cluster on the right). Also anchors the
-   absolute-positioned SearchResults dropdown directly under the box.
-
-   Centered with a negative half-width margin, NOT `transform: translateX(-50%)`. A transform makes an
-   element the containing block for its position:fixed descendants, which collapsed SearchResults'
-   `.sr-backdrop` (position:fixed; inset:0) from the viewport down to this 480x36 box — so clicking
-   anywhere outside the search box never dismissed the results. Keep this transform-free. */
 .topbar-search {
-  --sr-w: min(480px, 90vw);  /* the shared width: the input fills it, the results panel stretches to it */
+  --sr-w: min(480px, 90vw);
   position: absolute;
   left: 50%;
   margin-left: calc(var(--sr-w) / -2);
   width: var(--sr-w);
   display: flex;
   align-items: center;
-  z-index: 1;               /* keep the centered box above the flex siblings if they ever meet */
+  z-index: 1;
 }
-/* The input outranks the click-away backdrop (.sr-backdrop, z-index 90, a sibling in this same
-   stacking context) so clicking back into the box to edit the query moves the caret instead of
-   dismissing the results. Every other click still lands on the backdrop and closes them. */
 .topbar-search > .search-input {
   position: relative;
   z-index: 92;

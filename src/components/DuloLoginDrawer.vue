@@ -1,9 +1,4 @@
 <script setup lang="ts">
-// dulo streamed-login drawer. Opens a WebSocket to the server's /api/dulo/login-stream, which screencasts a
-// real server-side Chromium sitting on the dulo.tv login page (CDP JPEG frames). We paint frames into a
-// <canvas> and forward the user's mouse/keyboard back, scaled to the remote viewport. The user signs in on
-// the ACTUAL dulo page — their password never reaches TVApp2; the server intercepts the Supabase session
-// and stores only the tokens. See server/src/sources/adapters/dulo/loginBrowser.ts and restapi-sources.md.
 
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
 import Icon from './Icon.vue';
@@ -11,7 +6,6 @@ import Btn from './Btn.vue';
 import StatusDot from './StatusDot.vue';
 import { playlistConfig } from '../composables/useSettings';
 
-// The configured dulo site (Settings → Playlist Domain / Configuration), for the reassurance copy.
 const duloDomain = computed(() => playlistConfig.value.dulo.domain);
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'captured'): void }>();
@@ -26,7 +20,7 @@ let ctx: CanvasRenderingContext2D | null = null;
 let remoteW = 1280;
 let remoteH = 800;
 let lastMove = 0;
-let closing = false; // set when WE tear down, so ws.onclose can tell an intentional close from a drop
+let closing = false;
 
 const tone = computed(() => {
   switch (state.value) {
@@ -47,7 +41,6 @@ const label = computed(() => {
     case 'connecting':
       return 'starting…';
     case 'live':
-      // message is only set on the post-sign-in device-setup status; the initial 'live' has none.
       return message.value ? 'finishing setup' : 'ready';
     case 'captured':
       return 'connected';
@@ -71,7 +64,6 @@ async function drawFrame(blob: Blob) {
     ctx.drawImage(bmp, 0, 0, remoteW, remoteH);
     bmp.close();
   } catch {
-    /* a malformed/partial frame — skip it */
   }
 }
 
@@ -121,7 +113,7 @@ function onPointerUp(e: PointerEvent) {
 }
 function onPointerMove(e: PointerEvent) {
   const now = performance.now();
-  if (now - lastMove < 25) return; // throttle to ~40/s so we don't flood the socket
+  if (now - lastMove < 25) return;
   lastMove = now;
   const { x, y } = remoteCoords(e);
   send({ type: 'mouse', action: 'move', x, y });
@@ -153,9 +145,6 @@ onMounted(() => {
     }
   };
   ws.onclose = () => {
-    // Before this handler, a mid-session drop left the last frame frozen on the canvas while the label
-    // still read "ready". Surface the disconnect instead — unless we tore down on purpose, or the capture
-    // already succeeded (the server closes the socket right after emitting `captured`).
     if (closing || state.value === 'captured') return;
     const wasConnecting = state.value === 'connecting';
     state.value = 'error';
@@ -169,7 +158,6 @@ onBeforeUnmount(() => {
     send({ type: 'close' });
     ws?.close();
   } catch {
-    /* ignore */
   }
   ws = null;
 });
@@ -206,8 +194,6 @@ onBeforeUnmount(() => {
             @wheel.prevent="onWheel"
             @keydown.prevent="onKeyDown"
           />
-          <!-- Non-blocking guidance during the post-sign-in device-setup step — the canvas stays interactive
-               so the user can confirm "use this device" on dulo's Live TV page if it prompts. -->
           <div v-if="state === 'live' && message" class="dulo-banner good">
             <Icon name="check" :size="14" /> {{ message }}
           </div>
@@ -238,7 +224,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* The streamed remote-browser surface — the one place a canvas needs its own styling (cf. HlsPlayer.vue). */
 .dulo-stage {
   position: relative;
   width: 100%;
@@ -251,7 +236,7 @@ onBeforeUnmount(() => {
   width: 100%;
   height: auto;
   outline: none;
-  touch-action: none; /* forward touch drags to the remote instead of scrolling the panel */
+  touch-action: none;
   cursor: default;
 }
 .dulo-overlay {
@@ -270,7 +255,6 @@ onBeforeUnmount(() => {
 .dulo-overlay.good {
   color: var(--good);
 }
-/* A thin, non-blocking banner across the top of the stage (canvas stays clickable beneath it). */
 .dulo-banner {
   position: absolute;
   top: 0;
@@ -285,7 +269,7 @@ onBeforeUnmount(() => {
   font-size: var(--fs-xs);
   color: var(--text-0);
   background: rgba(0, 0, 0, 0.66);
-  pointer-events: none; /* never intercept clicks meant for the remote browser */
+  pointer-events: none;
 }
 .dulo-banner.good {
   color: var(--good);

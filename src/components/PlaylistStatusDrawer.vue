@@ -16,23 +16,13 @@ const props = defineProps<{ playlist: Playlist; channels: Channel[] }>();
 const emit = defineEmits<{
   (e: 'close'): void;
   (e: 'updated', patch: Partial<Playlist>): void;
-  // The server cascaded this playlist's tags onto its channels (applyTagsToChannels is on). Lets the parent
-  // screen re-fetch its channel list so the per-row tag pills refresh without a full reload.
   (e: 'channelsTagged'): void;
 }>();
 
 const baseDomain = computed(() => domain.value.replace(/\/$/, ''));
 
-// A "clone" (user-composed custom playlist, source==='clone') is custom-endpoint only and has NO live upstream,
-// so its Sync schedule is hidden and its `interval` stays 'none'. It DOES get a Compose-m3u schedule, though —
-// composeM3u recomposes its editable channel copies (the automatic twin of the manual "Compose m3u"); see
-// canComposeSchedule below. The global endpoint option stays hidden for a clone (custom-only).
 const isClone = computed(() => props.playlist.source === 'clone');
 
-// ── Per-playlist (Custom) proxy config (CFG/UICFG) ─────────────────────────────────────────────────────
-// The video engine applies the (Default) config to every playlist unless this playlist has its own override,
-// keyed app_<playlist.id> — which === the ?pl the composed M3U stamps for its channels (m3u/serialize.ts).
-// Toggling ON seeds the override as a copy of the current Default; toggling OFF deletes it (reverts to Default).
 const proxyConfigId = computed(() => `app_${props.playlist.id}`);
 const customProxy = ref(false);
 const proxyBusy = ref(false);
@@ -54,41 +44,16 @@ onMounted(async () => {
   customProxy.value = await customConfigExists(proxyConfigId.value);
 });
 
-// ── Automatic cron pickers (the shared FrequencyBuilder, same as the EPG source Edit drawer) ──────────
-// Two independent jobs for the (Default) source playlist's source id (id === source), distinguished by
-// targetType — each is its own cronjobs doc / _id ("<targetType>:<targetId>"), so the cadences never collide:
-//   • Sync schedule — targetType 'playlist'; the scheduler runs the source live-sync (the same work as the
-//     manual "Sync now").
-//   • Compose m3u — targetType 'playlist-m3u'; the scheduler recomposes the playlist's stream-ready m3u
-//     export (the same work as the manual "Compose m3u" — mirrors the EPG-XML compose schedule).
-// Which playlists can be SYNC-scheduled (cronTarget), and against WHAT cron targetId:
-//   • A (Default) SOURCE playlist (registry-backed; id === source) → its source/id (syncLive + composeM3u).
-//   • A custom playlist WITH a live upstream — 'url' (re-fetch the stored remoteUrl) or 'hdhomerun' (re-fetch
-//     the device lineup) → its own playlist id (the custom-playlists sync + composeM3u both key by id).
-//   • A clone (source==='clone'), a static 'file' import, or a source-unset (legacy/mock) playlist → NO SYNC
-//     target (nothing to live-sync). This hides the Sync builder (canSchedule → false).
-// The cron targetId is the playlist ID for every schedulable playlist (for a source playlist id === source,
-// so syncLive/composeM3u still receive the source id; for a custom playlist the scheduler resolves its type).
-// The custom-playlist source TYPE TAGs ('clone'/'file'/'url'/'hdhomerun'/'local'/legacy 'import') discriminate
-// an import from a registry-backed (Default) source playlist; only 'url'/'hdhomerun'/'local' have a re-syncable
-// upstream ('local' = a Local Now market re-fetch, which also has an auto-provisioned hourly schedule).
 const CUSTOM_TYPE_TAGS = new Set(['clone', 'file', 'url', 'hdhomerun', 'local', 'import']);
 const SCHEDULABLE_CUSTOM = new Set(['url', 'hdhomerun', 'local']);
 const cronTarget = computed<string | null>(() => {
   const src = props.playlist.source;
   if (!src) return null;
-  // A custom-type import → schedulable only if it has a live upstream ('url'/'hdhomerun').
   if (CUSTOM_TYPE_TAGS.has(src)) return SCHEDULABLE_CUSTOM.has(src) ? props.playlist.id : null;
-  // A (Default) source playlist (registry-backed, id === source) → always schedulable, regardless of endpoint.
   return props.playlist.id;
 });
 const canSchedule = computed(() => !!cronTarget.value);
 
-// Compose-m3u is schedulable for a SUPERSET of the sync-schedulable playlists: every sync-schedulable playlist
-// PLUS a clone. A clone has no live upstream to sync, but it DOES produce a stream-ready m3u export from its
-// editable channel copies, so composeM3u(id) is meaningful — the automatic twin of the manual "Compose m3u".
-// A static 'file' import or a source-unset legacy row still gets no compose schedule (nothing to recompose on a
-// cadence). The compose cron keys by the playlist id, same as the sync cron.
 const composeTarget = computed<string | null>(() => cronTarget.value ?? (isClone.value ? props.playlist.id : null));
 const canComposeSchedule = computed(() => !!composeTarget.value);
 
@@ -103,25 +68,19 @@ const existingM3uJob = computed<CronJob | null>(() =>
     : null,
 );
 
-// Sync schedule builder state (compiled to a cron string at save time; the UI lives in FrequencyBuilder).
 const isAuto = ref(false);
 const freq = reactive<CronFrequency>(defaultFrequency());
 const rawCron = ref('0 */6 * * *');
 const cron = computed(() => buildCron(freq, rawCron.value));
 
-// Compose-m3u schedule builder state (independent from the sync builder).
 const m3uIsAuto = ref(false);
 const m3uFreq = reactive<CronFrequency>(defaultFrequency());
 const m3uRawCron = ref('0 */6 * * *');
 const m3uCron = computed(() => buildCron(m3uFreq, m3uRawCron.value));
 
-// Save lifecycle for the schedule writes — surfaced in the footer so a failed save is visible instead of
-// silently swallowed (the drawer stays open on error, mirroring the EPG source Edit drawer).
 const saving = ref(false);
 const error = ref('');
 
-// Only forward a timezone the browser recognizes as a valid IANA zone — an unrecognized string makes
-// croner throw on construction server-side, so the job registers as errored and never fires.
 function safeTimezone(): string | null {
   const tz = timezone.value;
   if (!tz) return null;
@@ -133,7 +92,6 @@ function safeTimezone(): string | null {
   }
 }
 
-// Hydrate both builders from their existing cron jobs (so re-opening shows the saved schedules).
 onMounted(() => {
   const job = existingJob.value;
   if (job) {
@@ -149,9 +107,6 @@ onMounted(() => {
   }
 });
 
-// Persist one schedule (Automatic upserts the cron job, Manual deletes it). The (targetType, target) pair
-// is the job's identity — the sync and compose jobs share the target id but differ by targetType, so each
-// is its own cronjobs doc.
 async function putOrDeleteJob(targetType: string, target: string, isAuto: boolean, cronExpr: string, frequency: CronFrequency): Promise<void> {
   const path = `/api/cronjobs/${encodeURIComponent(target)}?targetType=${encodeURIComponent(targetType)}`;
   if (isAuto) {
@@ -169,29 +124,19 @@ async function putOrDeleteJob(targetType: string, target: string, isAuto: boolea
     if (!res.ok) throw new Error('schedule save failed');
   } else {
     const res = await fetch(path, { method: 'DELETE' });
-    // DELETE is idempotent — a 404 (no existing job) is expected when an already-Manual schedule is saved;
-    // any other non-2xx is a real failure worth surfacing.
     if (!res.ok && res.status !== 404) throw new Error('schedule delete failed');
   }
 }
 
-// Persist both schedules, mirror the friendly sync label onto the playlist row, then refresh the store.
-// Returns true on success; on failure sets `error` and returns false so the caller keeps the drawer open.
 async function saveSchedule(): Promise<boolean> {
   const syncTarget = cronTarget.value;
   const composeTgt = composeTarget.value;
-  if (!syncTarget && !composeTgt) return true; // nothing schedulable (e.g. a static 'file' import)
+  if (!syncTarget && !composeTgt) return true;
   error.value = '';
   saving.value = true;
   try {
-    // The sync + compose jobs are independent docs (own _id per targetType), so each is written only when its
-    // target applies. A clone has just a compose target (no upstream to sync) → only the 'playlist-m3u' job.
     if (syncTarget) await putOrDeleteJob('playlist', syncTarget, isAuto.value, cron.value, freq);
     if (composeTgt) await putOrDeleteJob('playlist-m3u', composeTgt, m3uIsAuto.value, m3uCron.value, m3uFreq);
-    // Mirror the friendly sync-schedule label + auto flag onto the playlist row (the EPG posture) so the
-    // stored interval stays accurate — ONLY when a sync schedule applies. A clone is compose-only and carries
-    // interval 'none'; it has no sync cadence to mirror, so its row field is left untouched. The compose chip
-    // derives live from the cron job (reloadCronjobs below refreshes it), so no playlist patch is needed for it.
     if (syncTarget) {
       const patch: Partial<Playlist> = {
         interval: isAuto.value ? summarizeFrequency(freq, cron.value) : 'manual',
@@ -216,7 +161,6 @@ async function saveSchedule(): Promise<boolean> {
 }
 
 async function done(): Promise<void> {
-  // Flush any pending debounced writes (name / custom path) so a fast Done doesn't drop the last edit.
   if (nameTimer) { clearTimeout(nameTimer); nameTimer = null; }
   if (pathTimer) { clearTimeout(pathTimer); pathTimer = null; }
   const trimmed = name.value.trim();
@@ -224,15 +168,10 @@ async function done(): Promise<void> {
   if (await saveSchedule()) emit('close');
 }
 
-// Local editable state, seeded from the persisted playlist doc. Changes PUT back to the API and emit
-// 'updated' so the parent refreshes. endpoint/state/url are the persisted fields (no more SPA-local store).
 const active = ref(props.playlist.state !== false);
-// Endpoint hosting mode — canonical LOWERCASE value ('global' | 'custom'), persisted via PUT.
 const mode = ref<'global' | 'custom'>(props.playlist.endpoint === 'custom' ? 'custom' : 'global');
 const customPath = ref(initialCustomPath());
 
-// Editable display name — a rename that persists via PUT /api/playlists/:id (does NOT change the id/url).
-// Debounced like the custom path so each keystroke doesn't fire a write; also flushed on Done.
 const name = ref(props.playlist.name);
 let nameTimer: ReturnType<typeof setTimeout> | null = null;
 function onName(v: string) {
@@ -244,9 +183,6 @@ function onName(v: string) {
   }, 400);
 }
 
-// Strip a trailing dotted filename segment + leading/trailing slashes (mirrors the server's
-// normalizeEndpointPath in server/src/m3u/paths.ts): 'MyList/playlist.m3u' → 'MyList', '/a/b/' → 'a/b'.
-// Per-user files are served as <domain>/<customPath>/<username>-<slug>.m3u, so the path is a bare directory.
 function normalizeCustomSegment(raw: string): string {
   const segs = (raw ?? '').split('/').filter(Boolean);
   if (segs.length && segs[segs.length - 1].includes('.')) segs.pop();
@@ -267,8 +203,6 @@ function initialCustomPath(): string {
   return '';
 }
 
-// The hosted url for the current selection: Global = the bare operator domain (the per-user Global files
-// are served FLAT at <domain>/<username>-<slug>.m3u); Custom = domain + normalized directory segment.
 const hostedUrl = computed(() => {
   if (mode.value === 'custom') {
     const seg = normalizeCustomSegment(customPath.value);
@@ -288,15 +222,10 @@ async function save(patch: Partial<Playlist>): Promise<void> {
       body: JSON.stringify(patch),
     });
     if (res.ok) {
-      emit('updated', patch); // instant optimistic feedback for the parent's own bound row
-      // The server CANONICALIZES `url` for the effective endpoint (bare domain for Global, <domain>/<path>
-      // for Custom) and reconciles the on-disk exports. Re-pull the shared PLAYLISTS store so every screen
-      // derived from it (list, detail header, Dashboard, Users copyable URLs) shows the canonical value
-      // without a full page reload — and no manual Compose. Non-fatal.
+      emit('updated', patch);
       void reloadPlaylists();
     }
   } catch {
-    /* best-effort; the UI keeps the optimistic local value */
   }
 }
 
@@ -305,19 +234,13 @@ function setActive(v: boolean) {
   save({ state: v });
 }
 
-// Custom tag assignment — persisted immediately (like the other drawer fields). The optimistic `emit('updated')`
-// inside save() updates the parent's bound row so the magenta pills refresh without a refetch.
 const tags = ref<string[]>([...(props.playlist.tags ?? [])]);
 function onTags(v: string[]) {
   tags.value = v;
   save({ tags: v });
-  // When "Apply to all channels" is on, the server additively re-pushes these tags onto every channel; ask
-  // the parent to re-fetch channels so the table's per-row tag pills reflect the cascade.
   if (applyTags.value) emit('channelsTagged');
 }
 
-// Persistent "cascade these tags onto every channel" flag. Turning it ON triggers the server cascade now (and
-// re-runs on every future tag edit while on); OFF just stops future propagation (existing channel tags stay).
 const applyTags = ref(!!props.playlist.applyTagsToChannels);
 function setApplyTags(v: boolean) {
   applyTags.value = v;
@@ -355,7 +278,6 @@ function onCustomPath(v: string) {
       </div>
 
       <div class="drawer-body">
-        <!-- EPG summary (informational) — the matched/unmatched split for this playlist's channels. -->
         <div style="display: grid; gap: 8px;">
           <div class="row" style="gap: 10px; padding: 8px 12px; border: 1px solid var(--hairline); border-radius: 8px; background: var(--bg-2);">
             <Icon name="check" :size="13" style="color: var(--good);" />
@@ -373,7 +295,6 @@ function onCustomPath(v: string) {
 
         <div class="divider" />
 
-        <!-- ① Name + State — side by side on one row. -->
         <div class="form-grid-2">
           <div class="form-row">
             <div class="field-lbl">Name</div>
@@ -393,9 +314,6 @@ function onCustomPath(v: string) {
           </div>
         </div>
 
-        <!-- ② Sync schedule — the shared FrequencyBuilder, same as the EPG source Edit drawer. Only playlists
-             with a live upstream to re-fetch can be sync-scheduled (a source-backed playlist, or a
-             'url'/'hdhomerun'/'local' custom import). A clone / static 'file' import has nothing to sync. -->
         <template v-if="canSchedule">
           <div class="divider" />
           <FrequencyBuilder :freq="freq" v-model:auto="isAuto" v-model:rawCron="rawCron"
@@ -403,8 +321,6 @@ function onCustomPath(v: string) {
                             manualHint="Synced manually only. Switch to Automatic to refresh this playlist on a schedule." />
         </template>
 
-        <!-- ②b Compose-m3u schedule — the automatic twin of the manual "Compose m3u". Shown for every
-             sync-schedulable playlist PLUS a clone (no upstream, but it still recomposes its m3u export). -->
         <template v-if="canComposeSchedule">
           <div class="divider" />
           <FrequencyBuilder :freq="m3uFreq" v-model:auto="m3uIsAuto" v-model:rawCron="m3uRawCron"
@@ -414,7 +330,6 @@ function onCustomPath(v: string) {
 
         <div class="divider" />
 
-        <!-- ③ Endpoint -->
         <div class="form-row">
           <div class="field-lbl">Endpoint</div>
           <div style="display: grid; gap: 8px;">
@@ -446,12 +361,9 @@ function onCustomPath(v: string) {
 
         <div class="divider" />
 
-        <!-- Custom tags -->
         <div class="form-row">
           <div class="field-lbl">Tags</div>
           <TagPicker :model-value="tags" @update:model-value="onTags" />
-          <!-- Persistent cascade toggle: push these tags onto every channel in this playlist, and keep them
-               in sync as the tags change (additive — a channel's own tags are preserved). -->
           <div class="row" style="align-items: center; gap: 10px; margin-top: 12px;">
             <div style="flex: 1;">
               <div class="field-lbl" style="margin: 0;">Apply to all channels</div>
@@ -467,7 +379,6 @@ function onCustomPath(v: string) {
 
         <div class="divider" />
 
-        <!-- ④ Video proxy engine (Custom per-playlist override) -->
         <div class="form-row">
           <div class="row" style="align-items: center; gap: 10px;">
             <div style="flex: 1;">

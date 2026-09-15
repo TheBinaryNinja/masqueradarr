@@ -5,22 +5,10 @@ import CopyConfirmModal from './CopyConfirmModal.vue';
 import { useCopyConfirm } from '../composables/useCopyConfirm';
 import type { PublishedGroup } from '../composables/usePublishedUrls';
 
-// Self-contained "Published URLs" renderer: one grouped .url-card per playlist (header = name + Global/Custom
-// badge; two compact rows labelled "M3U" / "EPG / Guide", each an input + copy button), PLUS the shared
-// copy-confirmation modal. A consumer drops in `<PublishedUrlGroups :groups :layout />` and gets cards + copy
-// + modal for free — the copy state machine (clipboard write, XMLTV note, in-modal EPG follow-up, Esc/overlay/
-// OK dismissal) lives in useCopyConfirm and is owned here, not duplicated per screen.
-//
-//   layout='stack' — the admin vertical layout EXACTLY (cards stacked top-to-bottom). Default.
-//   layout='grid'  — a responsive horizontal grid of cards (the Dashboard layout).
-//   showUrls=false — header-only cards (name + kind badge, no URL rows/copy); used by the Users > Edit
-//                    "Playlist Access" list. Default true (the Dashboard shows the URLs).
 withDefaults(
     defineProps<{
         groups: PublishedGroup[];
         layout?: 'stack' | 'grid';
-        // false → header-only cards (name + kind badge, no URL rows / copy). The Users > Edit "Playlist Access"
-        // list uses this to show assignment only; the Dashboard keeps the default (URLs shown).
         showUrls?: boolean;
     }>(),
     { layout: 'stack', showUrls: true },
@@ -76,13 +64,11 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
 </template>
 
 <style scoped>
-/* stack: the admin vertical layout — cards top-to-bottom with the same 12px gutter the drawer used. */
 .url-groups.stack {
     display: flex;
     flex-direction: column;
     gap: 12px;
 }
-/* grid: a responsive horizontal grid — cards flow into as many columns as fit (min 280px each). */
 .url-groups.grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
@@ -108,8 +94,6 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     color: var(--text-1);
     text-overflow: ellipsis;
 }
-/* One grouped card per published playlist — surface + border + padding separate it from its siblings, so the
-   header (name + kind badge) is the grouping cue and its two short-labelled rows read as a single block. */
 .url-card {
     display: flex;
     flex-direction: column;
@@ -127,8 +111,6 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     border-bottom: 1px solid var(--hairline);
     color: var(--text-2);
 }
-/* header-only (Users > Edit "Playlist Access"): a bare playlist card — no URL rows — so drop the header's
-   divider + bottom padding that exist only to separate it from the fields below. */
 .url-card.header-only {
     gap: 0;
 }

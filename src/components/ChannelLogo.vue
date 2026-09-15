@@ -2,9 +2,6 @@
 import { ref } from 'vue';
 import type { Channel } from '../data';
 const props = defineProps<{ ch: Channel; size?: '' | 'lg' }>();
-// Source playlists (dulo/common) provide a real logo URL; fall back to the derived initials tile
-// (also used for dlhd, which has no logos, and all legacy channels). If the image fails to load,
-// fall back to initials too.
 const broken = ref(false);
 </script>
 <template>

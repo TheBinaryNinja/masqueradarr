@@ -1,11 +1,4 @@
 <script setup lang="ts">
-// UplEpgStrip — the "what's on" panel docked directly under the picture: the programme now airing (with its
-// elapsed bar, description and episode/rating detail) followed by a short list of what's next.
-//
-// Reads the RICH guide lane (useUplData.stripPrograms), which is fetched with ?rich=1 for the single channel
-// being watched — that is where shortDesc / episodeTitle / season / episode / rating come from. Those fields
-// are Gracenote-only, so every one of them is rendered conditionally; a source without them degrades to
-// title + time and still looks deliberate.
 import { computed } from 'vue';
 import type { Program } from '../data';
 import { now, nowNext, progressOf, fmtClock, fmtRemaining, fmtEpisode } from './useUplData';
@@ -19,7 +12,6 @@ const pct = computed(() => Math.round(progressOf(live.value, now.value) * 100));
 
 <template>
   <div class="upl-strip">
-    <!-- Unmapped channel: say why there's nothing rather than showing an empty shell. -->
     <div v-if="!hasEpgLink" class="upl-strip-empty mono">
       No guide data — this channel isn't linked to an EPG source.
     </div>
@@ -57,8 +49,6 @@ const pct = computed(() => Math.round(progressOf(live.value, now.value) * 100));
 </template>
 
 <style scoped>
-/* Self-contained panel in a standalone window — no app shell to inherit from, so the layout lives here.
-   Colours/typography all come from the global --mq-* tokens. */
 .upl-strip {
   flex: 0 0 auto;
   padding: 10px 14px;

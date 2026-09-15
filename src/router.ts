@@ -20,7 +20,6 @@ const routes: RouteRecordRaw[] = [
 export const router = createRouter({ history: createWebHashHistory(), routes });
 
 router.beforeEach(async (to, _from, next) => {
-    // 1. Check if first-run setup is required
     if (needsSetup.value === null) {
         await checkSetup();
     }
@@ -34,7 +33,6 @@ router.beforeEach(async (to, _from, next) => {
         return next('/login');
     }
 
-    // 2. Fetch user profile if token is present but profile is not loaded
     if (token.value && !currentUser.value) {
         const success = await fetchMe();
         if (!success) {
@@ -47,7 +45,6 @@ router.beforeEach(async (to, _from, next) => {
 
     const loggedIn = !!currentUser.value;
 
-    // 3. Enforce login route protection
     if (!loggedIn) {
         if (to.path !== '/login') {
             return next('/login');
@@ -59,7 +56,6 @@ router.beforeEach(async (to, _from, next) => {
         return next('/dashboard');
     }
 
-    // 4. Enforce User role restriction (only allowed to view dashboard)
     if (currentUser.value?.role === 'user') {
         if (to.path !== '/dashboard') {
             return next('/dashboard');

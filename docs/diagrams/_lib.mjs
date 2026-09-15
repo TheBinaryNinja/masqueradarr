@@ -1,28 +1,20 @@
-/**
- * Shared drawing primitives for the masqueradarr README diagrams.
- * Palette + type scale are lifted straight from `src/styles.css` so the docs
- * and the SPA stay in visual lockstep.
- */
 
 export const C = {
-  // surfaces (--mq-*)
-  bg: '#0C0F11',       // --mq-obsidian
+  bg: '#0C0F11',
   carbon: '#13181A',
   slate: '#1A2124',
-  card: '#171D20',     // between carbon + slate
+  card: '#171D20',
   steel: '#232B2F',
   bracket: '#2A3236',
   lane: '#0F1416',
-  // ink
-  dim: '#5E696E',      // --mq-dim
-  ash: '#9AA5AA',      // --mq-ash
-  mist: '#E9EDEE',     // --mq-mist
-  // signal
-  teal: '#48D7FE',     // --mq-teal
+  dim: '#5E696E',
+  ash: '#9AA5AA',
+  mist: '#E9EDEE',
+  teal: '#48D7FE',
   tealDeep: '#1FAEDB',
-  amber: '#F7B83D',    // --warn
-  green: '#5FD37F',    // --good
-  risk: '#E0564B',     // --mq-risk
+  amber: '#F7B83D',
+  green: '#5FD37F',
+  risk: '#E0564B',
 };
 
 export const F_SANS = "'Space Grotesk','Inter',ui-sans-serif,system-ui,-apple-system,'Segoe UI',Roboto,sans-serif";
@@ -33,7 +25,6 @@ const ARROW_COLORS = { teal: C.teal, amber: C.amber, green: C.green, risk: C.ris
 export const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 const n = (v) => Math.round(v * 100) / 100;
 
-/** Rough advance-width estimate; padding everywhere is generous enough to absorb the error. */
 export function measure(str, size, mono = false) {
   return String(str).length * size * (mono ? 0.6 : 0.55);
 }
@@ -45,7 +36,6 @@ export function text(x, y, s, { fill = C.ash, size = 10.4, weight = 400, anchor 
     + `${opacity !== 1 ? ` opacity="${opacity}"` : ''}>${esc(s)}</text>`;
 }
 
-/** Orthogonal polyline with rounded corners. */
 export function polyPath(pts, r = 9) {
   let d = `M ${n(pts[0][0])} ${n(pts[0][1])}`;
   for (let i = 1; i < pts.length - 1; i++) {
@@ -69,7 +59,6 @@ export function edge(pts, { color = 'dim', dash = 0, width = 1.5, head = 'end', 
     + `${dash ? ` stroke-dasharray="${dash}"` : ''} stroke-linecap="round"${marker}${back} opacity="${dash ? 0.75 : 0.9}"/>`;
 }
 
-/** Opaque label that sits on top of an edge so the line never runs through the type. */
 export function pill(cx, cy, label, { color = C.ash, size = 9.6, mono = true, fill = C.bg } = {}) {
   const lines = Array.isArray(label) ? label : [label];
   const w = Math.max(...lines.map((l) => measure(l, size, mono))) + 18;
@@ -100,10 +89,6 @@ function badgeRow(x, y, badges, color) {
   return out;
 }
 
-/**
- * The one node primitive every diagram uses: left accent rail, title, meta lines,
- * optional badge chips.
- */
 export function card({ x, y, w, title, titleMono = false, titleRight, sub = [], subMono = false, rail = C.dim, badges = [], minH, fill = C.card, titleColor = C.mist, dashed = false }) {
   const h = Math.max(cardHeight({ sub, badges }), minH || 0);
   const tx = x + 18;
@@ -118,9 +103,7 @@ export function card({ x, y, w, title, titleMono = false, titleRight, sub = [], 
   return { svg: out + `</g>`, h, cx: x + w / 2, cy: y + h / 2, bottom: y + h, right: x + w };
 }
 
-/** Dashed container with a fieldset-style legend chip riding the top border. */
 export function lane({ x, y, w, h, label, color = C.dim, fill = C.lane }) {
-  // label is uppercase + letter-spaced, so the generic sans estimate under-measures it
   const lw = label.length * (9 * 0.64 + 1.3) + 22;
   return `<g>`
     + `<rect x="${n(x)}" y="${n(y)}" width="${n(w)}" height="${n(h)}" rx="12" fill="${fill}" stroke="${C.steel}" stroke-width="1" stroke-dasharray="5 4"/>`
@@ -135,7 +118,6 @@ export function diamond(cx, cy, w, h, label, { color = C.teal } = {}) {
     + text(cx, cy + 3.8, label, { fill: C.mist, size: 10.8, weight: 600, anchor: 'middle' }) + `</g>`;
 }
 
-/** Numbered step marker used by the composition funnel. */
 export function step(cx, cy, num, color = C.teal) {
   return `<g><circle cx="${n(cx)}" cy="${n(cy)}" r="10" fill="${C.bg}" stroke="${color}" stroke-opacity="0.55" stroke-width="1.2"/>`
     + text(cx, cy + 3.5, num, { fill: color, size: 10, weight: 600, anchor: 'middle', mono: true }) + `</g>`;

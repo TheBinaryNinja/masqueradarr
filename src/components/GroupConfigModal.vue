@@ -6,14 +6,10 @@ import Pill from './Pill.vue';
 import ChannelLogo from './ChannelLogo.vue';
 import { saveFailoverGroup, disbandFailoverGroup, type Channel, type FailoverGroupResult } from '../data';
 
-// Failover-group configuration: one PARENT (the exported, served channel) + ordered CHILDREN (hidden
-// backups tried in order when the parent's stream fails to establish). Opened from the detail screen's
-// selection toolbar as an inline .modal-bg/.modal block (same pattern as its Create/Append modals —
-// non-nested, so no Teleport needed). Children inherit the parent's EPG identity at save (server-side).
 const props = defineProps<{
   source: string;
-  channels: Channel[]; // the toolbar selection
-  allChannels: Channel[]; // the playlist's full channel list — pulls in unselected members of an existing group
+  channels: Channel[];
+  allChannels: Channel[];
 }>();
 const emit = defineEmits<{
   (e: 'close'): void;
@@ -21,9 +17,6 @@ const emit = defineEmits<{
   (e: 'disbanded', groupId: string): void;
 }>();
 
-// Anchor group: the FIRST existing failoverGroupId in the selection (editing that group); null = a new
-// group. Membership = the selection ∪ the anchor group's existing members (so opening the modal on just
-// the parent never silently drops the unselected children — the save endpoint clears absent members).
 const groupId: string | null = props.channels.find((c) => c.failoverGroupId)?.failoverGroupId ?? null;
 const members: Channel[] = (() => {
   const byId = new Map(props.channels.map((c) => [c.id, c]));
@@ -35,8 +28,6 @@ const members: Channel[] = (() => {
   return [...byId.values()];
 })();
 
-// Members of OTHER groups: a foreign CHILD is movable (badged, its donor group is reconciled server-side);
-// a foreign PARENT blocks Save (mirrors the server 409 — that group must be disbanded first).
 function isForeign(c: Channel): boolean {
   return !!c.failoverGroupId && c.failoverGroupId !== groupId;
 }
@@ -49,8 +40,6 @@ const initialParent =
 const parentId = ref(initialParent?.id ?? '');
 const parent = computed(() => members.find((c) => c.id === parentId.value) ?? null);
 
-// Ordered child list: the anchor group's existing children first (by failoverOrder), then the rest of the
-// selection in its given order. Drag to reorder; order persists on Save (failoverOrder = index).
 const children = ref<Channel[]>(
   (() => {
     const rest = members.filter((c) => c.id !== parentId.value);
@@ -62,7 +51,6 @@ const children = ref<Channel[]>(
   })(),
 );
 
-// Promote a child: the ex-parent rejoins the child list at the promoted row's position.
 function setParent(c: Channel) {
   const oldParent = parent.value;
   const idx = children.value.findIndex((x) => x.id === c.id);
@@ -72,7 +60,6 @@ function setParent(c: Channel) {
   children.value = next;
 }
 
-// ── Drag-to-reorder (native HTML5 DnD — the EPGSourcesScreen handler trio on the local child array) ──
 const dragIndex = ref<number | null>(null);
 const overIndex = ref<number | null>(null);
 
@@ -80,13 +67,12 @@ function onDragStart(i: number, e: DragEvent) {
   dragIndex.value = i;
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move';
-    // A payload is required for the drag to initiate in some browsers (Firefox).
     e.dataTransfer.setData('text/plain', String(i));
   }
 }
 function onDragOver(i: number, e: DragEvent) {
   if (dragIndex.value === null) return;
-  e.preventDefault(); // allow the drop
+  e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
   if (i !== overIndex.value) overIndex.value = i;
 }

@@ -1,13 +1,4 @@
 <script setup lang="ts">
-// Reusable tag-assignment control: toggle chips over the shared TAGS registry (magenta when selected), plus
-// an inline "create a tag" input (create-on-the-fly, like GroupPicker's allow-create). v-model is the
-// record's tag-id array. Used in the playlist / channel / EPG edit surfaces. Self-contained; reads the global
-// TAGS store directly so it works standalone.
-//
-// Tri-state (opt-in): when the `partial` prop is passed (bulk editor over a heterogeneous selection), a chip
-// renders in three states — on (in modelValue), partial (in `partial`, i.e. on SOME of the selection), off —
-// and the component becomes fully controlled: clicks emit `toggle` and creates emit `create`, letting the
-// parent own the on/partial/off cycle. Without `partial` it stays a plain binary v-model control (unchanged).
 import { ref, computed } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
@@ -20,17 +11,14 @@ const emit = defineEmits<{
   (e: 'create', id: string): void;
 }>();
 
-// Tri-state mode is active whenever the parent supplies a `partial` list (even if empty).
 const triState = computed(() => props.partial !== undefined);
 const selected = computed(() => new Set(props.modelValue ?? []));
 const partialSet = computed(() => new Set(props.partial ?? []));
-// on wins over partial; partial only shows when not selected.
 function isPartial(id: string) {
   return !selected.value.has(id) && partialSet.value.has(id);
 }
 
 function onChip(id: string) {
-  // Tri-state: parent owns the cycle. Binary: toggle in/out of the selected set (unchanged behavior).
   if (triState.value) {
     emit('toggle', id);
     return;
@@ -48,11 +36,9 @@ async function addNew() {
   creating.value = true;
   err.value = '';
   try {
-    // Reuse an existing same-name tag (case-insensitive) instead of erroring, then select it.
     const existing = TAGS.value.find((t) => t.name.toLowerCase() === name.toLowerCase());
     const tag = existing ?? (await createTag(name));
     newName.value = '';
-    // Tri-state: let the parent force the tag "on" (add to all). Binary: append to the selected set.
     if (triState.value) {
       emit('create', tag.id);
     } else if (!(props.modelValue ?? []).includes(tag.id)) {
@@ -119,7 +105,6 @@ async function addNew() {
   border-color: oklch(0.72 0.18 340 / 0.5);
   color: oklch(0.8 0.16 340);
 }
-/* Tri-state "on some" — a dimmed, dashed magenta chip with an indeterminate-style dash marker. */
 .tag-chip.partial {
   background: oklch(0.72 0.18 340 / 0.05);
   border-color: oklch(0.72 0.18 340 / 0.4);

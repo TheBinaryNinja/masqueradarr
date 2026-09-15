@@ -1,7 +1,4 @@
 <script setup lang="ts">
-// masqueradarr monogram — the single canonical mark.
-// One path, inherits currentColor. Never redraw, stretch, rotate, or recolor
-// off-brand. See .claude/skills/masqueradarr-logotype §1.
 defineProps<{
   size?: number | string;
   color?: string;

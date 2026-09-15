@@ -1,13 +1,4 @@
 <script setup lang="ts">
-// Playlist Domain / Configuration (Settings → Advanced). One raw JSON document holds every per-source knob for
-// DaddyLive, Dulo.tv and ZLive — `enable` (false hides the source from the Add Playlist picker and hides its
-// Settings card; existing playlists keep working), `domain` (the site the provider runs on) and the source's own
-// `extendedProperties`. The server's strict validator (server/src/sources/core/playlistConfig.ts) is the
-// authority: it normalizes domains and lists every problem, path-prefixed, which this panel shows verbatim.
-//
-// Saved explicitly, as a whole (never auto-persisted): a changed dulo domain signs the dulo session out
-// server-side, and a changed zlive domain resets its resolver. Test probes every listed domain with the editor's
-// CURRENT text — saved or not — and persists nothing.
 
 import { ref, computed, watch, onMounted } from 'vue';
 import Icon from './Icon.vue';
@@ -25,12 +16,10 @@ const pretty = (v: unknown): string => JSON.stringify(v, null, 2);
 
 const savedText = computed(() => pretty(playlistConfig.value));
 const text = ref(savedText.value);
-// Settings hydrate asynchronously at app boot; adopt the stored config unless the operator is mid-edit.
 watch(savedText, (next, prev) => {
   if (text.value === prev) text.value = next;
 });
 
-// ── Parse (client side: syntax only — the server validates the shape) ──────────────────────────────
 interface ParseState {
   ok: boolean;
   value?: unknown;
@@ -39,8 +28,6 @@ interface ParseState {
   col: number | null;
 }
 
-// JSON.parse messages differ per engine: V8 says "… in JSON at position N (line L column C)", Firefox
-// "JSON.parse: … at line L column C of the JSON data", Safari gives no position at all.
 function describeJsonError(src: string, err: Error): ParseState {
   const msg = err.message;
   let line: number | null = null;
@@ -71,15 +58,12 @@ const parsed = computed<ParseState>(() => {
   }
 });
 
-// Grow with the document (no inner scroll for a config this size), within sane bounds.
 const editorRows = computed(() => Math.min(40, Math.max(10, text.value.split('\n').length + 1)));
 
-// Whitespace-only edits are not changes.
 const dirty = computed(() =>
   parsed.value.ok ? pretty(parsed.value.value) !== savedText.value : text.value !== savedText.value,
 );
 
-// ── Server feedback ─────────────────────────────────────────────────────────────────────────────────
 const serverErrors = ref<string[]>([]);
 const serverError = ref<string | null>(null);
 watch(text, () => {
@@ -87,18 +71,14 @@ watch(text, () => {
   serverError.value = null;
 });
 
-// ── dulo sign-out guard ─────────────────────────────────────────────────────────────────────────────
-// A session belongs to the site it was captured on, so saving a CHANGED dulo domain signs it out. Warn first.
 const duloSignedIn = ref(false);
 async function refreshDuloStatus(): Promise<void> {
   try {
     const res = await fetch('/api/sources/dulo/status');
     if (res.ok) duloSignedIn.value = !!((await res.json()) as { signedIn?: boolean } | null)?.signedIn;
   } catch {
-    /* transient — the guard just stays as it was */
   }
 }
-// Mirrors the server's normalizer (strip scheme/path/port, lowercase) so "https://Dulo.GD/" is not a change.
 function cleanDomain(v: string): string {
   return v
     .trim()
@@ -114,7 +94,6 @@ const duloDomainChanging = computed(() => {
 });
 const signsOutDulo = computed(() => dirty.value && duloDomainChanging.value && duloSignedIn.value);
 
-// ── Save / Revert ───────────────────────────────────────────────────────────────────────────────────
 const saveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 async function save(): Promise<void> {
   if (!parsed.value.ok || !dirty.value || saveState.value === 'saving') return;
@@ -127,7 +106,7 @@ async function save(): Promise<void> {
     setTimeout(() => (saveState.value = 'idle'), 2200);
     return;
   }
-  text.value = savedText.value; // adopt the server's canonical form (normalized domains, filled defaults)
+  text.value = savedText.value;
   saveState.value = 'saved';
   void refreshDuloStatus();
   setTimeout(() => (saveState.value = 'idle'), 2200);
@@ -136,7 +115,6 @@ function revert(): void {
   text.value = savedText.value;
 }
 
-// ── Test ────────────────────────────────────────────────────────────────────────────────────────────
 const testing = ref(false);
 const results = ref<PlaylistConfigTestResult[] | null>(null);
 const testedAt = ref<string | null>(null);
@@ -165,7 +143,6 @@ function fmtTime(iso: string | null): string {
   return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString();
 }
 
-// Header status: unsaved edits > invalid JSON > in sync.
 const headerTone = computed(() => (!parsed.value.ok ? 'bad' : dirty.value ? 'warn' : 'good'));
 const headerLabel = computed(() => (!parsed.value.ok ? 'Invalid JSON' : dirty.value ? 'Unsaved changes' : 'Saved'));
 
@@ -197,7 +174,6 @@ onMounted(refreshDuloStatus);
       @keydown.ctrl.s.prevent="save"
     />
 
-    <!-- Always-mounted live region: the parse state, then any server-side validation errors. -->
     <div role="status" aria-live="polite" class="pc-feedback">
       <div v-if="!parsed.ok" class="pc-line bad">
         <Icon name="x" :size="12" />
@@ -237,7 +213,6 @@ onMounted(refreshDuloStatus);
       <span v-else-if="saveState === 'error'" style="color: var(--bad); font-size: var(--fs-xs);">Failed</span>
     </div>
 
-    <!-- Test results: one row per listed source. -->
     <div v-if="results" class="pc-results" aria-live="polite">
       <div class="muted pc-results-head">
         {{ passed }} of {{ results.length }} domains serving a catalog · tested {{ fmtTime(testedAt) }}
@@ -268,7 +243,6 @@ onMounted(refreshDuloStatus);
       </div>
     </div>
 
-    <!-- Property reference -->
     <details class="pc-ref">
       <summary class="muted">What the properties do</summary>
       <dl>

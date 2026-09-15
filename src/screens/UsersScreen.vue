@@ -20,11 +20,8 @@ const loading = ref(false);
 const error = ref('');
 const successMsg = ref('');
 
-// Drawer state
 const drawerOpen = ref(false);
 const editUserId = ref<string | null>(null);
-// The full row being edited — drives the right-hand published-URL / token-validation column. Null on Add
-// (a brand-new user has no slug/streamToken yet, so those read-outs only appear once the row exists).
 const editingUser = ref<User | null>(null);
 const formUsername = ref('');
 const formPassword = ref('');
@@ -33,14 +30,8 @@ const formTokenEnabled = ref(true);
 const formPlaylists = ref<string[]>([]);
 const formCustomPlaylists = ref<string[]>([]);
 
-// Playlist assignment moved to the Playlists screen's "Assign access" modal — this screen no longer edits the
-// access arrays. `formPlaylists` / `formCustomPlaylists` are still carried (loaded in openEdit, re-sent on save
-// untouched) so editing identity/role/token PRESERVES the user's existing access, and the right-hand Published
-// URLs column derives its read-only cards from them.
 
 onMounted(async () => {
-    // Load the shared users singleton (memoized — a re-visit reuses the in-memory list and stays live via the
-    // store's tvapp:users-changed reconcile).
     loading.value = true;
     try {
         await ensureUsers();
@@ -49,7 +40,6 @@ onMounted(async () => {
     } finally {
         loading.value = false;
     }
-    // Ensure playlists and custom playlists are loaded
     if (!PLAYLISTS.value.length) {
         reloadPlaylists().catch(() => {});
     }
@@ -102,8 +92,6 @@ async function saveUser() {
         return;
     }
 
-    // Complete, valid body. password is OMITTED when blank (PUT = no change); for create it's always present
-    // (guarded above). The shared store patches USERS in place + emits tvapp:users-changed on success.
     const payload = {
         username: formUsername.value.trim(),
         role: formRole.value,
@@ -145,11 +133,6 @@ async function deleteUser(user: User) {
     }
 }
 
-// The drawer's right column derives its published-URL cards from the SHARED usePublishedUrls() composable.
-// IMPORTANT — live-toggle: the card MEMBERSHIP must update as the admin checks/unchecks the access boxes,
-// while the URL IDENTITY (username/slug) comes from the row being edited. So we feed usePublishedUrls a
-// synthetic user that combines editingUser's identity with the LIVE form refs (formPlaylists /
-// formCustomPlaylists). Null until a real row is being edited (a brand-new user has no slug/streamToken yet).
 const publishedUrlUser = computed<PublishedUrlUser | null>(() => {
     const u = editingUser.value;
     if (!u) return null;
@@ -162,8 +145,6 @@ const publishedUrlUser = computed<PublishedUrlUser | null>(() => {
 });
 const publishedUrls = usePublishedUrls(publishedUrlUser);
 
-// Partial/masked view of the user's IPTV stream token so an admin can confirm it EXISTS without ever
-// rendering the full credential. Shows a short prefix + suffix with the middle masked.
 function maskToken(tok: string): string {
     if (!tok) return '—';
     if (tok.length <= 12) return `${tok.slice(0, 2)}••••`;
@@ -246,7 +227,6 @@ function formatTime(s: string) {
             </div>
         </div>
 
-        <!-- Slide-out edit/add user drawer -->
         <div v-if="drawerOpen" class="drawer-overlay" @click="drawerOpen = false">
             <div class="drawer" @click.stop>
                 <header class="drawer-hdr">
@@ -256,7 +236,6 @@ function formatTime(s: string) {
 
                 <div class="drawer-body">
                     <div class="drawer-cols">
-                        <!-- Left column: account controls -->
                         <div class="drawer-col">
                             <div class="form-group">
                                 <label>Username</label>
@@ -294,8 +273,6 @@ function formatTime(s: string) {
                                 </div>
                             </div>
 
-                            <!-- IPTV Token (validation) — relocated under the token-state toggle (left column).
-                                 Read-only confirmation the credential exists; only meaningful once the row exists. -->
                             <div v-if="editingUser" class="form-group token-validation">
                                 <label>IPTV Token (validation)</label>
                                 <div class="row align-center" style="gap: 8px;">
@@ -307,10 +284,6 @@ function formatTime(s: string) {
                                 <span class="muted font-xs">Masked for security — confirms the token exists without exposing it.</span>
                             </div>
 
-                            <!-- Playlist assignment lives on the Playlists screen ("Assign access" modal); this
-                                 drawer no longer edits allowedPlaylists / allowedCustomPlaylists. The user's
-                                 existing access is preserved on save (formPlaylists/formCustomPlaylists carry it
-                                 untouched) and surfaced read-only via the Playlist Access column. -->
                             <div class="form-group access-note">
                                 <label>Assign access</label>
                                 <span class="muted font-xs">
@@ -321,18 +294,9 @@ function formatTime(s: string) {
                             </div>
                         </div>
 
-                        <!-- Right column: the "Playlist Access" list — the user's assigned playlists as bare
-                             cards (name + Global/Custom badge, no URL rows — :show-urls="false"), GROUPED one
-                             card per playlist. Global card first (only when the user holds the Global union),
-                             then one card per assigned Custom. Admins copy the actual per-playlist URLs from the
-                             Playlists screen → Get access. Only meaningful once the user row exists (a brand-new
-                             user has no slug/streamToken yet). -->
                         <div class="drawer-col">
                             <template v-if="editingUser">
                                 <label class="section-label">Playlist Access</label>
-                                <!-- Shared cards + copy + confirmation modal. Stack layout reproduces the
-                                     drawer's vertical column; membership updates live as the access boxes
-                                     toggle (publishedUrls is driven by the live form refs). -->
                                 <PublishedUrlGroups :groups="publishedUrls" layout="stack" :show-urls="false" />
                                 <div v-if="publishedUrls.length === 0" class="muted text-xs new-user-hint">
                                     No playlist access yet — grant it from the <strong>Playlists</strong> screen → <strong>Assign access</strong>.
@@ -425,7 +389,6 @@ function formatTime(s: string) {
     color: var(--bad);
 }
 
-/* Drawer overlays */
 .drawer-overlay {
     position: fixed;
     inset: 0;
@@ -436,8 +399,6 @@ function formatTime(s: string) {
     justify-content: flex-end;
 }
 .drawer {
-    /* Half-window panel — matches the established half-window drawer convention
-       (PlaylistStatusDrawer / EditEpgSourceDrawer: 50vw, min 440px), capped at 96vw. */
     width: 50vw;
     min-width: 440px;
     max-width: 96vw;

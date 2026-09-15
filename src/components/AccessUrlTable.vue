@@ -1,8 +1,6 @@
 <script lang="ts">
 import type { PublishedGroup } from '../composables/usePublishedUrls';
 
-// One user's published-URL rows, consumed by the dense "Get access" table. Exported from a plain <script>
-// block (a <script setup> cannot contain ES module exports) so GetAccessModal can type the rows it builds.
 export interface AccessUserRows {
     id: string;
     username: string;
@@ -17,12 +15,6 @@ import Pill from './Pill.vue';
 import CopyConfirmModal from './CopyConfirmModal.vue';
 import { useCopyConfirm } from '../composables/useCopyConfirm';
 
-// ── Dense "all users' published URLs" table ─────────────────────────────────────────────────────────────
-// Purpose-built for the "Get access" modal: a compact User | Playlist | M3U | EPG table that fits as many
-// users as possible in one view. Each user contributes one row per PublishedGroup (M3U + EPG/Guide pair);
-// the username cell is rowspan-merged across the user's groups so the playlist/URL columns stay dense. Copy
-// reuses the shared useCopyConfirm state machine (clipboard write + XMLTV note + Esc/overlay dismissal) so it
-// is identical to the Users screen — this component just renders compactly and owns the confirmation modal.
 
 defineProps<{ rows: AccessUserRows[] }>();
 
@@ -41,7 +33,6 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
                 </tr>
             </thead>
             <tbody v-for="r in rows" :key="r.id" class="user-block">
-                <!-- No-access user: a single muted row so the admin still sees who lacks URLs. -->
                 <tr v-if="r.groups.length === 0" class="no-access">
                     <td class="c-user">
                         <div class="user-cell">
@@ -127,12 +118,9 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     border-bottom: 1px solid var(--hairline);
     vertical-align: middle;
 }
-/* A subtle divider between users so blocks read as units. */
 .user-block + .user-block td {
     border-top: 2px solid var(--hairline-strong);
 }
-/* Percent widths + table-layout:fixed → columns scale with the modal and the table is always exactly the
-   container width, so it never overflows into a horizontal scrollbar. Both URL columns share .c-url → equal. */
 .c-user { width: 25%; }
 .c-pl { width: 21%; }
 .c-url { width: 27%; }
@@ -142,15 +130,12 @@ const { copyModal, copyFailed, copyPublishedUrl, copyModalEpg, closeCopyModal } 
     gap: 8px;
     min-width: 0;
 }
-/* Username + role pill inline on one line (mirrors the Playlist name + type-pill cell). */
 .user-meta {
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
 }
-/* Keep the role/type pill at its natural size so a long username/playlist name clips (ellipsis) instead
-   of squashing the pill. */
 .user-meta :deep(.pill),
 .pl-cell :deep(.pill) {
     flex: none;

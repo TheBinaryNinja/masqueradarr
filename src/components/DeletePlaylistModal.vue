@@ -5,12 +5,6 @@ import Btn from './Btn.vue';
 import { reloadPlaylists, reloadCustomPlaylists, reloadChannels, reloadEpgSources, type Playlist } from '../data';
 import { useToast } from '../composables/useToast';
 
-// Delete-confirm for a playlist — user-composed (clone/file/url/hdhomerun/local/legacy import) AND built-in
-// (Default) source playlists are deletable. The backend cascades: a custom playlist drops its channels +
-// per-user m3u files + access-list refs; a built-in additionally prunes its copies out of every clone (by
-// `origin`) and removes its playlist-bound EPG source. For a built-in we first fetch a real affected-areas
-// report (GET /:id/delete-impact) and show it so the operator sees exactly what is removed before confirming.
-// Extracted from the detail screen so the Playlists LIST and DETAIL carry the SAME impact-aware confirm.
 interface DeleteImpact {
   playlist: { id: string; name: string; channels: number };
   affectedClones: { id: string; name: string; channelsRemoved: number }[];
@@ -26,17 +20,13 @@ const impact = ref<DeleteImpact | null>(null);
 const impactLoading = ref(false);
 const impactError = ref(false);
 
-// The modal only mounts when a delete is opened, so fetch the built-in impact report here (a brief spinner
-// while it loads); a clone/custom uses the generic checklist (no fetch). A failed/non-ok preview flags
-// impactError (+ a toast) and the template renders an explicit "preview unavailable" notice — the Delete
-// button stays gated so the operator can never confirm the destructive cascade blind.
 onMounted(async () => {
   if (!props.playlist.builtin) return;
   impactLoading.value = true;
   try {
     const res = await fetch(`/api/playlists/${encodeURIComponent(props.playlist.id)}/delete-impact`);
     if (res.ok) impact.value = await res.json();
-    else impactError.value = true; // a non-ok (400/403/404) never enters catch — flag it here
+    else impactError.value = true;
   } catch {
     impactError.value = true;
   } finally {
@@ -53,8 +43,6 @@ async function deletePlaylist() {
   try {
     const res = await fetch(`/api/playlists/${encodeURIComponent(p.id)}`, { method: 'DELETE' });
     if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error ?? `HTTP ${res.status}`);
-    // A built-in delete prunes clone copies + drops a bound EPG source — refresh the channel union and EPG
-    // store too so other screens reflect the cascade without a full reload.
     await Promise.all([
       reloadPlaylists(),
       reloadCustomPlaylists(),
@@ -86,14 +74,12 @@ async function deletePlaylist() {
           This cannot be undone.
         </div>
 
-        <!-- Built-in: real affected-areas summary from GET /:id/delete-impact. -->
         <template v-if="playlist.builtin">
           <div v-if="impactLoading" class="row" style="gap: 8px; padding: 12px 0; color: var(--text-2); font-size: var(--fs-sm);">
             <Icon name="refresh" :size="13" />
             <span>Calculating affected areas…</span>
           </div>
           <template v-else-if="impact">
-            <!-- Playlist Channels -->
             <div class="impact-block">
               <div class="impact-hd"><Icon name="list" :size="13" />Playlist Channels</div>
               <div class="impact-row">
@@ -112,7 +98,6 @@ async function deletePlaylist() {
                 No cloned playlists include this source's channels.
               </div>
             </div>
-            <!-- Playlist EPG -->
             <div class="impact-block">
               <div class="impact-hd"><Icon name="grid" :size="13" />Playlist EPG</div>
               <div class="impact-row">
@@ -124,8 +109,6 @@ async function deletePlaylist() {
               </div>
             </div>
           </template>
-          <!-- Preview failed (non-ok / network error): no affected-areas data — say so explicitly and keep
-               the Delete button gated (see modal-ft below) so the cascade is never confirmed blind. -->
           <div v-else class="impact-block">
             <div class="impact-row warn" style="gap: 8px;">
               <Icon name="warn" :size="14" />
@@ -135,7 +118,6 @@ async function deletePlaylist() {
           </div>
         </template>
 
-        <!-- Clone / custom: the generic checklist (no impact fetch needed). -->
         <div v-else style="display: grid; gap: 8px;">
           <div v-for="it in [
             { icon: 'list', text: `${playlist.channels} channel${playlist.channels === 1 ? '' : 's'} are removed` },

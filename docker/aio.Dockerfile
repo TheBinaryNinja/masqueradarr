@@ -86,7 +86,8 @@ COPY server/package.json server/package-lock.json ./
 RUN npm ci                              # devDeps (esbuild + typescript) to build the server
 COPY server/tsconfig.json ./
 COPY server/src/ ./src/
-COPY server/scripts/ ./scripts/         # bundle.mjs = esbuild build entry (+ tsx maintenance scripts)
+# scripts/bundle.mjs is the esbuild build entry (the rest are tsx maintenance scripts, unused here)
+COPY server/scripts/ ./scripts/
 RUN npm run build                       # esbuild bundle -> /server/dist/index.js (minified, no maps)
 
 # ---- Stage 2b: build the Rust video-proxy sidecar (masq-proxy) — MIRRORS docker/app.Dockerfile ----

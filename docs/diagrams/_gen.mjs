@@ -1,6 +1,3 @@
-/**
- * Regenerates every README diagram. Run:  node docs/diagrams/_gen.mjs
- */
 import { writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -19,7 +16,6 @@ const ROLE = {
 };
 const L = (...keys) => keys.map((k) => ROLE[k]);
 
-/* ── 1 · architecture overview ──────────────────────────────────────────── */
 {
   const W = 1000, H = 700;
   let b = header(W, 'Primary architecture', 'server/src/index.ts · proxy/');
@@ -57,7 +53,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   write('architecture-overview.svg', svg(W, H, b));
 }
 
-/* ── 3 · source lifecycle ───────────────────────────────────────────────── */
 {
   const W = 1040, H = 596;
   let b = header(W, 'Lifecycle — how a built-in source reaches the UI', 'server/src/sources/core/buildSource.ts');
@@ -98,7 +93,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   write('source-lifecycle.svg', svg(W, H, b));
 }
 
-/* ── 4 · guide composition ──────────────────────────────────────────────── */
 {
   const W = 880, H = 800;
   let b = header(W, 'Guide composition — a guide can never drift from its M3U', 'server/src/epg/composeGuide.ts');
@@ -133,7 +127,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   write('guide-composition.svg', svg(W, H, b));
 }
 
-/* ── 5 · internal seams ─────────────────────────────────────────────────── */
 {
   const W = 1040, H = 640;
   let b = header(W, 'The internal seams — loopback, shared secret', 'server/src/routes/internal.ts');
@@ -141,7 +134,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   b += lane({ x: 32, y: 84, w: 368, h: 476, label: 'NODE — CONTROL PLANE', color: C.teal });
   b += lane({ x: 648, y: 84, w: 360, h: 476, label: 'RUST — DATA PLANE', color: C.amber });
 
-  // the seam itself: an airlock column straddling the two planes
   b += `<rect x="416" y="240" width="192" height="300" rx="12" fill="${C.carbon}" stroke="${C.teal}" stroke-opacity="0.45" stroke-width="1.2"/>`;
   b += text(512, 266, '/api/internal/*', { fill: C.teal, size: 11.6, weight: 600, mono: true, anchor: 'middle' });
   b += text(512, 281, 'loopback · x-masq-secret', { fill: C.dim, size: 8.8, anchor: 'middle' });
@@ -170,7 +162,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   b += edge([[742, 247], [742, 268]], { color: 'amber' });
   b += edge([[914, 247], [914, 268]], { color: 'amber' });
 
-  // the seam bus: one trunk down the gutter, four taps into the ports
   b += `<path d="${['M 663 218', 'L 637 218', 'Q 628 218 628 227', 'L 628 518'].join(' ')}" fill="none" stroke="${C.teal}" stroke-width="1.5" opacity="0.5"/>`;
   for (const cy of [310, 384, 458]) b += edge([[628, cy], [594, cy]], { color: 'teal', r: 0 });
   b += edge([[628, 518], [594, 518]], { color: 'dim', dash: '4 3', r: 0 });
@@ -192,7 +183,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   write('internal-seams.svg', svg(W, H, b));
 }
 
-/* ── 6 · stream request flow ────────────────────────────────────────────── */
 {
   const W = 940, H = 1056;
   let b = header(W, 'How a stream request flows', 'streamGate → relay → masq-proxy');
@@ -235,7 +225,6 @@ const L = (...keys) => keys.map((k) => ROLE[k]);
   write('stream-request-flow.svg', svg(W, H, b));
 }
 
-/* ── 7 + 8 · topologies (identical skeletons so the inversion reads at a glance) ── */
 const topology = ({ file, title, subtitle, laneLabel, laneColor, left, right, edges, caption }) => {
   const W = 880, H = 500;
   let b = header(W, title, subtitle);
@@ -294,13 +283,11 @@ topology({
   caption: "Rust owns the public socket — Node's event loop leaves the byte path.",
 });
 
-/* ── 2 · adapter taxonomy ───────────────────────────────────────────────── */
 {
   const W = 800;
   const SLOT = [52, 290, 528], CW = 220, GAP = 18;
   const spanW = (n) => CW * n + GAP * (n - 1);
 
-  // one hue per adapter shape; identity gets mist (not dim) so its ids stay legible
   const G = { syn: C.ash, auth: C.risk, scrape: C.green, sentinel: C.teal, macro: C.amber, ident: C.mist };
 
   const glossary = (x, y, w, items) => {
@@ -461,12 +448,10 @@ topology({
   write('adapter-taxonomy.svg', svg(W, gl.bottom + 58, b));
 }
 
-/* ── 9 · failover groups ────────────────────────────────────────────────── */
 {
   const W = 1060, H = 1284;
   let b = header(W, 'Failover groups — configure, hide, walk, stick', 'services/failover.ts · proxy/src/proxy.rs');
 
-  /* 1 · configure — the group is three fields on the channel doc */
   b += lane({ x: 32, y: 84, w: 996, h: 216, label: '1 · CONFIGURE — NODE CONTROL PLANE', color: C.teal });
 
   const g1 = card({ x: 52, y: 112, w: 225, rail: C.ash, title: 'Group modal', sub: ['select channels → Group', 'pick parent · drag order', 'save'] });
@@ -488,7 +473,6 @@ topology({
   b += edge([[899, 199], [899, 211]], { color: 'teal' });
   b += g1.svg + g2.svg + g3.svg + g4.svg + store.svg + exp.svg;
 
-  /* 2 · the walk — the Rust↔Node loop that actually fails over */
   b += lane({ x: 32, y: 340, w: 996, h: 594, label: '2 · PLAY-TIME WALK — RUST DATA PLANE + NODE RESOLVE SEAM', color: C.amber });
 
   const trig = card({
@@ -502,14 +486,12 @@ topology({
   b += trig.svg;
   b += edge([[532, 455], [532, 468]], { color: 'risk' });
 
-  // the loop box + its fieldset chip
   b += `<rect x="44" y="470" width="976" height="448" rx="12" fill="${C.lane}" stroke="${C.amber}" stroke-opacity="0.42" stroke-width="1.2"/>`;
   const chipLabel = 'failover_walk() · attempt cursor · cap MAX_FAILOVER_ATTEMPTS = 12';
   const chipW = measure(chipLabel, 9, true) + 22;
   b += `<rect x="66" y="462" width="${chipW}" height="16" rx="5" fill="${C.bg}" stroke="${C.bracket}" stroke-width="1"/>`
     + text(66 + chipW / 2, 473.4, chipLabel, { fill: C.amber, size: 9, weight: 600, mono: true, anchor: 'middle' });
 
-  // the seam gutter
   b += `<line x1="538" y1="512" x2="538" y2="800" stroke="${C.teal}" stroke-width="1" stroke-dasharray="4 4" opacity="0.5"/>`;
 
   const r1 = card({
@@ -559,7 +541,6 @@ topology({
   b += pill(538, 757, ['grant · 502', '410 · 429'], { color: C.teal });
   b += pill(170, 498, 'attempt + 1', { color: C.amber });
 
-  /* 3 + 4 · the cursor and what it lights up */
   b += lane({ x: 32, y: 974, w: 488, h: 216, label: '3 · CURSOR — STICK ON THE WINNER', color: C.green });
   b += lane({ x: 540, y: 974, w: 488, h: 216, label: '4 · OBSERVABILITY', color: C.teal });
 
@@ -586,13 +567,10 @@ topology({
   write('failover-groups.svg', svg(W, H, b));
 }
 
-/* ── 10 · local origin (S3): one ingest, two renderers ──────────────────── */
 {
   const W = 940, H = 700;
   let b = header(W, 'Local origin — one ingest, two renderers', 'originEnabled · Side-1 iop / Side-2 oop');
 
-  // Laid out left→right with the RING in its own middle column: that is the whole claim of the design —
-  // everything on the left happens ONCE per channel, everything on the right reads the same cached bytes.
   b += lane({ x: 24, y: 110, w: 296, h: 400, label: 'SIDE-1 · ingest · iop', color: C.amber });
   b += lane({ x: 620, y: 110, w: 296, h: 400, label: 'SIDE-2 · serve · oop', color: C.teal });
 

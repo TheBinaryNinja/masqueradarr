@@ -1,19 +1,3 @@
-//! masq-proxy — the masqueradarr durable video **data plane** (HLS/TS proxy).
-//!
-//! A HTTP sidecar the Node **control plane** spawns + supervises (`server/src/proxy/sidecar.ts`). Node keeps
-//! every stateful per-source concern (dulo Supabase auth, dlhd mirror rotation + growing SSRF allowlist, the
-//! SourceProxy bag) behind the resolve seam; this binary fetches upstream, follows redirects, rewrites HLS
-//! manifests, and pipes segments — driven per stream by the grant the seam returns.
-//!
-//! Two topologies (chosen by `MASQ_EDGE`):
-//!  · SIDECAR (default) — ONE loopback listener (`127.0.0.1:8787`): `/health`, `/probe` (secret-gated), and a
-//!    fallback serving both stream mounts (/api/v1, /api/ext/v1); Node is the public front door + reverse-proxies
-//!    the stream mounts here.
-//!  · EDGE (`MASQ_EDGE=1`) — the loopback listener above is UNCHANGED, PLUS a public listener (`0.0.0.0:3000`)
-//!    whose fallback (`edge.rs`) serves the stream mounts in-process (token-gated) and reverse-proxies everything
-//!    else — SPA / `/api/*` / all four WebSockets — back to Node on its now-loopback internal port.
-//!
-//! See `.claude/plans/durable-iptv-proxy.md`.
 
 mod dns;
 mod edge;
@@ -46,8 +30,6 @@ fn env_or(key: &str, default: &str) -> String {
 
 #[tokio::main]
 async fn main() {
-    // The INTERNAL loopback listener — Node's channel to the sidecar in BOTH topologies. Host/port/secret and
-    // the Node callback URL arrive via env from the supervisor.
     let host = env_or("MASQ_PROXY_HOST", "127.0.0.1");
     let port: u16 = std::env::var("MASQ_PROXY_PORT")
         .ok()
@@ -61,11 +43,9 @@ async fn main() {
 
     let state = AppState::new(node_url.clone(), secret);
 
-    // The internal listener: /health + /probe (secret-gated) + the sidecar stream fallback. Serving both stream
-    // mounts here is UNUSED in edge mode (they come in on the public listener) but harmless + keeps one router.
     let internal = Router::new()
         .route("/health", get(health))
-        .route("/probe", post(probe::probe)) // PRB: the scheduled channel-probe batch (loopback + secret)
+        .route("/probe", post(probe::probe))
         .fallback(proxy::proxy)
         .with_state(state.clone());
     let internal_listener = tokio::net::TcpListener::bind(internal_addr)
@@ -75,9 +55,6 @@ async fn main() {
     let internal_server =
         axum::serve(internal_listener, internal).with_graceful_shutdown(shutdown_signal());
 
-    // EDGE-3: when MASQ_EDGE is set, ADD a public listener whose fallback (edge.rs) is the front door — it serves
-    // the stream mounts in-process (token-gated via the auth cache) and reverse-proxies everything else to Node.
-    // ConnectInfo supplies the real peer IP for telemetry. Both servers drain on SIGTERM (graceful shutdown).
     if std::env::var("MASQ_EDGE").map(|v| !v.is_empty()).unwrap_or(false) {
         let edge_host = env_or("MASQ_EDGE_HOST", "0.0.0.0");
         let edge_port: u16 = std::env::var("MASQ_EDGE_PORT")

@@ -1,7 +1,4 @@
 <script setup lang="ts">
-// masqueradarr horizontal lockup — mark + lowercase wordmark.
-// Wordmark is always lowercase, weight 600, tracking -0.03em.
-// See .claude/skills/masqueradarr-logotype §2/§3.
 import MasqMark from './MasqMark.vue';
 defineProps<{
   size?: number;

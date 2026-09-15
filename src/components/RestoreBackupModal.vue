@@ -5,11 +5,6 @@ import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import Segmented from './Segmented.vue';
 
-// Restore a full-workspace backup — either a file the operator picks (file mode) or one already saved on
-// disk by the scheduled backup job (saved mode). Both POST to /api/backup/restore* and return
-// { restored, skipped, errors }. A restore REPLACES the current configuration/mappings/users, so the
-// caller reloads the app on success. The file body is sent RAW (the backend reads request bytes): gzip is
-// auto-detected from the magic bytes (0x1f 0x8b) so the Content-Type is correct.
 const emit = defineEmits<{ (e: 'close'): void; (e: 'restored'): void }>();
 
 interface SavedBackup { filename: string; createdAt: string; size: number }
@@ -17,7 +12,6 @@ interface RestoreResult { restored: Record<string, number>; skipped: string[]; e
 
 const mode = ref<'file' | 'saved'>('file');
 
-// ── file mode ────────────────────────────────────────────────────────────
 const fileInput = ref<HTMLInputElement | null>(null);
 const file = ref<File | null>(null);
 const restoring = ref(false);
@@ -57,7 +51,6 @@ async function restoreFromFile() {
   }
 }
 
-// ── saved mode ───────────────────────────────────────────────────────────
 const saved = ref<SavedBackup[]>([]);
 const loadingList = ref(false);
 const listError = ref('');
@@ -78,7 +71,6 @@ async function loadList() {
   }
 }
 
-// Lazy-load the saved list whenever the saved tab becomes active (first show + on every switch).
 watch(mode, (m) => { if (m === 'saved') loadList(); }, { immediate: false });
 
 async function restoreFromSaved(name: string) {
@@ -135,7 +127,6 @@ const canRestoreFile = computed(() => !!file.value && !restoring.value);
           </div>
         </div>
 
-        <!-- file mode -->
         <template v-if="mode === 'file'">
           <input
             ref="fileInput"
@@ -160,7 +151,6 @@ const canRestoreFile = computed(() => !!file.value && !restoring.value);
           <div v-if="error" class="muted" style="color: var(--bad); font-size: var(--fs-sm);">{{ error }}</div>
         </template>
 
-        <!-- saved mode -->
         <template v-else>
           <div v-if="loadingList" class="muted" style="font-size: var(--fs-sm);">Loading saved backups…</div>
           <div v-else-if="listError" class="muted" style="color: var(--bad); font-size: var(--fs-sm);">{{ listError }}</div>

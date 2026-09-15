@@ -8,11 +8,6 @@ import { useToast } from '../composables/useToast';
 
 const toast = useToast();
 
-// Re-upload an XMLTV file for an existing 'xml file' EPG source — the detail-screen Upload action (the Sync
-// replacement for a static uploaded guide). Validate-then-commit: the chosen file is validated against the
-// backend (channel/program counts + a sample, or a list of specific issues) before POSTing it to
-// /api/epg-sources/:id/upload, which replaces the source's channels/programs. Mirrors the Add modal's file
-// panel. See AddEpgSourceModal.vue + restapi.md.
 
 const props = defineProps<{ sourceId: string; sourceName: string }>();
 const emit = defineEmits<{ (e: 'close'): void; (e: 'uploaded'): void }>();
@@ -22,7 +17,7 @@ interface XmltvValidation { ok: boolean; channelCount: number; programmeCount: n
 
 const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref('');
-const body = ref<XmltvBody | null>(null); // the gzipped (or raw) file body, reused for validate + commit
+const body = ref<XmltvBody | null>(null);
 const valid = ref<XmltvValidation | null>(null);
 const error = ref('');
 const validating = ref(false);
@@ -52,7 +47,7 @@ async function onFileChange(e: Event) {
   error.value = '';
   valid.value = null;
   try {
-    body.value = await fileToXmltvBody(f); // gzip in-stream (or pass a .xml.gz through)
+    body.value = await fileToXmltvBody(f);
     const res = await fetch('/api/epg-sources/xmltv/validate', {
       method: 'POST',
       headers: { 'Content-Type': body.value.contentType },

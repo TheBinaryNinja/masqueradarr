@@ -1,27 +1,3 @@
-//! log.rs — the masq-proxy structured logging framework.
-//!
-//! The Rust data plane's counterpart to Node's tagged `logger`. It decorates the whole engine with
-//! LEVEL-GATED, LINEAGE-TAGGED trace lines so a single channel's path — client request → source resolve →
-//! upstream fetch/failover → manifest rewrite → segment repackage / raw-TS concat → bytes out — is fully
-//! observable in the same "View logs" drawer as everything else (the dedicated `proxy` log category).
-//!
-//! DESIGN (mirrors the telemetry machinery in state.rs):
-//!  · The verbosity GATE lives here (in Rust): a line is only formatted + shipped if the current global level
-//!    permits it, so IPC stays cheap at low levels. The gate is checked BEFORE `format!` (the public helpers
-//!    take a closure) so a suppressed line allocates nothing.
-//!  · Lines are BATCHED: `emit`/the helpers enqueue onto a bounded mpsc; a single background `log_flusher`
-//!    coalesces + POSTs `{ events:[...] }` to `{node}/api/internal/log`. Best-effort — a full queue DROPS the
-//!    event (never blocks the byte path); a transport failure is ignored.
-//!  · The level is kept LIVE: every flush response (this endpoint AND /api/internal/telemetry) carries the
-//!    current `{ logLevel, nameservers }`, which `apply_flush_echo` reads back — the level into the atomic here,
-//!    the nameserver list into the upstream resolver (dns.rs) — so an operator's Settings change reaches the
-//!    sidecar within one flush cycle, no restart (see server/src/proxy/logLevel.ts + nameservers.ts).
-//!  · Level ladder: 1 = error/warn only · 2 = + info (milestones) · 3 = + trace (full per-stage/hop/segment
-//!    lineage). The persisted level is only info|warn|error — Rust's `trace` tier collapses to `info` on ship
-//!    (the verbosity distinction is the Rust-side GATE, not a fourth persisted level).
-//!
-//! The sink + level are process-GLOBALS (a cross-cutting logger, like Node's module-singleton `logger`) so any
-//! module logs without threading state. `init()` is called once from `AppState::new` (which runs once).
 
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::{Arc, OnceLock};
@@ -32,32 +8,23 @@ use tokio::sync::mpsc;
 
 use crate::dns::UpstreamDns;
 
-// Batching knobs — same shape as the telemetry flusher (state.rs).
 const LOG_QUEUE: usize = 4096;
 const LOG_MAX_BATCH: usize = 256;
 const LOG_FLUSH_MS: u64 = 250;
 
-// The global log level (1..3). Seeded from MASQ_LOG_LEVEL at init; kept live by apply_flush_echo.
 static LEVEL: AtomicU8 = AtomicU8::new(2);
 
-// The global log sink — the Sender half of the batched flusher's channel. None until init() installs it; a
-// log emitted before init (there are none in practice) is silently dropped.
 static SINK: OnceLock<mpsc::Sender<Value>> = OnceLock::new();
 
-/// The current global log level (1..3). Read by the gate on every helper + by the tsmux/proxy hot paths.
 #[inline]
 pub fn level() -> u8 {
     LEVEL.load(Ordering::Relaxed)
 }
 
-/// Store the current global log level (clamped 1..3). Called from init (env seed) + apply_flush_echo.
 pub fn set_level(n: u8) {
     LEVEL.store(n.clamp(1, 3), Ordering::Relaxed);
 }
 
-/// Install the log sink + spawn the batched flusher, and seed the level from MASQ_LOG_LEVEL. Idempotent (a
-/// second call is a no-op via the OnceLock). Must run inside the tokio runtime (AppState::new does). `dns` is the
-/// upstream resolver the flush echo retargets (see `apply_flush_echo`).
 pub fn init(client: reqwest::Client, url: String, secret: String, dns: Arc<UpstreamDns>) {
     let env_level = std::env::var("MASQ_LOG_LEVEL").ok().and_then(|v| v.parse::<u8>().ok()).unwrap_or(2);
     set_level(env_level);
@@ -67,10 +34,6 @@ pub fn init(client: reqwest::Client, url: String, secret: String, dns: Arc<Upstr
     }
 }
 
-/// Read the seam's flush echo `{ logLevel, nameservers }` and apply both live settings it carries: the level into
-/// the atomic here, the nameserver list into the upstream resolver (`UpstreamDns::apply_echo` — which ignores an
-/// echo that repeats the list in force, i.e. nearly all of them). Called by BOTH the log flusher (below) and the
-/// telemetry flusher (state.rs), so either flow alone keeps the sidecar current.
 pub async fn apply_flush_echo(resp: reqwest::Response, dns: &UpstreamDns) {
     if let Ok(v) = resp.json::<Value>().await {
         if let Some(n) = v.get("logLevel").and_then(|x| x.as_u64()) {
@@ -84,10 +47,6 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
-/// The FNV-1a-32 lineage id: a stable 8-hex id for one viewing session, derived from `source|entry`. The
-/// ENTRY, every `h/` HOP, each segment, and the TS poller all compute the SAME id (a cold hop recovers `entry`
-/// from `&e=`), so grepping one `rid` in the drawer replays a channel's whole path resolve→output — even
-/// across the stateless hop requests and a sidecar restart.
 pub fn rid(source: &str, entry: &str) -> String {
     let mut h: u32 = 0x811c_9dc5;
     for b in source.bytes().chain(std::iter::once(b'|')).chain(entry.bytes()) {
@@ -97,12 +56,7 @@ pub fn rid(source: &str, entry: &str) -> String {
     format!("{h:08x}")
 }
 
-// ── the ship path ─────────────────────────────────────────────────────────────────────────────────────────
 
-/// Compose + emit one line (the gate has already passed). Prints `[tag] [rid] msg` to stderr for local /
-/// standalone visibility (in Docker this is the ONE console line — Node persists silently to avoid a duplicate)
-/// and enqueues the structured event for the batched flusher. NEVER logs its own errors via this path
-/// (recursion guard); a full/absent queue just drops the event.
 fn ship(persist_level: &str, tag: &str, rid: &str, msg: String, meta: Option<Value>) {
     let line = if rid.is_empty() { msg.clone() } else { format!("[{rid}] {msg}") };
     eprintln!("[{tag}] {line}");
@@ -118,11 +72,6 @@ fn ship(persist_level: &str, tag: &str, rid: &str, msg: String, meta: Option<Val
     }
 }
 
-// Public helpers. The message is a CLOSURE so it (and its `format!`) is only built when the level admits the
-// line — a suppressed line allocates nothing. Level ladder: error/warn → >= 1 · info → >= 2 · trace → >= 3.
-// (The `meta` seam — ship's Option<Value> arg + logIngest's merge — is wired end-to-end; the current call
-// sites keep the whole line in the message + rid, so they pass None. Add a *_meta helper here if a future
-// milestone wants queryable structured fields.)
 
 pub fn error(tag: &str, rid: &str, f: impl FnOnce() -> String) {
     if level() >= 1 {
@@ -145,7 +94,6 @@ pub fn trace(tag: &str, rid: &str, f: impl FnOnce() -> String) {
     }
 }
 
-// ── the batched flusher (clone of state.rs::telemetry_flusher, + the settings echo-back) ──────────────────
 
 async fn log_flusher(
     mut rx: mpsc::Receiver<Value>,
@@ -157,7 +105,7 @@ async fn log_flusher(
     loop {
         let first = match rx.recv().await {
             Some(ev) => ev,
-            None => break, // sink dropped → process exit
+            None => break,
         };
         let mut batch = vec![first];
         let deadline = tokio::time::sleep(Duration::from_millis(LOG_FLUSH_MS));
@@ -189,7 +137,6 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a.len(), 8);
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
-        // Different entry → different id (so channels don't collide in the drawer).
         assert_ne!(a, rid("dlhd", "https://x/watch.php?id=43"));
     }
 

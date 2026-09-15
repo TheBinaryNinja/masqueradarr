@@ -1,18 +1,10 @@
 <script setup lang="ts">
 import { ref, watch, onBeforeUnmount } from 'vue';
 import Icon from './Icon.vue';
-// `value` stays the controlled source of truth (parent owns the filter ref). `debounce` is opt-in
-// (ms, default 0 = off → emit on every keystroke, the instant-filter contract every existing consumer
-// relies on). When > 0 the displayed text is held in a local model so typing stays responsive while the
-// `change` emit is deferred — the EPG screens use this; the other five pass no debounce and are unchanged.
-// `width` is a number (px) for the fixed-width filter boxes, or a CSS length string (e.g. '100%',
-// 'min(480px, 90vw)') for the topbar global search that fills its responsive container.
 const props = defineProps<{ value: string; placeholder?: string; width?: number | string; debounce?: number }>();
 const emit = defineEmits<{ (e: 'change', v: string): void }>();
 
 const local = ref(props.value);
-// Keep the visible text in sync when the parent resets/changes `value` externally (e.g. props.id change
-// reset on the EPG detail screen). Guard against clobbering mid-type: only adopt when it actually differs.
 watch(() => props.value, (v) => { if (v !== local.value) local.value = v; });
 
 let timer: ReturnType<typeof setTimeout> | null = null;

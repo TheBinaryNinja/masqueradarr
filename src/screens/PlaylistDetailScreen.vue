@@ -37,54 +37,25 @@ const PLACEHOLDER: Playlist = {
   id: '', name: '…', url: '', channels: 0, groups: 0,
   lastSync: '', status: 'good', auto: false, interval: '',
 };
-// The header row is derived from the shared PLAYLISTS store — the SAME source of truth the list, Dashboard,
-// nav count, and Users copyable URLs read — so an edit (this screen or the status drawer), a scheduled sync,
-// or a domain change surfaces here without a full page reload. The channel LIST below stays a local fetch
-// (per-playlist detail, not held in the shared store). reload() refreshes both.
 const playlist = computed<Playlist>(() => PLAYLISTS.value.find((p) => p.id === props.id) ?? PLACEHOLDER);
 
-// Live human-readable schedule labels, derived from the playlist's two cron jobs (never the stored
-// interval): targetType 'playlist' = Sync schedule, 'playlist-m3u' = Compose-m3u schedule. Each reads
-// 'Manual' when no job exists (or a source-less playlist), so the chips always reflect the real schedule.
 const scheduleLabel = computed(() => playlistScheduleLabel(playlist.value.id, 'playlist'));
 const m3uLabel = computed(() => playlistScheduleLabel(playlist.value.id, 'playlist-m3u'));
 
-// A "clone" is a user-composed custom playlist (Playlist row with source==='clone'). Per the clone-from
-// rule it can't be cloned/appended FROM, so the Create/Append actions are hidden on its detail screen.
 const isClone = computed(() => playlist.value.source === 'clone');
-// Clones carry interval 'none' → no Sync schedule chip, Custom endpoint only (see PlaylistStatusDrawer). They
-// DO get a Compose-m3u schedule though, so the M3U chip is shown for a clone regardless of `noSchedule` (its
-// label reads 'manual' until a schedule is set). Case-insensitive so a pre-normalization 'None' row still hides
-// the Sync chip before the boot migration runs.
 const noSchedule = computed(() => (playlist.value.interval ?? '').toLowerCase() === 'none');
-// Sync availability (a live upstream) and scope (global vs custom) are gated via the shared hasLiveUpstream /
-// isGlobalScope predicates from usePlaylistActions — the same definitions the list and the Global cohort
-// fan-out use, so a built-in stays syncable when set Custom and a 'url' import when set Global.
 
-// Delete a playlist — the impact-aware confirm now lives in the shared DeletePlaylistModal (a built-in first
-// fetches + shows a real affected-areas report; a custom playlist shows the generic checklist). The modal
-// owns the DELETE cascade + store reloads and emits `deleted`; we then leave the (now-gone) detail for the
-// list. Extracted so the Playlists list carries the identical impact-aware confirm.
 const deleteOpen = ref(false);
 function onDeleted(): void {
   deleteOpen.value = false;
   router.push('/playlists');
 }
-// Admin-only per-playlist access modals (mirrors the list screen). Booleans since the detail holds one
-// playlist; both take :playlist and branch on its endpoint (shared Global union vs this playlist's custom group).
 const assignAccessOpen = ref(false);
 const getAccessOpen = ref(false);
 
 const view = ref<'table' | 'grid'>('table');
-// State filter (orthogonal to the table/grid view): defaults to Active so a channel list always opens
-// showing only Active channels. Filters on the top-level 'Active' | 'Disabled' governor (playlistchannels.status).
 const stateFilter = ref<'Active' | 'Disabled'>('Active');
-// EPG match filter (mirrors stateFilter, plus an 'all' passthrough): 'all' applies no EPG filtering;
-// 'matched' shows only epgState === 'matched'; 'unmatched' shows everything else (epgState 'unmatched'
-// OR null). Defaults to all (unfiltered).
 const epgFilter = ref<'all' | 'matched' | 'unmatched'>('all');
-// Channel-list sort key (the toolbar Segmented to the right of the group filter): by name (default),
-// channel number, or group. Applied AFTER the state/group/search filters, in both Table and Grid views.
 const sortBy = ref<'name' | 'channelNo' | 'group'>('name');
 const search = ref('');
 const group = ref('all');
@@ -92,13 +63,8 @@ const selected = ref<Set<string>>(new Set());
 const editingId = ref<string | null>(null);
 const channels = ref<Channel[]>([]);
 
-// Whenever a different playlist is opened, default the state filter back to Active (each time a
-// channel list is displayed it should start on Active).
 watch(() => props.id, () => { stateFilter.value = 'Active'; epgFilter.value = 'all'; });
 
-// Nav-in load: refresh the shared playlist store (fresh header row) + THIS playlist's channel list. Re-runs
-// whenever the route id changes (tracked via props.id here); reload() writes only the store + channels, so it
-// never re-triggers this effect.
 watchEffect(() => {
   if (!props.id) return;
   void reload();
@@ -111,21 +77,15 @@ const bulkOpen = ref(false);
 const statusOpen = ref(false);
 const lastSelectedId = ref<string | null>(null);
 
-// A dulo sign-in/out on Settings flips this playlist's isAuthenticated server-side — re-pull the shared
-// store so the header auth badge (derived from it) updates without a manual refresh. (A drawer edit is
-// handled by the drawer's own save() → reloadPlaylists, so this screen needs no @updated listener.)
 async function onAuthChanged() {
   if (!props.id) return;
   await reloadPlaylists();
 }
-// A parent's EPG edit in the App-level ChannelDrawer cascaded to its children server-side — merge the
-// returned children into this screen's LOCAL list so the group stays coherent without a refetch.
 function onFailoverCascade(p: { source: string; children: Channel[] }) {
   if (p.source !== props.id || !p.children.length) return;
   const byId = new Map(p.children.map((k) => [k.id, k]));
   channels.value = channels.value.map((c) => byId.get(c.id) ?? c);
 }
-// A single channel was hard-deleted in the App-level ChannelDrawer's Remove — drop it from the LOCAL list.
 function onChannelsDeleted(p: { source: string; ids: string[] }) {
   if (p.source !== props.id || !p.ids.length) return;
   const dead = new Set(p.ids);
@@ -150,17 +110,12 @@ onBeforeUnmount(() => {
   if (flashTimer) clearTimeout(flashTimer);
 });
 
-// ── Deep-link focus: global search lands here with ?focus=<channelId>. Scroll the row into view + flash it.
-// The row that carries the transient .flash highlight (a dedicated ref, NOT the `selected` set, so focusing
-// never arms the bulk toolbar).
 const focusId = ref<string | null>(null);
 let flashTimer: number | null = null;
 
 function focusChannel(id: string) {
   const ch = channels.value.find((c) => c.id === id);
   if (!ch) return;
-  // Relax the filters so the target actually renders — the list defaults to Active, and a group/search filter
-  // could otherwise hide it (filteredView filters on stateFilter + group + search).
   group.value = 'all';
   search.value = '';
   stateFilter.value = ch.status as 'Active' | 'Disabled';
@@ -173,8 +128,6 @@ function focusChannel(id: string) {
   });
 }
 
-// Fire once the channels have loaded (the watch tracks both the query and the local list), then clear the
-// query so a refresh / back-nav doesn't re-trigger the flash.
 watch(
   [() => route.query.focus, channels],
   ([f]) => {
@@ -186,11 +139,7 @@ watch(
   { immediate: true },
 );
 
-// ── Failover group modal + tree ───────────────────────────────────────────
 const groupOpen = ref(false);
-// Failover-group tree state: which groups are collapsed (empty ⇒ all expanded), which parent row's actions
-// menu is open, and the parent whose group the Edit-group modal is scoped to (so the per-row "Edit group"
-// path doesn't clobber the multi-select `selected` set that the toolbar "Group" button relies on).
 const collapsedGroups = ref<Set<string>>(new Set());
 const openGroupMenuId = ref<string | null>(null);
 const editGroupAnchor = ref<Channel | null>(null);
@@ -211,14 +160,8 @@ function onGroupSaved(r: FailoverGroupResult) {
   groupOpen.value = false;
   editGroupAnchor.value = null;
   selected.value = new Set();
-  // The save can also mutate rows OUTSIDE the returned group: members dropped from it, foreign children
-  // moved in (their donor group possibly auto-disbanded server-side). The merge above keeps the UI snappy;
-  // this authoritative refetch reconciles everything else.
   void reload();
 }
-// Local patch shared by the modal's Disband and the per-row "Disband group": un-group every member of the
-// group (disbandChannelLocal mirrors the server — a former child's original tvg_id is restored in place, so
-// the row updates without a refresh) and drop any stale collapsed-state for it.
 function applyDisbandLocal(gid: string) {
   channels.value = channels.value.map((c) => (c.failoverGroupId === gid ? disbandChannelLocal(c) : c));
   if (collapsedGroups.value.has(gid)) {
@@ -235,9 +178,6 @@ function onGroupDisbanded(gid: string) {
   selected.value = new Set();
 }
 
-// Per-parent-row actions (waffle menu). "Edit group" opens the existing GroupConfigModal scoped to this
-// group via editGroupAnchor (the modal back-fills the rest of the group from :all-channels); "Disband
-// group" clears the whole group in place. Both reuse the existing data-layer + merge handlers.
 function groupMenuItems(parent: Channel): RowActionItem[] {
   return [
     { key: 'edit', icon: 'link', label: 'Edit group', run: () => { editGroupAnchor.value = parent; groupOpen.value = true; } },
@@ -294,9 +234,6 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   const n = ids.size;
   const targets = channels.value.filter((c) => ids.has(c.id));
   const supportsPlayer = (c: Channel) => ['dlhd'].includes(c.origin ?? c.source);
-  // Renumber: assign channelNo = seed, seed+step, … in the CURRENT display order (filteredView tree
-  // order). Selected channels not currently visible (filtered out by search/group/status) sort last,
-  // keeping their base order. Keyed by id, so it's independent of the PUT fan-out iteration order.
   const chnoById = new Map<string, string>();
   if (payload.chnoSeed !== undefined) {
     const step = payload.chnoStep && payload.chnoStep !== 0 ? payload.chnoStep : 1;
@@ -309,35 +246,23 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
     });
     ordered.forEach((c, i) => chnoById.set(c.id, String(payload.chnoSeed! + i * step)));
   }
-  // The persisted PUT body: status/group pass through; clearEpg unlinks the 2-factor EPG link (tvg_id + epg
-  // → null) and flips epgState to 'unmatched' (mirrors DELETE /api/epg-sources/:id's unlink). playerPref sets
-  // the DaddyLive player override (null = Auto/inherit); it's stripped per-channel below for non-DaddyLive sources.
   const body: Record<string, unknown> = {};
   if (payload.status) body.status = payload.status;
   if (payload.group) body.group = payload.group;
   if (payload.clearEpg) { body.tvg_id = null; body.epg = null; body.epgState = 'unmatched'; }
   if (payload.playerPref !== undefined) body.playerPref = payload.playerPref;
-  // Failover CHILDREN mirror their parent's EPG — the server rejects an EPG write on them with a 409 that
-  // discards the WHOLE patch. Strip the clearEpg keys from a child's body (its link follows the parent),
-  // and skip its PUT entirely when nothing else changed.
   const bodyFor = (c: Channel): Record<string, unknown> => {
     let b = body;
     if (payload.clearEpg && c.failoverRole === 'child') {
       const { tvg_id: _t, epg: _e, epgState: _s, ...rest } = b;
       b = rest;
     }
-    // playerPref only means anything on DaddyLive-family channels — strip it elsewhere so a mixed selection
-    // doesn't store a dead field (and a channel with nothing else to change is skipped below).
     if (payload.playerPref !== undefined && !supportsPlayer(c)) {
       const { playerPref: _p, ...rest } = b;
       b = rest;
     }
     return b;
   };
-  // Merge tags per-channel: union each channel's existing tags with addTags, then drop removeTags (remove
-  // wins if an id is in both sets). The channel PUT does a full $set replace of `tags`, so we compute the
-  // merged set client-side — and only send it when it actually differs (skip a needless write + keep each
-  // channel's own tags that aren't part of this op).
   const tagsById = new Map<string, string[]>();
   if (hasTagOps) {
     const add = payload.addTags ?? [];
@@ -349,7 +274,6 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
       if (next.length !== cur.length || next.some((t) => !curSet.has(t))) tagsById.set(c.id, next);
     }
   }
-  // Persist each channel edit (PUT /api/playlists/<source>/channels/<id>), then update locally.
   await Promise.all(
     targets.map((c) => {
       const chBody = {
@@ -400,11 +324,6 @@ async function applyBulk(payload: { status?: string; group?: string; clearEpg?: 
   selected.value = new Set();
 }
 
-// A group was renamed/deleted across the WHOLE playlist via the shared GroupManager — either the bulk editor
-// (rendered on this screen) or the App-level single-channel drawer (over this screen). GroupManager already
-// ran the data-layer op (which patched the global CHANNELS union + the registry store); patch this screen's
-// LOCAL channel list to match and fix the active group filter so the table + filter stay coherent without a
-// refetch. Deleting keeps the channels — only their group assignment is cleared.
 function onGroupChanged(
   p:
     | { source: string; kind: 'rename'; oldName: string; newName: string }
@@ -423,8 +342,6 @@ function onGroupChanged(
   }
 }
 
-// Hard-delete the selected channels (bulk-editor "Delete N channels"). Tombstoned server-side so a re-sync
-// won't re-add them; patch the LOCAL list, clear the selection, close the drawer.
 async function onDeleteChannels(ids: string[]) {
   if (!ids.length) { bulkOpen.value = false; return; }
   try {
@@ -439,23 +356,16 @@ async function onDeleteChannels(ids: string[]) {
   selected.value = new Set();
 }
 
-// Live sync for (Default) source playlists: re-runs the source adapter on the server, upserts the
-// channels, and refreshes this view. Built-in channels are EMPTY until this first runs (nothing is
-// seeded at boot) and persist in Mongo thereafter.
 const syncing = ref(false);
 const playlistSource = computed(() => playlist.value.source ?? null);
 
 async function reload() {
-  // Header row via the shared store (reloadPlaylists → /api/playlists); the channel list is this playlist's
-  // own fetch (not held in the shared store). Run both together.
   const [, cRes] = await Promise.all([
     reloadPlaylists(),
     fetch(`/api/playlists/${encodeURIComponent(props.id)}/channels`),
   ]);
   if (cRes.ok) channels.value = await cRes.json();
 }
-// Returns { failed } (the playlist name when the sync errored) so the sync-mode PlaylistOpModal can settle
-// the single row red. The direct callers ignore the return; only the modal reads it.
 async function syncNow(): Promise<OpRunResult> {
   const src = playlistSource.value;
   if (!src || syncing.value) return { failed: [] };
@@ -463,13 +373,9 @@ async function syncNow(): Promise<OpRunResult> {
   const name = playlist.value.name;
   let ok = true;
   try {
-    // Route by TYPE via the shared syncRequestUrl (same as the list + Global fan-out): a custom import with a
-    // live upstream re-syncs via the custom-playlists route; a Default source playlist via its registry route.
     const res = await fetch(syncRequestUrl(playlist.value), { method: 'POST' });
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
     const result = await res.json();
-    // Reload this playlist AND the shared EPG store — a source sync's afterSync hook can create/refresh
-    // EPG sources (dlhd/tubi self-EPG), which otherwise stay invisible until a full browser refresh.
     await Promise.all([reload(), reloadEpgSources().catch(() => {})]);
     const n = result.count ?? result.channels ?? '';
     banner({ text: `Synced ${n} channels${result.live === false ? ' (snapshot)' : ''}`.trim(), tone: 'good', icon: 'sync' });
@@ -482,8 +388,6 @@ async function syncNow(): Promise<OpRunResult> {
   return { failed: ok ? [] : [name] };
 }
 
-// (Re)compose this playlist's stream-ready m3u export on demand — the manual twin of the `playlist-m3u`
-// cron schedule (both hit composeM3u server-side). Source-backed (Default) playlists only.
 const composing = ref(false);
 async function composeNow() {
   if (!playlistSource.value || composing.value) return;
@@ -501,23 +405,17 @@ async function composeNow() {
   }
 }
 
-// Global cohort: a Global playlist's header buttons are "Sync Global" / "Compose Global" and fan out
-// across EVERY Global playlist (shared singleton state, so the buttons stay in lockstep with the list
-// screen). Custom playlists keep the single-playlist syncNow/composeNow above. `isCustom` selects which
-// busy source the header reads — Custom → local booleans (indeterminate), Global → shared determinate.
 const isCustom = computed(() => playlist.value.endpoint === 'custom');
 const headerBusy = computed(() =>
   isCustom.value ? syncing.value || composing.value : syncingGlobal.value || composingGlobal.value,
 );
 const headerProgress = computed<number | null>(() => {
-  if (isCustom.value) return null; // single op → indeterminate
+  if (isCustom.value) return null;
   if (syncingGlobal.value) return globalSyncProgress.value;
   if (composingGlobal.value) return globalComposeProgress.value;
   return null;
 });
 
-// Returns { failed } (the names of global playlists whose sync errored) so the sync-mode PlaylistOpModal can
-// settle those rows red while marking the rest done.
 async function onSyncGlobal(): Promise<OpRunResult> {
   if (syncingGlobal.value) return { failed: [] };
   const { total, failed } = await syncAllGlobal();
@@ -534,11 +432,6 @@ async function onComposeGlobal(): Promise<void> {
   else banner({ text: `Composed ${total} global playlist${total === 1 ? '' : 's'}`, tone: 'good', icon: 'file' });
 }
 
-// Op preview modal — the header Sync / Sync Global / Compose / Compose m3u / Compose Global buttons open the
-// shared PlaylistOpModal. In 'sync' mode it lists the scoped playlist(s) + each one's sync progress/status;
-// in 'compose' mode it lists the users (grouped by access) + per-user compose progress. The modal runs the
-// op itself via the `run` thunk (the existing syncNow / composeNow / onSyncGlobal / onComposeGlobal handlers),
-// so the toast + reload behavior is unchanged.
 const opOpen = ref(false);
 const opMode = ref<OpMode>('compose');
 const opScope = ref<OpScope | null>(null);
@@ -550,26 +443,17 @@ function openOpModal(mode: OpMode, scope: OpScope, run: () => Promise<OpRunResul
   opOpen.value = true;
 }
 
-// Header actions, collapsed into the waffle popover menu — gated on the two orthogonal axes (mirrors the
-// list's rowMenuItems): Sync iff hasLiveUpstream (a built-in or 'url'/'hdhomerun'/'local' import, at ANY
-// endpoint); then Global endpoint → the cohort-wide Sync Global / Compose Global, else → standalone Compose.
-// Assign/Get access (admin) + Edit + Delete are always present. Each run() opens the shared PlaylistOpModal /
-// status drawer / access + delete modals; the computed recomputes on the inflight refs, so the labels/disabled
-// stay live while the menu is open.
 const menuOpen = ref(false);
 const headerMenuItems = computed<RowActionItem[]>(() => {
   const p = playlist.value;
   const items: RowActionItem[] = [];
   if (playlistSource.value) {
-    // Sync availability follows TYPE (a live upstream), independent of scope.
     if (hasLiveUpstream(p)) {
       items.push({
         key: 'sync', icon: 'refresh', disabled: syncing.value, label: syncing.value ? 'Syncing…' : 'Sync',
         run: () => { openOpModal('sync', { kind: 'custom', id: p.id, name: p.name }, () => syncNow()); },
       });
     }
-    // Scope follows ENDPOINT: Global → the cohort-wide Sync Global / Compose Global (shared singleton fan-out);
-    // Custom → this playlist's standalone Compose.
     if (isGlobalScope(p)) {
       items.push({
         key: 'sync-global', icon: 'refresh', disabled: syncingGlobal.value, label: syncingGlobal.value ? 'Syncing…' : 'Sync Global',
@@ -586,8 +470,6 @@ const headerMenuItems = computed<RowActionItem[]>(() => {
       });
     }
   }
-  // Admin-only per-playlist access surfaces (mirrors the list). Both modals branch on endpoint internally
-  // (the shared Global-union access/URLs vs this playlist's custom group).
   if (isAdmin.value) {
     items.push({ key: 'assign', icon: 'lock', label: 'Assign access', run: () => { assignAccessOpen.value = true; } });
     items.push({ key: 'getaccess', icon: 'link', label: 'Get access', run: () => { getAccessOpen.value = true; } });
@@ -599,11 +481,6 @@ const headerMenuItems = computed<RowActionItem[]>(() => {
   return items;
 });
 
-// The filtered + sorted rows, then CLUSTERED into a failover tree: each parent keeps its sorted slot and is
-// immediately followed by its failoverOrder-sorted children (unless the group is collapsed). `nestedIds`
-// marks the child rows placed under a present parent (indent + connector); `childCounts` is the visible
-// backup count per parent id (always equals the nested rows shown). A child whose parent is filtered out
-// falls through as a normal, un-nested row.
 const filteredView = computed(() => {
   const q = search.value.toLowerCase();
   const rows = channels.value.filter((c) =>
@@ -615,8 +492,6 @@ const filteredView = computed(() => {
       c.tvg_name.toLowerCase().includes(q) ||
       tagNames(c.tags).some((n) => n.toLowerCase().includes(q)))
   );
-  // Sort by the selected key. channelNo is a user-editable string (may be numeric or null) — compare it
-  // numerically when both sides parse, else lexically, with nulls last; name/group are plain string sorts.
   const byName = (a: Channel, b: Channel) => a.tvg_name.localeCompare(b.tvg_name);
   const sorted = [...rows];
   if (sortBy.value === 'name') {
@@ -634,7 +509,6 @@ const filteredView = computed(() => {
       return (bothNum ? af - bf : an.localeCompare(bn)) || byName(a, b);
     });
   }
-  // Cluster failover groups over the sorted list.
   const childrenByGroup = new Map<string, Channel[]>();
   const parentPresent = new Set<string>();
   for (const c of sorted) {
@@ -649,7 +523,6 @@ const filteredView = computed(() => {
   const nestedIds = new Set<string>();
   const childCounts = new Map<string, number>();
   for (const c of sorted) {
-    // A child whose parent is present is emitted under that parent below — don't also place it here.
     if (c.failoverRole === 'child' && c.failoverGroupId && parentPresent.has(c.failoverGroupId)) continue;
     treeRows.push(c);
     if (c.failoverRole === 'parent' && c.failoverGroupId) {
@@ -662,22 +535,14 @@ const filteredView = computed(() => {
   }
   return { rows: treeRows, nestedIds, childCounts };
 });
-// `filtered` stays a flat Channel[] in tree order so every existing consumer (selection range/all, the
-// count pill, both v-for loops) is unchanged; the tree metadata rides alongside on `filteredView`.
 const filtered = computed(() => filteredView.value.rows);
 
 const selectedChannels = computed(() => channels.value.filter((c) => selected.value.has(c.id)));
 
-// Header channel count — value "<active> / <disabled>" (active cyan, disabled amber) with the total
-// folded into the Stat label as "Channels (<total>)". Derived from the loaded channels' top-level
-// Active/Disabled governor (status), not the API-computed playlist.channels total.
 const activeCount = computed(() => channels.value.filter((c) => c.status === 'Active').length);
 const disabledCount = computed(() => channels.value.filter((c) => c.status === 'Disabled').length);
 const totalCount = computed(() => channels.value.length);
 
-// Group filter options — the first-class group registry (GROUPS_BY_PLAYLIST) unioned with any group name
-// present on a loaded channel (a belt-and-suspenders safety net for a channel whose group predates a registry
-// reconcile). Empty groups (zero channels) DO appear here, which is the point of the registry.
 const groupOptions = computed(() => {
   const s = new Set<string>((GROUPS_BY_PLAYLIST.value[props.id] ?? []).map((g) => g.name));
   for (const c of channels.value) if (c.group) s.add(c.group);
@@ -706,9 +571,6 @@ function onRenameKey(id: string, e: KeyboardEvent) {
   if (e.key === 'Escape') editingId.value = null;
 }
 
-// Create modal state. A clone's id/url/path are derived SERVER-side from the name (non-alphanumerics
-// stripped, collision-disambiguated), so the modal collects only the name; `previewId` mirrors the server's
-// sanitize for a live "served at" preview.
 const createName = ref('My Custom Playlist');
 const previewId = computed(() => createName.value.trim().replace(/[^a-zA-Z0-9]/g, '') || 'clone');
 const canSubmitCreate = computed(() => createName.value.trim().length > 0);
@@ -718,7 +580,6 @@ function openCreate() {
   createName.value = 'My Custom Playlist';
   customAction.value = 'create';
 }
-// POST /api/custom-playlists — create a clone from the selected source channels (copied server-side).
 async function doCreate() {
   if (!canSubmitCreate.value || creating.value) return;
   creating.value = true;
@@ -742,7 +603,6 @@ async function doCreate() {
   }
 }
 
-// Append modal state
 const targetId = ref('');
 const appending = ref(false);
 function openAppend() {
@@ -751,7 +611,6 @@ function openAppend() {
 }
 const target = computed(() => customPlaylists.value.find((p) => p.id === targetId.value));
 const newTotal = computed(() => target.value ? target.value.channels + selectedChannels.value.length : 0);
-// PUT /api/custom-playlists/:id — append the selected source channels to an existing clone.
 async function doAppend() {
   if (!target.value || appending.value) return;
   appending.value = true;
@@ -815,10 +674,6 @@ async function doAppend() {
         <Stat label="Groups" :value="playlist.groups" />
         <Stat label="Synced" :value="playlist.lastSync" small />
       </div>
-      <!-- All header actions (Sync / Sync Global / Compose[ Global] / Edit / Delete) collapse into one cyan
-           waffle popover, mirroring the Playlists list-screen row-actions pattern. position:relative anchors
-           the absolutely-positioned RowActionsMenu; @click.stop is the contract its outside-click listener
-           relies on (and keeps the trigger click off the card). -->
       <div class="row" style="gap: 10px; position: relative;" @click.stop>
         <Btn
           variant="cyan"
@@ -1025,7 +880,6 @@ async function doAppend() {
       </div>
     </div>
 
-    <!-- Create modal -->
     <div v-if="customAction === 'create'" class="modal-bg" @click="customAction = null">
       <div class="modal" @click.stop style="width: 520px; max-width: 92vw;">
         <div class="modal-hd">
@@ -1083,7 +937,6 @@ async function doAppend() {
       </div>
     </div>
 
-    <!-- Append modal -->
     <div v-if="customAction === 'append'" class="modal-bg" @click="customAction = null">
       <div class="modal" @click.stop style="width: 520px; max-width: 92vw;">
         <div class="modal-hd">
@@ -1192,7 +1045,6 @@ async function doAppend() {
 </template>
 
 <style scoped>
-/* Transient highlight when a global-search result deep-links to a channel row/card (pulse, then cleared). */
 .flash {
   animation: mq-row-flash 2.2s ease-out;
 }

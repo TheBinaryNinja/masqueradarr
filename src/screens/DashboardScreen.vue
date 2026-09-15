@@ -22,8 +22,6 @@ const emit = defineEmits<{ (e: 'add', k: 'playlist' | 'epg'): void }>();
 const router = useRouter();
 function go(p: string) { router.push(p); }
 
-// Deterministic Code128-style barcode strip — same seed, same bars (the masqueradarr brand idiom,
-// mirroring LoginScreen/SetupScreen: seed 20240624, self-contained, no artwork fetch).
 const barcode = (() => {
   const rects: { x: number; w: number }[] = [];
   let seed = 20240624, x = 0, ink = true;
@@ -39,21 +37,11 @@ const barcode = (() => {
 
 const totalChannels = computed(() => PLAYLISTS.value.reduce((s, p) => s + p.channels, 0));
 const totalPrograms = computed(() => EPG_SOURCES.value.reduce((s, e) => s + e.programs, 0));
-// Dashboard renders these two overview panels A–Z (the store holds them in raw/server order).
-// Scoped to the Dashboard only — the Playlists / EPG Sources screens keep their own ordering.
 const sortedPlaylists = computed(() => [...PLAYLISTS.value].sort((a, b) => a.name.localeCompare(b.name)));
 const sortedEpgSources = computed(() => [...EPG_SOURCES.value].sort((a, b) => a.name.localeCompare(b.name)));
-// "Unmatched" = anything not EPG-matched, including the null seed state (never EPG-evaluated) —
-// not just epgState === 'unmatched'. epgState is the dedicated match-status indicator ('matched' | 'unmatched' | null).
 const unmatched = computed(() => CHANNELS.value.filter((c) => c.epgState !== 'matched').length);
-// Realtime phase governor (stream.status: 'live' | 'establishing' | 'buffer' | 'failed' | null) — the
-// same field PlaylistDetailScreen labels "live"/"down". Distinct from the top-level Active/Disabled governor.
 const channelsLive = computed(() => CHANNELS.value.filter((c) => c.stream.status === 'live').length);
 const channelsDown = computed(() => CHANNELS.value.filter((c) => c.stream.status === 'failed').length);
-// Manual vs. auto sync split for the Playlists card. "Manual" = no scheduled Sync cron job for the
-// playlist's source (playlistScheduleLabel resolves to the lowercase 'manual'); "auto" = a scheduled
-// interval exists. Branching on the same cron-derived label the per-row "Sync:" chip renders keeps the
-// card count in agreement with the chips in the Playlists panel directly below.
 const playlistSyncSplit = computed(() => {
   let manual = 0, auto = 0;
   for (const p of PLAYLISTS.value) {
@@ -62,22 +50,14 @@ const playlistSyncSplit = computed(() => {
   }
   return { manual, auto };
 });
-// Real active/disabled split for the Channels card — the top-level enable governor (status: 'Active' =
-// included in the m3u, 'Disabled' = excluded). Mirrors the Playlists card's manual/auto side-by-side and
-// is derived from the same CHANNELS feed the card's total reads (no per-channel created timestamp exists,
-// so a "new this week" count cannot be computed).
 const channelsActive = computed(() => CHANNELS.value.filter((c) => c.status === 'Active').length);
 const channelsDisabled = computed(() => CHANNELS.value.filter((c) => c.status === 'Disabled').length);
 
-// ── Activity panel — live Active Sessions + recent History ─────────────
-// Live snapshot over the /api/stream-stats WebSocket: the same ref-counted singleton the Active
-// Streams and History/Metrics screens use (no polling). Only sessions whose channelId resolves to a
-// real channel are surfaced; recentHistory reads the shared newest-first VIEW_SESSIONS feed.
 const { subscribe: subscribeStats, release: releaseStats } = useStreamStats();
 function chOf(channelId: string) { return CHANNELS.value.find((c) => c.id === channelId); }
 const activeSessions = computed(() => ACTIVE_STREAMS.value.filter((s) => chOf(s.channelId)));
 const recentHistory = computed(() => {
-  const cutoff = Date.now() - 24 * 60 * 60 * 1000; // last-24h window, matching the panel caption
+  const cutoff = Date.now() - 24 * 60 * 60 * 1000;
   return VIEW_SESSIONS.value.filter((v) => v.startedAt >= cutoff && chOf(v.channelId)).slice(0, 12);
 });
 
@@ -96,15 +76,7 @@ function durLabel(ms: number) {
   return `${h}h ${m ? m + 'm' : ''}`.trim();
 }
 
-// ── System Performance banner — live host/container metrics ────────────
-// Live frame over the /api/system-stats WebSocket (ref-counted singleton, admin-only — operator data). The
-// CPU% rolling series feeds the LivelineChart; the other four metrics are numeric tiles updated each tick.
 const { subscribe: subscribeSys, release: releaseSys, cpuSeries, cpuTimes } = useSystemStats();
-// LivelineChart inputs. cpuSeries (+ its lockstep cpuTimes arrival stamps) are refs
-// mutated IN PLACE; hand the chart finite-only samples paired with their stamps — filtered as PAIRS so
-// series and times stay index-aligned. The finite filter guards liveline's freeze-prone tick math (skill
-// §7.3); the stable per-sample stamps let a full window glide instead of snapping each tick — the jitter
-// seen on Dashboard re-entry (skill §7.1). liveline owns the 60fps glide.
 function zipFinite(vals: number[], times: number[]): { series: number[]; times: number[] } {
   const series: number[] = [], ts: number[] = [];
   for (let i = 0; i < vals.length; i++) {
@@ -113,7 +85,6 @@ function zipFinite(vals: number[], times: number[]): { series: number[]; times: 
   return { series, times: ts };
 }
 const cpuChart = computed(() => zipFinite(cpuSeries.value, cpuTimes.value));
-// Where CPU/Memory were measured: cgroup limits ('container') vs the whole machine ('host').
 const sysScope = computed(() => {
   const sc = SYSTEM_STATS.value?.scope;
   return sc === 'cgroup-v2' || sc === 'cgroup-v1' ? 'container' : 'host';
@@ -128,28 +99,16 @@ function fmtBytes(n: number | null | undefined) {
 }
 function fmtRate(n: number | null | undefined, unit: string) { return n == null ? 'n/a' : `${n.toFixed(1)} ${unit}`; }
 
-// MEMORY PRESSURE — the S3/ORIGIN rings as a share of the box. `originRingMb` bounds ONE channel and nothing
-// bounds the host yet (the postponed LRU ceiling), so host RAM is the only honest denominator: the failure
-// mode this warns about is the sum of rings outgrowing the machine, not any one ring filling up.
-//
-// Colour IS the reading here: this is the one tile whose big number is tinted, because the byte total alone
-// says nothing — 142 MB is fine on a workstation and fatal on a Pi. The tone carries that judgement on both
-// the value and the sub-line; null (no sidecar) stays grey so "unknown" never reads as "healthy".
 const ring = computed(() => SYSTEM_STATS.value?.ring ?? null);
-// 30% is the plan's own alarm case made concrete: ~50 origins at the 25 MiB default is ≈1.2 GiB, which is
-// where a 4 GB Pi starts hurting. 15% is the "look at this before it bites" mark.
 const ringTone = computed(() => (ring.value == null ? null : ring.value.pressurePct >= 30 ? 'bad' : ring.value.pressurePct >= 15 ? 'warn' : 'good'));
 
 
-// DB Health card — live MongoDB metrics from the same WS frame (mongo.health is null until the second
-// serverStatus sample lets the server take a delta, so the rate values show '—' for the first ~5s).
 const dbHealth = computed(() => SYSTEM_STATS.value?.mongo.health ?? null);
 function fmtPerSec(n: number | null | undefined) { return n == null ? '—' : `${n < 10 ? n.toFixed(1) : Math.round(n)} /s`; }
 function fmtMs(n: number | null | undefined) { return n == null ? '—' : `${n.toFixed(1)} ms`; }
 function fmtRatio(n: number | null | undefined) { return n == null ? '—' : `${n.toFixed(1)} : 1`; }
 function fmtCount(n: number | null | undefined) { return n == null ? '—' : `${n}`; }
 
-// User-specific states & computed properties
 const toast = useToast();
 const channelSearch = ref('');
 const selectedChannel = ref<any>(null);
@@ -159,16 +118,8 @@ const userInitials = computed(() => {
   return name.slice(0, 2).toUpperCase();
 });
 
-// Per-user published playlist URLs — one grouped card per playlist the current user is allowed (Global
-// first, then each allowed custom). The shared composable derives identical URLs to the admin Users
-// screen from data the SPA already has (identity + allow-lists + PLAYLISTS + operator domain), so there
-// is no new data-model field and no backend call. PublishedUrlGroups owns the copy + confirmation modal.
 const publishedUrls = usePublishedUrls(() => currentUser.value);
 
-// Available Channels are scoped to the playlists this user has been granted (allowedPlaylists ∪
-// allowedCustomPlaylists). reloadUserChannels() already limits CHANNELS to granted playlists, but we also
-// gate at the render layer: a channel's `source` equals the playlist/source id the grant is keyed on, so
-// an ungranted channel never surfaces here even if the store is repopulated out-of-band.
 const grantedSources = computed(() => new Set([
   ...(currentUser.value?.allowedPlaylists || []),
   ...(currentUser.value?.allowedCustomPlaylists || []),
@@ -183,10 +134,6 @@ const filteredChannels = computed(() => {
   });
 });
 
-// ── EPG guide for the selected channel (replaces the in-app player on the user dashboard) ───────────
-// The channel↔guide link is the 2-factor (tvg_id, epg); programs are keyed by the composite <epg>:<tvg_id>
-// (the same key ActiveStreams / EPG Detail use). Fetched via the user-reachable /api/playlists/:id/programs
-// (the admin /api/epg-programs is admin-only), scoped to the selected channel's own playlist `source`.
 const epgKey = computed<string | null>(() => {
   const c = selectedChannel.value;
   return c && c.epg && c.tvg_id ? `${c.epg}:${c.tvg_id}` : null;
@@ -195,18 +142,16 @@ const epgLoading = ref(false);
 
 watch(selectedChannel, async (c) => {
   const key = epgKey.value;
-  if (!c || !key) return;                 // unmatched channel → no guide (rendered as an empty state)
-  if (EPG_PROGRAMS[key]?.length) return;  // already cached from a prior selection
+  if (!c || !key) return;
+  if (EPG_PROGRAMS[key]?.length) return;
   epgLoading.value = true;
   try {
     const now = Date.now();
     await fetchUserProgramsFor(c.source, [key], now - 60 * 60 * 1000, now + 3 * 60 * 60 * 1000);
-  } catch { /* best-effort; the panel falls back to "No guide data" */ }
+  } catch {   }
   finally { epgLoading.value = false; }
 });
 
-// Now-playing + upcoming derived from the cached programs (overlap semantics match ActiveStreams' npData:
-// live = straddles now; upcoming = starts at/after the live block ends). Snapshot at selection time.
 const epgPrograms = computed<Program[]>(() => (epgKey.value ? EPG_PROGRAMS[epgKey.value] || [] : []));
 const nowPlaying = computed<Program | null>(() => {
   const now = Date.now();
@@ -218,7 +163,6 @@ const upcoming = computed<Program[]>(() => {
   return epgPrograms.value.filter((p) => p.start >= floor);
 });
 
-// HH:MM clock for guide rows (mirrors EPGDetailScreen's local-time formatting).
 function fmtClock(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
@@ -242,15 +186,12 @@ async function handleRegenerateToken() {
   }
 }
 
-// A sign-in/out on Settings flips a playlist's isAuthenticated — re-read so the badge updates live.
-// The admin-only Activity panel also subscribes to the live stream-stats WS (Active Sessions push +
-// freshly-closed sessions prepended into VIEW_SESSIONS) and refreshes the history once on enter.
 onMounted(() => {
   bus.on('tvapp:auth-changed', reloadPlaylists);
   if (isAdmin.value) {
     subscribeStats();
     subscribeSys();
-    reloadViewSessions().catch(() => { /* best-effort history refresh on enter */ });
+    reloadViewSessions().catch(() => {   });
   }
 });
 onBeforeUnmount(() => {
@@ -264,7 +205,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div v-if="isAdmin" class="col mq-dash" style="gap: 18px;">
-    <!-- masqueradarr HUD micro row — telemetry overline for the whole admin console -->
     <div class="mq-micro-row" aria-hidden="true">
       <span class="mq-micro-hi">MASQUERADARR // CONSOLE</span>
       <span>MK-SYS / DASH</span>
@@ -281,9 +221,6 @@ onBeforeUnmount(() => {
       <div style="padding: 12px var(--pad-card) 0;">
         <LivelineChart :series="cpuChart.series" :times="cpuChart.times" :target="80" />
       </div>
-      <!-- Bottom row: the 5 live metric tiles (flex: 1) + the DB Health mini-card pinned to the right.
-           Wrapped in its own nested .card flush so it keeps a carded surface while the chart above
-           blends into the page (.sys-flush on the outer card). -->
       <div class="card flush">
       <div style="display: flex; align-items: stretch;">
       <div class="stats" style="grid-template-columns: repeat(6, 1fr); margin: 0; flex: 1; min-width: 0;">
@@ -301,10 +238,6 @@ onBeforeUnmount(() => {
             {{ fmtBytes(SYSTEM_STATS?.memory.usedBytes) }} / {{ fmtBytes(SYSTEM_STATS?.memory.totalBytes) }} · rss {{ fmtBytes(SYSTEM_STATS?.memory.rssBytes) }}
           </div>
         </div>
-        <!-- S3/ORIGIN ring RAM. Sits beside Memory on purpose: that tile is the whole box, this one is the
-             slice the video rings hold — which memory.rssBytes cannot show, since the rings live in the Rust
-             sidecar. The value is the byte total and the THRESHOLD COLOUR is the verdict on it — the sub-line
-             then gives the percentage that colour was judged against, so the tint is never unexplained. -->
         <div class="stat">
           <div class="lbl">Memory pressure</div>
           <div class="val" :class="ringTone ? ringTone : 'val-muted'">{{ ring ? fmtBytes(ring.bytes) : '—' }}</div>
@@ -344,7 +277,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
       </div>
-      <!-- DB Health — live MongoDB metrics (mono values) pinned to the right of the DB connections tile. -->
       <div class="db-health">
         <div class="db-health-hd">DB Health</div>
         <div class="db-health-grid">
@@ -361,7 +293,6 @@ onBeforeUnmount(() => {
 
     </div>
 
-    <!-- spec-sheet overline above the six stat tiles -->
     <div class="mq-overline" aria-hidden="true">
       <span class="mq-ov-tag">SYS</span>
       <span class="mq-ov-rule" />
@@ -407,7 +338,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- brand foot — deterministic barcode + mono spec strip; sits full-width above Playlists/Activity -->
     <div class="mq-foot" aria-hidden="true">
       <svg class="mq-barcode" :viewBox="`0 0 ${barcode.width} 26`" preserveAspectRatio="none">
         <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
@@ -431,8 +361,6 @@ onBeforeUnmount(() => {
             <Btn variant="ghost" size="sm" @click="go('/playlists')">View all</Btn>
             <Btn variant="ghost" size="sm" icon="plus" @click="emit('add', 'playlist')">Add playlist</Btn>
           </div>
-          <!-- Same Ultimate Player launcher as the Playlists rows, plus the chevron this panel showed
-               before (PlaylistRow's default #actions) so the open affordance survives. -->
           <PlaylistRow v-for="p in sortedPlaylists" :key="p.id" :playlist="p" compact @open="go(`/playlists/${p.id}`)">
             <template #actions>
               <Btn
@@ -496,7 +424,6 @@ onBeforeUnmount(() => {
           <span class="mq-cap">LIVE // LAST 24H</span>
         </div>
         <div class="activity-body">
-          <!-- Active Sessions — rendered only when there are live sessions (nothing shown otherwise) -->
           <div v-if="activeSessions.length" class="activity-sec">
             <div class="activity-sec-hd">
               <span class="dot good pulse" style="width: 7px; height: 7px;" />
@@ -522,7 +449,6 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- History — recent completed watch sessions (always shown) -->
           <div class="activity-sec">
             <div class="activity-sec-hd">
               <Icon name="file" :size="13" />
@@ -544,7 +470,6 @@ onBeforeUnmount(() => {
               <div class="qoe-pill" :data-health="v.health"><span class="dot" />{{ v.qoeScore }}</div>
             </div>
             <div v-if="recentHistory.length === 0" class="mq-empty">
-              <!-- decorative SCAN FIELD micrographic plate (masqueradarr-micrographics MK-07.5) -->
               <svg class="mq-plate mq-plate-sm" viewBox="0 0 360 230" aria-hidden="true">
                 <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
                   <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
@@ -577,15 +502,12 @@ onBeforeUnmount(() => {
   </div>
 
   <div v-else class="col mq-dash mq-dash-user" style="gap: 18px;">
-    <!-- masqueradarr HUD micro row — telemetry overline for the end-user console -->
     <div class="mq-micro-row" aria-hidden="true">
       <span class="mq-micro-hi">MASQUERADARR // ACCOUNT</span>
       <span>MK-SYS / DASH</span>
     </div>
 
-    <!-- 1. Welcome Card -->
     <div class="card mq-welcome" style="padding: 20px; display: flex; align-items: center; gap: 20px;">
-      <!-- brand mark-in-circle avatar idiom (teal circle, obsidian glyph) — masqueradarr-logotype §3 -->
       <div class="mq-avatar">{{ userInitials }}</div>
       <div style="flex: 1;">
         <h2 style="margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -0.02em; color: var(--text-0);">Welcome, {{ currentUser?.username }}!</h2>
@@ -603,7 +525,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 2. Integration URLs -->
     <div class="card" style="padding: 20px; display: flex; flex-direction: column; gap: 16px;">
       <div class="mq-overline" aria-hidden="true">
         <span class="mq-ov-tag">LINK</span>
@@ -621,17 +542,15 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- 3. Channels & Program Guide -->
     <div class="mq-dash-cols">
-      <!-- Left: granted channels list + selected-channel info bar -->
       <div class="card flush mq-dash-channels">
         <div class="mq-h" style="font-size: 15px;">Available Channels</div>
         <div class="input">
           <input v-model="channelSearch" placeholder="Search channels or groups..." style="width: 100%;" />
         </div>
         <div class="mq-chan-list">
-          <div v-for="c in filteredChannels" :key="c.id" 
-               :class="['src-row', { selected: selectedChannel?.id === c.id }]" 
+          <div v-for="c in filteredChannels" :key="c.id"
+               :class="['src-row', { selected: selectedChannel?.id === c.id }]"
                style="padding: 8px 12px; margin: 0; border-radius: 8px; cursor: pointer; transition: all 0.2s;"
                @click="selectedChannel = c">
             <ChannelLogo :ch="c" />
@@ -646,7 +565,6 @@ onBeforeUnmount(() => {
             <StatusDot :status="c.stream.status" :pulse="c.stream.status === 'live'" />
           </div>
           <div v-if="filteredChannels.length === 0" class="mq-empty">
-            <!-- decorative UPLINK micrographic plate (masqueradarr-micrographics MK-07.2) -->
             <svg class="mq-plate mq-plate-sm" viewBox="0 0 360 230" aria-hidden="true">
               <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
                 <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
@@ -675,7 +593,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- info bar: clicked-channel details (title + pills), pinned below the list -->
         <div class="mq-chan-info">
           <template v-if="selectedChannel">
             <div style="min-width: 0;">
@@ -691,7 +608,6 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Right: EPG program guide for the selected channel (in place of the in-app player) -->
       <div class="card flush mq-dash-epg">
         <div class="mq-epg-hd">
           <div class="mq-h" style="font-size: 15px;">Program Guide</div>
@@ -717,7 +633,6 @@ onBeforeUnmount(() => {
           </div>
         </template>
 
-        <!-- nothing selected / loading / no guide data — decorative SIGNAL LOCK plate reused -->
         <div v-else class="mq-epg-state">
           <svg class="mq-plate mq-plate-sm" viewBox="0 0 360 230" aria-hidden="true">
             <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
@@ -754,7 +669,6 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- brand foot — deterministic barcode + mono spec strip -->
     <div class="mq-foot" aria-hidden="true">
       <svg class="mq-barcode" :viewBox="`0 0 ${barcode.width} 26`" preserveAspectRatio="none">
         <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
@@ -769,17 +683,7 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* ── masqueradarr brand chrome (scoped exception, matching LoginScreen/HlsPlayer) ──────────
-   Two colors only (teal signal via --accent/--mq-teal, red risk via --bad/--mq-risk); two
-   fonts only (Space Grotesk display, JetBrains Mono telemetry). All hues flow through tokens. */
 
-/* ── elevation over the .mq-stage field ───────────────────────────────────────────────────
-   The dashboard sits on the lit-center / dark-edge brand stage (owned by .mq-stage in
-   styles.css). A flat --bg-1 card would float against that gradient with no separation, so
-   The base card elevation (lifted --bg-2 → --bg-1 gradient + stronger hairline + layered shadow)
-   now lives globally on .card in styles.css, so the dashboard's own cards inherit it with no
-   scoped copy here. The welcome card keeps its own teal-tint surface gradient (.mq-welcome) and
-   only borrows the lift (border + shadow), so its override remains. */
 .mq-dash .card.mq-welcome {
   box-shadow:
     inset 0 1px 0 var(--accent-soft),
@@ -787,8 +691,6 @@ onBeforeUnmount(() => {
     0 14px 34px rgba(0, 0, 0, 0.34),
     0 0 0 1px var(--accent-soft);
 }
-/* Light theme: the welcome card's teal-ring shadow needs the same softening the global .card
-   light variant applies — soften the drop shadow and lift the top highlight toward white. */
 [data-theme="light"] .mq-dash .card.mq-welcome {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.7),
@@ -797,12 +699,7 @@ onBeforeUnmount(() => {
     0 0 0 1px var(--accent-soft);
 }
 
-/* System & GPU performance cards: the outer shell is a bare container so the liveline + header blend
-   into the page (no surface / border / shadow), while the nested .card flush lower row keeps the carded
-   treatment. The flat opt-out is now the global .card.sys-flush utility in styles.css (it strips the
-   global card elevation in both themes); these shells carry the sys-flush class in the template. */
 
-/* HUD micro row — console telemetry overline */
 .mq-micro-row {
   display: flex;
   align-items: center;
@@ -814,7 +711,6 @@ onBeforeUnmount(() => {
 }
 .mq-micro-hi { color: var(--text-2); }
 
-/* mono live caption (telemetry idiom) for card headers */
 .mq-cap {
   font-family: var(--mq-font-mono);
   font-size: var(--fs-xs);
@@ -823,7 +719,6 @@ onBeforeUnmount(() => {
   white-space: nowrap;
 }
 
-/* spec-sheet overline with teal rule */
 .mq-overline {
   display: flex;
   align-items: center;
@@ -843,7 +738,6 @@ onBeforeUnmount(() => {
   color: var(--text-3);
 }
 
-/* brand display heading (Space Grotesk, tight tracking) */
 .mq-h {
   font-family: var(--mq-font-sans);
   font-weight: 600;
@@ -851,14 +745,12 @@ onBeforeUnmount(() => {
   color: var(--text-0);
 }
 
-/* end-user welcome card — brand teal tint surface (no second/third hue) */
 .mq-welcome {
   background: linear-gradient(135deg, var(--accent-soft) 0%, var(--bg-1) 100%);
   border: 1px solid var(--accent-soft);
   border-radius: var(--radius-m);
 }
 
-/* brand mark-in-circle avatar idiom — teal circle, obsidian-ish glyph */
 .mq-avatar {
   width: 50px;
   height: 50px;
@@ -876,7 +768,6 @@ onBeforeUnmount(() => {
   flex: none;
 }
 
-/* decorative micrographic emblem plates (aria-hidden; paired with real text labels) */
 .mq-empty {
   display: flex;
   flex-direction: column;
@@ -905,7 +796,6 @@ onBeforeUnmount(() => {
   max-width: 260px;
 }
 
-/* signal-lock player idle state */
 .mq-lockstate .mq-plate { max-width: 300px; opacity: 0.7; margin-bottom: 8px; }
 .mq-lock-tag {
   font-family: var(--mq-font-mono);
@@ -915,21 +805,14 @@ onBeforeUnmount(() => {
   margin-bottom: 10px;
 }
 
-/* ── single-window user console ─────────────────────────────────────────────────────────────
-   The end-user dashboard fits ENTIRELY in one viewport — no page scroll, no horizontal scroll.
-   The root fills exactly the .mq-stage-content box (which already adds padding-top: topbar+pad and
-   padding-bottom: pad), so .screen's overflow-y never trips; the two-column area flex-fills the
-   remaining space and each column's inner list is the only scroller. Scoped to .mq-dash-user so the
-   admin dashboard (shares .mq-dash) keeps its normal document flow + scrolling. */
 .mq-dash-user {
   height: calc(100vh - var(--topbar-h) - 2 * var(--pad-x));
   min-height: 0;
   overflow: hidden;
 }
-.mq-dash-user > * { flex: 0 0 auto; }            /* welcome / integration / foot: intrinsic height */
-.mq-dash-user > .mq-dash-cols { flex: 1 1 auto; min-height: 0; }  /* absorbs the remaining height */
+.mq-dash-user > * { flex: 0 0 auto; }
+.mq-dash-user > .mq-dash-cols { flex: 1 1 auto; min-height: 0; }
 
-/* two equal-height columns; minmax(0,…) tracks + min-width:0 kill any horizontal overflow */
 .mq-dash-cols {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr);
@@ -938,8 +821,6 @@ onBeforeUnmount(() => {
 }
 .mq-dash-cols > * { min-width: 0; min-height: 0; }
 
-/* left: channels list card fills the row; the list scrolls internally, the info bar pins below.
-   The .card compound selectors beat the global .card.flush{padding:0} without inline styles. */
 .card.mq-dash-channels,
 .card.mq-dash-epg {
   display: flex;
@@ -978,7 +859,6 @@ onBeforeUnmount(() => {
 }
 .mq-chan-info-empty { font-size: 12px; }
 
-/* right: EPG program guide card (in place of the in-app player) — NOW block pinned, Up Next scrolls */
 .mq-epg-hd {
   flex: 0 0 auto;
   display: flex;
@@ -1070,7 +950,6 @@ onBeforeUnmount(() => {
 }
 .mq-epg-empty-inline { font-size: 12px; padding: 10px 4px; }
 
-/* EPG idle / loading / no-guide state — centered brand plate (reuses the SIGNAL LOCK micrographic) */
 .mq-epg-state {
   flex: 1 1 auto;
   min-height: 0;
@@ -1083,7 +962,6 @@ onBeforeUnmount(() => {
 }
 .mq-epg-state .mq-plate { max-width: 240px; opacity: 0.6; margin-bottom: 8px; }
 
-/* brand foot — deterministic barcode + mono spec strip */
 .mq-foot { margin-top: 4px; }
 .mq-barcode {
   display: block;

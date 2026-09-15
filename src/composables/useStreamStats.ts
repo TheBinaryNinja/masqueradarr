@@ -1,55 +1,29 @@
-// Live Active Streams over WebSocket (/api/stream-stats). A module-level singleton: every screen that needs
-// the live snapshot calls subscribe()/release() (ref-counted) so a single socket is shared. Each push frame
-// updates the shared ACTIVE_STREAMS ref (so the sidebar nav count + any consumer stay live) and appends to a
-// per-channel rolling bitrate series for the detail bitrate chart. Mirrors the dulo login-stream WS pattern
-// (DuloLoginDrawer.vue): proto from location.protocol, same-origin host, onmessage → update refs.
 
 import { reactive } from 'vue';
 import { ACTIVE_STREAMS, VIEW_SESSIONS, type ActiveStream, type ViewSession } from '../data';
 
-const SERIES_MAX = 60; // points kept per channel for the bitrate chart
-const SESSIONS_MAX = 500; // mirror GET /api/view-sessions' .limit(500)
-const LIVE_BUFFER_MAX = 200; // rolling cap on live buffer-event frames kept in memory
+const SERIES_MAX = 60;
+const SESSIONS_MAX = 500;
+const LIVE_BUFFER_MAX = 200;
 const RECONNECT_MS = 3000;
 
-// channelId → recent per-viewer bitrate samples (Mbps). reactive so the chart computed re-renders.
 const series = reactive<Record<string, number[]>>({});
 
-// channelId → ingest freshness + derived INGRESS rate, for the Active Streams four-stage panel.
-//
-// Two things live here that cannot live in a computed:
-//
-// 1. FRESHNESS AGAINST THE RIGHT CLOCK. `ingest.at` is stamped by NODE (server/src/proxy/telemetryIngest.ts),
-//    so `Date.now() - at` in the browser subtracts a server timestamp from a client one — a few minutes of
-//    clock skew pins every origin channel permanently stale or permanently fresh. It also freezes at the
-//    worst possible moment: a `Date.now() - at` reading looks FRESHEST the instant the socket dies. We
-//    therefore stamp our OWN arrival time, and only when the frame actually CHANGED — `report_iop` is not a
-//    heartbeat (it fires from five sites, only one of them steady-state), so a repeated snapshot must not
-//    read as liveness. Same two-clock idiom as LiveBufferEvent's `at` + `recvAt` below.
-// 2. THE INGRESS RATE. Nothing in Rust or Node computes one: `ingestedBytes` is only ever added to and read
-//    cumulatively. Δbytes/Δat here is the whole feature, with no backend change — the same shape already
-//    shipped for the bitrate series above.
 interface IngestMeta {
-  lastAt: number; // the last DISTINCT ingest.at seen (server epoch-ms) — the change detector, never aged against
-  recvAt: number; // client epoch-ms that distinct frame ARRIVED — the only clock we may measure age with
-  lastBytes: number; // ingestedBytes at that frame
-  // Derived ingress rate. `null` = never had two distinct frames to measure across; a NUMBER (including 0)
-  // is a real measurement — 0 means the ingest genuinely pulled no new bytes between two frames, which is a
-  // different statement from "we cannot tell yet" and must not render as the same string.
+  lastAt: number;
+  recvAt: number;
+  lastBytes: number;
   mbps: number | null;
 }
 const ingestMeta = reactive<Record<string, IngestMeta>>({});
 
-// A live buffering-interval START pushed over the WS the moment the telemetry core opens one (before the
-// session closes + persists). `side` distinguishes an upstream (phase-derived) from a client (rate-inferred)
-// event. Kept as a reactive rolling log so a mounted History screen can tally live buffering by side.
 export interface LiveBufferEvent {
   channelId: string | null;
   channelKey: string;
   phase: 'buffer' | 'failed';
-  at: number; // server epoch-ms the interval began
+  at: number;
   side: 'upstream' | 'client';
-  recvAt: number; // client epoch-ms the frame arrived (for windowing)
+  recvAt: number;
 }
 const liveBufferEvents = reactive<LiveBufferEvent[]>([]);
 
@@ -57,22 +31,12 @@ let ws: WebSocket | null = null;
 let refCount = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-// ── THE SERVER'S CLOCK, as observed from here ───────────────────────────────────────────────────────────
-// Every timestamp the backend sends is stamped with ITS `Date.now()`, so measuring one against OURS
-// subtracts two different clocks — see the note above, which is the same trap `recvAt` exists to dodge. Where
-// a same-clock stamp is available (a frame's arrival) that remains the better tool. This is for the
-// timestamps where none is: a viewer's `connectedAt`, a session's `lastClose.at`, the age of the FIRST
-// ingest frame we ever see. One offset, re-estimated every snapshot, turns all of those into same-clock
-// subtractions. The round trip inflates it by the network delay (single-digit ms), which is nothing against
-// the 10s liveness gate and the 30-90s staleness window it feeds.
 let serverOffset = 0;
 
 function noteServerClock(at: number): void {
   if (Number.isFinite(at)) serverOffset = at - Date.now();
 }
 
-/** The current time on the SERVER's clock. Use for any timestamp the backend stamped; never for measuring
- *  something this browser observed (that is what a local `recvAt` is for). */
 export function serverNow(): number {
   return Date.now() + serverOffset;
 }
@@ -87,54 +51,31 @@ function ingest(streams: ActiveStream[]): void {
     arr.push(s.bitrate);
     if (arr.length > SERIES_MAX) arr.shift();
 
-    // Ingest freshness + ingress rate — origin-backed channels only (a passthrough stream has no ring and
-    // never gets an entry, so `ingestAge` correctly reports "no reading" rather than a fabricated age).
     const ing = s.ingest;
     if (!ing) continue;
     const prev = ingestMeta[s.channelId];
     if (!prev) {
-      // FIRST SIGHT is the one case with no previous frame to compare against, and stamping it `now` asserts
-      // a freshness we have not observed: Node re-broadcasts the last `iop` snapshot for as long as viewers
-      // remain, so an ingest that died ten minutes ago arrives looking exactly like one that reported a
-      // moment ago — and the panel would paint green for the whole staleness window at precisely the moment
-      // an operator opened it to find out why the stream is frozen. Back-date our arrival stamp by the
-      // frame's OWN age, measured server-clock to server-clock, so `ingestAge` tells the truth on the first
-      // render. Clamped at 0: a small negative is offset noise, never evidence of a frame from the future.
       const age = Math.max(0, serverNow() - ing.at);
       ingestMeta[s.channelId] = { lastAt: ing.at, recvAt: now - age, lastBytes: ing.ingestedBytes, mbps: null };
     } else if (ing.at !== prev.lastAt) {
       const dtMs = ing.at - prev.lastAt;
       const dBytes = ing.ingestedBytes - prev.lastBytes;
-      // A fresh Origin for the same channel restarts every counter at 0, so a NEGATIVE delta is a restart,
-      // not negative throughput: reseed and report NOTHING (null) rather than rendering a bogus rate. dtMs
-      // <= 0 is likewise unusable (a clock step, or the same frame re-sent) — never divide by it.
-      //
-      // dBytes === 0 over a REAL interval is different from both: it is a measurement, and the answer is a
-      // genuine 0 Mbps. Collapsing it into the unmeasurable cases would make a stalled ingest read as
-      // "waiting for data", which is the opposite of what it means.
       prev.mbps = dtMs <= 0 || dBytes < 0 ? null : (dBytes * 8) / (dtMs / 1000) / 1e6;
       prev.lastAt = ing.at;
       prev.recvAt = now;
       prev.lastBytes = ing.ingestedBytes;
     }
   }
-  // Forget the series of channels that no longer have viewers.
   for (const id of Object.keys(series)) if (!present.has(id)) delete series[id];
   for (const id of Object.keys(ingestMeta)) if (!present.has(id)) delete ingestMeta[id];
 }
 
-// A freshly-closed watch session pushed on session-close — prepend (newest-first, matching the server's
-// sort) into the shared VIEW_SESSIONS history so the History/Metrics screen surfaces it live, with no
-// re-fetch. Deduped by the session's natural key (guard against a row already pulled by the on-enter
-// reload) and capped to the server's list limit. New array → ref identity changes → downstream computeds rerun.
 function ingestSession(s: ViewSession): void {
   const key = `${s.channelId}|${s.ip}|${s.startedAt}`;
   const rest = VIEW_SESSIONS.value.filter((v) => `${v.channelId}|${v.ip}|${v.startedAt}` !== key);
   VIEW_SESSIONS.value = [s, ...rest].slice(0, SESSIONS_MAX);
 }
 
-// A live buffering-interval start — append to the rolling log (bounded). `side` defaults to 'upstream' for
-// resilience against an older server that doesn't send it.
 function ingestBufferEvent(m: { channelId?: string | null; channelKey?: string; phase?: 'buffer' | 'failed'; at?: number; side?: 'upstream' | 'client' }): void {
   liveBufferEvents.push({
     channelId: m.channelId ?? null,
@@ -164,14 +105,11 @@ function connect(): void {
         at?: number;
         side?: 'upstream' | 'client';
       };
-      // Re-estimated on EVERY snapshot, before the payload is read: the frame's own `at` is the only
-      // observation of the server's clock we get, and everything downstream ages against it.
       if (typeof msg.at === 'number' && msg.type === 'active-streams') noteServerClock(msg.at);
       if (msg.type === 'active-streams' && Array.isArray(msg.streams)) ingest(msg.streams);
       else if (msg.type === 'view-session' && msg.session) ingestSession(msg.session);
       else if (msg.type === 'buffer-event' && msg.channelKey) ingestBufferEvent(msg);
     } catch {
-      /* ignore a malformed frame */
     }
   };
   ws.onclose = () => {
@@ -182,7 +120,6 @@ function connect(): void {
     try {
       ws?.close();
     } catch {
-      /* ignore */
     }
   };
 }
@@ -204,7 +141,6 @@ function disconnect(): void {
     try {
       ws.close();
     } catch {
-      /* ignore */
     }
     ws = null;
   }
@@ -219,25 +155,13 @@ export function useStreamStats() {
     refCount = Math.max(0, refCount - 1);
     if (refCount === 0) disconnect();
   }
-  /** Rolling per-viewer bitrate samples (Mbps) for a channel — drives the detail bitrate chart. */
   function bitrateSeries(channelId: string): number[] {
     return series[channelId] ?? [];
   }
-  /**
-   * Milliseconds since this channel's ingest last reported something NEW, measured on the browser clock.
-   * `Infinity` when nothing has ever been reported (passthrough, or before the first frame) — callers must
-   * treat that as "not measured", never as "stale", since the two mean opposite things on this panel.
-   */
   function ingestAge(channelId: string): number {
     const m = ingestMeta[channelId];
     return m ? Date.now() - m.recvAt : Infinity;
   }
-  /**
-   * Derived UPSTREAM ingress rate (Mbps) for a channel's single shared ingest.
-   * `null` = not measurable yet (fewer than two distinct ingest frames, or a counter restart). A returned
-   * `0` is a REAL reading: two frames arrived and no new bytes were pulled between them. Callers must render
-   * those two differently — treating null as zero invents throughput data that was never measured.
-   */
   function ingestMbps(channelId: string): number | null {
     return ingestMeta[channelId]?.mbps ?? null;
   }

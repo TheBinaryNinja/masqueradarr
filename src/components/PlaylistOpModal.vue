@@ -1,19 +1,4 @@
 <script lang="ts">
-// The scope + operation this modal visualizes. Exported from a plain <script> block (a <script setup> cannot
-// contain ES module exports) so both Playlist screens can type the values they hand in.
-//
-// `OpMode` selects WHICH instrument view renders inside the shared masqueradarr HUD scaffold:
-//   - 'compose' → users grouped ACCESS / NO-ACCESS, per-user compose progress (who receives a composed file).
-//   - 'sync'    → the list of playlists being synced + each one's per-playlist sync progress/status.
-//
-// `OpScope` is the target the operation runs against (same shape for both modes):
-//   - { kind: 'global' }            → the Global union (every endpoint:'global' source playlist).
-//   - { kind: 'custom', id, name }  → a single playlist (a custom/clone for compose; one source row for sync).
-//
-// `OpRunResult` is the optional value the `run` thunk may resolve with so the modal can flag per-target
-// FAILURES without the thunk throwing: `failed` is the list of target NAMES whose op errored. Compose thunks
-// resolve void (no per-user failure surface) → every access user settles "done"; sync thunks resolve
-// { failed } so failed playlists settle red (red-risk), the rest teal/green (teal-signal).
 export type OpMode = 'compose' | 'sync';
 export type OpScope =
     | { kind: 'global' }
@@ -41,25 +26,6 @@ import {
     type PublishedUrlUser,
 } from '../composables/useUserAccess';
 
-// ── Playlist op (compose / sync) preview + progress modal ───────────────────────────────────────────────
-// One component, two modes, one masqueradarr HUD scaffold (corner brackets, deterministic barcode, MasqMark,
-// teal-signal / red-risk status chip). Opened the moment the operator triggers the op.
-//
-//   COMPOSE — "what is being composed, and for whom": every app user is grouped ACCESS vs NO-ACCESS for the
-//   scope (the SAME access semantics the Assign/Get-access modals use — admins unfiltered = full access),
-//   with a per-user animated indicator under each access user.
-//
-//   SYNC — "which playlists are being pulled, and how each is doing": the scoped playlist list (the Global
-//   cohort for Sync Global, the single row for a per-row Sync), each with its own progress/status row.
-//
-// Progress wiring (shared shape): the modal kicks the single real op (`props.run`, the screen's existing
-// composeRow/composeNow/onComposeGlobal · syncRow/syncNow/onSyncGlobal handler — unchanged, toasts + reloads
-// preserved) and shows an honest indeterminate bar per row WHILE it is in flight, then settles each row the
-// instant the op resolves. A thrown op flips the WHOLE modal to a red FAULT state; the op still completes
-// server-side even if the modal is dismissed early. Two extra real signals are used in sync mode: the shared
-// `globalSyncProgress` (a genuine sequential per-playlist completion signal — Sync Global processes one
-// playlist at a time) marks playlists done incrementally as the sync reaches them, and the run thunk's
-// resolved `{ failed }` (from syncAllGlobal / a single syncRow) flips the named playlists to red.
 
 const props = defineProps<{
     mode: OpMode;
@@ -72,16 +38,14 @@ const { globalSyncProgress } = usePlaylistActions();
 
 type Phase = 'running' | 'done' | 'error';
 const phase = ref<Phase>('running');
-const settled = ref<Set<string>>(new Set()); // compose: access user ids that finished
-const loaded = ref(false); // user/playlist list resolved — gates the lists so nothing flashes empty
+const settled = ref<Set<string>>(new Set());
+const loaded = ref(false);
 
 const isGlobal = computed(() => props.scope.kind === 'global');
 const isSync = computed(() => props.mode === 'sync');
 const scopeName = computed(() => (props.scope.kind === 'custom' ? props.scope.name : 'Global Playlist'));
 const scopeCode = computed(() => (props.scope.kind === 'custom' ? props.scope.id : 'global').toUpperCase());
 
-// Deterministic barcode strip seeded from the scope id — the masqueradarr HUD idiom (a given playlist always
-// renders the same artwork). FNV-1a → LCG bar walk, mirroring DashboardScreen's brand foot.
 function seedFrom(s: string): number {
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) {
@@ -105,7 +69,6 @@ const barcode = computed(() => {
     return { rects, width: x };
 });
 
-// Expand an admin to full access (mirrors GetAccessModal.toPublishedUser); a normal user maps 1:1.
 function toPublishedUser(u: User): PublishedUrlUser {
     if (u.role === 'admin') {
         return {
@@ -123,8 +86,6 @@ function toPublishedUser(u: User): PublishedUrlUser {
     };
 }
 
-// Access = this user receives a composed file for the scope. Admins are unfiltered (always access), exactly
-// like the access-matrix cell state.
 function userHasAccess(u: User): boolean {
     if (u.role === 'admin') return true;
     const s = props.scope;
@@ -132,8 +93,6 @@ function userHasAccess(u: User): boolean {
     return (u.allowedCustomPlaylists || []).includes(s.id);
 }
 
-// The per-user composed M3U filename for the scope, via the shared published-URL builder (single source of
-// truth). Returns '' when the scope produces no file for the user (a no-access user, or PLAYLISTS not loaded).
 function fileName(u: User): string {
     const groups = buildPublishedGroups(toPublishedUser(u));
     const s = props.scope;
@@ -151,7 +110,6 @@ const noAccessTitle = computed(() => `No Access (${scopeName.value})`);
 function avatar(name: string): string {
     return name.slice(0, 2).toUpperCase();
 }
-// A row is "done" once the overall phase resolves, or once its staggered settle reached it.
 function rowDone(u: User): boolean {
     return phase.value === 'done' || settled.value.has(u._id);
 }
@@ -162,11 +120,6 @@ const statusLabel = computed(() => {
     return isSync.value ? 'SYNCING' : 'COMPOSING';
 });
 
-// ── SYNC mode ───────────────────────────────────────────────────────────────────────────────────────────
-// The scoped playlist list: Sync Global → every Global cohort row via the shared isGlobalSyncTarget predicate
-// (endpoint === 'global' — the EXACT set syncAllGlobal() fans out over, so this displayed list and the
-// operation cannot diverge); a per-row Sync → just that one playlist (looked up in PLAYLISTS, with a
-// synthetic fallback if absent).
 const syncTargets = computed<Playlist[]>(() => {
     if (!isSync.value) return [];
     if (props.scope.kind === 'global') return PLAYLISTS.value.filter(isGlobalSyncTarget);
@@ -176,8 +129,8 @@ const syncTargets = computed<Playlist[]>(() => {
 });
 const syncChannelTotal = computed(() => syncTargets.value.reduce((s, p) => s + (p.channels || 0), 0));
 
-const syncSettled = ref<Set<string>>(new Set()); // playlist ids that finished syncing (done, teal/green)
-const syncFailed = ref<Set<string>>(new Set()); // playlist ids whose sync errored (fail, red-risk)
+const syncSettled = ref<Set<string>>(new Set());
+const syncFailed = ref<Set<string>>(new Set());
 
 const SYNC_ICON: Record<string, string> = { clone: 'copy', file: 'file', url: 'link', hdhomerun: 'tv', import: 'import' };
 function syncIcon(p: Playlist): string {
@@ -191,9 +144,6 @@ function targetState(p: Playlist): 'running' | 'done' | 'fail' {
     return 'running';
 }
 
-// Sync Global advances `globalSyncProgress` 0..1 as it finishes each playlist IN ORDER. Mark the first N
-// targets settled as it crosses each step — a genuine per-playlist completion signal (not cosmetic). The set
-// only grows (no revert/flicker even when the singleton resets the progress to 0 in its finally block).
 watch(globalSyncProgress, (pr) => {
     if (!isSync.value || props.scope.kind !== 'global') return;
     const t = syncTargets.value;
@@ -207,9 +157,6 @@ watch(globalSyncProgress, (pr) => {
 const statusTitle = computed(() => (isSync.value ? 'Sync' : 'Compose'));
 const syncSectionTitle = computed(() => `Playlists (${scopeName.value})`);
 
-// ── shared run driver ───────────────────────────────────────────────────────────────────────────────────
-// Settle a collection of row-ids to "done" with a short, bounded stagger so completion reads sequentially
-// (cosmetic only — the op already finished server-side), then flip the whole modal to COMPLETE.
 function settleRows(ids: string[], get: () => Set<string>, set: (s: Set<string>) => void): void {
     if (!ids.length) {
         phase.value = 'done';
@@ -229,8 +176,6 @@ function settleRows(ids: string[], get: () => Set<string>, set: (s: Set<string>)
 async function start(): Promise<void> {
     phase.value = 'running';
     try {
-        // Kick the real op immediately; load the lists in parallel so rows render while it runs. Compose needs
-        // USERS (the access split); both modes want PLAYLISTS loaded (sync target list / no-flash gating).
         const runP = Promise.resolve(props.run());
         await Promise.all([
             isSync.value ? Promise.resolve() : ensureUsers().catch(() => {}),
@@ -240,9 +185,6 @@ async function start(): Promise<void> {
         const result = await runP;
 
         if (isSync.value) {
-            // Flag per-playlist failures from the run thunk's resolved { failed } (target NAMES), then settle
-            // the remaining playlists "done" with a stagger. Already-progressed rows (via globalSyncProgress)
-            // stay settled — a failed row briefly settled mid-run is corrected here to red.
             const failedNames = result && typeof result === 'object' && Array.isArray(result.failed) ? result.failed : [];
             const failSet = new Set<string>();
             for (const p of syncTargets.value) if (failedNames.includes(p.name)) failSet.add(p.id);
@@ -252,7 +194,6 @@ async function start(): Promise<void> {
             return;
         }
 
-        // COMPOSE: settle each access row to "done" with a stagger (no per-user backend signal; op finished).
         const ids = accessUsers.value.map((u) => u._id);
         settleRows(ids, () => settled.value, (s) => { settled.value = s; });
     } catch {
@@ -266,7 +207,6 @@ onMounted(start);
 <template>
     <div class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="op-title" @click="emit('close')">
         <div class="modal compose-modal" @click.stop>
-            <!-- HUD corner brackets framing the instrument -->
             <span class="corner tl" aria-hidden="true" /><span class="corner tr" aria-hidden="true" />
             <span class="corner bl" aria-hidden="true" /><span class="corner br" aria-hidden="true" />
 
@@ -283,7 +223,6 @@ onMounted(start);
                 <Btn variant="ghost" size="sm" icon="x" @click="emit('close')" />
             </div>
 
-            <!-- brand telemetry: deterministic barcode + mono spec strip -->
             <div class="cmp-telemetry" aria-hidden="true">
                 <svg class="cmp-barcode" :viewBox="`0 0 ${barcode.width} 26`" preserveAspectRatio="none">
                     <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
@@ -301,7 +240,6 @@ onMounted(start);
                 </div>
             </div>
 
-            <!-- SYNC mode — the scoped playlist list, each with its own per-playlist sync progress/status -->
             <div v-if="isSync" class="modal-body cmp-body">
                 <section class="cmp-sec">
                     <header class="cmp-sec-hd signal">
@@ -332,9 +270,7 @@ onMounted(start);
                 </section>
             </div>
 
-            <!-- COMPOSE mode — users grouped Access / No-Access for the scope -->
             <div v-else class="modal-body cmp-body">
-                <!-- ACCESS — users who receive a composed file for this scope -->
                 <section class="cmp-sec">
                     <header class="cmp-sec-hd signal">
                         <Icon name="check" :size="12" />
@@ -367,7 +303,6 @@ onMounted(start);
                     </div>
                 </section>
 
-                <!-- NO ACCESS — users who get nothing for this scope (no nested playlist, no progress) -->
                 <section class="cmp-sec">
                     <header class="cmp-sec-hd">
                         <Icon name="lock" :size="12" />
@@ -394,7 +329,6 @@ onMounted(start);
     position: relative;
     width: min(640px, 94vw);
 }
-/* HUD corner brackets framing the modal (the LoginScreen / ActiveStreams idiom). */
 .corner {
     position: absolute;
     width: 14px;
@@ -419,7 +353,6 @@ onMounted(start);
     white-space: nowrap;
     max-width: 320px;
 }
-/* Teal-signal / red-risk status chip (micrographics two-color rule). */
 .cmp-sig {
     display: inline-flex;
     align-items: center;
@@ -446,7 +379,6 @@ onMounted(start);
     background: currentColor;
     box-shadow: 0 0 8px currentColor;
 }
-/* Pulse only while live; a settled / faulted chip holds steady. */
 .cmp-sig:not(.done):not(.risk) .cmp-sig-dot { animation: cmp-pulse 1.1s ease-in-out infinite; }
 @keyframes cmp-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
@@ -456,7 +388,6 @@ onMounted(start);
     .cmp-sig .cmp-sig-dot { animation: none; }
 }
 
-/* Brand telemetry strip — barcode + mono spec keys. */
 .cmp-telemetry {
     padding: 10px 22px 4px;
     display: flex;
@@ -483,7 +414,6 @@ onMounted(start);
     padding-top: 8px;
 }
 .cmp-sec { display: flex; flex-direction: column; }
-/* Section header — mono overline, teal for Access / muted for No Access; a hairline rule trails it. */
 .cmp-sec-hd {
     display: flex;
     align-items: center;
@@ -511,7 +441,6 @@ onMounted(start);
     font-size: var(--fs-sm);
 }
 
-/* Access row: user line on top, the composed playlist + progress nested beneath. */
 .cmp-urow {
     padding: 9px 0;
     border-bottom: 1px solid color-mix(in oklab, var(--hairline) 60%, transparent);
@@ -539,7 +468,6 @@ onMounted(start);
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-/* Nested playlist + progress — indented under the user, matching the sample layout. */
 .cmp-nested {
     display: flex;
     align-items: center;
@@ -577,7 +505,6 @@ onMounted(start);
 .cmp-ok { color: var(--good); flex: none; }
 .cmp-fault { color: var(--bad); flex: none; }
 
-/* SYNC playlist row — single flat line: identity (icon + name + channel count) left, progress/status right. */
 .cmp-prow {
     display: flex;
     align-items: center;

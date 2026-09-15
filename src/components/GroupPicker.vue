@@ -1,25 +1,19 @@
 <script setup lang="ts">
-// Shared channel-group picker — a registry-backed <select> plus an optional "create new group" affordance,
-// used by BOTH the single-channel drawer (ChannelDrawer) and the bulk editor (ChannelBulkDrawer). Because it
-// reads/writes the shared GROUPS_BY_PLAYLIST registry, a group created here in one editor immediately appears
-// in the other. Creating a group PERSISTS it (an empty first-class group), so the taxonomy is durable rather
-// than a transient string. `modelValue` is the selected group name ('' = no group / leave unchanged).
 import { ref, computed, watch, onMounted } from 'vue';
 import Icon from './Icon.vue';
 import { GROUPS_BY_PLAYLIST, reloadGroups, createGroup, type GroupDef } from '../data';
 
 const props = defineProps<{
-  modelValue: string; // selected group name, or '' (no group / leave unchanged)
+  modelValue: string;
   playlistId: string;
-  allowCreate?: boolean; // show the inline "create a new group" input
-  allowUnchanged?: boolean; // bulk editor: the '' option means "leave unchanged" rather than "no group"
-  unchangedLabel?: string; // custom label for the '' option in the bulk editor
+  allowCreate?: boolean;
+  allowUnchanged?: boolean;
+  unchangedLabel?: string;
 }>();
 const emit = defineEmits<{ (e: 'update:modelValue', v: string): void }>();
 
 const groups = computed<GroupDef[]>(() => GROUPS_BY_PLAYLIST.value[props.playlistId] ?? []);
 
-// Load the registry for this playlist the first time it's needed (idempotent — cached in the store).
 function ensureLoaded(id: string) {
   if (id && !GROUPS_BY_PLAYLIST.value[id]) reloadGroups(id).catch(() => {});
 }
@@ -31,7 +25,6 @@ const selectVal = computed({
   set: (v: string) => emit('update:modelValue', v),
 });
 
-// The current value can be a legacy channel group not (yet) in the registry — surface it so the select shows it.
 const showOrphan = computed(() => !!props.modelValue && !groups.value.some((g) => g.name === props.modelValue));
 
 const newName = ref('');
@@ -48,7 +41,6 @@ async function commitNew() {
     emit('update:modelValue', name);
     newName.value = '';
   } catch (e) {
-    // A duplicate is not really an error here — just select the existing group.
     if ((e as Error).message === 'group_exists') {
       emit('update:modelValue', name);
       newName.value = '';

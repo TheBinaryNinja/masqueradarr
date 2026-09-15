@@ -1,23 +1,12 @@
 <script setup lang="ts">
-// JsonEditor.vue — a raw, syntax-highlighted multi-line JSON field with no editor dependency. A transparent
-// <textarea> owns the text (caret, selection, undo, IME, spellcheck-off) and sits exactly over a <pre> that shows
-// the same text as coloured tokens; the two share font, padding and line box, and scroll together. The overlay
-// is rebuilt from the text on every keystroke, HTML-escaped first, so a half-typed or invalid document still
-// renders exactly what is in the textarea (unrecognized characters simply stay uncoloured).
-//
-// Keyboard: Tab indents (two spaces). To keep the field from trapping keyboard users, Esc releases the next Tab to
-// move focus as usual (announced through aria-describedby).
 
 import { computed, ref } from 'vue';
 
 const props = withDefaults(
   defineProps<{
     modelValue: string;
-    /** Visible height in text rows (the field is also vertically resizable). */
     rows?: number;
-    /** Paint the field as invalid (e.g. the text does not parse). */
     invalid?: boolean;
-    /** Accessible name of the textarea. */
     label?: string;
   }>(),
   { rows: 18, invalid: false, label: 'JSON' },
@@ -32,8 +21,6 @@ function esc(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-// One pass over the text: a string (a key when a `:` follows it), a number, a literal, or punctuation. An
-// unterminated string runs to the end of its line, so typing a quote recolours only that line.
 const TOKEN_RE =
   /("(?:[^"\\\n]|\\.)*"?)(\s*:)?|(-?\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)|\b(true|false|null)\b|([{}[\],])/g;
 
@@ -56,7 +43,6 @@ const highlighted = computed(() => {
     }
     last = at + m[0].length;
   }
-  // A <pre> drops a trailing newline; pad one so the overlay keeps the textarea's last (empty) line.
   return `${out}${esc(src.slice(last))}\n`;
 });
 
@@ -78,12 +64,11 @@ function onKeydown(e: KeyboardEvent): void {
   }
   if (tabReleased) {
     tabReleased = false;
-    return; // let Tab move focus
+    return;
   }
   e.preventDefault();
   const el = ta.value;
   if (!el) return;
-  // insertText keeps the browser's undo stack intact; fall back to a manual splice where it is unsupported.
   if (!document.execCommand('insertText', false, '  ')) {
     const { selectionStart: a, selectionEnd: b, value } = el;
     emit('update:modelValue', `${value.slice(0, a)}  ${value.slice(b)}`);
@@ -130,7 +115,6 @@ function onKeydown(e: KeyboardEvent): void {
 }
 .json-editor.invalid { border-color: var(--bad); }
 
-/* Both layers must share every metric that affects where a glyph lands. */
 .json-layer {
   display: block;
   box-sizing: border-box;
@@ -169,7 +153,6 @@ function onKeydown(e: KeyboardEvent): void {
 .json-hl :deep(.j-key) { color: var(--accent); }
 .json-hl :deep(.j-str) { color: var(--good); }
 .json-hl :deep(.j-num) { color: var(--warn); }
-/* true/false/null: a violet derived from two theme tokens, so it re-tunes with the light/dark theme like the rest. */
 .json-hl :deep(.j-lit) { color: color-mix(in oklch, var(--accent), var(--bad)); }
 .json-hl :deep(.j-punc) { color: var(--text-2); }
 

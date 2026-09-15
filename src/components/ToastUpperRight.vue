@@ -1,6 +1,4 @@
 <script setup lang="ts">
-// Toast Upper-Right host — renders upper-right-positioned toasts (below the topbar). Mounted once in
-// App.vue; reads the shared useToast queue. See styles.css `.toasts-tr`.
 import { computed } from 'vue';
 import ToastCard from './ToastCard.vue';
 import { useToast } from '../composables/useToast';

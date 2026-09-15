@@ -1,50 +1,25 @@
-// Jesmann EPG catalog — a hardcoded static map of every guide offered at https://epg.guru/ (the site formerly
-// at epg.jesmann.com; same operator, still titled "JESMANN EPG Hub"). The Jesmann tab in AddEpgSourceModal lets
-// the user pick a Region + Download type; the chosen pair resolves to ONE concrete .xml URL that is created as a
-// 'jesmann'-kind XMLTV EPG source (POST /api/epg-sources { source: 'jesmann', name, url }). It re-fetches like a
-// 'remote url' source but carries its own type so 'remote url' stays reserved for the Custom tab's Remote URL
-// feature. This list is transformed verbatim from the site's own `const markets` / `const individualFiles` data
-// (generated offline, not scraped at runtime) so the download-type variants offered per region exactly mirror
-// what the site publishes:
-//   - markets / full guide → 7d Standard + 7d IPTV (off the CDN, which is all the site itself links now) plus
-//     3d Standard + 3d IPTV (same generator, still published on the origin, just no longer listed on the page)
-//   - Individual Markets (~284 DirecTV city files) → a single 14d Standard variant at the site root
-//   - Team Sports → one region with Horizontal / Vertical image variants
-//   - Legacy Guides → US/CAN 14d Standard+IPTV, US Locals (OTA) Standard only
-// The 14-day market guides (`/<Region>.xml` + `/iptv/<Region>.xml`) did NOT survive the move — `/iptv/` now holds
-// only the `-og` legacy files, and the root `/<Region>.xml` files are either aliases of the 7-day build or stale
-// leftovers — so 7 days is the longest window a market region offers. Regions dropped by the operator in the same
-// move (Sports, and the Caribbean / Europe / LatinSouthAmerica / NorthAmerica continent guides) are gone here too.
-// All URLs are the plain `.xml` — neither host publishes a real side-by-side `.gz` file any more (a `<file>.gz`
-// request 200s but returns the same XML entity), so the compression that both the size probe and a sync actually
-// get is ordinary Content-Encoding negotiation. Harmless either way: the ingest sniffs the gzip magic bytes.
-// Two origins: JESMANN_CDN_BASE for `cdn: true` types, else JESMANN_BASE. Both are allow-listed server-side in
-// xmltvIngest.ts (the probe's SSRF gate).
 
 export const JESMANN_BASE = 'https://epg.guru';
-// The 7-day builds are served from the operator's CDN — that is what the site's own download buttons point at.
 export const JESMANN_CDN_BASE = 'https://cdn.epg.guru';
 
-// The preferred default download type, by id, in order — first one a region actually offers wins.
 const DEFAULT_TYPE_ORDER = ['7d-std', '14d-std', '3d-std', '7d-iptv', '14d-iptv', '3d-iptv', 'horizontal', 'vertical'];
 
 export interface JesmannType {
-  id: string; // unique within a region
-  label: string; // shown in the download-type dropdown
-  url: string; // path relative to the type's base (always begins with /)
-  cdn?: boolean; // resolve against JESMANN_CDN_BASE instead of JESMANN_BASE
+  id: string;
+  label: string;
+  url: string;
+  cdn?: boolean;
 }
 export interface JesmannRegion {
-  id: string; // globally unique — the region <select> option value
-  name: string; // display name
+  id: string;
+  name: string;
   types: JesmannType[];
 }
 export interface JesmannGroup {
-  group: string; // <optgroup> label
+  group: string;
   regions: JesmannRegion[];
 }
 
-// The full catalog (344 regions across 9 groups). Generated offline from the site HTML.
 export const JESMANN_CATALOG: JesmannGroup[] = [
   {
     group: "North America",
@@ -437,7 +412,6 @@ export const JESMANN_CATALOG: JesmannGroup[] = [
   },
 ];
 
-// Flat lookup by region id → its group + region (for resolving a selection without re-walking groups).
 const REGION_INDEX = new Map<string, JesmannRegion>();
 for (const g of JESMANN_CATALOG) for (const r of g.regions) REGION_INDEX.set(r.id, r);
 
@@ -445,7 +419,6 @@ export function jesmannRegion(regionId: string): JesmannRegion | null {
   return REGION_INDEX.get(regionId) || null;
 }
 
-// Pick a region's default download type: '7d Standard' if it offers it, else the first available by preference.
 export function jesmannDefaultType(region: JesmannRegion): JesmannType | null {
   if (!region.types.length) return null;
   for (const id of DEFAULT_TYPE_ORDER) {
@@ -455,14 +428,10 @@ export function jesmannDefaultType(region: JesmannRegion): JesmannType | null {
   return region.types[0];
 }
 
-// Resolve a region+type selection to the concrete absolute .xml URL — off the CDN for the 7-day builds the
-// site serves from there, off the main site for everything else.
 export function jesmannUrl(region: JesmannRegion, type: JesmannType): string {
   return (type.cdn ? JESMANN_CDN_BASE : JESMANN_BASE) + type.url;
 }
 
-// A stable, unique source name for the created EpgSource (so the slug id differs per region+type and a user
-// can add several Jesmann guides). e.g. 'Jesmann · United States · 7d Standard'.
 export function jesmannSourceName(region: JesmannRegion, type: JesmannType): string {
   return `Jesmann · ${region.name} · ${type.label}`;
 }

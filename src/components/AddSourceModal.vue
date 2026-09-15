@@ -7,53 +7,36 @@ import Pill from './Pill.vue';
 import { PLAYLISTS, SOURCES, reloadPlaylists, reloadCustomPlaylists, reloadChannels } from '../data';
 import { useToast } from '../composables/useToast';
 
-// Add playlist — add a BUILT-IN registry source (dulo/dlhd/tubi) on demand, or create a new, named playlist
-// and populate it from an M3U (uploaded file or remote URL) or a local HDHomeRun tuner.
-//   Built-In  → POST /api/sources/<id>/provision (registers the (Default) source playlist's zero-channel shell
-//               row; channels populate on the first "Sync now"). The name derives server-side from the source.
-//   M3U       → POST /api/import/m3u (an Import-type playlist, channels via the `direct` proxy).
-//   HDHomeRun → POST /api/import/hdhomerun (an HDHomeRun-type playlist whose raw-TS channels remux to HLS via
-//               the `hdhomerun` proxy).
-// This replaces the standalone /import screen. EPG sources have their own modal (AddEpgSourceModal); this one
-// is playlist-only.
 
 const emit = defineEmits<{ (e: 'close'): void }>();
 const router = useRouter();
 const { banner } = useToast();
 
-// Built-in sources the user can add = the manifest sources NOT already provisioned as a Playlist row (an
-// added built-in disappears from the picker) and not hidden by the playlist configuration (`enable: false`,
-// Settings → Playlist Domain / Configuration). The manifest enumerates the full registry even when no row
-// exists yet (built-ins are now user-initiated), so this drives the dropdown directly.
 const availableBuiltins = computed(() => {
   const added = new Set(PLAYLISTS.value.map((p) => p.id));
   return SOURCES.value.filter((s) => !added.has(s.id) && s.enabled !== false);
 });
 
 const name = ref('');
-// Default to the Built-In option when there are built-ins left to add; otherwise fall back to file upload.
 const mode = ref<'builtin' | 'file' | 'url' | 'hdhr' | 'local'>(availableBuiltins.value.length ? 'builtin' : 'file');
-const selectedBuiltin = ref<string>(availableBuiltins.value[0]?.id ?? ''); // chosen source id (builtin mode)
+const selectedBuiltin = ref<string>(availableBuiltins.value[0]?.id ?? '');
 const fileInput = ref<HTMLInputElement | null>(null);
 const fileName = ref('');
-const content = ref(''); // raw m3u text (file mode)
-const url = ref(''); // remote URL (url mode)
-const hdhrAddress = ref(''); // HDHomeRun device address (hdhr mode)
+const content = ref('');
+const url = ref('');
+const hdhrAddress = ref('');
 
-// Local Now (local mode): a city/market typeahead against the City/Search proxy + the chosen market that
-// gates the Add button. A Local playlist is created per market (POST /api/import/local).
 interface LocalMarket {
   label: string;
   dma: string;
   market: string;
 }
-const cityQuery = ref(''); // the typeahead text
-const cityResults = ref<LocalMarket[]>([]); // City/Search matches
-const selectedMarket = ref<LocalMarket | null>(null); // the picked market (un-gates Add)
+const cityQuery = ref('');
+const cityResults = ref<LocalMarket[]>([]);
+const selectedMarket = ref<LocalMarket | null>(null);
 const searchingCities = ref(false);
 let cityTimer: ReturnType<typeof setTimeout> | null = null;
 
-// The manifest entry for the currently-picked built-in (drives the summary block below).
 const builtinEntry = computed(() => SOURCES.value.find((s) => s.id === selectedBuiltin.value) ?? null);
 
 interface Preview {
@@ -62,7 +45,6 @@ interface Preview {
   sample: { name: string; group: string | null }[];
 }
 const preview = ref<Preview | null>(null);
-// HDHomeRun device test summary (hdhr mode) — the lineup feedback that also gates the Add button.
 interface HdhrInfo {
   deviceName: string;
   model: string;
@@ -71,19 +53,16 @@ interface HdhrInfo {
   sampleChannels: { name: string }[];
 }
 const hdhrInfo = ref<HdhrInfo | null>(null);
-const busy = ref(false); // previewing / fetching / testing
+const busy = ref(false);
 const creating = ref(false);
 const error = ref('');
 
 const ready = computed(() => {
-  // Built-In: no name required (it derives server-side) — just a chosen, not-yet-added built-in.
   if (mode.value === 'builtin') {
     return !!selectedBuiltin.value && availableBuiltins.value.some((s) => s.id === selectedBuiltin.value);
   }
   if (name.value.trim().length === 0) return false;
-  // HDHomeRun: keep the Add button disabled until a successful Test returns a non-empty lineup.
   if (mode.value === 'hdhr') return hdhrInfo.value != null && hdhrInfo.value.channelCount > 0;
-  // Local Now: a market must be picked (typeahead or auto-detect) before Add is allowed.
   if (mode.value === 'local') return selectedMarket.value != null;
   return preview.value != null && preview.value.channels > 0;
 });
@@ -107,7 +86,6 @@ function switchMode(m: 'builtin' | 'file' | 'url' | 'hdhr' | 'local') {
   resetSource();
 }
 
-// Parse-only preview → honest channel/group counts before the user commits.
 async function runPreview(payload: Record<string, string>) {
   busy.value = true;
   error.value = '';
@@ -147,8 +125,6 @@ async function checkUrl() {
   await runPreview({ url: url.value.trim() });
 }
 
-// HDHomeRun "Test": ping the device (discover.json) + fetch its lineup.m3u, then show a summary. A successful
-// test (non-empty lineup) is what un-gates the Add button (see `ready`). Any failure surfaces in `error`.
 async function testHdhr() {
   if (!hdhrAddress.value.trim() || busy.value) return;
   busy.value = true;
@@ -171,8 +147,6 @@ async function testHdhr() {
   }
 }
 
-// Local Now city/market typeahead (debounced) → the City/Search proxy. Typing clears any prior pick so the
-// Add button only arms once the user re-selects a concrete market.
 function onCityInput() {
   selectedMarket.value = null;
   if (cityTimer) clearTimeout(cityTimer);
@@ -203,7 +177,6 @@ function pickMarket(m: LocalMarket) {
   cityQuery.value = m.label;
   defaultName(m.label);
 }
-// "Use my detected market" — Local Now's geo-detected default DMA/market (US-located servers only).
 async function detectLocalMarket() {
   if (busy.value) return;
   busy.value = true;
@@ -219,8 +192,6 @@ async function detectLocalMarket() {
   }
 }
 
-// Add a built-in source: provision its (Default) playlist shell row (no sync — channels populate on the first
-// "Sync now"), refresh stores, then open it. The name derives server-side from the source's adapter label.
 async function provisionBuiltin() {
   const entry = builtinEntry.value;
   if (!entry) return;
@@ -234,7 +205,6 @@ async function provisionBuiltin() {
   router.push(`/playlists/${encodeURIComponent(out.id)}`);
 }
 
-// Create the named playlist (M3U import or HDHomeRun device), then refresh stores + open it.
 async function create() {
   if (!ready.value || creating.value) return;
   creating.value = true;
@@ -290,7 +260,6 @@ async function create() {
         <Btn variant="ghost" size="sm" icon="x" @click="emit('close')" />
       </div>
       <div class="modal-body">
-        <!-- Built-In derives its name from the source — only the import modes ask for one. -->
         <div v-if="mode !== 'builtin'" class="form-row">
           <div class="field-lbl">Playlist name</div>
           <div class="input"><input v-model="name" placeholder="My Playlist" /></div>
@@ -323,7 +292,6 @@ async function create() {
           @change="onFileChange"
         />
 
-        <!-- BUILT-IN MODE -->
         <template v-if="mode === 'builtin'">
           <template v-if="availableBuiltins.length">
             <div class="field-lbl">Built-in playlist</div>
@@ -333,7 +301,6 @@ async function create() {
               </select>
             </div>
 
-            <!-- Summary of what's included with the selected built-in (from the manifest builtinMeta). -->
             <div v-if="builtinEntry" class="builtin-summary">
               <div class="bs-head">Playlist Channels</div>
               <div class="bs-kv">
@@ -366,7 +333,6 @@ async function create() {
           </div>
         </template>
 
-        <!-- FILE MODE -->
         <template v-if="mode === 'file'">
           <div v-if="!fileName" class="dropzone" @click="fileInput?.click()">
             <div class="icon-circle"><Icon name="upload" :size="20" /></div>
@@ -383,7 +349,6 @@ async function create() {
           </div>
         </template>
 
-        <!-- URL MODE -->
         <template v-else-if="mode === 'url'">
           <div class="row">
             <div class="input" style="flex: 1;">
@@ -396,7 +361,6 @@ async function create() {
           </div>
         </template>
 
-        <!-- HDHOMERUN MODE -->
         <template v-else-if="mode === 'hdhr'">
           <div class="field-lbl">HDHomeRun Address</div>
           <div class="row">
@@ -421,7 +385,6 @@ async function create() {
           </div>
         </template>
 
-        <!-- LOCAL NOW MODE -->
         <template v-else-if="mode === 'local'">
           <div class="field-lbl">City / Market</div>
           <div class="row">
@@ -473,7 +436,6 @@ async function create() {
 </template>
 
 <style scoped>
-/* Local Now City/Market typeahead results — a scrollable, hoverable pick list under the search box. */
 .city-results {
   margin-top: 8px;
   display: flex;

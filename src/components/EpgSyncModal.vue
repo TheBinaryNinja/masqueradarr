@@ -7,18 +7,6 @@ import ProgressBar from './ProgressBar.vue';
 import { EPG_SOURCES, type EpgSource } from '../data';
 import { useEpgActions, isEpgSyncTarget } from '../composables/useEpgActions';
 
-// ── EPG "Sync all" progress modal ───────────────────────────────────────────────────────────────────────
-// The masqueradarr HUD scaffold (corner brackets, deterministic barcode, MasqMark, teal-signal / red-risk
-// status chip) reused from PlaylistOpModal, narrowed to a single concern: "which EPG sources are being synced
-// and how each is doing". Playlist-bound sources are excluded (isEpgSyncTarget) — the loop never touches them
-// and they never appear here.
-//
-// Progress wiring: the modal kicks the real op (`props.run`, the screen's onSyncAll handler — toasts + store
-// reload preserved) and shows an honest indeterminate bar per row WHILE it is in flight, then settles each row
-// the instant the op resolves. The shared `syncAllProgress` (a genuine sequential per-source completion signal
-// — the sync runs one source at a time) marks sources done incrementally as the loop reaches them, and the run
-// thunk's resolved { failed } (source NAMES) flips the named sources to red. A thrown op flips the WHOLE modal
-// to a red FAULT state; the op still completes even if the modal is dismissed early.
 
 const props = defineProps<{
     run: () => Promise<{ failed?: string[] } | void> | void;
@@ -29,16 +17,14 @@ const { syncAllProgress } = useEpgActions();
 
 type Phase = 'running' | 'done' | 'error';
 const phase = ref<Phase>('running');
-const loaded = ref(false); // EPG list resolved — gates the list so nothing flashes empty
+const loaded = ref(false);
 
-// The sync cohort, same predicate the loop fans out over (so this displayed list and the operation cannot
-// diverge). Store-driven for display; the loop fetches live — they match in practice (same persisted order).
 const syncTargets = computed<EpgSource[]>(() => EPG_SOURCES.value.filter(isEpgSyncTarget));
 const channelTotal = computed(() => syncTargets.value.reduce((s, p) => s + (p.channels || 0), 0));
 const programTotal = computed(() => syncTargets.value.reduce((s, p) => s + (p.programs || 0), 0));
 
-const syncSettled = ref<Set<string>>(new Set()); // source ids that finished syncing (done, teal/green)
-const syncFailed = ref<Set<string>>(new Set()); // source ids whose sync errored (fail, red-risk)
+const syncSettled = ref<Set<string>>(new Set());
+const syncFailed = ref<Set<string>>(new Set());
 
 const statusLabel = computed(() => {
     if (phase.value === 'error') return 'FAULT';
@@ -46,8 +32,6 @@ const statusLabel = computed(() => {
     return 'SYNCING';
 });
 
-// Deterministic barcode strip (the masqueradarr HUD idiom). Fixed seed — this modal always represents the same
-// scope (all EPG sources), so the artwork is stable. FNV-1a → LCG bar walk, mirroring PlaylistOpModal.
 function seedFrom(s: string): number {
     let h = 2166136261;
     for (let i = 0; i < s.length; i++) {
@@ -81,9 +65,6 @@ function targetState(p: EpgSource): 'running' | 'done' | 'fail' {
     return 'running';
 }
 
-// The sync advances `syncAllProgress` 0..1 as it finishes each source IN ORDER. Mark the first N targets settled
-// as it crosses each step — a genuine per-source completion signal (not cosmetic). The set only grows (no
-// revert/flicker even when the singleton resets the progress to 0 in its finally block).
 watch(syncAllProgress, (pr) => {
     const t = syncTargets.value;
     const doneCount = Math.min(t.length, Math.floor(pr * t.length + 1e-6));
@@ -93,9 +74,6 @@ watch(syncAllProgress, (pr) => {
     syncSettled.value = n;
 });
 
-// ── run driver ──────────────────────────────────────────────────────────────────────────────────────────
-// Settle a collection of row-ids to "done" with a short, bounded stagger so completion reads sequentially
-// (cosmetic only — the op already finished), then flip the whole modal to COMPLETE.
 function settleRows(ids: string[]): void {
     if (!ids.length) {
         phase.value = 'done';
@@ -115,12 +93,9 @@ function settleRows(ids: string[]): void {
 async function start(): Promise<void> {
     phase.value = 'running';
     try {
-        // The EPG store is loaded at bootstrap; rows render immediately. Kick the real op, then settle on resolve.
         loaded.value = true;
         const result = await Promise.resolve(props.run());
 
-        // Flag per-source failures from the run thunk's resolved { failed } (source NAMES), then settle the
-        // remaining sources "done" with a stagger. Already-progressed rows (via syncAllProgress) stay settled.
         const failedNames = result && typeof result === 'object' && Array.isArray(result.failed) ? result.failed : [];
         const failSet = new Set<string>();
         for (const p of syncTargets.value) if (failedNames.includes(p.name)) failSet.add(p.id);
@@ -138,7 +113,6 @@ onMounted(start);
 <template>
     <div class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="epg-op-title" @click="emit('close')">
         <div class="modal compose-modal" @click.stop>
-            <!-- HUD corner brackets framing the instrument -->
             <span class="corner tl" aria-hidden="true" /><span class="corner tr" aria-hidden="true" />
             <span class="corner bl" aria-hidden="true" /><span class="corner br" aria-hidden="true" />
 
@@ -155,7 +129,6 @@ onMounted(start);
                 <Btn variant="ghost" size="sm" icon="x" @click="emit('close')" />
             </div>
 
-            <!-- brand telemetry: deterministic barcode + mono spec strip -->
             <div class="cmp-telemetry" aria-hidden="true">
                 <svg class="cmp-barcode" :viewBox="`0 0 ${barcode.width} 26`" preserveAspectRatio="none">
                     <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="26" />
@@ -167,7 +140,6 @@ onMounted(start);
                 </div>
             </div>
 
-            <!-- the EPG source list, each with its own per-source sync progress/status -->
             <div class="modal-body cmp-body">
                 <section class="cmp-sec">
                     <header class="cmp-sec-hd signal">
@@ -206,7 +178,6 @@ onMounted(start);
     position: relative;
     width: min(640px, 94vw);
 }
-/* HUD corner brackets framing the modal (the LoginScreen / ActiveStreams idiom). */
 .corner {
     position: absolute;
     width: 14px;
@@ -231,7 +202,6 @@ onMounted(start);
     white-space: nowrap;
     max-width: 320px;
 }
-/* Teal-signal / red-risk status chip (micrographics two-color rule). */
 .cmp-sig {
     display: inline-flex;
     align-items: center;
@@ -258,7 +228,6 @@ onMounted(start);
     background: currentColor;
     box-shadow: 0 0 8px currentColor;
 }
-/* Pulse only while live; a settled / faulted chip holds steady. */
 .cmp-sig:not(.done):not(.risk) .cmp-sig-dot { animation: cmp-pulse 1.1s ease-in-out infinite; }
 @keyframes cmp-pulse {
     0%, 100% { opacity: 1; transform: scale(1); }
@@ -268,7 +237,6 @@ onMounted(start);
     .cmp-sig .cmp-sig-dot { animation: none; }
 }
 
-/* Brand telemetry strip — barcode + mono spec keys. */
 .cmp-telemetry {
     padding: 10px 22px 4px;
     display: flex;
@@ -295,7 +263,6 @@ onMounted(start);
     padding-top: 8px;
 }
 .cmp-sec { display: flex; flex-direction: column; }
-/* Section header — mono overline, teal signal; a hairline rule trails it. */
 .cmp-sec-hd {
     display: flex;
     align-items: center;
@@ -354,7 +321,6 @@ onMounted(start);
 .cmp-ok { color: var(--good); flex: none; }
 .cmp-fault { color: var(--bad); flex: none; }
 
-/* Source row — single flat line: identity (icon + name + counts) left, progress/status right. */
 .cmp-prow {
     display: flex;
     align-items: center;

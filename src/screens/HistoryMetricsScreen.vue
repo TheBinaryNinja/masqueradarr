@@ -9,16 +9,15 @@ import ChannelLogo from '../components/ChannelLogo.vue';
 import { CHANNELS, VIEW_SESSIONS, reloadViewSessions, flagEmoji, type StreamProbe, type UserMetric, type PlayerType } from '../data';
 import { useStreamStats } from '../composables/useStreamStats';
 
-// Local presentation shape derived from the persisted ViewSession rows (real per-viewer watch sessions).
 interface Session {
   id: string; channelId: string; ip: string; client: string;
   playerType: PlayerType;
   location: string; countryCode: string | null;
   username: string | null;
-  startedAt: number; startedAgo: number; duration: number; // duration in minutes
-  durationMs: number; bytes: number; // raw ms / raw bytes — for client-side rollups (range filter)
+  startedAt: number; startedAgo: number; duration: number;
+  durationMs: number; bytes: number;
   buffers: number; rebuffMs: number;
-  avgBitrate: number; resolution: string; codec: string; // avgBitrate in Mbps
+  avgBitrate: number; resolution: string; codec: string;
   score: number; health: 'good' | 'warn' | 'bad'; ended: boolean;
   events: { atMin: number; dur: number; cause: string; side: 'upstream' | 'client' }[];
 }
@@ -26,12 +25,11 @@ interface Session {
 const VIEW_HISTORY = computed<Session[]>(() => {
   const now = Date.now();
   return VIEW_SESSIONS.value.map((v) => ({
-    // Stable identity (channel + start + viewer) so selection survives live prepends — NOT the array index.
     id: `${v.channelId}|${v.startedAt}|${v.ip}`,
     channelId: v.channelId,
     ip: v.ip,
     client: v.userAgent || 'unknown',
-    playerType: v.playerType ?? 'appPlayer', // older rows (pre-external-engine) default to the in-app player
+    playerType: v.playerType ?? 'appPlayer',
     location: v.location ?? '—',
     countryCode: v.countryCode ?? null,
     username: v.username,
@@ -42,7 +40,7 @@ const VIEW_HISTORY = computed<Session[]>(() => {
     bytes: v.bytesTotal,
     buffers: v.bufferCount,
     rebuffMs: v.rebufferMs,
-    avgBitrate: +(v.avgBitrate / 1000).toFixed(1), // kbps → Mbps
+    avgBitrate: +(v.avgBitrate / 1000).toFixed(1),
     resolution: v.resolution ?? '—',
     codec: v.codec ?? '—',
     score: v.qoeScore,
@@ -53,7 +51,7 @@ const VIEW_HISTORY = computed<Session[]>(() => {
         atMin: Math.max(0, Math.round((e.at - v.startedAt) / 60000)),
         dur: e.ms,
         cause: e.phase === 'failed' ? 'stream failed' : e.side === 'client' ? 'client rebuffering' : 'rebuffering',
-        side: e.side ?? 'upstream', // rows written before the two-sided split are treated as upstream
+        side: e.side ?? 'upstream',
       }))
       .sort((a, b) => a.atMin - b.atMin),
   }));
@@ -83,13 +81,9 @@ function formatDur(min: number) {
 const range = ref('24h');
 const search = ref('');
 const health = ref<'all' | 'good' | 'warn' | 'bad'>('all');
-// Filter the sessions table by which player produced them — in-app slide-out player vs external IPTV clients.
 const player = ref<'all' | 'appPlayer' | 'externalPlayer'>('all');
 const selectedId = ref<string | null>(null);
 
-// The time-range Segmented (1h/24h/7d/30d) gates BOTH view modes: the sessions table/aggregates and the
-// User Metrics rollup are filtered to sessions whose startedAt is at or after this cutoff. The cutoff is a
-// rolling window relative to now; an unknown value (defensive) falls back to "no cutoff".
 const RANGE_MS: Record<string, number> = {
   '1h': 3600000,
   '24h': 86400000,
@@ -101,10 +95,6 @@ const rangeCutoff = computed(() => {
   return span ? Date.now() - span : 0;
 });
 
-// User Metrics tab state. The per-user rollup is derived CLIENT-side from VIEW_HISTORY (see
-// rangedUserMetrics) so it can honor the shared time-range filter — the server's full-history
-// /user-metrics aggregate takes no range parameter and can't be windowed. VIEW_SESSIONS is kept
-// live by the shared WS + the on-enter baseline reload, so the rollup updates without a separate fetch.
 const viewMode = ref<'sessions' | 'users'>('sessions');
 const loadingMetrics = ref(false);
 const selectedUsername = ref<string | null>(null);
@@ -133,11 +123,6 @@ function formatBytes(bytes: number) {
   return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
-// Per-user rollup honoring the time-range filter. The server's /user-metrics aggregate covers the FULL
-// history with no range parameter, so when a range is active we re-derive the rollup CLIENT-side from the
-// (range-filtered) VIEW_HISTORY rows instead — same UserMetric shape, sorted by watch time descending so
-// the table/detail render identically. With no cutoff (defensive fallback) the server aggregate would
-// otherwise be richer, but the in-window derivation keeps both view modes consistent under one control.
 const rangedUserMetrics = computed<UserMetric[]>(() => {
   const cutoff = rangeCutoff.value;
   const acc: Record<string, UserMetric> = {};
@@ -152,7 +137,7 @@ const rangedUserMetrics = computed<UserMetric[]>(() => {
     m.totalSessions += 1;
     m.totalDurationMs += s.durationMs;
     m.totalBytes += s.bytes;
-    m.avgQoe += s.score; // running sum; averaged below
+    m.avgQoe += s.score;
     if (s.health === 'good') m.goodSessions += 1;
     else if (s.health === 'warn') m.warnSessions += 1;
     else m.badSessions += 1;
@@ -186,9 +171,6 @@ const uniqueIps = computed(() => new Set(sessions.value.map((s) => s.ip)).size);
 const uniqueChannels = computed(() => new Set(sessions.value.map((s) => s.channelId)).size);
 const avgScore = computed(() => sessions.value.length ? Math.round(sessions.value.reduce((a, s) => a + s.score, 0) / sessions.value.length) : 0);
 
-// Buffer-event histogram — BUF_BINS buckets spanning the SELECTED range (fixes the old hardcoded-24h bug that
-// silently dropped 7d/30d events since `sessions` is range-gated), split into the two sides (upstream vs
-// client) so the bars stack. Each bucket = span/BUF_BINS; bin 0 is oldest, the last bin is now.
 const BUF_BINS = 24;
 const bufBins = computed(() => {
   const span = RANGE_MS[range.value] ?? 86400000;
@@ -212,9 +194,6 @@ const bufMax = computed(() => Math.max(1, ...bufBins.value.total));
 const totalClientBuffers = computed(() => bufBins.value.client.reduce((a, b) => a + b, 0));
 const totalUpstreamBuffers = computed(() => bufBins.value.upstream.reduce((a, b) => a + b, 0));
 
-// X-axis timeline: AXIS_TICKS evenly-spaced clock/date labels spanning the SAME [start, now] window the
-// bars use (derived from bufBins so bars + axis never drift). Format adapts to range — HH:MM for 1h/24h,
-// M/D for 7d/30d — mirroring the time formatting used elsewhere (e.g. ActiveStreamsScreen).
 const AXIS_TICKS = 5;
 function fmtTick(t: number) {
   const d = new Date(t);
@@ -247,11 +226,8 @@ const sel = computed(() => sessions.value.find((s) => s.id === selectedId.value)
 
 function chOf(s: Session) { return CHANNELS.value.find((c) => c.id === s.channelId)!; }
 
-// Per-session decode-metadata technical details were removed with the old transcode engine (the streamsessions
-// store is gone), so this is always null now — the presenters + detail block below degrade to '—' / hidden.
 const selProbe = computed<StreamProbe | null>(() => null);
 
-// Compact one-line presenters for the decode-metadata technical details (null → row shows '—'). Mirrors ChannelDrawer.
 const videoLine = computed(() => {
   const v = selProbe.value?.video;
   if (!v || !v.codec) return null;
@@ -281,9 +257,6 @@ const timingLine = computed(() => {
 });
 
 const { subscribe, release, liveBufferEvents } = useStreamStats();
-// Live buffering tally since this screen opened — counts the buffer-event WS frames by side as they arrive
-// (each frame is a buffering-interval START, pushed before the session closes + persists). Reactive: the
-// composable's rolling log grows on each frame, so this re-tallies without a timer.
 const mountedAt = Date.now();
 const liveTally = computed(() => {
   let upstream = 0, client = 0;
@@ -297,18 +270,14 @@ const liveTally = computed(() => {
 const ready = ref(false);
 onMounted(() => {
   requestAnimationFrame(() => ready.value = true);
-  // Baseline refresh on enter; loadingMetrics tracks it so the User Metrics toolbar can show "Loading…"
-  // while the history (which the client-side rollup is derived from) is still being fetched.
   loadingMetrics.value = true;
   reloadViewSessions()
-    .catch(() => { /* best-effort refresh on enter */ })
+    .catch(() => {   })
     .finally(() => { loadingMetrics.value = false; });
-  subscribe(); // live: newly-closed sessions are pushed over /api/stream-stats and prepended into VIEW_SESSIONS
+  subscribe();
 });
 onBeforeUnmount(() => release());
 
-// The stack's total height animates 0→ratio with the staggered reveal; the two side-segments fill it in
-// proportion to their counts (upstream on the bottom, client stacked above).
 function stackStyle(i: number) {
   const ratio = bufBins.value.total[i] / bufMax.value;
   const total = 1500, perBar = 520;
@@ -407,7 +376,6 @@ function metricColor(tone?: string) {
               </div>
             </div>
           </div>
-          <!-- X-axis timeline: evenly-spaced clock/date ticks across the [−range, now] window -->
           <div class="buf-axis">
             <span v-for="(t, i) in axisTicks" :key="i" class="mono buf-tick">{{ t }}</span>
           </div>
@@ -606,9 +574,7 @@ function metricColor(tone?: string) {
       </div>
     </div>
 
-    <!-- User Metrics Grid -->
     <div v-else class="hm-grid">
-      <!-- User List Column -->
       <div class="card flush hm-list">
         <div class="toolbar">
           <div style="font-weight: 600; font-size: 14px;">User Metrics Summary</div>
@@ -650,7 +616,6 @@ function metricColor(tone?: string) {
         </div>
       </div>
 
-      <!-- User Details Column -->
       <div class="card flush hm-detail">
         <template v-if="selectedUserMetric">
           <div class="card-hd" style="padding: 14px var(--pad-card);">

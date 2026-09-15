@@ -1,7 +1,3 @@
-// Schedule helpers shared by the EPG Source Edit drawer (the frequency builder) and the Settings sync
-// screen (the cron preset dropdown). Pure functions + constants, no reactive state. `buildCron` compiles
-// the structured CronFrequency into a 5-field cron string; `summarizeFrequency` renders the friendly label
-// stored on EpgSource.interval. See restapi.md + schemas.md §3.13.
 
 import type { CronFrequency } from '../data';
 
@@ -15,9 +11,6 @@ function hm(h: number, m: number): string {
   return `${pad2(clamp(h, 0, 23))}:${pad2(clamp(m, 0, 59))}`;
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Frequency builder (Edit drawer "Auto" mode)
-// ──────────────────────────────────────────────────────────────────────
 
 export const WEEKDAYS = [
   { value: 0, label: 'Sun' },
@@ -41,8 +34,6 @@ export function defaultFrequency(): CronFrequency {
   return { mode: 'hourly', every: 6, atHour: null, atMinute: 0, daysOfWeek: null };
 }
 
-// Compile the structured frequency into a 5-field cron string. For 'custom' the raw cron the user typed is
-// authoritative (passed in), since the structured fields don't describe it.
 export function buildCron(f: CronFrequency, rawCron = ''): string {
   switch (f.mode) {
     case 'minutes': {
@@ -71,7 +62,6 @@ export function buildCron(f: CronFrequency, rawCron = ''): string {
   }
 }
 
-// Friendly summary stored on EpgSource.interval + shown as the live preview.
 export function summarizeFrequency(f: CronFrequency, rawCron = ''): string {
   switch (f.mode) {
     case 'minutes': {
@@ -96,9 +86,6 @@ export function summarizeFrequency(f: CronFrequency, rawCron = ''): string {
   }
 }
 
-// ──────────────────────────────────────────────────────────────────────
-// Cron presets (Settings sync screen dropdown)
-// ──────────────────────────────────────────────────────────────────────
 
 export interface SchedulePreset {
   label: string;
@@ -125,9 +112,6 @@ export function nextRunForCron(cron: string): string {
   return SCHEDULE_PRESETS.find((p) => p.cron === cron)?.next || '—';
 }
 
-// Map a friendly interval label → a default cron (for the Settings screen's per-source schedule seed).
-// Case-insensitive: the stored discriminator is lowercase ('auto-updated') and a friendly label may be
-// rendered lowercase, so match on a lowercased copy.
 export function defaultCronFor(interval: string): string {
   const v = (interval ?? '').toLowerCase();
   if (v === 'every 6 hours') return '0 */6 * * *';

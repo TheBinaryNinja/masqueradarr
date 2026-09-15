@@ -6,15 +6,8 @@ import Pill from './Pill.vue';
 import { GROUPS_BY_PLAYLIST, reloadGroups, createGroup, renameGroup, deleteGroup, type GroupDef } from '../data';
 import { bus } from '../composables/bus';
 
-// Whole-playlist group manager: rename / delete / add-empty over the shared first-class group registry
-// (GROUPS_BY_PLAYLIST). Shared by BOTH the bulk editor (ChannelBulkDrawer) and the single-channel editor
-// (ChannelDrawer, App-level). It calls the data layer directly (which patches the global CHANNELS union +
-// the registry store) and announces a rename/delete on the bus (`tvapp:group-changed`) so a screen holding
-// a LOCAL channel list (PlaylistDetailScreen) can relabel/clear its rows + fix its active group filter
-// without a refetch.
 const props = defineProps<{ playlistId: string }>();
 
-// The playlist's group registry (shared store). Self-load it (like GroupPicker) so this works standalone.
 const registry = computed<GroupDef[]>(() => GROUPS_BY_PLAYLIST.value[props.playlistId] ?? []);
 function ensureLoaded(id: string) {
   if (id && !GROUPS_BY_PLAYLIST.value[id]) reloadGroups(id).catch(() => {});
@@ -22,11 +15,8 @@ function ensureLoaded(id: string) {
 onMounted(() => ensureLoaded(props.playlistId));
 watch(() => props.playlistId, (id) => ensureLoaded(id));
 
-// Inline error (rename/delete/create) — surfaced right at the panel rather than via a parent banner, so the
-// component stays self-contained (mirrors GroupPicker's createError).
 const opError = ref('');
 
-// ── Rename (inline, 3-state row) ──
 const renaming = ref<string | null>(null);
 const renameVal = ref('');
 function startRename(g: GroupDef) {
@@ -47,7 +37,6 @@ async function commitRename() {
   }
 }
 
-// ── Delete (inline confirm) ── Deleting keeps the channels; only their group assignment is cleared.
 const confirmDeleteGroup = ref<string | null>(null);
 async function doDeleteGroup(name: string) {
   confirmDeleteGroup.value = null;
@@ -59,8 +48,6 @@ async function doDeleteGroup(name: string) {
   }
 }
 
-// ── Add an EMPTY group (persists with zero channels). No bus event — no channel label changes, and the
-// registry-derived filter surfaces it reactively via GROUPS_BY_PLAYLIST. ──
 const newGroupName = ref('');
 const creatingGroup = ref(false);
 async function addEmptyGroup() {
@@ -72,7 +59,6 @@ async function addEmptyGroup() {
     await createGroup(props.playlistId, name);
     newGroupName.value = '';
   } catch (e) {
-    // A duplicate already exists in the list below — treat as benign; other errors surface inline.
     if ((e as Error).message === 'group_exists') newGroupName.value = '';
     else opError.value = 'Could not create group';
   } finally {
@@ -82,8 +68,6 @@ async function addEmptyGroup() {
 </script>
 
 <template>
-  <!-- Manage the playlist's groups (immediate, whole-playlist). Same registry the assign picker and the
-       single-channel editor read — rename/delete/add here reflect everywhere. -->
   <div class="form-row">
     <div class="field-lbl">Manage groups</div>
     <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 8px;">
