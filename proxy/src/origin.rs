@@ -1336,48 +1336,54 @@ async fn ingest(ctx: IngestCtx) {
                     Some(Resolution { media: MediaSource::RawTs(stream, first), .. }) => {
                         // The serving candidate's bound, as for every HLS poll below (set from this resolve above).
                         let read_timeout_ms = serving_policy.as_ref().map_or(0, |p| p.read_timeout_ms.load(Ordering::Relaxed));
-                        let started = Instant::now();
                         // A splice pending from the resolve (a reset's, or a renewal that landed on a socket) rides
                         // on the session's first cut, exactly as the HLS path puts it on its first segment.
-                        let (produced, min_session) =
-                            ingest_raw_ts(&ctx, &rid, stream, first, read_timeout_ms, forced.is_some()).await;
+                        let session = ingest_raw_ts(&ctx, &rid, stream, first, read_timeout_ms, forced.is_some()).await;
+                        let produced = session.produced;
                         if produced > 0 {
                             forced = None;
                         }
                         next_upstream_seq = -1;
                         recent_paths.clear();
-                        let lasted = started.elapsed();
-                        if produced > 0 && lasted >= min_session {
-                            // A socket that carried media for a while and then ended is a reconnect, not a fault.
-                            media_failures = 0;
-                            backoff.succeed();
-                            walk_wrapped = false;
-                        } else if produced > 0 {
-                            // BKO: a live socket runs in real time, so one that ended within a few target
-                            // durations — a finite clip behind a `.ts` entry, a restreamer that accepts and drops —
-                            // is a failure however many cuts it yielded. Read as a clean reconnect, it looped
-                            // straight back into a resolve with no pause: one Node resolve, one entry GET and a
-                            // ring reset per pass, hundreds a second, while no window ever grew playable.
-                            media_failures = media_failures.saturating_add(1);
-                            let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
-                            log::warn("iop", &rid, || {
-                                format!(
-                                    "raw-TS session ended after {}ms ({produced} segment(s)) — shorter than a live socket runs, counted as a failure",
-                                    lasted.as_millis()
-                                )
-                            });
-                            back_off(&rid, wait, backoff.failures).await;
-                        } else {
-                            // BKO: a 2xx entry that is neither a playlist nor a transport stream — an HTML
-                            // interstitial, a challenge page — used to loop straight back into a resolve with
-                            // no pause and no failure counted: one Node resolve plus one entry GET per pass,
-                            // for as long as anyone was subscribed. It is a failure, and it always waits.
-                            media_failures = media_failures.saturating_add(1);
-                            let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
-                            log::warn("iop", &rid, || {
-                                "the entry answered with neither a playlist nor a transport stream (0 segments cut) — counted as a failure".to_string()
-                            });
-                            back_off(&rid, wait, backoff.failures).await;
+                        match raw_verdict(&session) {
+                            RawVerdict::Reconnect => {
+                                // A socket that carried media for a while and then ended is a reconnect, not a fault.
+                                media_failures = 0;
+                                backoff.succeed();
+                                walk_wrapped = false;
+                            }
+                            RawVerdict::Short => {
+                                // BKO: a live socket runs in real time, so one whose media stopped within a few
+                                // target durations — a finite clip behind a `.ts` entry, a restreamer that accepts
+                                // and drops — is a failure however many cuts it yielded. Read as a clean reconnect,
+                                // it looped straight back into a resolve with no pause: one Node resolve, one entry
+                                // GET and a ring reset per pass, hundreds a second, while no window ever grew
+                                // playable. Judged by the MEDIA span, not the wall clock: a socket that sends its
+                                // headers and then holds the connection open silently ends on the silence bound,
+                                // and the wait itself used to make it read as a healthy long session — no backoff,
+                                // no escalation to the channel's backups, the same dead candidate every ~15 s.
+                                media_failures = media_failures.saturating_add(1);
+                                let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
+                                log::warn("iop", &rid, || {
+                                    format!(
+                                        "raw-TS session carried media for {}ms ({produced} segment(s)) — shorter than a live socket runs, counted as a failure",
+                                        session.media_span.as_millis()
+                                    )
+                                });
+                                back_off(&rid, wait, backoff.failures).await;
+                            }
+                            RawVerdict::NotMedia => {
+                                // BKO: a 2xx entry that is neither a playlist nor a transport stream — an HTML
+                                // interstitial, a challenge page — used to loop straight back into a resolve with
+                                // no pause and no failure counted: one Node resolve plus one entry GET per pass,
+                                // for as long as anyone was subscribed. It is a failure, and it always waits.
+                                media_failures = media_failures.saturating_add(1);
+                                let wait = backoff.fail_walk(walk_wrapped).max(FAILURE_BACKOFF_BASE);
+                                log::warn("iop", &rid, || {
+                                    "the entry answered with neither a playlist nor a transport stream (0 segments cut) — counted as a failure".to_string()
+                                });
+                                back_off(&rid, wait, backoff.failures).await;
+                            }
                         }
                         continue;
                     }
@@ -2402,14 +2408,46 @@ fn looks_like_manifest(b: &[u8]) -> bool {
     t.trim_start_matches('\u{feff}').trim_start().starts_with("#EXTM3U")
 }
 
+/// How one bare-TS session went — what the ingest loop judges its candidate by (`raw_verdict`).
+struct RawSession {
+    /// Segments cut, the tail flush included. ZERO means the entry never carried media at all.
+    produced: u64,
+    /// How long media FLOWED: from the session's first bytes to its last. A session that ended on the silence
+    /// bound stopped carrying anything when its last chunk arrived — the wait that ended it is not part of its run.
+    media_span: Duration,
+    /// The shortest a live session runs: the silence bound, three target durations at least.
+    min_session: Duration,
+}
+
+/// What a finished bare-TS session says about the candidate that served it.
+#[derive(Debug, PartialEq, Eq)]
+enum RawVerdict {
+    /// Media flowed for at least as long as a live socket runs, then ended: a reconnect, not a fault.
+    Reconnect,
+    /// Media, but for less than a live socket runs — a finite clip behind a `.ts` entry, a restreamer that accepts
+    /// and drops, a socket that sent its headers and went silent. A failure however many cuts it yielded.
+    Short,
+    /// Nothing cut at all: the entry answered with neither a playlist nor a transport stream.
+    NotMedia,
+}
+
+fn raw_verdict(s: &RawSession) -> RawVerdict {
+    if s.produced == 0 {
+        RawVerdict::NotMedia
+    } else if s.media_span >= s.min_session {
+        RawVerdict::Reconnect
+    } else {
+        RawVerdict::Short
+    }
+}
+
 /// Ingest a BARE TS socket: cut it into segments locally and push them into the same ring the HLS path fills.
 ///
 /// Runs until the socket ends, falls silent for longer than the ingest's I/O bound, or the ingest is stopping
 /// — unlike the HLS path there is nothing to poll, so this is one long read rather than a loop over playlist
-/// refreshes. Returns how many segments it cut — ZERO means the entry never carried media at all — and the
-/// shortest a live session runs (the silence bound: three target durations at least), below which the caller
-/// counts the session as a failure rather than a reconnect: a live socket delivers in real time, so one that
-/// ended sooner was a finite clip or a dropped connection.
+/// refreshes. Returns what the caller judges the session by (`RawSession`, `raw_verdict`): a live socket
+/// delivers in real time, so one whose media stopped sooner than the silence bound was a finite clip, a
+/// dropped connection or a socket gone quiet — a failure, not a reconnect.
 ///
 /// `mark_first`: a splice is pending (the ring was reset for this socket, or a renewal landed on one), so the
 /// first cut carries `#EXT-X-DISCONTINUITY` — the new socket's clock is not the one the window was on.
@@ -2420,7 +2458,7 @@ async fn ingest_raw_ts(
     first: Bytes,
     read_timeout_ms: u64,
     mark_first: bool,
-) -> (u64, Duration) {
+) -> RawSession {
     // Segment length: reuse whatever target the channel already reported, else a 5 s default that matches
     // typical HLS practice. This also seeds the renderer's #EXT-X-TARGETDURATION.
     let target = {
@@ -2435,6 +2473,9 @@ async fn ingest_raw_ts(
     let silence = ingest_io(read_timeout_ms, target).body;
     // The pending splice rides on the session's first cut, and on that one only.
     let mut disc = mark_first;
+    // The session's media span runs from its first bytes (in hand already) to the last chunk that arrived.
+    let opened = Instant::now();
+    let mut last_bytes = opened;
 
     for cut in seg.push(&first) {
         push_cut(ctx, cut, std::mem::take(&mut disc));
@@ -2456,6 +2497,7 @@ async fn ingest_raw_ts(
         }
         match item {
             Ok(b) => {
+                last_bytes = Instant::now();
                 for cut in seg.push(&b) {
                     push_cut(ctx, cut, std::mem::take(&mut disc));
                     produced += 1;
@@ -2474,7 +2516,7 @@ async fn ingest_raw_ts(
     }
     log::info("iop", rid, || format!("raw-TS session ended — {produced} segment(s) cut"));
     report_iop(ctx, "closed");
-    (produced, silence)
+    RawSession { produced, media_span: last_bytes.duration_since(opened), min_session: silence }
 }
 
 /// Push a locally-cut segment into the ring. Within a session `discontinuity` is false: a bare TS socket is one
@@ -4796,6 +4838,52 @@ mod tests {
         until(Duration::from_secs(5), "the clip is cut into the ring", || o.ring_depth() >= 3).await;
         tokio::time::sleep(Duration::from_secs(1)).await;
         assert_eq!(up.resolves() - before, 1, "one session, then a pause — not a resolve per spin");
+    }
+
+    /// BKO: a bare-TS session is a reconnect only when its MEDIA ran as long as a live socket runs.
+    #[test]
+    fn a_raw_session_is_a_reconnect_only_when_its_media_ran_as_long_as_a_live_socket_does() {
+        let s = |produced, span_ms, min_ms| RawSession {
+            produced,
+            media_span: Duration::from_millis(span_ms),
+            min_session: Duration::from_millis(min_ms),
+        };
+        assert_eq!(raw_verdict(&s(40, 3_600_000, 15_000)), RawVerdict::Reconnect, "an hour of media, then an end");
+        assert_eq!(raw_verdict(&s(3, 15_000, 15_000)), RawVerdict::Reconnect, "exactly the bar");
+        assert_eq!(raw_verdict(&s(4, 900, 15_000)), RawVerdict::Short, "a finite clip");
+        assert_eq!(raw_verdict(&s(1, 20, 15_000)), RawVerdict::Short, "a few packets, then silence");
+        assert_eq!(raw_verdict(&s(0, 0, 15_000)), RawVerdict::NotMedia, "nothing that cuts");
+    }
+
+    /// BKO: a socket that sends a little and then holds the connection open silently ends on the silence bound —
+    /// and that bound was also the "ran long enough" bar, with the wait counted into the run. Such a session always
+    /// read as a healthy long one: the failure count reset, no backoff, and the same dead candidate re-resolved
+    /// every ~15 s without ever escalating to the channel's backups. What counts now is the span media flowed.
+    #[tokio::test]
+    async fn a_socket_that_goes_silent_is_judged_by_the_media_it_carried_not_by_the_wait() {
+        let up = Mock::start(Seam::grant("/pl/x.ts", true)).await; // only its telemetry sink is used
+        let ctx = IngestCtx {
+            state: up.state(),
+            origin: Arc::new(Origin::new(10_000)),
+            source: "zl".into(),
+            entry: "zl://abc".into(),
+            pl: None,
+            key: "zl|zl://abc".into(),
+        };
+        ctx.origin.target_duration_ms.store(1000, Ordering::Relaxed); // a 1 s target: the 10 s silence floor binds
+        let ts = crate::tsseg::tuner_ts(3);
+        let half = ts.len() / crate::tsseg::PKT / 2 * crate::tsseg::PKT;
+        let rest: Vec<reqwest::Result<Bytes>> = vec![Ok(Bytes::copy_from_slice(&ts[half..]))];
+        let stream: std::pin::Pin<Box<dyn tokio_stream::Stream<Item = reqwest::Result<Bytes>> + Send>> =
+            Box::pin(tokio_stream::iter(rest).chain(tokio_stream::pending()));
+
+        let opened = Instant::now();
+        let s = ingest_raw_ts(&ctx, "t", stream, Bytes::copy_from_slice(&ts[..half]), 0, false).await;
+        // The old bar, wall time since the socket opened, is met — which is exactly how this read as healthy.
+        assert!(opened.elapsed() >= s.min_session, "it ended on the silence bound, after {:?}", opened.elapsed());
+        assert!(s.produced >= 1, "what arrived was cut into the ring");
+        assert!(s.media_span < Duration::from_secs(1), "media flowed for {:?}; the wait is not part of it", s.media_span);
+        assert_eq!(raw_verdict(&s), RawVerdict::Short, "a failure, not a reconnect");
     }
 
     /// CNT, end to end, on a bare TS socket: a reconnect after the ring holds media resets the ring — and the new
