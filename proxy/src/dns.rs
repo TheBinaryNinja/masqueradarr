@@ -306,7 +306,7 @@ impl Resolve for UpstreamDns {
 /// One lookup, by the semantics in the module doc.
 async fn lookup(
     host: &str,
-    active: &Active,
+    active: &Arc<Active>,
     os: &OsLookup,
     seen: &Mutex<HashMap<String, String>>,
     down_window: Duration,
@@ -327,11 +327,43 @@ async fn lookup(
     if active.servers_down() {
         return Ok(os(host.to_string()).await?);
     }
-    let failed = match ask_servers(resolver, host).await {
-        Ok(ips) => {
-            if active.heal() {
-                log::info(TAG, "", || format!("the configured nameserver(s) answer again ({host}) — asking them first once more"));
+    // The servers are asked on a task of their own, so what they did is recorded even when the connection that
+    // asked has given up. reqwest's connect timeout — and fetch_with_retry's read timeout — wrap this resolve, and
+    // the operator can set either below QUERY_TIMEOUT: the lookup is then dropped mid-query, and with it the only
+    // code that could open the down window, so every later connection paid the same dead query and failed the same
+    // way — the very case the window exists for. The task outlives its caller by at most one query timeout.
+    let asking = {
+        let (resolver, host, active) = (resolver.clone(), host.to_string(), active.clone());
+        tokio::spawn(async move {
+            let asked = ask_servers(&resolver, &host).await;
+            match &asked {
+                Ok(_) => {
+                    if active.heal() {
+                        log::info(TAG, "", || {
+                            format!("the configured nameserver(s) answer again ({host}) — asking them first once more")
+                        });
+                    }
+                }
+                // Servers that did not answer at all are left alone for a window, rather than taxing every connection
+                // until they come back. Only the lookup that opened the window says so.
+                Err(failed) if failed.unanswered && active.trip(down_window) => {
+                    log::warn(TAG, "", || {
+                        format!(
+                            "configured nameserver(s) {} not answering ({}) — the OS resolver answers alone for \
+                             the next {}s",
+                            join(&active.servers),
+                            failed.code,
+                            down_window.as_secs()
+                        )
+                    });
+                }
+                Err(_) => {}
             }
+            asked
+        })
+    };
+    let failed = match asking.await {
+        Ok(Ok(ips)) => {
             if admit_trace(seen, log::level(), host, &trace_key(&ips)) {
                 log::info(TAG, "", || {
                     format!("{host} → {} (family {}) via {}", join(&ips), family(&ips), join(&active.servers))
@@ -339,20 +371,10 @@ async fn lookup(
             }
             return Ok(ips);
         }
-        Err(failed) => failed,
+        Ok(Err(failed)) => failed,
+        // The query task panicked: nothing was answered, and the OS resolver still gets its turn below.
+        Err(e) => CustomFailure { code: "EINTERNAL".to_string(), err: Box::new(e), unanswered: false },
     };
-    // Servers that did not answer at all are left alone for a window, rather than taxing every connection until
-    // they come back. Only the lookup that opened the window says so.
-    if failed.unanswered && active.trip(down_window) {
-        log::warn(TAG, "", || {
-            format!(
-                "configured nameserver(s) {} not answering ({}) — the OS resolver answers alone for the next {}s",
-                join(&active.servers),
-                failed.code,
-                down_window.as_secs()
-            )
-        });
-    }
     // The configured servers failed (blocked egress to 8.8.8.8, SERVFAIL, NXDOMAIN for a LAN name, …). Ask the OS
     // resolver, so one filtered nameserver cannot silently break every upstream; only a double failure fails.
     match os(host.to_string()).await {
@@ -765,6 +787,29 @@ mod tests {
         tokio::time::sleep(window).await;
         assert_eq!(resolve(&dns, "nas.lan").await, Ok(ips(&["192.168.1.20"])));
         assert!(r.asked().len() > asked.len(), "once the window lapses the servers are asked again");
+    }
+
+    /// reqwest's connect timeout (and the fetch read timeout) wrap the resolve, and the operator can set either
+    /// below the query timeout. The connection that asked a dead server then gives up mid-query — and what the
+    /// server did must still be recorded: before, the dropped lookup took the window with it, so every later
+    /// connection asked the same dead server, ran out of budget the same way, and never reached the OS resolver.
+    #[tokio::test]
+    async fn a_caller_that_gives_up_mid_query_still_opens_the_down_window() {
+        let r = Responder::start(|_, _| Answer::Silent).await;
+        let (os, os_calls) = fake_os(&[("cdn.example.test", "198.51.100.1")]);
+        let dns = UpstreamDns::with_parts(os, r.port, TEST_QUERY, SERVERS_DOWN_WINDOW);
+        dns.apply_echo(&serde_json::json!({ "nameservers": "127.0.0.1" }));
+        let budget = TEST_QUERY / 3; // a connect timeout shorter than one query
+
+        let first = tokio::time::timeout(budget, resolve(&dns, "cdn.example.test")).await;
+        assert!(first.is_err(), "the first connection runs out of budget while the servers are asked");
+        assert_eq!(os_calls.load(Ordering::SeqCst), 0, "it never got as far as the fallback");
+
+        tokio::time::sleep(TEST_QUERY + Duration::from_millis(200)).await; // the abandoned query times out on its own
+        let asked = r.asked().len();
+        let next = tokio::time::timeout(budget, resolve(&dns, "cdn.example.test")).await;
+        assert_eq!(next.expect("inside the window the OS resolver answers within the budget"), Ok(ips(&["198.51.100.1"])));
+        assert_eq!(r.asked().len(), asked, "and the dead servers are not asked again");
     }
 
     /// The window is for servers that do not ANSWER. One that answers "no such name" is up — the name may simply be
