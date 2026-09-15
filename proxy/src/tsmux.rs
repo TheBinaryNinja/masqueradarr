@@ -875,6 +875,15 @@ async fn ts_producer(
     let mut joined = false;
 
     'outer: loop {
+        // The viewer left. A failed send is how this producer usually learns it, and a session whose upstream gives
+        // it nothing to send — every segment refused or skipped as private while the playlist still answers 200 —
+        // never sends: it polled the playlist, retried every segment it listed and kept the stream's failover cursor
+        // alive for good after the socket closed. So the receiver is watched too (here, per segment below, and
+        // across the poll wait), as the origin's ring producers watch it.
+        if tx.is_closed() {
+            close_reason = "client_gone";
+            break 'outer;
+        }
         // Refresh the media playlist each cycle (except the first — we already have it from try_ts_response).
         if !first {
             match fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-media", MAX_UPSTREAM_RETRIES)
@@ -930,6 +939,10 @@ async fn ts_producer(
             let seq = mp.media_sequence + i as i64;
             if seq < next_seq {
                 continue; // already served
+            }
+            if tx.is_closed() {
+                close_reason = "client_gone";
+                break 'outer; // nobody to fetch it for
             }
             next_seq = seq + 1;
             let seg_url = match media_url.join(&seg.uri) {
@@ -1196,7 +1209,15 @@ async fn ts_producer(
             close_reason = "endlist";
             break 'outer; // VOD / finished event
         }
-        tokio::time::sleep(poll_interval(mp.target_duration)).await;
+        // The poll wait is where a quiet upstream spends most of its time: a departure ends it at once.
+        let gone = tokio::select! {
+            _ = tx.closed() => true,
+            _ = tokio::time::sleep(poll_interval(mp.target_duration)) => false,
+        };
+        if gone {
+            close_reason = "client_gone";
+            break 'outer;
+        }
     }
 
     // CLOSE: flush residual bytes, then tell Node the socket session ended (noteSocketViewerClose).
@@ -1782,6 +1803,37 @@ mod tests {
         let mut socket = resp.into_body().into_data_stream();
         let heard = tokio::time::timeout(Duration::from_millis(1500), socket.next()).await;
         assert!(heard.is_err(), "no loopback segment was fetched and relayed");
+    }
+
+    /// A raw-TS viewer leaves a pass-through session whose upstream gives it nothing to send: the playlist keeps
+    /// answering 200, every segment it lists is refused. The producer stops polling at once. A failed send was its
+    /// only way to learn the viewer had gone, and here nothing is ever sent — so it went on polling the playlist
+    /// (and retrying every segment it listed) for good, keeping the failover cursor alive for nobody.
+    #[tokio::test]
+    async fn a_viewer_who_leaves_a_session_with_nothing_to_send_stops_the_polling() {
+        let up = Mock::start(raw_ts_grant(serde_json::json!({}))).await;
+        let mut body = "#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:2\n#EXT-X-MEDIA-SEQUENCE:0\n".to_string();
+        for n in 0..3 {
+            body.push_str(&format!("#EXTINF:2.0,\n/pl/x{n}.ts\n"));
+        }
+        up.script(|s| {
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(body.clone()));
+            for n in 0..3 {
+                s.paths.insert(format!("/pl/x{n}.ts"), Serve::Status(403));
+            }
+        });
+        let socket = open_socket(&up.state()).await;
+        crate::testkit::until(Duration::from_secs(5), "the producer re-polls the playlist", || {
+            up.hits("/pl/live.m3u8") >= 3
+        })
+        .await;
+        assert!(up.hits("/pl/x0.ts") >= 1, "precondition: the segments were asked for, and refused");
+
+        drop(socket); // the viewer leaves; nothing was ever sent to it
+        tokio::time::sleep(Duration::from_millis(300)).await; // a poll already in flight may still land
+        let after = up.hits("/pl/live.m3u8");
+        tokio::time::sleep(Duration::from_secs(3)).await; // three poll intervals
+        assert_eq!(up.hits("/pl/live.m3u8"), after, "nobody polls the upstream for a viewer who has gone");
     }
 
     /// KEY: a join segment is held back only until its keyframe is in hand — not until the segment ENDS. Here the
