@@ -133,17 +133,7 @@ export function allowHost(hostname: string): void {
 // unchanged.
 export { isPrivateHost } from '../../core/ssrf.js';
 
-// The (rotating) player origin discovered by the last resolve, e.g. https://donis.jimpenopisonline.online/.
-// The CDN/segment hosts saw this as the browser Referer, so the proxy replays it on those hops. Falls back
-// lazily to the current mirror referer until the first resolve runs (lazy so a setBase() hop reflects too).
-let _playerReferer: string | null = null;
-export function setPlayerOrigin(originOrUrl: string): void {
-  try {
-    _playerReferer = `${new URL(originOrUrl).origin}/`;
-  } catch {
-    /* ignore malformed */
-  }
-}
-export function playerReferer(): string {
-  return _playerReferer || getReferer();
-}
+// There is deliberately no "current player origin" here any more. The CDN/segment hops replay the Referer of the
+// player page each stream's playlist came from, and that differs per provider — so it travels WITH the resolve
+// (ResolvedStream.upstreamHeaders, built in ./resolveStream.ts) instead of through a module global that a
+// concurrent resolve of another channel could overwrite between the resolve and the grant.

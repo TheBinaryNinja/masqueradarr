@@ -164,6 +164,13 @@ export interface ResolvedStream {
    * the expiry as a 403 mid-stream. Omit when unknown — the data plane then keeps its fixed target TTL.
    */
   expiresAtMs?: number;
+  /**
+   * Headers to replay on every hop of THIS stream, when they depend on what the resolve found — a Referer/Origin
+   * naming the player page the playlist came from, which differs per provider and per resolve. The seam uses them
+   * instead of `proxy.upstreamHeaders(masterUrl)`, so they travel with the resolve rather than through adapter
+   * state a concurrent resolve of another channel could overwrite. Omit when the headers are constant per source.
+   */
+  upstreamHeaders?: Record<string, string>;
 }
 
 /** One adapter's answer to "does this candidate domain serve our catalog?" (SourceAdapter.testDomain). */

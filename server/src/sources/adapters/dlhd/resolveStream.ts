@@ -31,19 +31,37 @@
 // shape. `opts.player` (1-based; 0/undefined = Auto) chooses which player to PREFER; the resolver then
 // falls through the rest, remembers the winner and burns the losers (./playerMemory.ts) so the next
 // establish leads with the player that actually worked instead of re-walking from Player 1.
+//
+// MIRROR TRAFFIC. Hop 1 is the mirror's heaviest page and the one thing every resolve of every channel has in
+// common, so it is where an IP gets rate-limited. ./resolveCache.ts keeps it to what is needed: hop-1 embed lists
+// and the player list are cached, concurrent resolves of a channel share one walk, a failed walk is replayed
+// rather than repeated, and a mirror that refused us (or said 429) is left alone for a while by every channel.
 
 import {
   getBase,
   getReferer,
   UA,
   allowHost,
-  setPlayerOrigin,
-  playerReferer,
   getPlayerDefault,
   PLAYER_PREFIXES,
 } from './config.js';
-import { extractMasterUrls } from './embedExtractors.js';
+import { extractMasterUrls, type EmbedCandidate } from './embedExtractors.js';
 import { preferenceOrder, noteGood, noteBad, burnCurrent } from './playerMemory.js';
+import {
+  cachedEmbeds,
+  rememberEmbeds,
+  forgetEmbeds,
+  cachedPlayerPaths,
+  rememberPlayerPaths,
+  recentFailure,
+  rememberFailure,
+  clearFailure,
+  mirrorDown,
+  noteMirrorDown,
+  singleFlight,
+} from './resolveCache.js';
+import { transportKind, transportText, describeTransport, type TransportKind } from './transport.js';
+import { logger } from '../../core/logger.js';
 import { logMilestone, logTrace } from '../../../logs/tier.js';
 
 // Node's fetch has NO default timeout, so one hanging provider would stall the whole walk (and with it the
@@ -54,11 +72,22 @@ const HOP_TIMEOUT_MS = Number(process.env.DLHD_HOP_TIMEOUT_MS || 8000);
 // try, and the fall-through stops once the budget is spent. Same reasoning as the Rust failover walk's
 // reduced budget for later candidates (proxy.rs).
 const RESOLVE_BUDGET_MS = Number(process.env.DLHD_RESOLVE_BUDGET_MS || 20_000);
+// A cached embed list younger than this is not re-read from hop 1 when it fails: it can't have gone stale yet,
+// and re-reading it would double a failing player's mirror cost on every walk.
+const EMBED_RECHECK_MS = 120_000;
+// Hop-1 failures that are about the MIRROR, not the player: every other player page is on the same host and
+// would fail the same way, so the walk stops at the first one instead of knocking five more times.
+const MIRROR_STOP: ReadonlySet<TransportKind> = new Set<TransportKind>(['refused', 'dns', 'throttled']);
+// Some providers' embed page is only a frame around the real player page. One that yields no candidate but
+// frames another page is followed, at most this many levels deep.
+const MAX_FRAME_DEPTH = 2;
 
 export interface ResolvedStream {
   id: string;
-  /** The player-provider embed URL that produced this playlist (hop 2). Its origin is the Referer replayed downstream. */
+  /** The player page that produced this playlist (hop 2, or the page it framed). Its origin is the Referer replayed downstream. */
   playerUrl: string;
+  /** What the data plane replays on every hop of this stream — streamHeaders(playerUrl). */
+  upstreamHeaders: Record<string, string>;
   /** What the data plane fetches. Despite the name it may be a MASTER or a MEDIA playlist — see `shape`. */
   masterUrl: string;
   variantUrl: string;
@@ -105,10 +134,16 @@ export interface ResolveOptions {
  */
 export class DlhdResolveError extends Error {
   readonly mirrorUnreachable: boolean;
-  constructor(message: string, mirrorUnreachable: boolean) {
+  /** HOW the mirror failed, when `mirrorUnreachable` — the operator advice depends on it (see ./transport.ts). */
+  readonly mirrorKind: TransportKind | null;
+  /** Answered from ./resolveCache.ts (the breaker or a failed walk) without touching the network. */
+  readonly replayed: boolean;
+  constructor(message: string, mirrorUnreachable: boolean, mirrorKind: TransportKind | null = null, replayed = false) {
     super(message);
     this.name = 'DlhdResolveError';
     this.mirrorUnreachable = mirrorUnreachable;
+    this.mirrorKind = mirrorKind;
+    this.replayed = replayed;
   }
 }
 
@@ -124,26 +159,73 @@ export class DlhdPlayersExhausted extends Error {
   }
 }
 
-/** Connection-level (not HTTP-level) failure — the mirror/provider could not be reached at all. */
-function isTransportError(err: unknown): boolean {
-  const e = err as { name?: string; message?: string };
-  if (e?.name === 'TimeoutError' || e?.name === 'AbortError') return true;
-  return /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|UND_ERR/i.test(
-    String(e?.message ?? ''),
-  );
+/** A bounded GET. Every hop in this file goes through here, with headers from one of the builders below. */
+function hop(url: string, headers: Record<string, string>): Promise<Response> {
+  return fetch(url, { headers, signal: AbortSignal.timeout(HOP_TIMEOUT_MS) });
 }
 
-/** A bounded GET with the dlhd UA. Every hop in this file goes through here. */
-function hop(url: string, referer: string): Promise<Response> {
-  return fetch(url, {
-    headers: { Referer: referer, 'User-Agent': UA },
-    signal: AbortSignal.timeout(HOP_TIMEOUT_MS),
-  });
+// ── What a browser sends at each hop ─────────────────────────────────────────────────────────────────────
+// watch.php frames the player page (same origin), the player page frames the provider's embed (cross-origin),
+// and the embed's player fetches the playlist and segments with XHR (cross-origin, CORS). Under the default
+// strict-origin-when-cross-origin policy — none of the observed pages sets another — a same-origin request
+// carries the full URL as Referer and a cross-origin one only the origin. Matching that, and the fetch-metadata
+// that goes with each kind of request, keeps these hops indistinguishable from a viewer's.
+const ACCEPT_LANGUAGE = 'en-US,en;q=0.9';
+
+/** A page navigated to (`document`) or loaded into an <iframe>, from `referer` — already reduced to what the
+ * browser sends (see refererFor). */
+function pageHeaders(
+  referer: string,
+  site: 'same-origin' | 'cross-site',
+  dest: 'document' | 'iframe',
+): Record<string, string> {
+  return {
+    'User-Agent': UA,
+    Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': ACCEPT_LANGUAGE,
+    Referer: referer,
+    'Sec-Fetch-Dest': dest,
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': site,
+    'Upgrade-Insecure-Requests': '1',
+  };
 }
 
+/**
+ * The player's own XHR to the CDN: playlist and segments. Hop 3 sends exactly this, and it is what the resolve
+ * hands the data plane to replay (ResolvedStream.upstreamHeaders), so a playlist that validated here is fetched
+ * the same way for the rest of the stream.
+ */
+export function streamHeaders(playerUrl: string): Record<string, string> {
+  const origin = new URL(playerUrl).origin;
+  return {
+    'User-Agent': UA,
+    Accept: '*/*',
+    'Accept-Language': ACCEPT_LANGUAGE,
+    Referer: `${origin}/`,
+    Origin: origin,
+    'Sec-Fetch-Dest': 'empty',
+    'Sec-Fetch-Mode': 'cors',
+    'Sec-Fetch-Site': 'cross-site',
+  };
+}
+
+/** The Referer a browser sends from `from` to `to`: the full URL within one origin, only the origin across. */
+function refererFor(from: string, to: string): { referer: string; site: 'same-origin' | 'cross-site' } {
+  const a = new URL(from);
+  return new URL(to).origin === a.origin
+    ? { referer: from, site: 'same-origin' }
+    : { referer: `${a.origin}/`, site: 'cross-site' };
+}
+
+// fetch's own message is always "fetch failed"; transportText appends the code that explains it (ECONNREFUSED …).
 function shortErr(err: unknown): string {
-  const m = String((err as Error)?.message ?? err);
+  const m = transportText(err);
   return m.length > 160 ? `${m.slice(0, 157)}…` : m;
+}
+
+function secs(ms: number): number {
+  return Math.max(1, Math.ceil(ms / 1000));
 }
 
 function hostOf(url: string): string {
@@ -166,23 +248,29 @@ const NON_PLAYER_RE = /(doubleclick|googletagmanager|google-analytics|googlesynd
  * `/premiumtv/` — as this did before — made Players 2/3/4 unreachable without a single network request.
  */
 function findEmbedUrls(html: string, pageUrl: string): string[] {
-  const out: string[] = [];
-  const add = (raw: string): void => {
-    if (!raw || /^(about:|data:|javascript:)/i.test(raw)) return;
-    let abs: string;
-    try {
-      abs = new URL(raw, pageUrl).href;
-    } catch {
-      return;
-    }
-    if (!/^https?:$/i.test(new URL(abs).protocol)) return;
-    if (NON_PLAYER_RE.test(abs)) return;
-    if (!out.includes(abs)) out.push(abs);
-  };
+  const premium = html.match(PREMIUMTV_RE)?.[0];
+  return [...new Set([...(premium ? [premium] : []), ...iframeSrcs(html, pageUrl)])];
+}
 
-  const premium = html.match(PREMIUMTV_RE);
-  if (premium) add(premium[0]);
-  for (const m of html.matchAll(/<iframe[^>]*\bsrc=["']([^"']+)["']/gi)) add(m[1]);
+/**
+ * A page's `<iframe src>` URLs, absolute and in DOM order — minus ad/analytics frames, and minus a src that a
+ * script assembles at runtime (`'<iframe src="' + window.location.href + '"…'`), which only looks like a URL
+ * to a regex.
+ */
+function iframeSrcs(html: string, pageUrl: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(/<iframe[^>]*\bsrc=["']([^"']+)["']/gi)) {
+    const raw = m[1].trim();
+    if (!raw || /^(about:|data:|javascript:)/i.test(raw) || /['"+\s]|window\./.test(raw)) continue;
+    let abs: URL;
+    try {
+      abs = new URL(raw, pageUrl);
+    } catch {
+      continue;
+    }
+    if (!/^https?:$/i.test(abs.protocol) || NON_PLAYER_RE.test(abs.href)) continue;
+    if (!out.includes(abs.href)) out.push(abs.href);
+  }
   return out;
 }
 
@@ -224,10 +312,15 @@ function staticPage(id: string, playerIndex: number): PlayerPage {
 // (matches the site's PLAYER 1..N exactly and self-heals if the site reorders/renames the prefixes). Each
 // data-url is normalized onto the ACTIVE mirror host (getBase) so every hop-1 fetch targets the proven-live
 // mirror, not whatever host the button happened to name. Falls back to the last-known PLAYER_PREFIXES when
-// watch.php can't be parsed (layout change / fetch error) so selection + fallback still work.
+// watch.php can't be parsed (layout change / fetch error) so selection + fallback still work. A parsed list is
+// cached per channel (./resolveCache.ts); the static fallback is not, so the next walk tries watch.php again.
 async function listPlayerPages(id: string): Promise<PlayerPage[]> {
+  const base = getBase();
+  const known = cachedPlayerPaths(base, id);
+  if (known) return known.map((p, i) => ({ url: `${base}${p}`, playerIndex: i + 1 }));
   try {
-    const r = await hop(`${getBase()}/watch.php?id=${id}`, getReferer());
+    // A viewer reaches watch.php from the channel directory.
+    const r = await hop(`${base}/watch.php?id=${id}`, pageHeaders(`${base}/24-7-channels.php`, 'same-origin', 'document'));
     if (r.ok) {
       const html = await r.text();
       const seen = new Set<string>();
@@ -241,7 +334,8 @@ async function listPlayerPages(id: string): Promise<PlayerPage[]> {
         }
       }
       if (paths.length) {
-        return paths.map((p, i) => ({ url: `${getBase()}${p}`, playerIndex: i + 1 }));
+        rememberPlayerPaths(base, id, paths);
+        return paths.map((p, i) => ({ url: `${base}${p}`, playerIndex: i + 1 }));
       }
     }
   } catch {
@@ -251,13 +345,39 @@ async function listPlayerPages(id: string): Promise<PlayerPage[]> {
 }
 
 /** Raised by hop 1 so the caller can tell "the mirror is unreachable" from "this provider is dead". */
-class MirrorHopError extends Error {}
+class MirrorHopError extends Error {
+  readonly kind: TransportKind;
+  constructor(message: string, kind: TransportKind) {
+    super(message);
+    this.kind = kind;
+  }
+}
+
+/** Hop 1: the mirror's page for one player → the embed URLs it offers. Remembered (./resolveCache.ts). */
+async function fetchEmbeds(streamPageUrl: string, id: string): Promise<string[]> {
+  let s: Response;
+  try {
+    // watch.php frames the player page, same origin — so the Referer is watch.php's full URL.
+    s = await hop(streamPageUrl, pageHeaders(`${getBase()}/watch.php?id=${id}`, 'same-origin', 'iframe'));
+  } catch (err) {
+    throw new MirrorHopError(`stream page unreachable: ${shortErr(err)}`, transportKind(err) ?? 'network');
+  }
+  if (s.status === 429) throw new MirrorHopError('stream page throttled: HTTP 429', 'throttled');
+  if (!s.ok) throw new Error(`stream page fetch failed: HTTP ${s.status}`);
+  const embeds = findEmbedUrls(await s.text(), streamPageUrl);
+  if (!embeds.length) throw new Error(`no player embed on the page for channel ${id} — not live or layout changed`);
+  rememberEmbeds(streamPageUrl, embeds);
+  return embeds;
+}
 
 /**
  * The full resolve against ONE player's stream page: hop 1 → every embed it offers → every playlist URL
  * each embed yields → the first one that fetches and validates. Throws so the caller falls through to the
- * next player. Seeds the dynamic SSRF allowlist and the player-origin Referer for the WINNER only — a
- * losing embed must not poison the module-global Referer the proxy replays.
+ * next player. Seeds the dynamic SSRF allowlist for the WINNER only.
+ *
+ * Hop 1 comes from the cache when it can. A cached list that never got as far as a playlist fetch may have gone
+ * stale — the page now names another embed, or the old embed URL carried a token that lapsed — so it is re-read
+ * once and only the embeds it did not already name are tried.
  */
 async function resolveViaStreamPage(
   streamPageUrl: string,
@@ -266,56 +386,100 @@ async function resolveViaStreamPage(
   playerCount: number,
   deep: boolean,
 ): Promise<ResolvedStream> {
-  // ── hop 1: the mirror's per-player page ─────────────────────────────────────
-  let s: Response;
-  try {
-    s = await hop(streamPageUrl, getReferer());
-  } catch (err) {
-    throw new MirrorHopError(`stream page unreachable: ${shortErr(err)}`);
-  }
-  if (!s.ok) throw new Error(`stream page fetch failed: HTTP ${s.status}`);
-  const embeds = findEmbedUrls(await s.text(), streamPageUrl);
-  if (!embeds.length) throw new Error(`no player embed on the page for channel ${id} — not live or layout changed`);
+  const hit = cachedEmbeds(streamPageUrl);
+  const embeds = hit?.embeds ?? (await fetchEmbeds(streamPageUrl, id));
+  const first = await tryEmbeds(streamPageUrl, embeds, id, playerIndex, playerCount, deep);
+  if (first.stream) return first.stream;
 
-  const reasons: string[] = [];
-  for (const embedUrl of embeds) {
-    // ── hop 2: the player provider's embed page ───────────────────────────────
+  if (hit && !first.reachedPlaylist && hit.ageMs >= EMBED_RECHECK_MS) {
+    forgetEmbeds(streamPageUrl);
+    const unseen = (await fetchEmbeds(streamPageUrl, id)).filter((u) => !embeds.includes(u));
+    if (unseen.length) {
+      const second = await tryEmbeds(streamPageUrl, unseen, id, playerIndex, playerCount, deep);
+      if (second.stream) return second.stream;
+      first.reasons.push(...second.reasons);
+    }
+  }
+  throw new Error(first.reasons.join('; ') || `no playable embed for channel ${id}`);
+}
+
+interface EmbedsOutcome {
+  stream: ResolvedStream | null;
+  reasons: string[];
+  /** Some candidate got an HTTP answer at hop 3, so the embed itself was sound. */
+  reachedPlaylist: boolean;
+}
+
+/**
+ * Hop 2: an embed page → its candidate playlist URLs. When the page only frames the real player page, that page
+ * is read instead (up to MAX_FRAME_DEPTH levels), and IT is the player page — the origin the CDN expects as
+ * Referer. Each frame is requested as the browser would from the page framing it (see refererFor). Null when
+ * nothing was found; the reason is recorded.
+ */
+async function readEmbed(
+  parentUrl: string,
+  embedUrl: string,
+  reasons: string[],
+): Promise<{ playerUrl: string; candidates: EmbedCandidate[] } | null> {
+  let from = parentUrl;
+  let url = embedUrl;
+  for (let depth = 0; ; depth++) {
+    const { referer, site } = refererFor(from, url);
     let d: Response;
     try {
-      d = await hop(embedUrl, getReferer());
+      d = await hop(url, pageHeaders(referer, site, 'iframe'));
     } catch (err) {
-      reasons.push(`${hostOf(embedUrl)}: ${shortErr(err)}`);
-      continue;
+      reasons.push(`${hostOf(url)}: ${shortErr(err)}`);
+      return null;
     }
     if (!d.ok) {
-      reasons.push(`${hostOf(embedUrl)}: embed HTTP ${d.status}`);
-      continue;
+      reasons.push(`${hostOf(url)}: embed HTTP ${d.status}`);
+      return null;
     }
-    const { urls, extractor } = extractMasterUrls(await d.text(), embedUrl);
-    if (!urls.length) {
-      reasons.push(`${hostOf(embedUrl)}: no playlist URL in the embed`);
-      continue;
+    const html = await d.text();
+    const candidates = extractMasterUrls(html, url);
+    if (candidates.length) return { playerUrl: url, candidates };
+    const next = depth < MAX_FRAME_DEPTH ? iframeSrcs(html, url).find((u) => u !== url) : undefined;
+    if (!next) {
+      const nested = depth ? ` (${depth} frame${depth > 1 ? 's' : ''} deep)` : '';
+      reasons.push(`${hostOf(url)}: no playlist URL in the embed${nested}`);
+      return null;
     }
+    from = url;
+    url = next;
+  }
+}
 
-    // The CDN's /secure/ gate folds the (rotating) player origin into the signature, so hop 3 needs it as
-    // Referer. Held LOCALLY here: setPlayerOrigin writes a module global a concurrent resolve of another
-    // channel could clobber across awaits, and we only want to commit it for the player that wins.
-    let playerRef: string;
-    try {
-      playerRef = `${new URL(embedUrl).origin}/`;
-    } catch {
-      playerRef = playerReferer();
-    }
+/** Hops 2 + 3 over a player page's embeds, in order. Never throws: failures are collected as `reasons`. */
+async function tryEmbeds(
+  streamPageUrl: string,
+  embeds: string[],
+  id: string,
+  playerIndex: number,
+  playerCount: number,
+  deep: boolean,
+): Promise<EmbedsOutcome> {
+  const reasons: string[] = [];
+  let reachedPlaylist = false;
+  for (const embedUrl of embeds) {
+    const page = await readEmbed(streamPageUrl, embedUrl, reasons);
+    if (!page) continue;
+    const { playerUrl, candidates } = page;
 
-    for (const candidate of urls) {
+    // Some CDNs' /secure/ gate folds the (rotating) player origin into the signature, so hop 3 goes out as the
+    // player's own XHR would — and the same headers ride the resolve to the data plane for the rest of the stream.
+    const headers = streamHeaders(playerUrl);
+
+    for (const { url: candidate, extractor } of candidates) {
       // ── hop 3: the signed playlist ──────────────────────────────────────────
       let m: Response;
       try {
-        m = await hop(candidate, playerRef);
+        m = await hop(candidate, headers);
       } catch (err) {
         reasons.push(`${hostOf(candidate)}: ${shortErr(err)}`);
         continue;
       }
+      reachedPlaylist = true;
       if (!m.ok) {
         // 403 vs 404 is a real signal and worth spelling out: with a valid Referer, 403 means the
         // signature/Referer gate rejected us (a HEADER problem — another player won't help), while 404
@@ -345,20 +509,14 @@ async function resolveViaStreamPage(
         }
         variantUrl = new URL(variantLine.trim(), candidate).href;
         streamInf = lines.find((l) => l.startsWith('#EXT-X-STREAM-INF')) ?? null;
-        if (deep && !(await variantHasMedia(variantUrl, playerRef))) {
+        if (deep && !(await variantHasMedia(variantUrl, headers))) {
           reasons.push(`${hostOf(candidate)}: variant carries no segments`);
           continue;
         }
       }
 
-      // Winner — commit the shared state now that this player is proven.
-      setPlayerOrigin(embedUrl);
-      try {
-        allowHost(new URL(embedUrl).hostname);
-      } catch {
-        /* ignore */
-      }
-      for (const u of [candidate, variantUrl]) {
+      // Winner — seed the SSRF allowlist now that this player is proven.
+      for (const u of [embedUrl, playerUrl, candidate, variantUrl]) {
         try {
           allowHost(new URL(u).hostname);
         } catch {
@@ -374,9 +532,10 @@ async function resolveViaStreamPage(
         /* ignore */
       }
 
-      return {
+      const stream: ResolvedStream = {
         id,
-        playerUrl: embedUrl,
+        playerUrl,
+        upstreamHeaders: headers,
         masterUrl: candidate,
         variantUrl,
         token,
@@ -387,15 +546,16 @@ async function resolveViaStreamPage(
         playerIndex,
         playerCount,
       };
+      return { stream, reasons, reachedPlaylist };
     }
   }
-  throw new Error(reasons.join('; ') || `no playable embed for channel ${id}`);
+  return { stream: null, reasons, reachedPlaylist };
 }
 
 /** Deep check: does this variant actually list media? Guards "resolves fine but never streams" players. */
-async function variantHasMedia(variantUrl: string, referer: string): Promise<boolean> {
+async function variantHasMedia(variantUrl: string, headers: Record<string, string>): Promise<boolean> {
   try {
-    const r = await hop(variantUrl, referer);
+    const r = await hop(variantUrl, headers);
     if (!r.ok) return false;
     return /^#EXTINF/m.test(await r.text());
   } catch {
@@ -417,10 +577,51 @@ export async function resolveStreamUrl(
   // no evidence against. Every other resolve is non-strict, so it can still fall back onto a burnt player
   // rather than leave the channel with nothing to try.
   const strict = opts?.advance === true;
+  const base = getBase();
+
+  // Answered from memory, without touching the mirror (./resolveCache.ts):
+  //  · the breaker — the mirror refused us, didn't resolve, or said 429 moments ago. True for every channel.
+  //  · a failed walk of THIS channel, under the same player preference, moments ago. Never for an advance: that
+  //    walk skips every burnt player, so it is already cheap after a failed walk — and it must still reach
+  //    whatever players the failed walk's budget left untried.
+  const down = mirrorDown(base);
+  if (down) {
+    throw new DlhdResolveError(
+      `no live player for channel ${id}: the mirror failed moments ago (${down.detail}) — not asking it again for ${secs(down.leftMs)}s`,
+      true,
+      down.kind,
+      true,
+    );
+  }
+  if (!strict) {
+    const failed = recentFailure(base, id, want);
+    if (failed) {
+      throw new DlhdResolveError(
+        `${failed.message} — from a walk ${secs(failed.ageMs)}s ago; next live try in ${secs(failed.leftMs)}s`,
+        false,
+        null,
+        true,
+      );
+    }
+  }
+  // Concurrent resolves of the same channel under the same options share one walk.
+  const key = `${base}|${id}|${want}|${deep ? 'deep' : 'shallow'}|${strict ? 'advance' : 'normal'}`;
+  return singleFlight(key, () => walkPlayers(base, id, want, deep, strict, opts?.advanceReason));
+}
+
+/** The player walk behind resolveStreamUrl: the lead player, then the rest in preference order. */
+async function walkPlayers(
+  base: string,
+  id: string,
+  want: number,
+  deep: boolean,
+  strict: boolean,
+  advanceReason: string | undefined,
+): Promise<ResolvedStream> {
   if (strict) {
     // The data plane names the cause when it has one (S3/UND sends `undecodable-video`); anything else is
     // the generic play-time failure. Recorded against the player so the burn list says WHY, not just THAT.
-    const why = opts?.advanceReason || 'play-time-failure';
+    const why = advanceReason || 'play-time-failure';
     const burned = burnCurrent(id, why);
     logMilestone(
       'dlhd:stream',
@@ -431,24 +632,47 @@ export async function resolveStreamUrl(
   const deadline = Date.now() + RESOLVE_BUDGET_MS;
   let attempted = 0;
   let mirrorFailures = 0;
+  let mirrorKind: TransportKind | null = null;
 
   const attempt = async (page: PlayerPage, count: number): Promise<ResolvedStream | null> => {
     attempted += 1;
     try {
       const r = await resolveViaStreamPage(page.url, id, page.playerIndex, count, deep);
       noteGood(id, r.playerIndex);
+      clearFailure(base, id);
       logMilestone(
         'dlhd:stream',
         `channel ${id} → Player ${r.playerIndex}/${r.playerCount} via ${hostOf(r.playerUrl)} (${r.extractor}, ${r.shape})`,
       );
       return r;
     } catch (err) {
-      if (err instanceof MirrorHopError) mirrorFailures += 1;
-      noteBad(id, page.playerIndex);
+      if (err instanceof MirrorHopError) {
+        // The MIRROR failed, not this player. Burning the player would leave a good provider at the back of
+        // the order for BURN_MS after the mirror comes back.
+        mirrorFailures += 1;
+        mirrorKind = err.kind;
+      } else {
+        noteBad(id, page.playerIndex);
+      }
       failures.push(`P${page.playerIndex}: ${shortErr(err)}`);
       logTrace('dlhd:stream', `channel ${id} Player ${page.playerIndex} failed: ${shortErr(err)}`);
       return null;
     }
+  };
+
+  // The mirror is out of reach: open the breaker so EVERY channel stops knocking for a while, and fail this
+  // walk. Read through a function because `attempt` assigns mirrorKind from inside a closure.
+  const lastMirrorKind = (): TransportKind | null => mirrorKind;
+  const tripBreaker = (kind: TransportKind): never => {
+    const detail = failures.join('; ');
+    noteMirrorDown(base, kind, detail);
+    logger.warn('dlhd', `${describeTransport(kind, hostOf(base))} — pausing dlhd resolves (${detail})`);
+    throw new DlhdResolveError(`no live player for channel ${id} (${detail})`, true, kind);
+  };
+  // A refusal, an unresolvable name or a 429 is true of EVERY page on the mirror: stop at the first one.
+  const stopIfMirrorSaidNo = (): void => {
+    const kind = lastMirrorKind();
+    if (kind !== null && MIRROR_STOP.has(kind)) tripBreaker(kind);
   };
 
   // FAST PATH — one page, no watch.php fetch. The lead is the operator's pick, else the remembered winner,
@@ -461,6 +685,7 @@ export async function resolveStreamUrl(
   const leadPage = staticPage(id, lead);
   const first = await attempt(leadPage, PLAYER_PREFIXES.length);
   if (first) return first;
+  stopIfMirrorSaidNo();
 
   // FALL-THROUGH — enumerate the live button list (authoritative order, self-healing on a site rename) and
   // walk the remaining players in preference order.
@@ -476,12 +701,16 @@ export async function resolveStreamUrl(
     }
     const r = await attempt(cand, pages.length);
     if (r) return r;
+    stopIfMirrorSaidNo();
   }
 
   // Every attempt failed at hop 1 with a connection error ⇒ it is the MIRROR that is unreachable, not the
-  // channel. The adapter re-probes the mirror directory on this signal (and only on it).
-  throw new DlhdResolveError(
-    `no live player for channel ${id} (${failures.join('; ')})`,
-    attempted > 0 && mirrorFailures === attempted,
-  );
+  // channel (timeouts and resets land here; refusals, DNS and 429 stopped the walk above).
+  const kind = lastMirrorKind();
+  if (attempted > 0 && mirrorFailures === attempted && kind !== null) tripBreaker(kind);
+
+  // The mirror answered and no player worked: replay this for a while rather than re-walk on every retry.
+  const message = `no live player for channel ${id} (${failures.join('; ')})`;
+  if (!strict) rememberFailure(base, id, want, message);
+  throw new DlhdResolveError(message, false);
 }

@@ -26,16 +26,27 @@ import {
   isAllowedHost,
   isPrivateHost,
   allowHost,
-  playerReferer,
 } from './dlhd/config.js';
 import { parseChannels } from './dlhd/parseDirectory.js';
 import { resolveStreamUrl, DlhdResolveError } from './dlhd/resolveStream.js';
 import { probeDlhdDomain } from './dlhd/probe.js';
+import { transportKind, describeTransport, type TransportKind } from './dlhd/transport.js';
 import type { SourceAdapter, ArtifactType, ResolveStreamOptions } from '../types.js';
 import type { DlhdRawChannel } from './dlhd/parseDirectory.js';
 import type { SourceChannelDoc } from '../../models/SourceChannel.js';
 
 const SNAPSHOT = snapshotFile('dlhd');
+
+// What to tell the operator when the configured mirror can't be reached. Changing `daddylive.domain` is the fix
+// only when the domain is the problem; a mirror that refuses or rate-limits THIS server is just as unreachable
+// from any other domain served by the same origin — see ./dlhd/transport.ts.
+function mirrorAdvice(kind: TransportKind | null): string {
+  const what = describeTransport(kind ?? 'network', `DaddyLive at ${getMirrorHost()}`);
+  if (kind === 'refused' || kind === 'throttled') {
+    return `${what} — leave DaddyLive idle for a while and retry; changing daddylive.domain only helps if the new domain is served from a different origin`;
+  }
+  return `${what} — update daddylive.domain in Settings → Playlist Domain / Configuration and re-Sync`;
+}
 
 // ── post-sync EPG hooks (two complementary guides) ───────────────────────────────────────────────────
 // dlhd carries no native guide, so after syncLive populates the channels we attach EPG data two ways, IN
@@ -100,6 +111,7 @@ const dlhdAdapter: SourceAdapter = {
       };
     } catch (err) {
       const snap = JSON.parse(readFileSync(SNAPSHOT, 'utf8')) as { channels?: DlhdRawChannel[] };
+      const kind = transportKind(err);
       return {
         raw: snap.channels || [],
         meta: {
@@ -107,7 +119,9 @@ const dlhdAdapter: SourceAdapter = {
           endpoint: directoryUrl,
           live: false,
           fallback: 'dlhd.snapshot.json',
-          reason: `${(err as Error).message} — check daddylive.domain in Settings → Playlist Domain / Configuration`,
+          reason: kind
+            ? mirrorAdvice(kind)
+            : `${(err as Error).message} — check daddylive.domain in Settings → Playlist Domain / Configuration`,
           fetchedAt: new Date().toISOString(),
         },
       };
@@ -164,6 +178,11 @@ const dlhdAdapter: SourceAdapter = {
   // Playlist-config Test: does a candidate domain serve the 24/7 channel directory?
   testDomain: probeDlhdDomain,
 
+  // The scheduled probe sweep never resolves dlhd channels in bulk: every resolve is a multi-page scrape of the
+  // mirror, and a catalog-wide sweep of them is the traffic shape that gets this server's IP refused (it did,
+  // 2026-09-15). The channels keep the status live playback last wrote.
+  probeExempt: true,
+
   // ── stream resolution ────────────────────────────────────────────────────────────
   // DaddyLive offers Player 1..N per channel, each an INDEPENDENT third-party provider (not redundant embeds
   // of one feed — see dlhd/config.ts PLAYER_PREFIXES). They don't all carry every channel, so the operator can
@@ -179,45 +198,40 @@ const dlhdAdapter: SourceAdapter = {
     }
   },
   async resolveStream(entryUrl: string, opts?: ResolveStreamOptions) {
-    // A connection-level failure against the MIRROR means the configured mirror is unreachable (dlhd domains
-    // rotate / get sinkholed) — distinct from a clean "not live" (no embed / no signed playlist in it).
-    // resolveStreamUrl decides this explicitly (DlhdResolveError.mirrorUnreachable) rather than by
-    // sniffing the message: its aggregated text now also carries the PROVIDERS' connection errors, and a
-    // dead third-party embed host says nothing about the mirror. The regex stays as the fallback for a
-    // throw from anywhere else in the chain.
-    const looksUnreachable = (err: unknown): boolean =>
-      err instanceof DlhdResolveError
-        ? err.mirrorUnreachable
-        : /fetch failed|ENOTFOUND|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ECONNRESET|UND_ERR/i.test(
-            String((err as Error)?.message ?? ''),
-          );
+    // A connection-level failure against the MIRROR means the configured mirror is unreachable — distinct from
+    // a clean "not live" (no embed / no signed playlist in it). resolveStreamUrl decides this explicitly
+    // (DlhdResolveError.mirrorUnreachable + mirrorKind) rather than by sniffing the message: its aggregated text
+    // also carries the PROVIDERS' connection errors, and a dead third-party embed host says nothing about the
+    // mirror. transportKind is the fallback for a throw from anywhere else in the chain.
     try {
-      // 3-hop scrape + player walk; seeds the dynamic allowlist and remembers the winning player.
-      const { masterUrl, playerIndex, playerCount } = await resolveStreamUrl(entryUrl, opts);
-      return { masterUrl, playerIndex, playerCount };
+      // 3-hop scrape + player walk; seeds the dynamic allowlist and remembers the winning player. The headers
+      // name the player page this stream's playlist came from, so they ride the resolve to the grant.
+      const { masterUrl, playerIndex, playerCount, upstreamHeaders } = await resolveStreamUrl(entryUrl, opts);
+      return { masterUrl, playerIndex, playerCount, upstreamHeaders };
     } catch (err) {
-      if (!looksUnreachable(err)) throw err; // a real "not live" / layout error already reads clearly
-      // The mirror is pinned (no auto-picker to fail over to), so say exactly what to change.
+      const kind = err instanceof DlhdResolveError ? err.mirrorKind : transportKind(err);
+      const unreachable = err instanceof DlhdResolveError ? err.mirrorUnreachable : kind !== null;
+      if (!unreachable) throw err; // a real "not live" / layout error already reads clearly
       const msg = (err as Error).message;
-      logger.warn('dlhd', `resolve failed: cannot reach ${getBase()} (${msg})`);
-      throw new Error(
-        `cannot reach DaddyLive at ${getBase()} (down, moved, or geo-blocked) — update daddylive.domain in ` +
-          `Settings → Playlist Domain / Configuration and re-Sync. Underlying: ${msg}`,
-      );
+      // resolveStreamUrl already warned when it opened its breaker; only an unexpected throw is news here.
+      if (!(err instanceof DlhdResolveError)) logger.warn('dlhd', `resolve failed: cannot reach ${getBase()} (${msg})`);
+      // The mirror is pinned (no auto-picker to fail over to), so say exactly what would help.
+      throw new Error(`${mirrorAdvice(kind)}. Underlying: ${msg}`);
     }
   },
 
   // ── proxy behavior ─────────────────────────────────────────────────────────────────
   proxy: {
     upstreamHeaders(url: string): Record<string, string> {
-      // Mirror hops need the dlhd Referer; CDN/segment hops replay the (rotating) player origin.
+      // Only the fallback now: a resolved dlhd stream carries its own headers (the Referer/Origin of the player
+      // page its playlist came from — ResolvedStream.upstreamHeaders), which the seam prefers. What's left to
+      // know without a resolve is the mirror's own Referer; any other host gets no guessed player origin.
       try {
-        const host = new URL(url).hostname;
-        const referer = host === getMirrorHost() ? getReferer() : playerReferer();
-        return { Referer: referer, 'User-Agent': UA };
+        if (new URL(url).hostname === getMirrorHost()) return { Referer: getReferer(), 'User-Agent': UA };
       } catch {
-        return { 'User-Agent': UA };
+        /* not a URL — the UA alone */
       }
+      return { 'User-Agent': UA };
     },
     isAllowedUpstream(url: string) {
       try {

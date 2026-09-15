@@ -9,11 +9,22 @@
 //   P4 logic.icelanders.st/embed/<slug>           → XOR-array eval blob, JW Player
 //   P5 www.ksohls.ru/premiumtv/daddyhd.php        → daddy-family again
 //
+// …and they rotate within hours. On 2026-09-15, ch 925 / 648 on dlive.sx:
+//
+//   P1 assetrage.net/e/<slug>, P2 tiestep.top/e/<slug>  → one provider, two domains: `window._econfig` blob
+//                                                         (shuffledConfig) — the only one actually serving
+//   P3 hamis.romponalis.st/premiumtv/daddy.php          → 403 "not available on your domain"
+//   P4 epiembeds.online/embed/<name>                    → XOR-array blob (xorEval), but a self-signed TLS cert
+//   P3/P4 liveon5.zip, P5/P6 www.ksohls.ru              → refusing connections / NXDOMAIN
+//
 // The old resolver only understood P1's shape (it required "/premiumtv/" in the iframe src AND an atob
 // base64 run), so the alternates were unreachable — which is why "Auto" could never hop to a working
 // player. This module is the generic replacement: an ORDERED chain of cheap, pure, total extractors, each
-// returning candidate master URLs. The chain stops at the first extractor that yields anything; the caller
-// tries the candidates in order against hop 3, so a false positive costs one small fetch, not a failure.
+// returning candidate master URLs. EVERY extractor runs and the candidates are pooled in chain order — the
+// most specific decoders first, the plaintext scan (the one most likely to pick up a decoy) last — and the
+// caller tries them in that order against hop 3, so a false positive costs one small fetch, not a failure.
+// (The chain used to stop at the first extractor that found anything, which let one decoy .m3u8 in an ad
+// script hide the real URL a later extractor would have decoded.)
 //
 // Every extractor is written to be SELF-DESCRIBING — it parses whatever constants the page carries rather
 // than hardcoding them — because these are third-party sites that rotate. Adding the next provider should
@@ -29,9 +40,11 @@ const MAX_XOR_ARRAY = 20_000;
 const MAX_KEY_CANDIDATES = 16;
 // Substrings the decoded payload must contain — the crib-drag recovers the keys from these alone.
 const CRIBS = ['.m3u8', 'https://'] as const;
-// How many candidates any single page may contribute. Hop 3 tries them in order; this bounds the cost of a
-// page that happens to mention several .m3u8 URLs (posters, examples, alternate qualities).
+// How many candidates any single extractor may contribute, and how many a page may yield in total. Hop 3 tries
+// them in order; this bounds the cost of a page that happens to mention several .m3u8 URLs (posters, examples,
+// alternate qualities).
 const MAX_CANDIDATES = 4;
+const MAX_TOTAL_CANDIDATES = 6;
 
 /** Collect every .m3u8 in `text`, absolutised against `pageUrl`, in first-seen order. */
 function scanM3u8(text: string, pageUrl: string): string[] {
@@ -75,9 +88,10 @@ function base64(html: string, pageUrl: string): string[] {
 }
 
 // ── 2. plaintext ──────────────────────────────────────────────────────────────────────────────────────
-// Many embeds ship the URL in clear, in an attribute, or inside an inline JSON config.
+// Many embeds ship the URL in clear, in an attribute, or inside an inline JSON config — where a serializer
+// usually escapes the slashes (`streamUrl: "https:\/\/…"`), which hides the `//` the scan anchors on.
 function plaintext(html: string, pageUrl: string): string[] {
-  return scanM3u8(html, pageUrl);
+  return scanM3u8(html.replace(/\\\//g, '/'), pageUrl);
 }
 
 // ── 3. xorEval ────────────────────────────────────────────────────────────────────────────────────────
@@ -227,27 +241,184 @@ function hexEscape(html: string, pageUrl: string): string[] {
   return [...plaintext(un, pageUrl), ...base64(un, pageUrl)];
 }
 
-/** The ordered chain. Cheapest + most common first; the first extractor that yields anything wins. */
+// ── 6. shuffledConfig ─────────────────────────────────────────────────────────────────────────────────
+// assetrage.net / tiestep.top (dlhd Players 1+2 on 2026-09-15) put no URL in the page at all, only
+//   window._econfig = '<~150 KB of base64>'
+// which the provider's own /assets/stream.js turns into a JSON config { stream_url, stream_url_nop2p, p2p, … }:
+// base64-decode it, cut the text into N equal chunks, drop the junk character at index K of each, base64-decode
+// each chunk, put the pieces back in a fixed ORDER and base64-decode the join. stream.js v0.0.26 uses N=4, K=3,
+// ORDER=[2,0,3,1] — constants that live in that script, not in the page. Rather than fetch and parse the script,
+// the layout is recovered from the payload itself: the reassembled text is base64 of a JSON object, so the piece
+// that leads is the one decoding to "{", and only the right (N, K, ORDER) produces text JSON.parse accepts.
+// The search is small — N ≤ 6, K ≤ 5, at most 5! orders behind the fixed first piece — and exits on the first hit.
+const MIN_CONFIG_BLOB = 1000;
+const MAX_SHUFFLE_PARTS = 6;
+const MAX_JUNK_INDEX = 5;
+
+function shuffledConfig(html: string, pageUrl: string): string[] {
+  const blobs = [...html.matchAll(new RegExp(`(["'])([A-Za-z0-9+/=]{${MIN_CONFIG_BLOB},})\\1`, 'g'))]
+    .map((m) => m[2])
+    .sort((a, b) => b.length - a.length)
+    .slice(0, 3);
+  for (const blob of blobs) {
+    const config = recoverShuffledJson(blob);
+    if (config !== undefined) {
+      const urls = playlistUrlsIn(config, pageUrl);
+      if (urls.length) return urls;
+    }
+  }
+  return [];
+}
+
+function fromB64(s: string): string {
+  return Buffer.from(s, 'base64').toString('latin1');
+}
+
+/** The JSON value hidden in `blob` under the chunk-shuffle layout above, or undefined when it isn't one. */
+function recoverShuffledJson(blob: string): unknown {
+  const text = fromB64(blob);
+  if (!/^[A-Za-z0-9+/=]{16}/.test(text)) return undefined; // the first layer must decode to more base64
+  for (let n = 2; n <= MAX_SHUFFLE_PARTS; n++) {
+    const size = Math.ceil(text.length / n);
+    const chunks = Array.from({ length: n }, (_, i) => text.substr(i * size, size));
+    for (let k = 0; k <= MAX_JUNK_INDEX; k++) {
+      const pieces = chunks.map((c) => fromB64(c.slice(0, k) + c.slice(k + 1)));
+      for (let lead = 0; lead < n; lead++) {
+        if (!fromB64(pieces[lead].slice(0, 4)).startsWith('{')) continue;
+        const rest = pieces.filter((_, i) => i !== lead);
+        for (const order of permutations(rest)) {
+          try {
+            return JSON.parse(fromB64([pieces[lead], ...order].join('')));
+          } catch {
+            /* not this arrangement */
+          }
+        }
+      }
+    }
+  }
+  return undefined;
+}
+
+function* permutations<T>(items: T[]): Generator<T[]> {
+  if (items.length <= 1) {
+    yield items;
+    return;
+  }
+  for (let i = 0; i < items.length; i++) {
+    for (const tail of permutations([...items.slice(0, i), ...items.slice(i + 1)])) yield [items[i], ...tail];
+  }
+}
+
+/** Every .m3u8 URL among a decoded config's string values, in document order. */
+function playlistUrlsIn(value: unknown, pageUrl: string, depth = 0): string[] {
+  if (depth > 6) return [];
+  if (typeof value === 'string') return value.includes('.m3u8') ? scanM3u8(value, pageUrl) : [];
+  if (Array.isArray(value)) return value.flatMap((v) => playlistUrlsIn(v, pageUrl, depth + 1));
+  if (value && typeof value === 'object') {
+    return Object.values(value).flatMap((v) => playlistUrlsIn(v, pageUrl, depth + 1));
+  }
+  return [];
+}
+
+// ── 7. chunkedAtob ────────────────────────────────────────────────────────────────────────────────────
+// The URL split across several base64(url) string variables and reassembled through a local decoder:
+//   function dq(s){ return atob(s.replace(/-/g,'+').replace(/_/g,'/')) }
+//   var k1='aHR0cHM6Ly9…', k2='…', k3='…';   var src = dq(k1)+dq(k2)+dq(k3);
+// (the cdnlivetv shape — dlhd Player 5 on the morning of 2026-09-15). No single literal holds the whole URL, so
+// neither the base64 nor the plaintext pass can see it. The decoder is the function an atob call sits in — found
+// by looking back from each `atob(` (a handful per page) rather than by scanning every assignment on it, which
+// is quadratic on a page carrying a 150 KB base64 literal. The parts are the string literals its calls name.
+const DECODER_LOOKBACK = 400;
+
+function chunkedAtob(html: string, pageUrl: string): string[] {
+  const decoders = new Set<string>();
+  for (const a of html.matchAll(/\batob\s*\(/g)) {
+    const before = html.slice(Math.max(0, a.index! - DECODER_LOOKBACK), a.index!);
+    const heads = [
+      ...before.matchAll(/(?:function\s+([\w$]{1,40})\s*\(|([\w$]{1,40})\s*=\s*(?:function\b|\([^)]{0,40}\)\s*=>|[\w$]{1,40}\s*=>))/g),
+    ];
+    const head = heads[heads.length - 1];
+    if (head) decoders.add(head[1] ?? head[2]);
+  }
+  if (!decoders.size) return [];
+  const literals = new Map<string, string>();
+  for (const m of html.matchAll(/([\w$]{1,40})\s*=\s*(["'])([A-Za-z0-9+/=_-]{4,})\2/g)) literals.set(m[1], m[3]);
+
+  const out: string[] = [];
+  for (const dec of decoders) {
+    const call = `${dec.replace(/\$/g, '\\$')}\\(\\s*([\\w$]+)\\s*\\)`;
+    for (const m of html.matchAll(new RegExp(`${call}(?:\\s*\\+\\s*${call})+`, 'g'))) {
+      const names = [...m[0].matchAll(new RegExp(call, 'g'))].map((x) => x[1]);
+      if (!names.every((n) => literals.has(n))) continue;
+      const joined = names.map((n) => fromB64(literals.get(n)!.replace(/-/g, '+').replace(/_/g, '/'))).join('');
+      out.push(...scanM3u8(joined, pageUrl));
+    }
+  }
+  return out;
+}
+
+// ── 8. charArrayJoin ──────────────────────────────────────────────────────────────────────────────────
+// The URL spelled out one character at a time and finished off with text read from the DOM:
+//   return(["h","t","t","p","s",":","\/","\/", …].join("") + document.getElementById("tk").innerHTML);
+// (the igniteandship shape). The array is joined here, and the element text appended when the page names one.
+function charArrayJoin(html: string, pageUrl: string): string[] {
+  const out: string[] = [];
+  for (const m of html.matchAll(/\]\s*\.join\(\s*(["'])\1\s*\)/g)) {
+    const open = html.lastIndexOf('[', m.index!);
+    if (open === -1 || m.index! - open > 20_000) continue;
+    const items = [...html.slice(open + 1, m.index!).matchAll(/(["'])((?:\\.|(?!\1).)*)\1/g)].map((x) => jsUnescape(x[2]));
+    let text = items.join('');
+    if (!/^https?:/i.test(text)) continue;
+    const tail = html.slice(m.index! + m[0].length, m.index! + m[0].length + 200);
+    const el = tail.match(/^\s*\+\s*document\.getElementById\(\s*(["'])([^"']+)\1\s*\)\.(?:innerHTML|innerText|textContent)/);
+    if (el) {
+      const id = el[2].replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      text += html.match(new RegExp(`id=["']${id}["'][^>]*>([^<]*)<`))?.[1]?.trim() ?? '';
+    }
+    out.push(...scanM3u8(text, pageUrl));
+  }
+  return out;
+}
+
+/** Undo JS string escapes (\/, \xNN, \uNNNN, \"). */
+function jsUnescape(s: string): string {
+  return s
+    .replace(/\\x([0-9a-fA-F]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\u([0-9a-fA-F]{4})/g, (_, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\(.)/g, '$1');
+}
+
+/**
+ * The ordered chain, EVERY entry of which runs. Order is rank: decoders that recover a URL the page went out of
+ * its way to hide come first; the plaintext scan — the pass most likely to pick up an ad's or a poster's .m3u8 —
+ * comes last.
+ */
 const CHAIN: Array<{ name: string; run: (html: string, pageUrl: string) => string[] }> = [
   { name: 'base64', run: base64 },
-  { name: 'plaintext', run: plaintext },
+  { name: 'shuffledConfig', run: shuffledConfig },
   { name: 'xorEval', run: xorEval },
   { name: 'packed', run: packed },
+  { name: 'chunkedAtob', run: chunkedAtob },
+  { name: 'charArrayJoin', run: charArrayJoin },
   { name: 'hexEscape', run: hexEscape },
+  { name: 'plaintext', run: plaintext },
 ];
 
-export interface EmbedExtraction {
-  /** Candidate master/media playlist URLs, absolute, deduped, best-first. */
-  urls: string[];
-  /** Which extractor produced them — surfaced in logs so a provider rotation is diagnosable. */
+export interface EmbedCandidate {
+  /** A candidate master/media playlist URL, absolute. */
+  url: string;
+  /** Which extractor produced it — surfaced in logs so a provider rotation is diagnosable. */
   extractor: string;
 }
 
 /**
- * Pull candidate playlist URLs out of a player-embed page. Returns `urls: []` when no extractor matched
- * (the caller treats that as "this player isn't live / isn't a shape we understand" and moves on).
+ * Pull candidate playlist URLs out of a player-embed page, best-first and deduped (a URL keeps the rank of the
+ * first extractor that found it). Empty when no extractor matched — the caller treats that as "this player
+ * isn't live / isn't a shape we understand" and moves on.
  */
-export function extractMasterUrls(html: string, pageUrl: string): EmbedExtraction {
+export function extractMasterUrls(html: string, pageUrl: string): EmbedCandidate[] {
+  const out: EmbedCandidate[] = [];
+  const seen = new Set<string>();
   for (const { name, run } of CHAIN) {
     let urls: string[];
     try {
@@ -255,8 +426,11 @@ export function extractMasterUrls(html: string, pageUrl: string): EmbedExtractio
     } catch {
       continue; // an extractor must never break the walk
     }
-    const uniq = [...new Set(urls)].slice(0, MAX_CANDIDATES);
-    if (uniq.length) return { urls: uniq, extractor: name };
+    for (const url of [...new Set(urls)].slice(0, MAX_CANDIDATES)) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      out.push({ url, extractor: name });
+    }
   }
-  return { urls: [], extractor: 'none' };
+  return out.slice(0, MAX_TOTAL_CANDIDATES);
 }

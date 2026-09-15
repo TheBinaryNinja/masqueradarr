@@ -628,8 +628,8 @@ priority order, save.
   other streams — and a ZLive child walked to from a plain pass-through parent is still unwrapped if it ends
   up served on that pass-through path.
 - **Observability.** Active Streams badges a failed-over stream with `failover → <child>`; the scheduled
-  channel probe keeps probing hidden children (except those from a `probeExempt` source such as ZLive), so a
-  dead backup is visible before failover ever reaches it.
+  channel probe keeps probing hidden children (except those from a `probeExempt` source such as ZLive or
+  DaddyLive), so a dead backup is visible before failover ever reaches it.
 - **Self-healing.** Any prune/delete that removes a group's parent (or its last child) auto-disbands the
   group; disbanding is also available in the Group modal — children keep their inherited EPG link but
   re-enter the export. Children must stay **Active** to remain probe-covered and candidate-eligible
@@ -653,10 +653,15 @@ So picking a player picks a **provider**, and which provider works varies per ch
 The resolver is built around that:
 
 - **Provider-agnostic hop 2.** Any `<iframe>` on the player page is a candidate (the `/premiumtv/` embed is
-  simply tried first), and the signed playlist URL is read by an ordered chain of extractors —
-  base64/`atob`, plaintext, an XOR-array `eval` blob, a p·a·c·k·e·d payload, hex escapes
-  (`sources/adapters/dlhd/embedExtractors.ts`). Each recovers whatever constants the page carries rather
-  than hardcoding them, so a key rotation self-heals; a genuinely new obfuscation is a ~10-line addition.
+  simply tried first). An embed page that only frames the real player page is followed up to two levels
+  deep, sending the Referer a browser would. The signed playlist URL is read by a chain of extractors that
+  ALL run and pool their candidates by rank, so a decoy `.m3u8` can't hide the real one: base64/`atob`, the
+  chunk-shuffled `_econfig` JSON config, an XOR-array `eval` blob, a p·a·c·k·e·d payload, base64 chunks
+  joined through a local `atob` decoder, a character array joined with DOM text, hex escapes, and plaintext
+  last (`sources/adapters/dlhd/embedExtractors.ts`). Each recovers whatever constants the page carries
+  rather than hardcoding them — the `_econfig` layout (chunk count, junk index, order) is recovered from the
+  payload itself — so a key rotation self-heals; a genuinely new obfuscation is a ~10-line addition.
+  `tsx scripts/dlhd-extractor-check.ts` (from `server/`) is the offline gate for every family.
 - **Both playlist shapes are valid.** Providers return either a master (`#EXT-X-STREAM-INF`) or a media
   playlist (`#EXTINF`) — an `#EXTM3U` with neither is now rejected instead of being served as an empty stream.
 - **Learned + sticky.** The winning player is remembered per channel (~30 min) and a failing one is burnt
@@ -665,12 +670,21 @@ The resolver is built around that:
   override in the channel drawer — always leads; the rest are the fallback order.
 - **Bounded.** Every hop has a timeout (`DLHD_HOP_TIMEOUT_MS`, 8 s) and the whole walk has a deadline
   (`DLHD_RESOLVE_BUDGET_MS`, 20 s) so a hanging provider can't outlast a player's manifest timeout.
+- **Frugal with the mirror.** Hop 1 is the mirror's heaviest page and the traffic that gets an IP rate-limited
+  (on 2026-09-15 the origin behind every advertised mirror began refusing this server outright). So each
+  player page's embed list is cached (~20 min) and a renewal goes straight to hop 2. The `watch.php` player
+  list is cached too (~30 min). Concurrent resolves of a channel share one walk, and a walk that found no
+  working player is replayed for ~90 s rather than repeated on every client retry. A hop-1 refusal,
+  unresolvable domain or HTTP `429` stops the walk at once and opens a mirror-wide breaker (~60 s), so every
+  channel stops knocking; the error then says whether changing `daddylive.domain` can help at all
+  (`resolveCache.ts`, `transport.ts`). DaddyLive is `probeExempt` for the same reason.
 - **Play-time rotation.** The data plane's first failover attempt re-resolves the same channel through a
   *different provider* (the seam burns the one that was serving); only then does it start walking the
   channel's configured [failover-group children](#failover-groups-channel-backups). Active Streams badges
   the result — `failover → Player 4`.
 
 Knobs: `DLHD_PLAYER_STICKY_MS`, `DLHD_PLAYER_BURN_MS`, `DLHD_HOP_TIMEOUT_MS`, `DLHD_RESOLVE_BUDGET_MS`,
+`DLHD_EMBED_CACHE_MS`, `DLHD_PLAYER_LIST_CACHE_MS`, `DLHD_FAILURE_CACHE_MS`, `DLHD_MIRROR_BREAKER_MS`.
 (The mirror itself and the source-wide default player are operator settings — `daddylive.domain` and
 `defaultPlayer` in *Playlist Domain / Configuration*; the old `DLHD_BASE` / `DLHD_PLAYER` env vars are gone.)
 
@@ -946,7 +960,9 @@ Node and Rust talk over one private loopback channel — `POST /api/internal/*`,
 
 - **resolve** (`/api/internal/resolve`) — Rust asks Node to resolve a stream; Node runs the adapter logic and
   returns a per-stream **grant** that Rust replays for the whole stream: the resolved `target`, the
-  `upstreamHeaders` for every hop, `relabelSegment`, `allowPrivate`, the resolved `proxyConfig`, the
+  `upstreamHeaders` for every hop (the ones the resolve reported for this stream when it has them — DaddyLive's
+  player-page `Referer`/`Origin` — else the adapter's rule; operator `headerOverrides` on top),
+  `relabelSegment`, `allowPrivate`, the resolved `proxyConfig`, the
   adapter's declared capabilities (`playerSelectable`, `adSignature`, `segmentUnwrap`), the target's own
   `expiresAtMs` when the adapter knows it, and `policySource` / `failover` for a failover candidate. There is
   no host list in it: Rust seeds its per-source SSRF allow-set from `target` and grows it from the hosts it
