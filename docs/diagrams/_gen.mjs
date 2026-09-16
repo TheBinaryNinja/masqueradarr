@@ -380,7 +380,7 @@ topology({
   y += 34;
   b += rule(y, 'AUTHENTICATED · requiresAuth', C.risk); y += 20;
   const au = renderRows(y, [
-    A('dulo', 'dulo.tv', ['Supabase session + device fp', 'captured via headful Chromium', 'dulo://channel/id → playbackUrl'], ['AUTH', 'XWALK', 'DYN SSRF'], G.auth),
+    A('dulo', 'Dulo.TV', ['Supabase session + device fp', 'captured via headful Chromium', 'dulo://channel/id → playbackUrl'], ['AUTH', 'XWALK', 'DYN SSRF'], G.auth),
     N('Gracenote crosswalk only', ['dulo publishes no guide of its own — its channels link to the', 'Gracenote EPG source through the Mapping screen. It is the only', 'adapter with a credential-capture surface (DuloLoginDrawer).'], 2),
   ], G.auth);
   b += au.svg; y = au.bottom + 30;
