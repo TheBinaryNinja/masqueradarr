@@ -404,7 +404,6 @@ topology({
         A('pluto', 'Pluto TV', ['pluto://region/id', 'region boot (cached) + URL', 'per-region timelines guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
         A('roku', 'The Roku Channel', ['roku://id', 'session boot (cached) + playId', 'content-proxy fanout guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
         A('plex', 'Plex', ['plex://compoundId', 'anon JWT (cached) + signed master', 'per-channel grid fanout guide'], ['SELF-EPG', 'XWALK'], G.sentinel),
-        A('zlive', 'ZLive', ['zlive://slug → 302 per play', 'TS disguised as WEBP images', 'station-id guide crosswalk'], ['XWALK', 'ORIGIN', 'UNWRAP', 'CAP'], G.sentinel),
         N('Declared capabilities', ['originRequired · segmentUnwrap', 'probeExempt · stream limit', 'flags — never a source-id branch']),
       ],
     },
