@@ -1,8 +1,4 @@
 <script lang="ts">
-// One entry in the per-row actions popup. Exported from a plain <script> block (a <script setup> cannot
-// contain ES module exports) so the consuming screen can type the items array it builds. `run` is the click
-// handler (the screen's existing onSyncGlobal/composeRow/editRow/… — unchanged); `disabled` reflects the
-// row's live inflight state.
 export interface RowActionItem {
     key: string;
     label: string;
@@ -17,12 +13,6 @@ export interface RowActionItem {
 import { ref, onMounted, onBeforeUnmount, nextTick } from 'vue';
 import Icon from './Icon.vue';
 
-// ── Anchored per-row actions popover ────────────────────────────────────────────────────────────────────
-// A small reusable vertical menu (role="menu") rendered inside a position:relative anchor (the row's
-// .pl-row-actions cell). The parent decides WHICH row is open (a single openMenuId) and passes the ordered,
-// row-scoped items; this component owns only the popup chrome: outside-click + Esc dismissal, arrow-key
-// navigation, first-item autofocus, and an upward flip when the row sits near the viewport bottom. Selecting
-// an item runs its handler then emits close. Logic/handlers live on the screen — this is presentation only.
 
 const props = defineProps<{ items: RowActionItem[] }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -37,8 +27,6 @@ function select(item: RowActionItem): void {
     emit('close');
 }
 
-// Outside-click closes. The trigger lives in the same .pl-row-actions container (which stops click
-// propagation), so re-clicking the trigger toggles via the parent without this listener double-firing.
 function onDocClick(e: MouseEvent): void {
     if (root.value && !root.value.contains(e.target as Node)) emit('close');
 }
@@ -65,7 +53,6 @@ onMounted(async () => {
     document.addEventListener('click', onDocClick);
     window.addEventListener('keydown', onKeydown, true);
     await nextTick();
-    // Flip above the trigger when the menu would overflow the viewport bottom.
     const r = root.value?.getBoundingClientRect();
     if (r && r.bottom > window.innerHeight - 8) flipUp.value = true;
     itemEls.value.find((el) => el && !el.disabled)?.focus();

@@ -20,16 +20,10 @@ const router = useRouter();
 const toast = useToast();
 const { syncingAllEpg, syncAllEpg, syncingIds, syncEpgSource } = useEpgActions();
 
-// ── Per-row waffle menu ──────────────────────────────────────────────────────
-// One anchored actions popup per row, one open at a time (tracked by source id). Item set is ROW-SCOPED:
-// Sync + Delete only for a standalone, syncable source; 'xml file' swaps Sync → Upload XML; a playlist-bound
-// or built-in row shows Edit only (its sync/delete are managed elsewhere / off-limits). Edit is always present.
 const openMenuId = ref<string | null>(null);
 function toggleMenu(id: string): void {
   openMenuId.value = openMenuId.value === id ? null : id;
 }
-// Row-scoped surfaces opened from a waffle item (null = closed). Rendered by the screen — the menu unmounts on
-// select, so each item's `run` just flips one of these refs.
 const editingSource = ref<EpgSource | null>(null);
 const deletingSource = ref<EpgSource | null>(null);
 const uploadingSource = ref<EpgSource | null>(null);
@@ -49,8 +43,6 @@ async function onSync(p: EpgSource): Promise<void> {
 
 function menuItems(p: EpgSource): RowActionItem[] {
   const items: RowActionItem[] = [];
-  // Sync + Delete are hidden for playlist-bound (playlist owns the cadence) and built-in (ships preconfigured)
-  // rows — they get Edit only. Everyone else gets Sync (or Upload XML for a one-shot 'xml file') + Delete.
   const restricted = !!p.builtin || !!p.playlistBinding;
   if (!restricted) {
     if (p.source === 'xml file') {
@@ -71,15 +63,8 @@ function onUploaded(): void {
   void reloadEpgSources();
 }
 
-// The list renders straight off the shared EPG_SOURCES store (no local copy), so a scheduled sync or an
-// edit made elsewhere only surfaces if we re-pull on entry. Refetch on mount — the screen mounts fresh on
-// every nav-in (no <keep-alive>), matching the Playlists screen so moving between them always shows truth.
 onMounted(() => { void reloadEpgSources(); });
 
-// ── Sync all ───────────────────────────────────────────────────────────────
-// Open the progress modal, which kicks this thunk: a linear (one-at-a-time) sync of every non-playlist-bound
-// EPG source via useEpgActions. Returns the failed names so the modal can flag those rows red; a summary toast
-// reports the outcome (lowerRight — the EPG screen's toast convention).
 const opOpen = ref(false);
 async function onSyncAll(): Promise<{ failed: string[] }> {
   if (syncingAllEpg.value) return { failed: [] };
@@ -92,8 +77,6 @@ async function onSyncAll(): Promise<{ failed: string[] }> {
   return { failed };
 }
 
-// Search filter — case-insensitive substring across name + kind (source) + lineupId + assigned custom tag
-// names. Debounced via the shared SearchInput so a large source list doesn't re-filter on every keystroke.
 const search = ref('');
 const filteredSources = computed(() => {
   const q = search.value.trim().toLowerCase();
@@ -103,11 +86,6 @@ const filteredSources = computed(() => {
   );
 });
 
-// ── Drag-to-reorder (native HTML5 DnD) ─────────────────────────────────────
-// Rows are reorderable only when no search filter is active — reordering a filtered subset would be
-// ambiguous against the persisted full-list ordinals. `dragIndex` is the row being dragged; `overIndex`
-// is the current drop target (drives the snap insertion-line styling). `dragMoved` suppresses the row's
-// click→navigate when a drag just finished (HTML5 DnD fires a click on the source element on drop).
 const canReorder = computed(() => !search.value.trim());
 const dragIndex = ref<number | null>(null);
 const overIndex = ref<number | null>(null);
@@ -119,14 +97,13 @@ function onDragStart(i: number, e: DragEvent) {
   dragMoved.value = false;
   if (e.dataTransfer) {
     e.dataTransfer.effectAllowed = 'move';
-    // A payload is required for the drag to initiate in some browsers (Firefox).
     e.dataTransfer.setData('text/plain', String(i));
   }
 }
 
 function onDragOver(i: number, e: DragEvent) {
   if (dragIndex.value === null) return;
-  e.preventDefault(); // allow the drop
+  e.preventDefault();
   if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
   if (i !== overIndex.value) overIndex.value = i;
   if (i !== dragIndex.value) dragMoved.value = true;
@@ -136,12 +113,11 @@ async function onDrop(i: number) {
   const from = dragIndex.value;
   reset();
   if (from === null || from === i) return;
-  // Build the new id sequence by moving `from` to `i` within the full (unfiltered) list, then persist.
   const ids = EPG_SOURCES.value.map((s) => s.id);
   const [moved] = ids.splice(from, 1);
   ids.splice(i, 0, moved);
   try {
-    await reorderEpgSources(ids); // optimistic snap + persist + reconcile (see data.ts)
+    await reorderEpgSources(ids);
   } catch {
     toast.lowerRight({ tone: 'bad', title: 'Reorder failed', text: 'Could not save the new order. Please try again.' });
   }
@@ -152,7 +128,6 @@ function reset() {
   overIndex.value = null;
 }
 
-// Navigate on row click — but swallow the synthetic click that follows a drag.
 function openSource(id: string) {
   if (dragMoved.value) {
     dragMoved.value = false;
@@ -216,9 +191,6 @@ function openSource(id: string) {
           <b style="font-size: 12px; font-weight: 500; color: var(--text-1);">{{ formatSyncTime(p.lastSync) }}</b>
           last sync
         </div>
-        <!-- Row actions — the waffle drops into the .src-row grid's spare 6th column (no template change).
-             @click.stop keeps the trigger from navigating the row AND satisfies RowActionsMenu's outside-click
-             toggle contract. -->
         <div style="position: relative; justify-self: end;" @click.stop>
           <Btn
             variant="cyan"

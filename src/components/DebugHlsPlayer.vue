@@ -1,16 +1,4 @@
 <script setup lang="ts">
-// DebugHlsPlayer — a diagnostic in-app player. A first-class port of the throwaway `hlstest.html` we built
-// during the HLS-vs-rawTS investigation: a bare <video> + RAW hls.js (deliberately not Vidstack — the point
-// is to observe the engine directly), instrumented with a live status line and a color-coded event log so an
-// operator can watch a channel's client-side playback health in real time. Everything here is measured from
-// the actual <video>/hls.js in the operator's browser — distinct from the server-side stream telemetry
-// (useStreamStats). Same `{ src }` prop + `resolution` emit as the normal in-app player, so the slide-out can
-// swap between them (see ChannelPlayer.vue). Token-append comes from useAppStreamSource — do NOT re-implement
-// it here.
-//
-// Layout: a HUD inside the drawer's 16:9 media frame — video fills the frame, a status strip is docked at the
-// top and the scrolling event log at the bottom. Native <video> controls are intentionally omitted (the log
-// would overlap them, and this is a passive live-observation tool — use the normal player for scrubbing).
 import { ref, reactive, watch, onMounted, onBeforeUnmount, toRef, nextTick } from 'vue';
 import Hls from 'hls.js';
 import Pill from './Pill.vue';
@@ -23,25 +11,21 @@ const video = ref<HTMLVideoElement | null>(null);
 const logEl = ref<HTMLElement | null>(null);
 let hls: Hls | null = null;
 
-// Token append lives in the composable; we bind hls.js to gatedSrc (the authenticated URL, or null while idle).
 const { gatedSrc } = useAppStreamSource(toRef(props, 'src'));
 
-// ---- live status line (sampled every 500ms) ----
 const m = reactive({
   currentTime: 0, frozenFor: 0, bufAhead: 0, readyState: 0, paused: true,
   stalls: 0, fragLoaded: 0, keyLoaded: 0, fragErr: 0, fatal: 0, dropped: 0, latency: 0,
 });
 
-// ---- color-coded event log (ring buffer) ----
 type Tone = 'good' | 'warn' | 'bad' | 'accent' | '';
 const logs = ref<{ t: string; tone: Tone; msg: string }[]>([]);
 function log(tone: Tone, msg: string) {
   logs.value.push({ t: new Date().toLocaleTimeString(), tone, msg });
-  if (logs.value.length > 200) logs.value.shift(); // cap — keep the tail
+  if (logs.value.length > 200) logs.value.shift();
   void nextTick(() => { const el = logEl.value; if (el) el.scrollTop = el.scrollHeight; });
 }
 
-// Read the playing <video>'s pixel height and report it as e.g. "1080p" (guarding 0/NaN until metadata lands).
 function reportResolution() {
   const el = video.value;
   if (!el) return;
@@ -50,7 +34,6 @@ function reportResolution() {
   emit('resolution', `${h}p`);
 }
 
-// ---- 500ms sampler + freeze detector ----
 let lastTime = 0;
 let freezeLogged = false;
 let sampler: ReturnType<typeof setInterval> | null = null;
@@ -60,7 +43,6 @@ function sample() {
   m.currentTime = v.currentTime;
   m.readyState = v.readyState;
   m.paused = v.paused;
-  // buffered ahead of the playhead (the range the playhead currently sits in)
   let ahead = 0;
   for (let i = 0; i < v.buffered.length; i++) {
     if (v.currentTime >= v.buffered.start(i) && v.currentTime <= v.buffered.end(i)) {
@@ -72,7 +54,6 @@ function sample() {
   const q = v.getVideoPlaybackQuality?.();
   if (q) m.dropped = q.droppedVideoFrames;
   if (hls) m.latency = hls.latency ?? 0;
-  // freeze detector: currentTime stuck > 3s while not paused → log once, with buffer depth + readyState.
   if (!v.paused && v.currentTime === lastTime) {
     m.frozenFor += 0.5;
     if (m.frozenFor > 3 && !freezeLogged) {
@@ -87,7 +68,6 @@ function sample() {
   lastTime = v.currentTime;
 }
 
-// ---- <video> element event taps ----
 function onWaiting() { m.stalls++; log('warn', `video WAITING (stall) #${m.stalls}`); }
 function onPlaying() { log('good', 'video PLAYING'); }
 function onStalled() { log('warn', 'video STALLED'); }
@@ -115,11 +95,10 @@ function teardownHls() {
   const el = video.value;
   if (el) {
     unbindVideoEvents(el);
-    if (el.getAttribute('src')) { el.removeAttribute('src'); el.load(); } // drop a native-HLS source
+    if (el.getAttribute('src')) { el.removeAttribute('src'); el.load(); }
   }
 }
 
-// Attach raw hls.js (or native HLS on Safari) to the authenticated src.
 function attach(el: HTMLVideoElement, src: string) {
   bindVideoEvents(el);
   if (el.canPlayType('application/vnd.apple.mpegurl')) {
@@ -141,7 +120,6 @@ function attach(el: HTMLVideoElement, src: string) {
   });
   hls.on(Hls.Events.FRAG_LOADED, () => { m.fragLoaded++; });
   hls.on(Hls.Events.KEY_LOADED, () => { m.keyLoaded++; });
-  // Reset the recovery budget on healthy playback so a genuinely dead stream still surfaces the error.
   hls.on(Hls.Events.FRAG_BUFFERED, () => { recoverAttempts = 0; });
   hls.on(Hls.Events.ERROR, (_e, d) => {
     const line = `${d.type} · ${d.details}${d.fatal ? ' · FATAL' : ''}`;
@@ -165,7 +143,6 @@ function attach(el: HTMLVideoElement, src: string) {
   el.play().catch(() => undefined);
 }
 
-// gatedSrc drives attach/teardown. Null → tear down; a URL → attach.
 watch(gatedSrc, (url) => {
   teardownHls();
   if (url && video.value) { log('accent', 'src ready → attaching'); attach(video.value, url); }
@@ -185,7 +162,6 @@ onBeforeUnmount(() => {
   <div class="dbg-player mono">
     <video ref="video" autoplay muted playsinline class="dbg-video" />
 
-    <!-- Status strip (top) -->
     <div class="dbg-status">
       <Pill :tone="m.fatal > 0 ? 'bad' : m.stalls > 0 ? 'warn' : 'good'">
         {{ m.fatal > 0 ? 'FATAL' : m.paused ? 'PAUSED' : 'LIVE' }}
@@ -203,7 +179,6 @@ onBeforeUnmount(() => {
       <span class="dbg-kv"><i>lat</i>{{ m.latency.toFixed(1) }}</span>
     </div>
 
-    <!-- Event log (bottom) -->
     <div class="dbg-logwrap">
       <div class="dbg-loghdr">EVENT LOG · {{ logs.length }}</div>
       <div ref="logEl" class="dbg-log">
@@ -216,8 +191,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* This component owns irreducible media/HUD layout — the same documented exception HlsPlayer/LivelineChart
-   take by carrying a scoped block (most components in this repo use global classes + inline var() styles). */
 .dbg-player {
   position: relative;
   width: 100%;

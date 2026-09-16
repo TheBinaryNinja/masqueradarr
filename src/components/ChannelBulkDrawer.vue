@@ -10,37 +10,21 @@ import TagPicker from './TagPicker.vue';
 import { playerSelectable, type Channel } from '../data';
 
 const props = defineProps<{
-  channels: Channel[]; // the SELECTED channels being bulk-edited
-  playlistId: string; // owning playlist id — the group-registry key
+  channels: Channel[];
+  playlistId: string;
 }>();
 const emit = defineEmits<{
   (e: 'close'): void;
-  // status/group/clearEpg apply to the SELECTED channels; clearEpg unlinks the 2-factor EPG link.
-  // playerPref sets the DaddyLive player override (null = clear → inherit the source default).
-  // chnoSeed/chnoStep renumber the selection: channelNo = seed, seed+step, seed+2·step, … assigned
-  // in the parent's current display order (the parent owns the ordering).
-  // addTags/removeTags are custom tag ids to add to / remove from each selected channel; the parent merges
-  // them per-channel over that channel's existing tags (remove wins if an id is in both).
   (e: 'apply', payload: { status?: string; group?: string; clearEpg?: boolean; playerPref?: number | null; chnoSeed?: number; chnoStep?: number; addTags?: string[]; removeTags?: string[] }): void;
-  // Hard-delete the selected channels (tombstoned server-side; the parent patches its local list).
   (e: 'deleteChannels', ids: string[]): void;
 }>();
 
 const statusVal = ref<string>('');
-// The group to assign to the SELECTION ('' = leave unchanged). A first-class group, chosen/created via the
-// shared GroupPicker (same registry the single-channel editor uses).
 const groupVal = ref<string>('');
 const clearEpg = ref(false);
-// DaddyLive-family (dlhd) player override for the selection. '' = leave unchanged; 0 = Auto (clear the
-// override → inherit the source default); 1..6 = a specific player. Shown only when the selection has any.
 const supportsPlayer = computed(() => props.channels.some((c) => playerSelectable(c)));
 const playerVal = ref<number | ''>('');
 
-// Tags — one tri-state picker over the selection (matches the single-channel editor's chip layout). Each tag's
-// initial membership across the selected channels is 'all' (on every one), 'some' (on a subset → the picker's
-// partial/dashed state), or 'none' (on none). The operator's explicit choices live in `decision` (add = force
-// onto all, remove = pull from all); a tag with no decision is left untouched. In apply() the decisions become
-// the same addTags/removeTags payload the parent merges per-channel — so nothing downstream changes.
 type Membership = 'all' | 'some';
 type Decision = 'add' | 'remove';
 const membership = computed(() => {
@@ -49,19 +33,16 @@ const membership = computed(() => {
   for (const c of props.channels) for (const id of c.tags ?? []) count.set(id, (count.get(id) ?? 0) + 1);
   const m = new Map<string, Membership>();
   for (const [id, ct] of count) m.set(id, ct === n ? 'all' : 'some');
-  return m; // ids absent from the map are on no selected channel → treated as 'none'
+  return m;
 });
 const decision = ref(new Map<string, Decision>());
 
-// Effective chip state for a tag, from its decision (if any) else its baseline membership.
 function stateOf(id: string): 'on' | 'partial' | 'off' {
   const d = decision.value.get(id);
   if (d) return d === 'add' ? 'on' : 'off';
   const mem = membership.value.get(id);
   return mem === 'all' ? 'on' : mem === 'some' ? 'partial' : 'off';
 }
-// Bound to the picker: ids shown solid (on) and dashed (partial). Built from decision + membership so
-// decisions on ids not currently on any channel (e.g. a just-created tag forced on) are included.
 const onIds = computed(() => {
   const s = new Set<string>();
   for (const [id, d] of decision.value) if (d === 'add') s.add(id);
@@ -74,10 +55,8 @@ const partialIds = computed(() => {
   return s;
 });
 
-// Advance a chip one step through its membership-dependent cycle, clearing the decision when it lands back on
-// the baseline (leave-unchanged): some → partial→on→off→partial; all → on⇄off; none → off⇄on.
 function onToggle(id: string) {
-  const mem = membership.value.get(id); // undefined = 'none'
+  const mem = membership.value.get(id);
   const cur = stateOf(id);
   const baseline: 'on' | 'partial' | 'off' = mem === 'all' ? 'on' : mem === 'some' ? 'partial' : 'off';
   let next: 'on' | 'partial' | 'off';
@@ -89,7 +68,6 @@ function onToggle(id: string) {
   else m.set(id, next === 'on' ? 'add' : 'remove');
   decision.value = m;
 }
-// A freshly created/selected tag from the input: force it "on" (add to all), unless it's already on every one.
 function onCreate(id: string) {
   const m = new Map(decision.value);
   if (membership.value.get(id) === 'all') m.delete(id);
@@ -97,16 +75,12 @@ function onCreate(id: string) {
   decision.value = m;
 }
 
-// Channel-number seed + increment. '' seed = leave unchanged; a valid non-negative integer renumbers
-// the selection starting at the seed, stepping by chnoStep (default 1), in the parent's display order.
 const chnoSeed = ref<string>('');
 const chnoStep = ref<number>(1);
-// The parsed seed when it is a usable non-negative integer, else null (blank/garbage = leave unchanged).
 const chnoSeedNum = computed(() => {
   const n = parseInt(chnoSeed.value, 10);
   return String(n) === chnoSeed.value.trim() && Number.isFinite(n) && n >= 0 ? n : null;
 });
-// Human preview of the first few assigned numbers (uses the same seed/step math as apply()).
 const chnoPreview = computed(() => {
   if (chnoSeedNum.value == null) return '';
   const step = Number(chnoStep.value) || 1;
@@ -119,7 +93,6 @@ const groupMixed = computed(() => new Set(props.channels.map((c) => c.group)).si
 const commonStatus = computed(() => (statusMixed.value ? '' : (props.channels[0]?.status ?? '')));
 const commonGroup = computed(() => (groupMixed.value ? '' : (props.channels[0]?.group ?? '')));
 
-// How many selected channels currently carry an EPG link (the clear-EPG target count).
 const linkedCount = computed(() => props.channels.filter((c) => c.epg != null || c.tvg_id != null).length);
 
 const unchangedLabel = computed(() =>
@@ -137,15 +110,11 @@ function apply() {
   if (statusVal.value && statusVal.value !== commonStatus.value) payload.status = statusVal.value;
   if (groupVal.value && groupVal.value !== commonGroup.value) payload.group = groupVal.value;
   if (clearEpg.value) payload.clearEpg = true;
-  // 0 = Auto → clear the override (null); a specific 1..6 is sent verbatim. '' leaves it untouched.
   if (playerVal.value !== '') payload.playerPref = playerVal.value === 0 ? null : playerVal.value;
-  // Renumber only when the seed parses to a non-negative integer; otherwise leave channel # untouched.
   if (chnoSeedNum.value != null) {
     payload.chnoSeed = chnoSeedNum.value;
     payload.chnoStep = Number(chnoStep.value) || 1;
   }
-  // Tags: emit the operator's explicit decisions as the same add/remove id sets the parent merges per-channel
-  // (empty = leave each channel's tags untouched).
   const added = [...decision.value].filter(([, d]) => d === 'add').map(([id]) => id);
   const removed = [...decision.value].filter(([, d]) => d === 'remove').map(([id]) => id);
   if (added.length) payload.addTags = added;
@@ -154,7 +123,6 @@ function apply() {
   emit('close');
 }
 
-// ── Delete channels (destructive, two-step confirm) ──
 const confirmDeleteChannels = ref(false);
 function doDeleteChannels() {
   confirmDeleteChannels.value = false;
@@ -218,8 +186,6 @@ function doDeleteChannels() {
           </div>
         </div>
 
-        <!-- Assign the selection to a group. The picker reads the SAME registry the Manage panel edits and the
-             single-channel editor uses, so the taxonomy is one shared, persisted set. -->
         <div class="form-row">
           <div class="field-lbl">
             Group
@@ -232,7 +198,6 @@ function doDeleteChannels() {
           </div>
         </div>
 
-        <!-- DaddyLive-family only: bulk-set the preferred upstream player for the selected channels. -->
         <div v-if="supportsPlayer" class="form-row">
           <div class="field-lbl">Player source</div>
           <div class="select fill">
@@ -253,8 +218,6 @@ function doDeleteChannels() {
           </div>
         </div>
 
-        <!-- Renumber the selection: seed the first number and auto-increment by "Increment by" across the
-             selection in the current table order (the parent owns the ordering). Blank seed = leave unchanged. -->
         <div class="form-row">
           <div class="field-lbl">Channel number</div>
           <div class="row" style="gap: 10px; align-items: flex-end;">
@@ -296,10 +259,6 @@ function doDeleteChannels() {
           </label>
         </div>
 
-        <!-- Bulk-assign custom tags via one tri-state picker (matches the single-channel editor's chip layout).
-             A chip is solid when the tag is on every selected channel, dashed when it's on only some, plain when
-             on none; clicking cycles it to add-to-all / remove-from-all / leave. Only the operator's explicit
-             add/remove decisions are sent — untouched (incl. partial) tags are left as each channel had them. -->
         <div class="form-row">
           <div class="field-lbl">Tags</div>
           <div class="muted" style="font-size: var(--fs-xs); margin-bottom: 6px;">
@@ -318,12 +277,10 @@ function doDeleteChannels() {
 
         <div class="divider" />
 
-        <!-- Manage the playlist's groups (immediate, whole-playlist) — shared with the single-channel editor. -->
         <GroupManager :playlist-id="playlistId" />
 
         <div class="divider" />
 
-        <!-- Delete the SELECTED channels (destructive, tombstoned so a re-sync won't re-add them). -->
         <div class="form-row">
           <div class="field-lbl" style="color: var(--bad);">Delete channels</div>
           <div v-if="!confirmDeleteChannels" class="row">

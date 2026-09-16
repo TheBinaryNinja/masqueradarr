@@ -1,8 +1,4 @@
 <script setup lang="ts">
-// Impact-aware delete confirm for an EPG source, shared by the EPG Sources list + detail waffle menus (the
-// "Delete" item). Owns the cascade DELETE /api/epg-sources/:id, the store re-pull, and the outcome toast;
-// emits `deleted` so the detail screen can navigate back to the list (the list just lets the reloaded store
-// drop the row). Extracted from the old inline confirm on EPGDetailScreen so both screens share one dialog.
 import { ref } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';

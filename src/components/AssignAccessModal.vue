@@ -8,17 +8,6 @@ import { useToast } from '../composables/useToast';
 import { globalMemberIds, hasGlobalAccess, toggleGlobal, toggleCustom } from '../composables/useUserAccess';
 import { USERS, ensureUsers, saveUserAccess, type User } from '../composables/useUsers';
 
-// ── Per-playlist "Assign access" ────────────────────────────────────────────────────────────────────────
-// Scoped to ONE playlist (opened from that row's waffle menu): a list of users, each with a single
-// grant/revoke toggle for THIS playlist. The semantics follow the playlist's type:
-//   • Global playlist  → the toggle is the Global UNION (hasGlobalAccess / toggleGlobal): granting it puts
-//     every endpoint:'global' member id into allowedPlaylists, so the user gains access to EVERY global
-//     playlist at once — the shared "cross access". Opening this from any global row shows the same set.
-//   • Custom playlist  → the toggle maps to this one allowedCustomPlaylists id.
-// Each click IMMEDIATELY writes through saveUserAccess() (no batch/commit "Done" step — Done just closes),
-// which patches the SHARED USERS singleton in place, so the admin Users screen and this modal stay in
-// lockstep automatically. Admins always hold every playlist (backend materialization + role gate), so their
-// row renders a locked all-access marker rather than a toggle.
 
 const props = defineProps<{ playlist: Playlist }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -29,9 +18,6 @@ const globalAvailable = computed(() => globalMemberIds.value.length > 0);
 
 const loading = ref(false);
 const search = ref('');
-// Per-user in-flight ids so one row's save never disables/spins the others. saveUserAccess sends the user's
-// FULL allow-lists, so locking the row while its toggle saves serializes that user's writes (last-write-wins
-// avoided); different users still save in parallel (independent docs).
 const savingIds = ref(new Set<string>());
 
 const filteredUsers = computed<User[]>(() => {
@@ -50,18 +36,17 @@ onMounted(async () => {
     } finally {
         loading.value = false;
     }
-    // globalMemberIds / hasGlobalAccess derive from PLAYLISTS — make sure it's loaded.
     if (!PLAYLISTS.value.length) reloadPlaylists().catch(() => {});
 });
 
 function isChecked(user: User): boolean {
-    if (user.role === 'admin') return true; // unfiltered — full access
+    if (user.role === 'admin') return true;
     return isGlobal.value ? hasGlobalAccess(user) : (user.allowedCustomPlaylists || []).includes(props.playlist.id);
 }
 
 function rowDisabled(user: User): boolean {
-    if (user.role === 'admin') return true; // editing an admin's arrays is meaningless
-    if (isGlobal.value && !globalAvailable.value) return true; // nothing to grant
+    if (user.role === 'admin') return true;
+    if (isGlobal.value && !globalAvailable.value) return true;
     return savingIds.value.has(user._id);
 }
 
@@ -79,7 +64,6 @@ async function toggleUser(user: User): Promise<void> {
     }
 
     try {
-        // saveUserAccess patches USERS in place on success → the toggle's checked state updates reactively.
         await saveUserAccess(user._id, { allowedPlaylists, allowedCustomPlaylists });
     } catch (err) {
         banner({ text: `Could not update access: ${(err as Error).message}`, tone: 'bad', icon: 'warn' });
@@ -122,7 +106,6 @@ async function toggleUser(user: User): Promise<void> {
                             <span class="uname" :title="user.username">{{ user.username }}</span>
                             <Pill v-if="user.role === 'admin'" tone="cyan">admin — all access</Pill>
                         </div>
-                        <!-- Admin: locked all-access marker (admins always hold every playlist). -->
                         <button
                             v-if="user.role === 'admin'"
                             type="button"
@@ -132,7 +115,6 @@ async function toggleUser(user: User): Promise<void> {
                         >
                             <Icon name="lock" :size="12" />
                         </button>
-                        <!-- Standard user: immediate grant/revoke for this playlist. -->
                         <button
                             v-else
                             type="button"
@@ -157,11 +139,9 @@ async function toggleUser(user: User): Promise<void> {
 </template>
 
 <style scoped>
-/* Reuse the global .modal surface; a compact single-playlist width. */
 .assign-modal {
     width: min(520px, 94vw);
 }
-/* Header/search/footer sit OUTSIDE the scroll region, so they stay in view; only the user list scrolls. */
 .assign-body {
     gap: 12px;
     max-height: 72vh;
@@ -232,7 +212,6 @@ async function toggleUser(user: User): Promise<void> {
     text-overflow: ellipsis;
     white-space: nowrap;
 }
-/* Grant/revoke toggle button (reuses the global .cbx checkbox glyph). */
 .cell-box {
     margin-left: auto;
     flex: none;
@@ -256,7 +235,6 @@ async function toggleUser(user: User): Promise<void> {
     opacity: 0.5;
     pointer-events: none;
 }
-/* Admin rows are locked all-access — a muted lock glyph, never a togglable checkbox. */
 .cell-box.locked {
     color: var(--text-2);
     opacity: 0.7;

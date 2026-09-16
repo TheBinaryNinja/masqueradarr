@@ -1,16 +1,4 @@
 <script setup lang="ts">
-// UplApp — the Ultimate Player window's shell. Owns the URL params, the current channel, the single keymap,
-// and the layout: picture on top, "what's on" strip beneath it, channel rail overlaid on the right.
-//
-// It is launched by ChannelDrawer as `player.html#pl=<playlistId>&ch=<channelId>` with a FIXED window name,
-// so relaunching from the drawer re-navigates this same window. Only the hash changes in that case, which
-// means no reload fires — hence the `hashchange` listener, which re-tunes (and reloads the channel list if
-// the playlist itself changed).
-//
-// There is no vue-router and no App.vue shell here on purpose: no role guard to amend, no chrome to
-// suppress, no `.app { min-width: 1100px }` to escape, and no second bootstrapData()/stats WebSocket.
-// Auth comes from the same-origin localStorage token via authFetch.ts; every endpoint used re-checks the
-// caller's playlist grant server-side.
 import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue';
 import type { Channel } from '../data';
 import { appPlayerProxyPath } from '../streamPath';
@@ -38,12 +26,11 @@ const current = computed<Channel | null>(
 const src = computed<string | null>(() => (current.value ? appPlayerProxyPath(current.value) : null));
 const currentKey = computed(() => epgKey(current.value));
 
-// --- engine + health readout ---------------------------------------------------------------------------
 const engine = ref<'vhs' | 'native' | null>(null);
 const stats = ref({ bitrateKbps: null as number | null, bufferSec: 0, dropped: 0 });
 const resolution = ref<string | null>(null);
 const levels = ref<{ index: number; label: string; active: boolean }[]>([]);
-const pinnedLevel = ref(-1); // -1 = ABR (auto)
+const pinnedLevel = ref(-1);
 const playerRef = ref<InstanceType<typeof UplVideoJsPlayer> | null>(null);
 
 const engineLabel = computed(() => {
@@ -56,9 +43,6 @@ function onStats(s: { bitrateKbps: number | null; bufferSec: number; dropped: nu
   stats.value = s;
 }
 
-// Video.js's own control bar ships no quality selector, so the shell owns one, built from the
-// QualityLevelList the player reports. Empty on Safari's native-HLS path — the browser does not expose its
-// renditions — so the control says "Auto (native)" and disables rather than pretending to offer a choice.
 function onLevels(l: { index: number; label: string; active: boolean }[]): void {
   levels.value = l;
   if (l.length === 0) pinnedLevel.value = -1;
@@ -69,11 +53,6 @@ function pinLevel(v: string): void {
   playerRef.value?.selectLevel(i);
 }
 
-// The drawer normally persists a channel's resolution when its embedded player reports one
-// (ChannelDrawer.onResolution). With the player living out here, do the same so that behaviour survives
-// Ultimate mode. `stream` is a MERGE patch server-side, so send only the changed field — never the whole
-// stream object, which would carry the probe snapshot back over itself. Best-effort: the route is
-// admin-only, so a standard user just gets a 403 we ignore.
 async function onResolution(res: string): Promise<void> {
   resolution.value = res;
   const ch = current.value;
@@ -85,17 +64,15 @@ async function onResolution(res: string): Promise<void> {
       body: JSON.stringify({ stream: { res } }),
     });
     ch.stream.res = res;
-  } catch { /* non-essential telemetry */ }
+  } catch {   }
 }
 
-// --- tuning --------------------------------------------------------------------------------------------
 function tune(ch: Channel): void {
   if (ch.id === currentId.value) { railOpen.value = false; return; }
   currentId.value = ch.id;
   resolution.value = null;
   engine.value = null;
   railOpen.value = false;
-  // Keep the address bar honest so a refresh (or a copied URL) lands on the channel being watched.
   const h = `#pl=${encodeURIComponent(params.value.pl)}&ch=${encodeURIComponent(ch.id)}`;
   if (window.location.hash !== h) window.history.replaceState(null, '', h);
 }
@@ -108,15 +85,6 @@ function step(delta: number): void {
   if (next) tune(next);
 }
 
-// --- full screen ---------------------------------------------------------------------------------------
-// The one way to actually get rid of the browser's address bar. `window.open('…','popup=yes')` already
-// strips the tab strip, bookmarks bar, toolbar and menu, but every current browser FORCES a read-only origin
-// chip onto a pop-up and ignores the legacy `location=no` feature — it is anti-spoofing, not a setting. So
-// full screen is the real answer, and because the Fullscreen API needs a user gesture it hangs off this
-// button and the F key rather than firing on load (a pop-up does not reliably inherit the opener's gesture).
-//
-// documentElement, NOT the video element: Video.js's own fullscreen button expands the picture alone, which
-// throws away the header, guide strip, channel rail and footer. This keeps the whole player usable.
 const isFullscreen = ref(false);
 
 function syncFullscreen(): void {
@@ -125,14 +93,11 @@ function syncFullscreen(): void {
 
 function toggleFullscreen(): void {
   try {
-    if (document.fullscreenElement) void document.exitFullscreen().catch(() => { /* noop */ });
-    else void document.documentElement.requestFullscreen().catch(() => { /* denied by the browser */ });
-  } catch { /* API absent — the button simply does nothing */ }
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => {   });
+    else void document.documentElement.requestFullscreen().catch(() => {   });
+  } catch {   }
 }
 
-// --- keyboard: ONE keymap for the window ---------------------------------------------------------------
-// Video.js's own hotkeys are disabled (userActions.hotkeys: false), so there is no second handler to fight.
-// Typing in the rail's filter box must never be swallowed, hence the input-target bail-out.
 function onKey(e: KeyboardEvent): void {
   const t = e.target as HTMLElement | null;
   if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) {
@@ -156,8 +121,6 @@ function onKey(e: KeyboardEvent): void {
     case '[': step(-1); break;
     case ']': step(1); break;
     case 'c': case 'C': railOpen.value = !railOpen.value; break;
-    // A keypress carries the user activation the autoplay policy wants, so this is a reliable way to get
-    // sound back even when the browser refused it on load.
     case 'm': case 'M': playerRef.value?.toggleMute(); break;
     case 'f': case 'F': toggleFullscreen(); break;
     case 'Escape': railOpen.value = false; break;
@@ -165,11 +128,9 @@ function onKey(e: KeyboardEvent): void {
   }
 }
 
-// --- lifecycle -----------------------------------------------------------------------------------------
 async function boot(): Promise<void> {
   if (!params.value.pl) return;
   await loadChannels(params.value.pl);
-  // Fall back to the first channel if the requested id isn't in this playlist (e.g. it was just deleted).
   if (!orderedChannels.value.some((c) => c.id === currentId.value)) {
     currentId.value = orderedChannels.value[0]?.id ?? '';
   }
@@ -187,11 +148,7 @@ function onHashChange(): void {
   }
 }
 
-// Guide data for the channel being watched — the rich lane (descriptions, episode info).
 watch(currentKey, (k) => { void loadStripPrograms(params.value.pl, k); }, { immediate: true });
-// The window title is the pop-up's only branding (no tab strip, and the origin chip the browser forces on is
-// not ours to write). Keep player.html's exact string as the suffix so the identity survives tuning, and keep
-// the channel prefix so several player windows — or a taskbar full of them — stay tellable apart.
 watch(current, (c) => {
   document.title = c
     ? `${c.tvg_name} — Ultimate Video Player : masqueradarr`
@@ -202,7 +159,6 @@ onMounted(() => {
   startClock();
   window.addEventListener('hashchange', onHashChange);
   window.addEventListener('keydown', onKey);
-  // Esc and the browser's own controls leave full screen without going through toggleFullscreen().
   document.addEventListener('fullscreenchange', syncFullscreen);
   if (signedIn) void boot();
 });
@@ -216,7 +172,6 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="upl-root">
-    <!-- Not signed in: this window can't authenticate on its own (no login form here by design). -->
     <div v-if="!signedIn" class="upl-gate">
       <Icon name="lock" :size="22" />
       <h2>Not signed in</h2>
@@ -236,7 +191,6 @@ onBeforeUnmount(() => {
     </div>
 
     <template v-else>
-      <!-- Header: who's playing. Compact so the picture keeps the room. -->
       <header class="upl-hd">
         <ChannelLogo v-if="current" :ch="current" />
         <div class="upl-hd-txt">
@@ -274,8 +228,6 @@ onBeforeUnmount(() => {
 
       <UplEpgStrip :programs="stripPrograms" :has-epg-link="!!currentKey" />
 
-      <!-- Engine + health. The engine label is deliberately explicit: on Safari this player runs the
-           browser's native HLS rather than VHS, and that should be visible, not guessed at. -->
       <footer class="upl-foot mono">
         <span class="upl-foot-engine" :class="{ native: engine === 'native' }">
           <Icon name="chip" :size="12" /> {{ engineLabel }}
@@ -318,7 +270,6 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
-/* This window has no app shell, so the root owns the full-viewport column layout. */
 .upl-root {
   position: relative;
   height: 100%;
@@ -374,7 +325,6 @@ onBeforeUnmount(() => {
   color: var(--text-3);
 }
 .upl-foot-engine { display: inline-flex; align-items: center; gap: 5px; color: var(--accent-hi); }
-/* Native HLS is a genuinely different engine — flag it as a warn tone, not an accent one. */
 .upl-foot-engine.native { color: var(--warn); }
 .upl-foot-q { display: inline-flex; align-items: center; gap: 6px; }
 .upl-foot-select { height: 22px; padding: 0 20px 0 6px; font-size: 10px; background-position: right 4px center; }

@@ -14,8 +14,6 @@ const confirmPassword = ref('');
 const error = ref('');
 const loading = ref(false);
 
-// Deterministic Code128-style barcode strip — same seed, same bars (the brand
-// card's barcode generator, masqueradarr-card "The deterministic barcode").
 const barcode = (() => {
     const rects: { x: number; w: number }[] = [];
     let seed = 20240624, x = 0, ink = true;
@@ -62,7 +60,6 @@ async function handleSetup() {
 
 <template>
     <div class="auth-stage">
-        <!-- decorative BROADCAST micrographic plate behind the card (masqueradarr-micrographics MK-07.1) -->
         <svg class="auth-plate" viewBox="0 0 360 230" aria-hidden="true">
             <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
                 <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
@@ -82,11 +79,9 @@ async function handleSetup() {
         </svg>
 
         <div class="auth-card card">
-            <!-- corner brackets -->
             <span class="corner tl" /><span class="corner tr" />
             <span class="corner bl" /><span class="corner br" />
 
-            <!-- top micro row -->
             <div class="micro-row">
                 <span class="micro-hi">MASQUERADARR // PROVISION</span>
                 <span>MK-SYS / SETUP</span>
@@ -105,7 +100,6 @@ async function handleSetup() {
                 <p class="muted auth-tagline">Configure your initial Administrator account to get started.</p>
             </div>
 
-            <!-- ticked divider -->
             <div class="divider">
                 <span class="div-fill" />
                 <span class="tick" style="left:0" /><span class="tick" style="left:25%" />
@@ -150,7 +144,6 @@ async function handleSetup() {
                 </Btn>
             </form>
 
-            <!-- foot: deterministic barcode + spec strip -->
             <div class="auth-foot">
                 <svg class="barcode" :viewBox="`0 0 ${barcode.width} 30`" preserveAspectRatio="none" aria-hidden="true">
                     <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="30" />
@@ -198,7 +191,6 @@ async function handleSetup() {
     backdrop-filter: blur(10px);
 }
 
-/* corner brackets */
 .corner {
     position: absolute;
     width: 14px;

@@ -1,41 +1,29 @@
 import { reactive, ref, watch, nextTick } from 'vue';
 
-// The durable video-engine proxy config (Settings → Advanced for the (Default), the playlist drawer for a
-// (Custom) per-playlist override). Mirrors useSettings.ts's hydrate-guard + 500 ms debounced auto-PUT, but as
-// a FACTORY (there are N configs, not one singleton): useProxyConfig(id) returns reactive state scoped to that
-// id ('app' = Default, 'app_<playlistId>' = Custom) with no save button — edits auto-persist.
-//
-// The route upserts, so a first edit of a not-yet-existing Custom row CREATES it; the drawer instead seeds a
-// new Custom as a COPY of the current Default via createCustomFromDefault (below) so it starts populated, then
-// mounts the panel. See server/src/routes/proxyConfigs.ts + models/ProxyConfig.ts.
 
 export interface ProxyConfigState {
-  connectTimeoutMs: number; // LIVE in P2 (Rust upstream client connect timeout)
-  readTimeoutMs: number | null; // LIVE (P3.1/RSL — idle/read timeout enforced per-stream)
-  bufferSizeKb: number | null; // LIVE (P3.1/RSL — bounded upstream→client read-ahead buffer)
-  maxRedirects: number; // LIVE in P2 (Rust upstream redirect cap)
-  headerOverrides: Record<string, string>; // LIVE in P2 (merged into the grant's upstream headers)
-  outputFormat: string; // LIVE (P3.2/DST) — 'hls' (segmented) | 'ts' (continuous raw MPEG-TS, ext mount); enc/fMP4→HLS
-  streamInfRedux: boolean; // LIVE (SIR) — opt-in HLS master reorder (ext mount) so the first #EXT-X-STREAM-INF fits a strict player's probe window
-  failoverEnabled: boolean; // LIVE — play-time failover groups (walk the ordered children on an establish failure); default ON
-  failoverOnDefiniteError: boolean; // LIVE — also fail over on a definitive upstream 4xx/5xx (normally forwarded verbatim); default OFF
-  segmentCacheTtlSec: number | null; // reserved (the only unapplied knob)
-  // S3/ORIGIN — republish from a local origin instead of proxying the upstream manifest. One refcounted
-  // ingest per channel decrypts + rings segments; the client gets a masqueradarr-authored stream.
-  originEnabled: boolean; // LIVE — default OFF (off is byte-identical to today's output)
-  originRingMb: number; // LIVE — per-channel ring cap (MiB); a 3-segment floor still wins over it
-  spliceNormalize: boolean; // LIVE — default ON; origin-only kill switch for splice/pid normalisation
+  connectTimeoutMs: number;
+  readTimeoutMs: number | null;
+  bufferSizeKb: number | null;
+  maxRedirects: number;
+  headerOverrides: Record<string, string>;
+  outputFormat: string;
+  streamInfRedux: boolean;
+  failoverEnabled: boolean;
+  failoverOnDefiniteError: boolean;
+  segmentCacheTtlSec: number | null;
+  originEnabled: boolean;
+  originRingMb: number;
+  spliceNormalize: boolean;
 }
 
 export type ProxyConfigSaveState = 'idle' | 'saving' | 'saved' | 'error';
 
-// Client-side defaults — mirror the server envDefaults so a brief pre-hydrate render (and a Custom row that
-// inherits the Default) looks right.
 export function proxyConfigDefaults(): ProxyConfigState {
   return {
     connectTimeoutMs: 15000,
     readTimeoutMs: null,
-    bufferSizeKb: 1024, // ≈16 read-ahead chunks (KiB/64); a real jitter buffer out of the box. Clearable → null (minimal).
+    bufferSizeKb: 1024,
     maxRedirects: 10,
     headerOverrides: {},
     outputFormat: 'hls',
@@ -49,7 +37,6 @@ export function proxyConfigDefaults(): ProxyConfigState {
   };
 }
 
-// Coerce a raw API response into a full ProxyConfigState (defaults fill any missing/wrong-typed field).
 function normalize(raw: unknown): ProxyConfigState {
   const d = proxyConfigDefaults();
   const s = (raw ?? {}) as Partial<ProxyConfigState>;
@@ -82,7 +69,7 @@ export function useProxyConfig(id: string) {
   const state = reactive<ProxyConfigState>(proxyConfigDefaults());
   const loading = ref(true);
   const saveState = ref<ProxyConfigSaveState>('idle');
-  let hydrated = false; // guards the load-triggered watcher fire so hydration doesn't echo a PUT
+  let hydrated = false;
   let timer: ReturnType<typeof setTimeout> | null = null;
 
   async function load(): Promise<void> {
@@ -91,9 +78,7 @@ export function useProxyConfig(id: string) {
     try {
       const res = await fetch(url(id));
       if (res.ok) Object.assign(state, normalize(await res.json()));
-      // A 404 (a Custom row that doesn't exist yet) leaves the defaults in place; the first edit upserts it.
     } catch {
-      // Best-effort — defaults stand if the API is unreachable.
     } finally {
       loading.value = false;
       await nextTick();
@@ -101,7 +86,6 @@ export function useProxyConfig(id: string) {
     }
   }
 
-  // Debounced PUT of the full state (the route validates + upserts; nulls clear the reserved knobs).
   function persist(): void {
     if (!hydrated) return;
     if (timer) clearTimeout(timer);
@@ -128,9 +112,7 @@ export function useProxyConfig(id: string) {
   return { state, loading, saveState, load };
 }
 
-// ── Drawer helpers for the (Default)/(Custom) toggle ──────────────────────────────────────────────────────
 
-// Does a Custom override row (app_<playlistId>) exist? A 200 → yes; a 404 → the playlist inherits the Default.
 export async function customConfigExists(id: string): Promise<boolean> {
   try {
     const res = await fetch(url(id));
@@ -140,8 +122,6 @@ export async function customConfigExists(id: string): Promise<boolean> {
   }
 }
 
-// Toggle a playlist to Custom: seed the new override as a COPY of the current effective Default so it starts
-// populated (not env defaults), then it's ready for the panel to edit.
 export async function createCustomFromDefault(id: string): Promise<boolean> {
   try {
     const res = await fetch(url('app'));
@@ -157,7 +137,6 @@ export async function createCustomFromDefault(id: string): Promise<boolean> {
   }
 }
 
-// Toggle a playlist back to the Default: delete its override row.
 export async function deleteCustomConfig(id: string): Promise<boolean> {
   try {
     const res = await fetch(url(id), { method: 'DELETE' });

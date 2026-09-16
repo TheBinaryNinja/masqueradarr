@@ -56,7 +56,7 @@ sign-in, and the **Custom Tags** manager. Changes save to the single application
   colouring, holding the per-playlist settings for **DaddyLive**, **Dulo.tv** and **ZLive**. Each entry has:
   - `enable` — `false` **hides** that playlist: it disappears from **Add Playlist** and its settings are hidden
     (for Dulo.tv, the sign-in card). A playlist you already added keeps syncing and playing.
-  - `domain` — the site the provider runs on today (for example `dlive.sx`). When a provider moves, change it
+  - `domain` — the site the provider runs on today, as a bare host. When a provider moves, change it
     here and re-Sync the playlist. For Dulo.tv, saving a new domain **signs the dulo session out** (you'll be
     warned first) because a session belongs to the site it came from.
   - `extendedProperties` — the provider's own options: DaddyLive's `defaultPlayer` (`"auto"` or a player

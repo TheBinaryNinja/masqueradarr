@@ -1,7 +1,4 @@
 <script setup lang="ts">
-// The shared visual card rendered by all three positioned toast hosts (ToastBanner / ToastUpperRight /
-// ToastLowerRight). Owns the close button, hover-to-pause wiring, and the decrementing timeout progress
-// bar. Positioning + entry animation are driven by the host container's class (see styles.css), not here.
 import Icon from './Icon.vue';
 import { useToast, type ToastItem } from '../composables/useToast';
 

@@ -1,20 +1,13 @@
-// Live application logs over WebSocket (/api/logs-stream). A module-level singleton: the Logs drawer calls
-// subscribe()/release() (ref-counted) so a single socket is shared. Each pushed frame is prepended into the
-// shared LOGS ref (newest-first, capped) so the drawer — and any future consumer — stays live without
-// polling. Mirrors useStreamStats.ts exactly (the repo's one-WS-client-per-concern pattern): proto from
-// location.protocol, same-origin host, onmessage → update the shared ref, ref-counted reconnect.
 
 import { LOGS, type Log } from '../data';
 
-const LOGS_MAX = 1000; // bound the client-side buffer (the drawer renders a filtered slice of this)
+const LOGS_MAX = 1000;
 const RECONNECT_MS = 3000;
 
 let ws: WebSocket | null = null;
 let refCount = 0;
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
-// Prepend a freshly-pushed log line (server-generated → no dedupe needed). New array → ref identity changes
-// → the drawer's computed re-runs. Capped to LOGS_MAX so a long-lived tab can't grow unbounded.
 function ingestLog(log: Log): void {
   LOGS.value = [log, ...LOGS.value].slice(0, LOGS_MAX);
 }
@@ -29,7 +22,6 @@ function connect(): void {
       const msg = JSON.parse(ev.data) as { type?: string; log?: Log };
       if (msg.type === 'log' && msg.log) ingestLog(msg.log);
     } catch {
-      /* ignore a malformed frame */
     }
   };
   ws.onclose = () => {
@@ -40,7 +32,6 @@ function connect(): void {
     try {
       ws?.close();
     } catch {
-      /* ignore */
     }
   };
 }
@@ -62,7 +53,6 @@ function disconnect(): void {
     try {
       ws.close();
     } catch {
-      /* ignore */
     }
     ws = null;
   }

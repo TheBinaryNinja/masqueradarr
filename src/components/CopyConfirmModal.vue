@@ -3,13 +3,6 @@ import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import { M3U_EPG_NOTE, type CopyModalState } from '../composables/useCopyConfirm';
 
-// Presentational copy-to-clipboard confirmation modal. Pure read-out: the open/close state and the copy
-// behavior live in useCopyConfirm — this component renders the current state and emits the two user actions
-// (dismiss + copy the secondary EPG URL). Layers ABOVE any drawer (copy-modal-bg z-index override); the OK
-// button, the header ×, and an overlay click all emit `close`. (Esc is handled by useCopyConfirm globally.)
-// For kind === 'm3u' it adds the XMLTV-EPG note + a one-click affordance for that card's EPG/Guide URL; for
-// kind === 'epg' it's a plain confirmation. Uses the global .modal* surface classes so it matches the app's
-// other modals.
 defineProps<{
     modal: CopyModalState;
     failed?: boolean;
@@ -22,11 +15,6 @@ const emit = defineEmits<{
 </script>
 
 <template>
-    <!-- Teleported to <body> so this overlay escapes the .modal (backdrop-filter + overflow:hidden) it may be
-         nested inside — e.g. the per-playlist "Get access" modal. Nested there, that ancestor becomes the
-         containing block for this position:fixed overlay (clipping it) and traps its z-index in a lower
-         stacking context; at <body> the fixed positioning + z-index:120 resolve against the viewport/root, so
-         it centers full-screen ABOVE the modal. Scoped styles + [data-theme] (on <html>) still apply. -->
     <Teleport to="body">
     <div
         class="modal-bg copy-modal-bg"
@@ -55,8 +43,6 @@ const emit = defineEmits<{
                     Automatic copy was blocked by the browser. The URL above is selected — press Ctrl/Cmd+C to copy it manually.
                 </div>
 
-                <!-- M3U-only XMLTV-EPG guidance + the card's EPG/Guide URL as a direct grab. Gated on the
-                     data-carried kind flag (never on label string-matching). -->
                 <template v-if="modal.kind === 'm3u'">
                     <div class="copy-note">
                         <Icon name="info" :size="13" />
@@ -85,9 +71,6 @@ const emit = defineEmits<{
 </template>
 
 <style scoped>
-/* Copy-confirmation modal — reuses the global .modal* surface; only the layering + a couple of compact
-   read-out rows are local. It must sit ABOVE the half-window drawer (.drawer-overlay z-index 100), so bump
-   the global .modal-bg (90) past it here. */
 .copy-modal-bg {
     z-index: 120;
 }
@@ -138,7 +121,6 @@ const emit = defineEmits<{
 .font-xs {
     font-size: 10.5px;
 }
-/* The XMLTV-EPG guidance block shown only for M3U copies. */
 .copy-note {
     display: flex;
     gap: 8px;

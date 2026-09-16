@@ -6,7 +6,6 @@ export interface UserProfile {
     role: 'admin' | 'user';
     streamToken: string;
     streamTokenEnabled: boolean;
-    // Stable slug naming this user's per-user playlist file (served FLAT at <domain>/<username>-<slug>.m3u).
     slug: string;
     allowedPlaylists: string[];
     allowedCustomPlaylists: string[];
@@ -19,11 +18,6 @@ export const needsSetup = ref<boolean | null>(null);
 export const isAdmin = computed(() => currentUser.value?.role === 'admin');
 export const isAuthenticated = computed(() => !!currentUser.value);
 
-// Per-user Global playlist file URL — served FLAT at the operator domain root as
-// <domain>/<username>-<slug>.m3u. The download URL is token-free (the random slug is the unguessable
-// bearer); the user's streamToken is baked into the channel URLs INSIDE the file, not into this URL.
-// <domain> is the configured operator domain from useSettings (same source PlaylistStatusDrawer uses as
-// baseDomain). Accepts the minimal { username, slug } so it serves both UserProfile and the admin User.
 export function userM3uUrl(user: { username: string; slug: string }): string {
     const baseDomain = domain.value.replace(/\/+$/, '');
     return `${baseDomain}/${user.username}-${user.slug}.m3u`;
@@ -109,7 +103,6 @@ export async function logout(): Promise<void> {
         try {
             await fetch('/api/auth/logout', { method: 'POST' });
         } catch {
-            // ignore
         }
     }
     logoutLocal();

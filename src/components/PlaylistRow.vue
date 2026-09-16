@@ -5,41 +5,24 @@ import Pill from './Pill.vue';
 import StatusDot from './StatusDot.vue';
 import { playlistScheduleLabel, tagNames, type Playlist } from '../data';
 
-// Shared playlist row — the 7-column `.src-row.pl-row` used by the Playlists list AND the Dashboard
-// Playlists panel, so the two never drift. Presentational only: the row's data comes in via `playlist`,
-// the click navigation is left to the parent (`open`), and the trailing action cell is a SLOT so each
-// host supplies its own affordance — the Playlists screen drops in its waffle actions menu, the
-// Dashboard falls back to a decorative chevron (visual-only preview).
 const props = defineProps<{
   playlist: Playlist;
-  // Source-type group indent (the Playlists list groups rows under built-in/clone/file/… headers).
   grouped?: boolean;
-  // Always-on wrapping layout for narrow embeds (the Dashboard's narrow panel column), independent of
-  // the viewport-width `@media (max-width: 1500px)` breakpoint the full Playlists list relies on.
   compact?: boolean;
-  // Render the drag grip (the Playlists PINNED section is drag-reorderable). NOT named `draggable` — that
-  // would swallow the native draggable DOM attribute the host passes separately (it falls through to the
-  // single root element). The Dashboard omits this, so it never shows a grip.
   reorderable?: boolean;
 }>();
 
 defineEmits<{ (e: 'open'): void }>();
 
-// Per-source-type chip icon (label itself comes straight from the stored `source`).
 const SOURCE_CHIP_ICON: Record<string, string> = {
   clone: 'copy',
   file: 'file',
   url: 'link',
   hdhomerun: 'tv',
-  local: 'map', // Local Now (per-market) playlist
-  import: 'import', // legacy pre-file/url-split rows
+  local: 'map',
+  import: 'import',
 };
 
-// Leading source-type chip — ALWAYS rendered so every row shows what kind of playlist it is. Labels are
-// LOWERCASE (the repo-wide source-type normalization). The label comes STRAIGHT FROM the stored `source`
-// (clone / file / url / hdhomerun, or legacy import) — EXCEPT a registry built-in (p.builtin, i.e. id ===
-// source), which keeps its dedicated "built-in" chip. A source-unset legacy/mock row → "manual". Distinct
-// from the global/custom *endpoint* chip (where the m3u is hosted, not origination).
 function sourceChip(p: Playlist): { label: string; tone: string; icon: string } {
   if (p.builtin) return { label: 'built-in', tone: 'system', icon: 'check' };
   if (p.source) return { label: p.source, tone: 'system', icon: SOURCE_CHIP_ICON[p.source] ?? 'playlist' };
@@ -53,8 +36,6 @@ function sourceChip(p: Playlist): { label: string; tone: string; icon: string } 
     :class="{ 'pl-grouped': grouped, 'pl-row-compact': compact }"
     @click="$emit('open')"
   >
-    <!-- Drag grip for the PINNED section (absolutely positioned at the row's left edge; the host makes the
-         row draggable). Hover-revealed via CSS so the resting list stays clean. -->
     <span v-if="reorderable" class="drag-grip" title="Drag to reorder" @click.stop>
       <Icon name="grip" :size="16" />
     </span>
@@ -92,8 +73,6 @@ function sourceChip(p: Playlist): { label: string; tone: string; icon: string } 
       <b style="font-size: 12px; font-weight: 500; color: var(--text-1);">{{ playlist.lastSync }}</b>
       last sync
     </div>
-    <!-- Trailing action cell. The host fills #actions (Playlists → the waffle menu); the default is a
-         decorative chevron (Dashboard preview). @click.stop keeps an interactive action from navigating. -->
     <div class="row pl-row-actions" @click.stop>
       <slot name="actions">
         <Btn variant="ghost" size="sm" icon="chevron-r" @click="$emit('open')" />

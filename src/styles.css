@@ -1,6 +1,4 @@
-/* ── Design tokens ────────────────────────────────────────────── */
 :root {
-  /* Dark (default) */
   --bg-0: oklch(0.16 0.005 240);
   --bg-1: oklch(0.20 0.006 240);
   --bg-2: oklch(0.24 0.008 240);
@@ -8,17 +6,13 @@
   --hairline: oklch(1 0 0 / 0.07);
   --hairline-strong: oklch(1 0 0 / 0.12);
 
-  /* HUD corner-bracket marks — theme-aware structural strokes. Light mode keeps the
-     fixed dark --mq-bracket; dark mode lifts to a light gray so the brackets read on
-     the dark field instead of vanishing into it. */
-  --bracket:      var(--mq-mist);   /* #E9EDEE on the dark field */
+  --bracket:      var(--mq-mist);
 
   --text-0: oklch(0.98 0 0);
   --text-1: oklch(0.78 0.01 240);
   --text-2: oklch(0.58 0.012 240);
   --text-3: oklch(0.42 0.012 240);
 
-  /* masqueradarr accent — brand teal #48D7FE · oklch(.81 .11 230) */
   --accent: oklch(0.81 0.11 230);
   --accent-hi: oklch(0.87 0.11 230);
   --accent-soft: oklch(0.81 0.11 230 / 0.14);
@@ -26,15 +20,8 @@
 
   --good: oklch(0.78 0.16 150);
   --warn: oklch(0.82 0.15 80);
-  /* masqueradarr risk — brand red #E0564B (risk/critical only) */
   --bad:  oklch(0.65 0.17 28);
 
-  /* ── masqueradarr brand reference tokens ─────────────────────────
-     The brand source of truth (HEX, from masqueradarr-logotype §0/§4).
-     The semantic accent/bg/text families above are the runtime tokens
-     screens consume; these mq- tokens are for brand-exact surfaces (the
-     lockup, micrographic plates, the brand card). Two colors only: teal
-     carries signal, red is risk/critical. */
   --mq-teal:       #48D7FE;
   --mq-teal-deep:  #1FAEDB;
   --mq-teal-veil:  rgba(72, 215, 254, 0.14);
@@ -54,11 +41,8 @@
   --radius-m: 12px;
   --radius-l: 16px;
 
-  /* Global app-shell topbar height — the overlay bar that floats over .screen; the baseline
-     sticky-offset for every header that pins just under it. Fixed across densities. */
   --topbar-h: 56px;
 
-  /* Density (set per [data-density]) */
   --row-h: 44px;
   --pad-card: 18px;
   --pad-x: 16px;
@@ -105,8 +89,6 @@
   --text-2: oklch(0.50 0.012 240);
   --text-3: oklch(0.62 0.012 240);
 
-  /* Darker semantic colors so foreground text stays legible on light backgrounds.
-     The originals (used in dark mode) are too washed out on white. */
   --accent: oklch(0.52 0.13 230);
   --accent-hi: oklch(0.44 0.14 230);
   --accent-soft: oklch(0.52 0.13 230 / 0.12);
@@ -115,17 +97,12 @@
   --warn: oklch(0.55 0.17 60);
   --bad:  oklch(0.52 0.20 25);
 
-  /* corner-bracket marks keep their fixed dark values on the light field */
-  --bracket:      var(--mq-bracket); /* #2A3236 */
+  --bracket:      var(--mq-bracket);
 }
 
-/* Hardcoded raw-oklch text colors that bypass the tokens — re-shade in light mode */
 [data-theme="light"] .log-line.log-error .log-msg { color: oklch(0.48 0.20 25); }
 [data-theme="light"] .live-pill { color: oklch(0.48 0.20 25); background: oklch(0.52 0.20 25 / 0.12); border-color: oklch(0.52 0.20 25 / 0.4); }
 
-/* Builtin source/schedule icons use a dark navy gradient by default — swap to a
-   light surface in light mode so the row matches its siblings, while preserving
-   the cyan icon color and accent glow. */
 [data-theme="light"] .src-row .src-ico.builtin,
 [data-theme="light"] .sched-ico.builtin {
   background: var(--bg-3);
@@ -140,7 +117,6 @@
   box-shadow: inset 0 0 0 1px oklch(0.48 0.17 150 / 0.15), 0 0 9px oklch(0.48 0.17 150 / 0.10);
 }
 
-/* ── Reset / base ─────────────────────────────────────────────── */
 * { box-sizing: border-box; }
 html, body, #root { height: 100%; margin: 0; }
 body {
@@ -157,7 +133,6 @@ input, textarea, select { font: inherit; color: inherit; }
 button, input, textarea, select { outline: none; }
 ::selection { background: var(--accent-soft); color: var(--text-0); }
 
-/* Scrollbars */
 *::-webkit-scrollbar { width: 10px; height: 10px; }
 *::-webkit-scrollbar-track { background: transparent; }
 *::-webkit-scrollbar-thumb {
@@ -168,7 +143,6 @@ button, input, textarea, select { outline: none; }
 }
 *::-webkit-scrollbar-thumb:hover { background: var(--text-3); background-clip: content-box; border: 2px solid transparent; }
 
-/* ── App shell ────────────────────────────────────────────────── */
 .app {
   display: grid;
   grid-template-columns: 224px 1fr;
@@ -176,7 +150,6 @@ button, input, textarea, select { outline: none; }
   min-width: 1100px;
 }
 
-/* Sidebar */
 .sidebar {
   background: var(--bg-0);
   border-right: 1px solid var(--hairline);
@@ -197,9 +170,6 @@ button, input, textarea, select { outline: none; }
   align-items: center;
   gap: 10px;
 }
-/* Circular badge variant of the mark (masqueradarr-logotype §3 avatar):
-   teal circle, obsidian mark, ~60% inset. The mark stays the canonical
-   currentColor MasqMark primitive — the circle is chrome around it. */
 .brand-badge {
   flex: none;
   display: inline-grid;
@@ -283,13 +253,6 @@ button, input, textarea, select { outline: none; }
 .sidebar-foot .name { font-size: 12.5px; color: var(--text-0); }
 .sidebar-foot .plan { font-size: 10.5px; color: var(--text-2); }
 
-/* Main */
-/* The brand "stage" aurora gradient is painted on the always-present main column so the
-   now-transparent header floats over it on every route and the field runs continuously from
-   the top of the header through the scrolling content as one unbroken plane. Stage routes
-   (.mq-stage) no longer re-paint it (they'd double-paint + misalign); they keep only their
-   vignette + inset content wrapper. Top aurora is anchored above the header so the lit center
-   sits where the title sits. */
 .main {
   display: flex;
   flex-direction: column;
@@ -300,16 +263,13 @@ button, input, textarea, select { outline: none; }
   overflow: hidden;
   position: relative;
 }
-/* The topbar is an OVERLAY: absolutely pinned over the top of .screen so content scrolls UNDER it,
-   which lets .topbar.is-stuck backdrop-filter the actual scrolled content (true content-frost), not
-   just the static aurora. .screen pads its top by --topbar-h to clear the bar at rest. */
 .topbar {
   height: var(--topbar-h);
   position: absolute;
   top: 0;
   left: 0;
   right: 0;
-  z-index: 20;            /* above content stickies (<=5), below drawers/modals/toasts (80/90/130) */
+  z-index: 20;
   border-bottom: 1px solid transparent;
   background: transparent;
   display: flex;
@@ -318,9 +278,6 @@ button, input, textarea, select { outline: none; }
   gap: 12px;
   transition: background-color .2s ease, border-color .2s ease, box-shadow .2s ease;
 }
-/* Scroll-engaged glass — a frosted strip derived from .glass; on scroll (.is-stuck) the bar gains a
-   translucent tint, a content-sampling blur, a bottom hairline and a soft shadow. The blur radius is
-   not transitioned (only color/shadow) to avoid jank. */
 .topbar.is-stuck {
   background:
     linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0) 60%),
@@ -337,7 +294,6 @@ button, input, textarea, select { outline: none; }
   border-bottom-color: oklch(0 0 0 / 0.08);
   box-shadow: 0 10px 30px oklch(0.25 0.05 240 / 0.12);
 }
-/* Accessibility: no animated/blurred glass for users who reduce transparency or motion. */
 @media (prefers-reduced-transparency: reduce), (prefers-reduced-motion: reduce) {
   .topbar { transition: none; }
   .topbar.is-stuck {
@@ -358,9 +314,6 @@ button, input, textarea, select { outline: none; }
 }
 .topbar-spacer { flex: 1; }
 
-/* Header restore-progress strip — spans from title to the theme toggle while a
-   "Restore defaults" job is running. Single line of what's being restored plus
-   a glowing cyan progress bar and overall percentage. */
 .restore-strip {
   flex: 1;
   min-width: 0;
@@ -445,8 +398,6 @@ button, input, textarea, select { outline: none; }
   text-align: right;
 }
 
-/* Progress bar primitive (ProgressBar.vue) — token-only, mirrors the restore-strip idiom above.
-   Determinate: .progress-fill width is bound 0..100%. Indeterminate: a fixed sliver slides across. */
 .progress {
   position: relative;
   height: 6px;
@@ -467,7 +418,6 @@ button, input, textarea, select { outline: none; }
 }
 .progress-good .progress-fill { background: var(--good); box-shadow: 0 0 10px oklch(0.78 0.16 150 / 0.5); }
 .progress-warn .progress-fill { background: var(--warn); box-shadow: 0 0 10px oklch(0.82 0.15 80 / 0.5); }
-/* Indeterminate: drop the width binding + transition; the keyframe translates a fixed sliver. */
 .progress-indeterminate .progress-fill {
   width: 35%;
   transition: none;
@@ -481,7 +431,6 @@ button, input, textarea, select { outline: none; }
   .progress-indeterminate .progress-fill { animation-duration: 2.4s; }
 }
 
-/* Theme toggle (segmented sun / moon pill) */
 .theme-toggle {
   position: relative;
   display: inline-flex;
@@ -527,31 +476,13 @@ button, input, textarea, select { outline: none; }
   flex: 1;
   overflow-y: auto;
   padding: var(--pad-x);
-  /* Clear the overlay topbar at rest — same inset below the bar as before the overlay change.
-     (Stage routes zero this via .mq-stage-screen and re-add it on .mq-stage-content.) */
   padding-top: calc(var(--topbar-h) + var(--pad-x));
 }
 
-/* ── masqueradarr brand stage background ──────────────────────────
-   The full-bleed brand backdrop shared by LoginScreen and the
-   Dashboard (the `logo` agent owns this; screens opt in). Two layers
-   of depth over --bg-0: a top teal aurora (the brand "uplink" glow,
-   same recipe as the login --auth-stage) plus a faint bottom-corner
-   vignette so surfaced cards read as elevated above a receding field.
-   Edge-to-edge by design — a screen that adopts .mq-stage moves its
-   own inset to an inner content wrapper, never padding the gradient. */
-/* a .screen adopting the stage drops its own inset so the gradient bleeds
-   to all four edges; the inset is reapplied by .mq-stage-content within. */
 .mq-stage-screen { padding: 0; }
-/* The aurora gradient now lives globally on .main (see above), so a stage screen no longer
-   paints its own — it remains only to host the edge vignette (::before) and the inset content
-   wrapper that keeps stage routes edge-to-edge while their content sits inset above the field. */
 .mq-stage {
   position: relative;
 }
-/* edge vignette — darkens the periphery so the lit center recedes,
-   adding the card-over-field separation the brand cards rely on.
-   aria-hidden, non-interactive, pinned behind all stage content. */
 .mq-stage::before {
   content: '';
   position: absolute;
@@ -563,33 +494,14 @@ button, input, textarea, select { outline: none; }
 [data-theme="light"] .mq-stage::before {
   background: radial-gradient(125% 105% at 50% 36%, transparent 60%, rgb(0 0 0 / 0.06) 100%);
 }
-/* the scrolling content of a stage screen sits inset above the field;
-   the gradient itself stays edge-to-edge (no padding on .screen).
-
-   LANDMINE: `position: relative` + `z-index: 1` makes this a STACKING CONTEXT. Any fixed-position
-   overlay rendered from inside a stage screen (dashboard, active) is clamped to level 1 here and
-   therefore paints BELOW .topbar (z-index 20) — see issue #55, where the topbar's "Search
-   everything…" box covered the Active Streams slide-over's header. Overlays inside a stage screen
-   MUST `<Teleport to="body">`. (The z-index itself is load-bearing for the .mq-stage::before
-   vignette — keep it.) */
 .mq-stage > .mq-stage-content {
   position: relative;
   z-index: 1;
   padding: var(--pad-x);
-  /* Stage routes zero .screen padding (.mq-stage-screen), so re-add the overlay-topbar clearance here. */
   padding-top: calc(var(--topbar-h) + var(--pad-x));
 }
-/* The active route is a full-height flex screen (screenFlex makes .screen a flex column and the
-   Active Streams root fills it via height:100%). Its stage-content wrapper must participate in that
-   flex chain instead of collapsing to content height; the Dashboard stage screen scrolls normally
-   and needs no fill. */
 .mq-stage-content-fill { flex: 1; min-height: 0; display: flex; flex-direction: column; }
 
-/* ── Primitives ───────────────────────────────────────────────── */
-/* Cards read as elevated above the brand stage field everywhere: a top-lit surface gradient
-   (lifted --bg-2 → --bg-1), a stronger hairline, and a layered shadow (1px inset top highlight
-   + contact shadow + soft drop shadow) so they float over the .main aurora. All token-driven;
-   the rgba(0,0,0,…) values are shadow opacities (theme-flipped below for light). */
 .card {
   background: linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 64%);
   border: 1px solid var(--hairline-strong);
@@ -600,18 +512,12 @@ button, input, textarea, select { outline: none; }
     0 1px 2px rgba(0, 0, 0, 0.28),
     0 14px 34px rgba(0, 0, 0, 0.34);
 }
-/* Light theme: the dark drop shadow + dark-tone gradient read wrong on a light field, so soften
-   the shadow and lift the top highlight toward white. --bg-2/--bg-1 + --hairline-strong already
-   theme-flip; only the shadow alpha + the inset highlight need a light recipe. */
 [data-theme="light"] .card {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.8),
     0 1px 2px rgba(0, 0, 0, 0.06),
     0 12px 28px rgba(0, 0, 0, 0.10);
 }
-/* Flat opt-out — strips the elevation so a card shell blends into the page (the Dashboard
-   chart/HUD outer shells, or any screen needing a flat surface). Placed after the light-theme
-   .card block so source-order wins in both themes. */
 .card.sys-flush {
   background: transparent;
   border: none;
@@ -633,7 +539,6 @@ button, input, textarea, select { outline: none; }
   letter-spacing: -0.01em;
 }
 
-/* Button */
 .btn {
   display: inline-flex;
   align-items: center;
@@ -681,7 +586,6 @@ button, input, textarea, select { outline: none; }
 .btn.sm { height: 28px; padding: 0 10px; font-size: var(--fs-xs); }
 .btn.sm.icon { width: 28px; padding: 0; }
 
-/* Input */
 .input {
   display: flex;
   align-items: center;
@@ -709,7 +613,6 @@ button, input, textarea, select { outline: none; }
 .input .ico { width: 14px; height: 14px; color: var(--text-2); flex: none; }
 .input.lg { height: 38px; }
 
-/* SearchInput clear (×) button — appears only when there is text */
 .search-clear {
   display: grid;
   place-items: center;
@@ -729,7 +632,6 @@ button, input, textarea, select { outline: none; }
 
 textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical; }
 
-/* Select */
 .select { position: relative; }
 .select select {
   appearance: none;
@@ -743,9 +645,8 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   font-size: var(--fs-sm);
 }
 .select.lg select { height: 40px; padding: 0 12px; font-size: var(--fs-base); width: 100%; }
-.select.fill select { width: 100%; } /* full-width select that keeps the 34px height (matches .input) */
+.select.fill select { width: 100%; }
 
-/* Toggle (cyan style from reference) */
 .toggle {
   width: 38px;
   height: 22px;
@@ -775,15 +676,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   left: 18px;
   background: white;
 }
-/* Matches the native `:disabled` treatment the inputs beside it get — a dependent control has to read as
-   unavailable, not merely as off. */
 .toggle.disabled {
   opacity: 0.45;
   cursor: not-allowed;
   box-shadow: none;
 }
 
-/* Checkbox (cyan filled) */
 .cbx {
   width: 18px; height: 18px;
   border-radius: 5px;
@@ -807,7 +705,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   transform: rotate(45deg) translate(-1px, -1px);
 }
 
-/* Status dot */
 .dot {
   width: 8px; height: 8px;
   border-radius: 50%;
@@ -831,7 +728,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   100% { transform: scale(2.2); opacity: 0; }
 }
 
-/* Pill / tag */
 .pill {
   display: inline-flex;
   align-items: center;
@@ -860,8 +756,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: oklch(0.78 0.17 55);
   border-color: oklch(0.72 0.17 55 / 0.4);
 }
-/* Failover-group roles: parent (violet — the exported/served channel) and child (slate — the hidden,
-   export-suppressed backup that inherits the parent's EPG identity). */
 .pill.parent {
   background: oklch(0.72 0.16 305 / 0.14);
   color: oklch(0.8 0.14 305);
@@ -872,15 +766,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: oklch(0.79 0.09 250);
   border-color: oklch(0.74 0.09 250 / 0.3);
 }
-/* Custom tags — a single magenta variant for all user-managed tags (hue ~340, distinct from the violet
-   parent/305 and system-purple/280 roles). Raw oklch like parent/child, so no separate light-mode override. */
 .pill.magenta {
   background: oklch(0.72 0.18 340 / 0.14);
   color: oklch(0.80 0.16 340);
   border-color: oklch(0.72 0.18 340 / 0.32);
 }
 
-/* Segmented control */
 .segmented {
   display: inline-flex;
   background: var(--bg-1);
@@ -909,13 +800,10 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--accent-hi);
   box-shadow: inset 0 0 0 1px var(--hairline-strong);
 }
-/* Channel Mappings filter — per-button selected tone (scoped via modifier class, leaves the
-   global .segmented button.active untouched so every other segmented control is unaffected). */
 .segmented button.seg-amber.active { color: var(--warn);      box-shadow: inset 0 0 0 1px oklch(0.82 0.15 80 / 0.4); }
 .segmented button.seg-green.active { color: var(--good);      box-shadow: inset 0 0 0 1px oklch(0.78 0.16 150 / 0.4); }
 .segmented button.seg-cyan.active  { color: var(--accent-hi); box-shadow: inset 0 0 0 1px oklch(0.82 0.13 220 / 0.4); }
 
-/* Toolbar */
 .toolbar {
   display: flex;
   align-items: center;
@@ -924,33 +812,18 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-bottom: 1px solid var(--hairline);
 }
 .toolbar .spacer { flex: 1; }
-/* A-Z sort toggle (Playlists screen): a ghost button that lights up in the accent when active, mirroring the
-   pin button's is-pinned treatment. */
 .toolbar .btn.az-btn { font-weight: 600; letter-spacing: 0.02em; }
 .toolbar .btn.az-btn.is-active { color: var(--accent-hi); border-color: var(--accent-hi); }
 
-/* Playlist-detail sticky header: pin the toolbar (search/filter/view-switch) AND the table column
-   headers to the top of the .screen scroll area while the channel rows scroll underneath. Scoped to
-   .pl-detail-sticky so the shared .toolbar / .tbl thead classes stay un-sticky on other screens.
-
-   Offsets: position:sticky is resolved against .screen's CONTENT box, so .screen's padding-top
-   (calc(var(--topbar-h) + var(--pad-x))) is ADDED to every `top` below. To land the toolbar flush under
-   the overlay topbar (at var(--topbar-h) from the viewport) we need top = var(--topbar-h) - padding-top
-   = -var(--pad-x); the thead then stacks var(--pl-toolbar-h) lower, i.e. var(--pl-toolbar-h) - var(--pad-x).
-   (A plain top:var(--topbar-h) double-counts the topbar and floats the block ~72px too low.)
-
-   --pl-toolbar-h is the toolbar's rendered height (12px pad + 34px tallest control + 12px pad + 1px
-   border = 59px). The toolbar is flex-nowrap with fixed-height controls (.input / .select select / .btn
-   are all 34px), so it's constant across densities — keep it in sync if the toolbar padding/controls change. */
 .pl-detail-sticky { --pl-toolbar-h: 59px; }
 .pl-detail-sticky .toolbar {
   position: sticky;
-  top: calc(-1 * var(--pad-x));    /* flush under the overlay topbar (offsets .screen padding-top — see note) */
+  top: calc(-1 * var(--pad-x));
   z-index: 3;
   background: var(--bg-1);
 }
 .pl-detail-sticky .tbl thead th {
-  top: calc(var(--pl-toolbar-h) - var(--pad-x));   /* stack flush below the sticky toolbar */
+  top: calc(var(--pl-toolbar-h) - var(--pad-x));
   z-index: 2;
 }
 
@@ -968,18 +841,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: 0 0 0 3px oklch(0.62 0.18 30 / 0.12);
 }
 
-/* ── Toasts ───────────────────────────────────────────────────────────────
-   Global toast system (useToast.ts) — three positioned hosts (ToastBanner /
-   ToastUpperRight / ToastLowerRight) all render the shared .toast-card. Each
-   card auto-dismisses with a decrementing .toast-progress bar (its
-   animation-duration is the toast's `duration`), pausing on hover. */
 .toasts {
   position: fixed;
-  z-index: 130;                 /* above modals (90) + drawers (80) */
+  z-index: 130;
   display: flex;
   flex-direction: column;
   gap: 10px;
-  pointer-events: none;         /* the container never eats clicks; cards opt back in */
+  pointer-events: none;
 }
 .toasts-banner {
   top: 16px;
@@ -987,13 +855,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   transform: translateX(-50%);
   align-items: center;
 }
-.toasts-tr { top: 64px; right: 20px; align-items: flex-end; }   /* clears the topbar */
+.toasts-tr { top: 64px; right: 20px; align-items: flex-end; }
 .toasts-br { bottom: 22px; right: 20px; align-items: flex-end; flex-direction: column-reverse; }
 
 .toast-card {
   pointer-events: auto;
   position: relative;
-  overflow: hidden;             /* clips the progress bar to the rounded corners */
+  overflow: hidden;
   display: flex;
   align-items: flex-start;
   gap: 10px;
@@ -1037,7 +905,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .toast-card-x:hover { background: var(--bg-0); color: var(--text-0); }
 
-/* Decrementing timeout indicator — scaleX from 1→0 over the toast's duration (set inline). */
 .toast-progress {
   position: absolute;
   left: 0;
@@ -1057,7 +924,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   to { transform: scaleX(0); }
 }
 
-/* Entry animation is per-position (banner drops from the top, corners slide from the side). */
 .toasts-banner .toast-card { animation: toast-pop-top .26s cubic-bezier(.2,.7,.2,1); }
 .toasts-tr .toast-card,
 .toasts-br .toast-card { animation: toast-pop-side .26s cubic-bezier(.2,.7,.2,1); }
@@ -1070,7 +936,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   to { transform: translateX(0); opacity: 1; }
 }
 
-/* Table */
 .tbl { width: 100%; border-collapse: collapse; }
 .tbl thead th {
   text-align: left;
@@ -1080,7 +945,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   padding: 10px var(--pad-card);
   border-bottom: 1px solid var(--hairline);
   background: var(--bg-1);
-  position: sticky; top: var(--topbar-h);   /* pin under the overlay topbar (tables scrolling in .screen) */
+  position: sticky; top: var(--topbar-h);
   letter-spacing: 0.02em;
   text-transform: uppercase;
 }
@@ -1097,7 +962,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   vertical-align: middle;
 }
 
-/* Channel logo placeholder */
 .ch-logo {
   width: 28px; height: 28px;
   border-radius: 6px;
@@ -1113,7 +977,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .ch-logo.lg { width: 56px; height: 56px; font-size: 14px; border-radius: 10px; }
 
-/* Channel cards grid */
 .ch-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
@@ -1141,11 +1004,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .ch-card .cbx-pos { position: absolute; top: 10px; right: 10px; opacity: 0; transition: opacity .12s; }
 .ch-card:hover .cbx-pos, .ch-card.selected .cbx-pos { opacity: 1; }
 
-/* ── Failover-group tree (channel table + grid) ─────────────────────────────────────────────────────────
-   Grouped channels render as a parent → child tree: the parent row carries a collapse chevron + a "N
-   backups" count + a waffle actions menu; its children sit directly beneath, indented with a connector.
-   The leading slot in the Channel cell is a fixed width across parent / child / ungrouped rows so the logos
-   stay column-aligned; only child rows add extra left padding to read as nested. */
 .ch-tree-toggle,
 .ch-tree-branch,
 .ch-tree-spacer {
@@ -1168,16 +1026,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .ch-tree-toggle:hover { color: var(--text-0); background: var(--bg-3); }
 .ch-tree-branch { color: oklch(0.74 0.09 250); opacity: 0.7; font-size: 13px; line-height: 1; }
 .ch-tree-row.is-child { padding-left: 22px; }
-/* Trailing per-row group-actions cell (waffle) — anchors the absolutely-positioned RowActionsMenu. */
 .ch-row-actions { display: inline-flex; align-items: center; gap: 4px; }
 
-/* Grid cards: child cards get a slate accent bar (matching the child pill tone), parent cards a subtle
-   violet accent; the footer wraps so the added count pill + tools never clip. */
 .ch-card-child { border-left: 2px solid oklch(0.74 0.09 250 / 0.5); }
 .ch-card-parent { border-left: 2px solid oklch(0.72 0.16 305 / 0.5); }
 .ch-card-foot { flex-wrap: wrap; gap: 6px; }
 
-/* Stats row */
 .stats {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -1190,16 +1044,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .stat .delta { display: inline-flex; align-items: center; gap: 4px; font-size: var(--fs-xs); margin-top: 6px; color: var(--good); }
 .stat .delta.warn { color: var(--warn); }
 .stat .delta.bad { color: var(--bad); }
-/* Tinted .val — for a tile where the number alone carries no verdict (Memory pressure: 142 MB is fine on a
-   workstation and fatal on a Pi), so the threshold colour has to ride on the value itself. Most tiles are
-   deliberately NOT tinted; a row of coloured big numbers would flatten the signal these are meant to raise.
-   .val-muted is the unknown state — grey, so "no reading" never reads as "healthy". */
 .stat .val.good { color: var(--good); }
 .stat .val.warn { color: var(--warn); }
 .stat .val.bad { color: var(--bad); }
 .stat .val.val-muted { color: var(--text-2); }
 
-/* DB Health mini-card — sits at the right end of the System Performance card's tile strip (Dashboard). */
 .db-health {
   display: flex;
   flex-direction: column;
@@ -1217,7 +1066,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .db-health-item .db-health-k { font-size: var(--fs-xs); color: var(--text-2); }
 .db-health-item .mono { font-size: var(--fs-sm); color: var(--text-1); font-variant-numeric: tabular-nums; }
 
-/* Source row (playlists / EPG list) */
 .src-row {
   display: grid;
   grid-template-columns: 40px 1fr auto auto auto auto;
@@ -1230,10 +1078,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .src-row:last-child { border-bottom: 0; }
 .src-row:hover { background: var(--bg-2); }
-/* Drag-to-reorder affordance on the EPG Sources list. The grip is absolutely positioned at the row's left
-   edge so it overlays without consuming a grid column (the shared 6-col .src-row template is untouched); the
-   row gains a little left padding to make room. The grip only appears for reorderable rows (no search filter),
-   fading in on hover so the resting list stays clean. */
 .src-row[draggable="true"] { position: relative; padding-left: calc(var(--pad-card) + 18px); cursor: grab; }
 .src-row[draggable="true"]:active { cursor: grabbing; }
 .drag-grip {
@@ -1252,12 +1096,8 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .src-row[draggable="true"]:hover .drag-grip { opacity: 1; }
 .drag-grip:hover { color: var(--text-1); }
 .drag-grip:active { cursor: grabbing; }
-/* The row being dragged dims; the current drop target shows a top insertion line (the snap indicator). */
 .src-row.drag-source { opacity: 0.45; }
 .src-row.drag-over { box-shadow: inset 0 2px 0 0 var(--good); }
-/* Failover-group modal rows (GroupConfigModal). Replicates the .src-row drag affordance for a flex row —
-   the .src-row rules above are compound selectors on its 6-col grid template, so they can't be reused in
-   a modal list. Shares the absolutely-positioned .drag-grip (rows reserve left padding for it). */
 .grp-row {
   display: flex;
   align-items: center;
@@ -1276,16 +1116,9 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .grp-row:hover .drag-grip { opacity: 1; }
 .grp-row.drag-source { opacity: 0.45; }
 .grp-row.drag-over { box-shadow: inset 0 2px 0 0 var(--good); }
-/* Playlists list rows carry a trailing per-row action group (Sync / Compose / Edit) — one column more
-   than the shared 6-col .src-row. Scoped to playlists so EPG Sources / Dashboard rows are unaffected.
-   Stat + action columns are FIXED-width (not auto) so every row resolves the same template and the
-   Active / channels / groups / last-sync / action cells form clean vertical bands across all rows
-   regardless of per-row content width (e.g. "Sync Global" vs "Sync"). */
 .src-row.pl-row {
   grid-template-columns: 40px 1fr 84px 72px 72px 168px 92px;
 }
-/* Source-type group header in the Playlists list — a light divider label above each group of rows
-   (built-in / clone / file / hdhomerun / url). Lighter than .section-title; uses only existing tokens. */
 .pl-group-hdr {
   padding: 14px var(--pad-card) 6px;
   font-size: var(--fs-xs);
@@ -1295,12 +1128,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--text-2);
   border-bottom: 1px solid var(--hairline);
 }
-/* Slight indent so grouped rows read as children of their source-type header. */
 .src-row.pl-row.pl-grouped { padding-left: calc(var(--pad-card) + 16px); }
-/* PINNED-section rows are drag-reorderable (mirrors the EPG Sources affordance). The row already carries
-   .src-row so .src-row.drag-source / .drag-over (the dim + insertion line) and the generic .drag-grip apply
-   for free; this only combines the grouped indent (16px) with the grip gutter (18px). Declared AFTER
-   .pl-row.pl-grouped so it wins the equal-specificity padding-left tie. */
 .src-row.pl-row[draggable="true"] {
   position: relative;
   padding-left: calc(var(--pad-card) + 16px + 18px);
@@ -1308,17 +1136,9 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .src-row.pl-row[draggable="true"]:active { cursor: grabbing; }
 .src-row.pl-row[draggable="true"]:hover .drag-grip { opacity: 1; }
-/* PINNED section header — a subtle accent so the pinned group reads as distinct from the type-group dividers. */
 .pl-group-hdr.pinned { color: var(--accent-hi); }
-/* Stat cells in a playlist row right-align onto their fixed column so the numbers line up column-to-column. */
 .src-row.pl-row .stat-mini { justify-self: end; }
-/* Active/Inactive pill (the only .pill that is a DIRECT grid child — the name chips are nested in
-   .src-name) shrink-wraps and centers in its fixed 84px column, and centers its own label, so it reads
-   like the sibling chips rather than a left-aligned full-width band. */
 .src-row.pl-row > .pill { justify-self: center; justify-content: center; }
-/* Action group: collapsed to a single right-aligned "waffle" trigger that opens the per-row actions popup
-   (Sync/Sync Global · Compose/Compose Global · Edit). position:relative anchors the absolutely-positioned
-   RowActionsMenu (it drops below the trigger, flipping up near the viewport bottom). */
 .src-row.pl-row .pl-row-actions {
   position: relative;
   display: flex;
@@ -1328,76 +1148,44 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   width: 100%;
   justify-self: end;
 }
-/* Persistent pin toggle (left of the waffle). Muted at rest so it reads as a secondary control; a pinned
-   row's pin fills + takes the accent so the state is legible at a glance. The three-class selector clears
-   the base .btn.ghost color. */
 .src-row.pl-row .pl-row-actions .btn.pin-btn { color: var(--text-3); }
 .src-row.pl-row .pl-row-actions .btn.pin-btn:hover { color: var(--text-1); }
 .src-row.pl-row .pl-row-actions .btn.pin-btn.is-pinned { color: var(--accent-hi); }
-/* Ultimate Player launcher (right of the waffle). Same muted-at-rest treatment as the pin so the row keeps
-   ONE loud control — the cyan waffle; two cyan buttons side by side would fight for the eye. Falls back to
-   the shared .btn:disabled treatment on a playlist with nothing to tune yet. */
 .src-row.pl-row .pl-row-actions .btn.upl-btn { color: var(--text-3); }
 .src-row.pl-row .pl-row-actions .btn.upl-btn:hover { color: var(--accent-hi); }
-/* Two stacked rows inside the playlist name cell: row 1 is the status dot + display name, row 2 is the
-   chip/pill cluster underneath. Scoped to .pl-row so the shared .src-name (EPG Sources / Dashboard rows,
-   which stay a single inline row) is unaffected. The column overrides the base .src-name flex-row. */
 .src-row.pl-row .src-name {
   flex-direction: column;
   align-items: flex-start;
   gap: 6px;
 }
-/* Row 1: status dot immediately followed by the name (one line). */
 .src-row.pl-row .src-name .pl-name-row {
   display: flex;
   align-items: center;
   gap: 8px;
   min-width: 0;
 }
-/* Row 2: the chips wrap within the (shrinking 1fr) grid column instead of being forced onto one nowrap
-   line — keeps the row's natural width bounded so the trailing Edit button never clips on a non-ultrawide
-   display; longer schedule labels just wrap sooner. Robust to content + density. */
 .src-row.pl-row .src-name .pl-chip-row {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
 }
-/* The playlist name no longer competes with the chips for width (they're on a separate row now), but pin
-   it so it never compresses below its content (e.g. "Dulo.TV" → "Dulo.T"). Robust to any source/endpoint
-   type since it depends on no per-type field. */
 .src-row.pl-row .src-name .pl-name { flex: 0 0 auto; white-space: nowrap; }
-/* Responsive tier 2 — once the wrapped-pill grid starts squeezing the name column enough that the
-   pills tower into a tall narrow stack beside the fixed columns, hand off to a single wrapping flex
-   stack: cleaner and more compact (the grid and flex row heights are ~equal at this threshold, so the
-   transition is seamless), and it never clips right down to the app's 1100px min-width floor. */
 @media (max-width: 1500px) {
   .src-row.pl-row {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    /* inherits the base 14px gap */
   }
-  /* Icon + name share the first line; the name grows to fill it, forcing the Active pill, stat
-     cells and action group to wrap onto following lines. */
   .src-row.pl-row .pl-row-head { flex: 1 1 0; min-width: 0; }
-  /* Action group: relax the fixed 3-col grid to a wrapping flex; buttons size to content so
-     Sync / Compose / Edit wrap instead of clipping. */
   .src-row.pl-row .pl-row-actions { display: flex; flex-wrap: wrap; width: auto; }
   .src-row.pl-row .pl-row-actions .btn { width: auto; }
 }
-/* Always-on form of the wrap layout above — same declarations, applied unconditionally to a `compact`
-   playlist row (the Dashboard Playlists panel, which sits in a narrow column where the fixed 7-col grid
-   would cramp regardless of viewport width, so the viewport-based @media tier never kicks in for it). */
 .src-row.pl-row.pl-row-compact { display: flex; flex-wrap: wrap; align-items: center; }
 .src-row.pl-row.pl-row-compact .pl-row-head { flex: 1 1 0; min-width: 0; }
 .src-row.pl-row.pl-row-compact .pl-row-actions { display: flex; flex-wrap: wrap; width: auto; }
 .src-row.pl-row.pl-row-compact .pl-row-actions .btn { width: auto; }
-/* Detail-header twin: replaces the middle Stat group in the flex header while busy. */
 .pl-detail-progress { flex: 1; min-width: 80px; max-width: 700px; margin-inline: auto; }
-/* Icon tile base — applies to every .src-ico (list rows, detail headers, drawers) so the glyph is
-   centered and gets the surface/border. Size/radius are overridden inline on the larger detail/drawer
-   tiles; the .builtin / .epg-builtin variants below override the surface + add the glow. */
 .src-ico {
   width: 40px; height: 40px;
   border-radius: 10px;
@@ -1406,17 +1194,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--accent);
   border: 1px solid var(--hairline);
 }
-/* Name is a fixed 18px for legibility across every density view — intentionally NOT a --fs-* token
-   (those scale per density: --fs-h2 is 16/14.5/18). Applies to Playlists, EPG Sources, Dashboard. */
 .src-row .src-name { font-weight: 600; font-size: 18px; display: flex; align-items: center; gap: 8px; }
 .src-row .src-url { color: var(--text-2); font-size: var(--fs-xs); font-family: 'JetBrains Mono', ui-monospace, monospace; margin-top: 3px; }
 .src-row .stat-mini { font-size: var(--fs-xs); color: var(--text-2); text-align: right; min-width: 60px; }
 .src-row .stat-mini b { color: var(--text-0); font-size: var(--fs-base); font-weight: 600; display: block; }
 
-/* EPG source provenance line (under the name; replaces the old single url line). Leads with the SOURCE /
-   LINEUPID chips — each a plain label OUTSIDE the cyan value pill, e.g. SOURCE: (Gracenote) — then carries
-   the source's inline pills (sync-frequency, Playlist-bound, tags) after them. align-items:center keeps the
-   mixed-height children (.meta-item chips vs. .pill badges) sharing one baseline. */
 .epg-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 7px 12px; margin-top: 12px; }
 .meta-item { display: inline-flex; align-items: center; gap: 5px; max-width: 280px; }
 .meta-k { color: var(--text-3); text-transform: uppercase; letter-spacing: 0.03em; font-size: 9.5px; font-weight: 600; }
@@ -1432,7 +1214,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 
-/* Weekday toggle chips in the EPG Edit drawer's weekly frequency builder. */
 .day-chip {
   font-size: var(--fs-xs); padding: 5px 9px; border-radius: 7px;
   background: var(--bg-1); border: 1px solid var(--hairline); color: var(--text-2);
@@ -1441,8 +1222,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .day-chip:hover { border-color: var(--accent); }
 .day-chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--text-0); }
 
-/* EPG source DETAIL screen — summary dashboard, the two schedule cards / linked panels row, linked rows.
-   Tokens only (no hardcoded colors); auto-fit grids collapse to one column without a media query. */
 .epg-summary-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -1473,7 +1252,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .summary-val.sm { font-size: var(--fs-base); font-weight: 500; }
 
-/* Two-up row reused by the linked-playlists/linked-channels panels. */
 .epg-schedules-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
@@ -1481,7 +1259,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   align-items: start;
 }
 
-/* A single linked playlist / channel row (icon|logo + name + count/status pill). */
 .linked-row {
   display: flex;
   align-items: center;
@@ -1503,16 +1280,10 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--accent);
 }
 
-/* EPG source detail — the header is a plain in-flow .card, positioned identically to the
-   Playlists detail header (PlaylistDetailScreen.vue): no sticky/fixed, scrolls with the page.
-   The only pinned element on these detail screens is the filter toolbar (.pl-detail-sticky on
-   Playlists), not the header. The bounded timeline below keeps its own internal scroll. */
 .epg-grid-card {
-  /* bounded so the timeline keeps its own internal scroll while the page scrolls around it */
   height: clamp(420px, 65vh, 900px);
 }
 
-/* EPG timeline */
 .epg {
   display: grid;
   grid-template-rows: 36px 1fr;
@@ -1541,8 +1312,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   display: grid;
   grid-template-columns: 200px 1fr;
   border-bottom: 1px solid var(--hairline);
-  /* Fixed height (was min-height) so the timeline's vertical virtual list can map
-     index <-> scrollTop arithmetically — must match ROW_H in EPGDetailScreen.vue. */
   height: 76px;
   box-sizing: border-box;
 }
@@ -1602,7 +1371,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: 0 0 12px var(--accent);
 }
 
-/* Drop zone */
 .dropzone {
   border: 2px dashed var(--hairline-strong);
   border-radius: var(--radius-l);
@@ -1630,8 +1398,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .dropzone h3 { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; }
 .dropzone p { margin: 0; color: var(--text-2); font-size: var(--fs-sm); }
 
-/* Add Playlist → Built-In "what's included?" summary (AddSourceModal). A markdown-style block: bold
-   section headers, label/value rows with code-span values, and a blockquote note. */
 .builtin-summary {
   margin-top: 14px;
   display: flex;
@@ -1676,9 +1442,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--text-0);
 }
 
-/* Delete-impact summary — the affected-areas report inside the built-in playlist delete confirm modal.
-   One block per heading ("Playlist Channels" / "Playlist EPG"), each with one .impact-row per affected
-   playlist/EPG source. Token-only (no hardcoded colors); the .bad/.warn/.muted value modifiers carry tone. */
 .impact-block {
   display: flex;
   flex-direction: column;
@@ -1717,7 +1480,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .impact-block .impact-val.warn { color: var(--warn); }
 .impact-block .impact-val.muted { color: var(--text-2); }
 
-/* Player */
 .player {
   background: black;
   border: 1px solid var(--hairline);
@@ -1784,19 +1546,14 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: 0 0 12px var(--accent);
 }
 
-/* Channel drawer media stack: player → liveline → kv details → chip row, all full-width column blocks */
-/* Label + a fixed 250px liveline chart, stacked. The chart is a fixed-height box (no stretch), so
-   Technical Details + chip row sit directly beneath it. */
 .chd-bitrate { display: flex; flex-direction: column; gap: 6px; }
-.chd-tech { display: flex; flex-direction: column; gap: 8px; }   /* "Technical Details" label + kv rows */
-.chd-chip-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }   /* the moved status chips, one row */
+.chd-tech { display: flex; flex-direction: column; gap: 8px; }
+.chd-chip-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
 .chd-player {
-  width: 100%;       /* fill the drawer column (16:9 height follows from .player) */
+  width: 100%;
   max-width: 100%;
-  margin-inline: 0;  /* override .player's auto-centering in this context */
+  margin-inline: 0;
 }
-/* Ultimate Player mode: the launch button that stands in for the player + liveline block. Centred and given
-   real vertical room so the drawer doesn't read as if the media block simply failed to load. */
 .chd-upl {
   display: flex;
   flex-direction: column;
@@ -1807,7 +1564,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .chd-upl-hint { font-size: var(--fs-xs); }
 
-/* Section header */
 .section-title {
   font-size: var(--fs-h2);
   font-weight: 600;
@@ -1818,22 +1574,16 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   gap: 10px;
 }
 
-/* Mapping */
-/* Fill the screen: the grid grows to consume the height left under the header card, so the two
-   columns reach the bottom of the viewport and only their lists scroll (no empty page space). */
 .map-screen { height: 100%; min-height: 0; }
 .map-screen > .card { flex: none; }
 .map-screen .map-grid { flex: 1; min-height: 420px; grid-template-rows: minmax(0, 1fr); }
 .map-head { display: flex; flex-direction: column; gap: 14px; }
 .map-head-top { display: flex; align-items: center; gap: 18px; }
 .map-title { font-weight: 600; font-size: 15px; }
-/* Playlist + EPG Source selectors share one row directly under the heading: Playlist [choice]  EPG Source [choice].
-   Wraps to two lines only on a narrow viewport. */
 .map-controls { display: flex; flex-direction: row; flex-wrap: wrap; gap: 10px 28px; align-items: center; }
 .map-field { display: flex; align-items: center; gap: 10px; }
 .map-field > span { flex: none; font-size: var(--fs-sm); color: var(--text-2); }
 .map-field .select { width: 240px; }
-/* Auto-match progress modal — narrower than the default 560px .modal; reuses the global modal surface. */
 .automatch-modal { width: 420px; max-width: 92vw; }
 .map-grid {
   display: grid;
@@ -1848,7 +1598,7 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  min-height: 0;          /* stretched by the grid row (minmax(0,1fr)); list scrolls internally */
+  min-height: 0;
 }
 .map-col h3 {
   margin: 0;
@@ -1877,8 +1627,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-bottom: 1px solid var(--hairline);
   cursor: default;
   transition: background .1s;
-  /* Fixed height (incl. padding + border via border-box) so the virtual list can map
-     index <-> scrollTop arithmetically — must match ROW_H in MappingScreen.vue. */
   height: 50px;
   box-sizing: border-box;
 }
@@ -1937,7 +1685,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .match-row .arr { color: var(--accent); }
 
-/* Activity feed */
 .act {
   display: flex;
   gap: 12px;
@@ -1958,15 +1705,13 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .act b { font-weight: 600; }
 
-/* Dashboard Activity panel — viewport-bounded card that scrolls within the visible window.
-   Active Sessions stacks above History; the card header stays pinned, the body owns the scrollbar. */
 .activity-card {
   position: sticky;
-  top: var(--topbar-h);       /* pin under the overlay topbar (pin position unchanged from before) */
+  top: var(--topbar-h);
   align-self: start;
   display: flex;
   flex-direction: column;
-  max-height: calc(100vh - var(--topbar-h) - 2 * var(--pad-x)); /* topbar height + .screen vertical padding */
+  max-height: calc(100vh - var(--topbar-h) - 2 * var(--pad-x));
 }
 .activity-body {
   flex: 1;
@@ -1994,7 +1739,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   color: var(--text-2);
 }
 
-/* Sync grid (Settings → Syncing card) — every row shares the same 5 columns */
 .sync-grid {
   display: flex;
   flex-direction: column;
@@ -2022,7 +1766,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .sync-col-toggle { justify-content: flex-end; }
 .sync-col-cron { justify-content: flex-end; }
 
-/* Section header rows span all 5 columns */
 .sync-section-hd {
   display: flex;
   align-items: center;
@@ -2040,7 +1783,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .sync-section-hd .chev { color: var(--text-2); transition: transform .18s ease; }
 .sync-section-hd.collapsible.open .chev { transform: rotate(90deg); }
 
-/* Endpoint fields (Settings → General → Hosting endpoints) */
 .endpoint-field {
   display: grid;
   grid-template-columns: 160px 1fr auto;
@@ -2098,10 +1840,8 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .cron-chip:hover { border-color: var(--accent); background: var(--accent-soft); }
 
-/* Keep the schedule selector full-width to align the row with the cron chip */
 .sync-col-sched .select select { width: 100%; }
 
-/* Sidebar foot stack + Logs button */
 .sidebar-foot-stack { margin-top: auto; display: flex; flex-direction: column; gap: 8px; }
 .logs-btn {
   display: flex;
@@ -2129,7 +1869,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .logs-btn-ico .dot { position: absolute; top: -1px; right: -1px; }
 
 
-/* Realtime logs bottom drawer */
 .logs-drawer-wrap { position: fixed; inset: 0; z-index: 88; pointer-events: none; }
 .logs-drawer-backdrop {
   position: absolute; inset: 0;
@@ -2193,7 +1932,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .log-line.log-ok { border-left-color: oklch(0.78 0.16 150 / 0.4); }
 .log-line.log-debug { opacity: 0.7; }
 
-/* Mapping history rows */
 .hist-row {
   display: flex;
   align-items: flex-start;
@@ -2213,7 +1951,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   margin-top: 2px;
 }
 
-/* History / Metrics screen */
 .hm-grid {
   display: grid;
   grid-template-columns: 1.4fr 1fr;
@@ -2227,8 +1964,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  /* Fixed 20px height with border-box so the 1px border is included; vertical padding is 0 so it
-     cannot fight the fixed height (align-items:center keeps the text/dot vertically centered). */
   box-sizing: border-box;
   height: 20px;
   padding: 0 9px;
@@ -2248,7 +1983,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .qoe-pill[data-health="bad"] .dot { background: var(--bad); box-shadow: 0 0 6px var(--bad); }
 .qoe-pill .dot { width: 5px; height: 5px; border-radius: 50%; }
 
-/* Buffer bar chart */
 .buf-bars {
   display: flex;
   align-items: flex-end;
@@ -2262,7 +1996,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   border-radius: 3px 3px 0 0;
   min-height: 2px;
 }
-/* Two-sided stacked buffer bar: upstream (bottom) + client (top) segments fill a height-animated stack. */
 .buf-bar-stack {
   width: 100%;
   min-height: 2px;
@@ -2273,12 +2006,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   overflow: hidden;
 }
 .buf-seg { width: 100%; }
-.buf-seg-upstream { background: oklch(0.66 0.12 220); }  /* cyan — upstream (stream-side) */
-.buf-seg-client { background: oklch(0.74 0.15 65); }     /* amber — client (viewer-side) */
+.buf-seg-upstream { background: oklch(0.66 0.12 220); }
+.buf-seg-client { background: oklch(0.74 0.15 65); }
 .buf-legend { display: inline-flex; align-items: center; gap: 4px; }
 .buf-swatch { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
 .buf-dot { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex: none; }
-/* X-axis timeline under the bars: evenly-spaced ticks; end ticks hug the row edges (= window start/now). */
 .buf-axis {
   display: flex;
   justify-content: space-between;
@@ -2288,7 +2020,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .buf-tick { white-space: nowrap; }
 
-/* Buffering timeline */
 .buf-timeline {
   position: relative;
   height: 32px;
@@ -2315,7 +2046,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: 0 0 8px oklch(0.7 0.18 25 / 0.6);
   cursor: default;
 }
-/* Timeline event colored by side: upstream stays red (stream outage); client is amber (viewer-side). */
 .buf-event--upstream { background: var(--bad); box-shadow: 0 0 8px oklch(0.7 0.18 25 / 0.6); }
 .buf-event--client { background: oklch(0.74 0.15 65); box-shadow: 0 0 8px oklch(0.74 0.15 65 / 0.55); }
 
@@ -2339,7 +2069,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   z-index: 5;
 }
 
-/* Channel drawer */
 .drawer-wrap { position: fixed; inset: 0; z-index: 80; pointer-events: none; }
 .drawer-backdrop { position: absolute; inset: 0; pointer-events: auto; animation: fade-in .2s ease-out; }
 .drawer-panel {
@@ -2374,8 +2103,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   flex: 1;
 }
 
-/* Two-column drawer body \u2014 left = controls, right = published URLs / read-outs. Collapses to a
-   single column on narrow viewports (e.g. a half-window drawer below the breakpoint). */
 .drawer-cols {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -2392,17 +2119,16 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   .drawer-cols { grid-template-columns: 1fr; }
 }
 
-/* \u2500\u2500 Docs slide-out panel (DocsDrawer.vue) \u2014 narrow TOC (left) + wide documentation (right) \u2500\u2500\u2500\u2500\u2500 */
 .docs-panel {
-  width: clamp(420px, 50vw, 1000px);   /* ~half-screen, capped readable, full-ish on small viewports */
+  width: clamp(420px, 50vw, 1000px);
   max-width: 96vw;
-  container-type: inline-size;          /* the TOC collapses on panel width, not viewport width */
+  container-type: inline-size;
 }
 .docs-cols {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: minmax(150px, max-content) 1fr;  /* TOC fits its longest label; content takes the rest */
+  grid-template-columns: minmax(150px, max-content) 1fr;
 }
 .docs-toc {
   border-right: 1px solid var(--hairline);
@@ -2445,7 +2171,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .docs-section { padding-bottom: 16px; }
 .docs-section + .docs-section { border-top: 1px solid var(--hairline); padding-top: 20px; }
 
-/* Rendered markdown (marked output) */
 .doc-prose { color: var(--text-1); font-size: 14px; line-height: 1.65; }
 .doc-prose h1 { font-size: 19px; font-weight: 700; color: var(--text-0); margin: 0 0 12px; }
 .doc-prose h2 { font-size: 15px; font-weight: 600; color: var(--text-0); margin: 22px 0 8px; }
@@ -2483,13 +2208,11 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .doc-prose th, .doc-prose td { border: 1px solid var(--hairline); padding: 6px 10px; text-align: left; }
 .doc-prose hr { border: 0; border-top: 1px solid var(--hairline); margin: 18px 0; }
 
-/* Collapse to a single column when the panel itself is narrow. */
 @container (max-width: 560px) {
   .docs-cols { grid-template-columns: 1fr; grid-template-rows: auto 1fr; }
   .docs-toc { border-right: 0; border-bottom: 1px solid var(--hairline); max-height: 30vh; }
 }
 
-/* \u2500\u2500 Glass panel surface (shared by side-panels + modals) \u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 .glass {
   background:
     linear-gradient(180deg, oklch(1 0 0 / 0.04), oklch(1 0 0 / 0) 40%),
@@ -2523,7 +2246,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   background: oklch(0.6 0.01 240 / 0.32);
 }
 
-/* Modal */
 .modal-bg {
   position: fixed; inset: 0;
   background: oklch(0.1 0.005 240 / 0.55);
@@ -2587,16 +2309,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .field-lbl { font-size: var(--fs-xs); color: var(--text-2); margin-bottom: 6px; text-transform: uppercase; letter-spacing: 0.05em; }
 
-/* Form */
 .form-row { display: flex; flex-direction: column; }
 .form-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .form-grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
 
-/* Channel drawer: keep every stacked block at its natural height so the player holds 16:9 and the
-   body's existing overflow-y produces a scrollbar instead of squishing children to fit. */
 .chd-body > * { flex-shrink: 0; }
 
-/* Empty state */
 .empty {
   padding: 60px 20px;
   text-align: center;
@@ -2604,7 +2322,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .empty h3 { color: var(--text-0); margin: 0 0 6px; font-size: 16px; font-weight: 600; }
 
-/* Tweaks panel surface override (dark) */
 [data-theme="dark"] .twk-panel {
   background: rgba(28, 30, 36, 0.85) !important;
   color: var(--text-0) !important;
@@ -2615,7 +2332,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 [data-theme="dark"] .twk-lbl { color: var(--text-1) !important; }
 [data-theme="dark"] .twk-val { color: var(--text-3) !important; }
 
-/* Active Streams */
 .streams-grid {
   display: grid;
   grid-template-columns: 380px 1fr;
@@ -2659,20 +2375,12 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 .stream-item .viewer b { font-size: var(--fs-base); font-weight: 600; color: var(--text-0); display: block; }
 .stream-item .viewer span { font-size: 10px; color: var(--text-3); text-transform: uppercase; letter-spacing: 0.06em; }
 
-/* masqueradarr HUD instrument cluster — the detail panel is a BORDERLESS, background-free surface
-   (definition comes from corner brackets + a brand header + flat spec-label inner cards). Keep only
-   the scroll + flex-min behaviour. The framing chrome + inner-card restyle live scoped under
-   .stream-detail in ActiveStreamsScreen.vue so the shared .card / .metric / .kv-list rules are
-   untouched for other screens. */
 .stream-detail {
   position: relative;
   overflow: hidden;
   min-height: 0;
 }
 
-/* ── Stream detail layout ─────────────────────────────────────────────────────────────────────────────── */
-/* The detail content column. The per-stream "Video Engine Service" diagram rail was removed in the
-   video-engine teardown, so the split is now a single full-width column. */
 .stream-detail-body { height: 100%; min-height: 0; box-sizing: border-box; }
 .stream-detail-split {
   display: grid;
@@ -2683,10 +2391,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   min-height: 0;
 }
 .stream-detail-main { display: flex; flex-direction: column; gap: 16px; min-width: 0; min-height: 0; }
-/* The Connected sessions card sizes to its content (header + the capped, self-scrolling sessions table);
-   it must NOT absorb leftover height. NOTE: `.stream-detail-main` IS itself a scroller — see the scoped
-   `overflow-y: auto` in ActiveStreamsScreen.vue, added so a column taller than the fixed-height panel
-   scrolls instead of clipping the sessions rows. It is also the named query container for the stage rail. */
 .metric-grid {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -2728,13 +2432,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .live-pill .dot { background: oklch(0.7 0.18 25); box-shadow: 0 0 8px oklch(0.7 0.18 25); }
 
-/* Fixed-geometry slot for the Active Streams detail-panel status badge. The badge swaps between the
-   red live-pill (8px dot, "LIVE"), the amber warn pill (11px SVG, "buffer"/"establishing"), and the
-   red offline pill — variants with different intrinsic width/height that would otherwise reflow the
-   title row and everything stacked below it. The slot holds a constant box (height locks the row's
-   line box → no vertical jump; min-width covers the widest label → no horizontal jump); each inner
-   badge stretches to the slot height so the dot and the SVG icon share identical vertical metrics.
-   Colors/visual language stay per-variant — only the geometry is stabilized. */
 .status-badge-slot {
   display: inline-flex;
   align-items: center;
@@ -2748,14 +2445,9 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-sizing: border-box;
   line-height: 1;
 }
-/* Equal icon/dot box across variants so neither raises the badge's line box. */
 .status-badge-slot > .live-pill .dot { width: 8px; height: 8px; }
 .status-badge-slot > .pill .ico { width: 12px; height: 12px; flex: none; }
 
-/* Stream view slide-over (1/2 screen).
-   z-index 85 only resolves if this overlay is NOT inside a stacking context. ActiveStreamsScreen is a
-   stage route, so it must `<Teleport to="body">` its copy (issue #55); EPGDetailScreen is not, so its
-   copy renders in place. See the .mq-stage-content LANDMINE note above. */
 .stream-view-bg {
   position: fixed;
   inset: 0;
@@ -2836,7 +2528,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
 }
 .player-ctrl:hover { background: rgba(255,255,255,0.08); color: white; }
 
-/* Built-in / system source badge */
 .pill.system {
   background: linear-gradient(135deg, oklch(0.82 0.13 220 / 0.22), oklch(0.6 0.18 280 / 0.22));
   color: var(--accent-hi);
@@ -2858,10 +2549,6 @@ textarea.input { height: auto; padding: 10px; min-height: 80px; resize: vertical
   box-shadow: inset 0 0 0 1px oklch(0.78 0.16 150 / 0.2), 0 0 9px oklch(0.78 0.16 150 / 0.10);
 }
 
-/* Green glow for the EPG Sources brand icon, applied consistently to every instance: the nav entry
-   glyph (.epg-glow lands on the svg.ico itself) and the .src-ico tiles on the EPG list + detail
-   screens (.epg-glow lands on the wrapper, so the inner glyph gets the drop-shadow + the tile gets a
-   soft halo). Keeps the existing green scheme — mirrors the --good glow tokens used by .epg-builtin. */
 svg.ico.epg-glow { filter: drop-shadow(0 0 3px oklch(0.78 0.16 150 / 0.28)); }
 .src-ico.epg-glow { box-shadow: 0 0 8px oklch(0.78 0.16 150 / 0.10); border: 1.5px solid oklch(0.78 0.16 150 / 0.5); }
 .src-ico.epg-glow .ico { filter: drop-shadow(0 0 3px oklch(0.78 0.16 150 / 0.28)); }
@@ -2869,7 +2556,6 @@ svg.ico.epg-glow { filter: drop-shadow(0 0 3px oklch(0.78 0.16 150 / 0.28)); }
 [data-theme="light"] .src-ico.epg-glow { box-shadow: 0 0 8px oklch(0.48 0.17 150 / 0.10); border: 1.5px solid oklch(0.48 0.17 150 / 0.5); }
 [data-theme="light"] .src-ico.epg-glow .ico { filter: drop-shadow(0 0 3px oklch(0.48 0.17 150 / 0.25)); }
 
-/* Utility */
 .row { display: flex; align-items: center; gap: 10px; }
 .col { display: flex; flex-direction: column; gap: 10px; }
 .muted { color: var(--text-2); }

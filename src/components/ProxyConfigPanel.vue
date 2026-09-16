@@ -1,12 +1,4 @@
 <script setup lang="ts">
-// Shared durable video-engine proxy-config panel. Mounted twice with the same shape:
-//   · (Default)  Settings → Advanced      → <ProxyConfigPanel config-id="app" />
-//   · (Custom)   playlist drawer          → <ProxyConfigPanel :config-id="'app_' + playlist.id" flat />
-// Auto-saves every edit (no save button) via useProxyConfig(configId) — the useSettings hydrate-guard + 500 ms
-// debounce, scoped per config id. The knobs split into ACTIVE-NOW (applied by the Rust data plane today —
-// connect/read timeout, max redirects, buffer size, header overrides, and the output format incl. P3.2 raw-TS)
-// and RESERVED (persisted + shipped in the grant, applied when a later phase gains the capability — segment
-// cache). See src/composables/useProxyConfig.ts + .claude/plans/durable-iptv-proxy.md.
 
 import { ref, computed, onMounted, watch } from 'vue';
 import Icon from './Icon.vue';
@@ -20,15 +12,6 @@ const props = defineProps<{ configId: string; title?: string; flat?: boolean }>(
 
 const { state, loading, saveState, load } = useProxyConfig(props.configId);
 
-// "Forced by source" (display only). A source whose manifest entry says `originRequired` has its streams put on
-// the local origin by the server's resolve seam WHATEVER this config says, so a plain Off toggle would lie.
-// Nothing here writes state — the stored value stays exactly as the operator left it.
-//   · a built-in playlist's Custom panel (config id app_<playlistId>) for such a source → the toggle is moot:
-//     show it On and locked.
-//   · the Default panel, or a clone playlist's (its channels can come from any provider) → the toggle still
-//     governs everything else, so it stays live, with a line naming the sources it cannot turn off — and the
-//     ring-dependent knobs stay editable even with it Off, because those sources' streams run on them.
-// Only sources actually added here are named — the rest have no streams to force.
 const CUSTOM_PREFIX = 'app_';
 const originForcedSources = computed(() => {
   const added = new Set(PLAYLISTS.value.map((p) => p.id));
@@ -49,16 +32,9 @@ const originForcedFor = computed(() => {
   if (props.configId.startsWith(CUSTOM_PREFIX) && panelPlaylist.value?.source !== 'clone') return [];
   return originForcedSources.value.map((s) => s.label);
 });
-// The toggle's own state: on if the operator turned it on, or this panel's source forces it (locked on).
 const originToggleOn = computed(() => state.originEnabled || !!originForcedBy.value);
-// What the ring-dependent knobs (ring size, splice normalization) key off: they are LIVE whenever any stream
-// granted this config runs on the origin — including the forced sources named under an Off toggle here. In-app
-// playback carries no ?pl, so every in-app ZLive stream runs on the Default config's ring size and splice setting
-// with the Default toggle Off; greying them out would hide the values actually in effect.
 const originKnobsLive = computed(() => originToggleOn.value || originForcedFor.value.length > 0);
 
-// headerOverrides is edited as an ordered key/value row list, written back into the reactive state (whose deep
-// watcher fires the auto-save). state is the source of truth; rows are a view rebuilt whenever the id reloads.
 const rows = ref<{ key: string; value: string }[]>([]);
 function syncRowsFromState() {
   rows.value = Object.entries(state.headerOverrides).map(([key, value]) => ({ key, value }));
@@ -79,12 +55,6 @@ function removeHeader(i: number) {
   syncStateFromRows();
 }
 
-// Numeric coercion is split in two so the controlled :value never fights the caret:
-//   · @input  reflects EXACTLY what's typed (no floor clamp) — the old Math.max(min, n) ran per
-//             keystroke, so a leading sub-floor digit snapped the field and blocked multi-digit entry.
-//   · @blur   commits into [min, max] once typing stops (nullable knobs keep blank → null). The ranges
-//             mirror the server gate in server/src/proxyconfig/translate.ts, so the UI never persists a
-//             value the API would 400.
 function setNum(field: 'connectTimeoutMs' | 'maxRedirects' | 'originRingMb', raw: string) {
   const n = Math.round(Number(raw));
   if (Number.isFinite(n)) state[field] = n;
@@ -116,7 +86,6 @@ onMounted(async () => {
   await load();
   syncRowsFromState();
 });
-// The drawer reuses one panel instance across playlists — reload + rebuild the header rows when the id changes.
 watch(
   () => props.configId,
   async () => {
@@ -144,7 +113,6 @@ watch(
     </div>
 
     <div class="pcp-body" :style="loading ? 'opacity: 0.5; pointer-events: none;' : ''">
-      <!-- ── Active now ─────────────────────────────────────────────────────────────── -->
       <div class="form-grid-2">
         <div class="form-row">
           <div class="field-lbl">Connect timeout <span class="mono muted" style="font-weight: 400;">· ms</span></div>
@@ -194,8 +162,6 @@ watch(
         </div>
       </div>
 
-      <!-- S3/ORIGIN. Sits directly above Output format because it changes what that setting MEANS: with
-           origin on, both shapes are rendered from the same local ring instead of proxying upstream. -->
       <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
           <div class="field-lbl">Local origin</div>
@@ -243,8 +209,6 @@ watch(
         </div>
       </div>
 
-      <!-- Splice normalisation. Sits with the origin knobs because it only acts on the ingest. Presented as
-           something you TURN OFF, not on, since it is the shipped default and off is the older behaviour. -->
       <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
           <div class="field-lbl">Smooth ad transitions</div>
@@ -265,7 +229,6 @@ watch(
         </div>
       </div>
 
-      <!-- Output format shares a 2-col row with STREAM-INF Redux (it shrinks to the left half). -->
       <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
           <div class="field-lbl">Output format</div>
@@ -294,7 +257,6 @@ watch(
         </div>
       </div>
 
-      <!-- Failover knobs share a 2-col row (both are plain toggles like STREAM-INF Redux above). -->
       <div class="form-grid-2" style="margin-top: 17px;">
         <div class="form-row">
           <div class="field-lbl">Failover groups</div>
@@ -341,7 +303,6 @@ watch(
 
       <div class="divider" style="margin: 20px 0 12px;" />
 
-      <!-- ── Reserved (persisted now, applied in a later phase) ─────────────────────────── -->
       <div class="row" style="align-items: center; gap: 8px; margin-bottom: 4px;">
         <div class="field-lbl" style="margin: 0;">Reserved</div>
         <span class="muted" style="font-size: var(--fs-xs);">— saved now, applied as the engine gains each capability</span>
@@ -364,19 +325,9 @@ watch(
 </template>
 
 <style scoped>
-/* Roughly a third more compact than the comfortable pass, done with SPACING only.
-   An earlier attempt used `zoom: 0.67` on this body — reverted deliberately: zoom scales the entire
-   subtree including the Segmented/Toggle controls, and any pointer mis-mapping there is indistinguishable
-   from "the setting didn't save". Not worth that risk for a cosmetic density change, and keeping text at
-   full size is better for the help paragraphs anyway.
-   Applies to BOTH mount points — Settings → Video Config and the playlist drawer share this component. */
-/* Row gap stays larger than column gap: each cell is label + control + a multi-line help paragraph, so
-   vertically adjacent cells run together long before the columns do. */
 .pcp .form-grid-2 {
   gap: 20px 24px;
 }
-/* The help paragraphs are the bulk of the panel's text; a looser line-height is what actually makes it
-   scan, and capping the measure keeps them readable now that Settings is twice as wide. */
 .pcp .form-row .muted {
   line-height: 1.45;
   max-width: 62ch;

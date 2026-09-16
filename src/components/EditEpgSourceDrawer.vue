@@ -1,16 +1,4 @@
 <script setup lang="ts">
-// Half-screen slide-out for editing an EPG source's user-owned fields — Name, Sync schedule, and Tags —
-// opened from the "Edit" item in the EPG Sources waffle menu (list + detail screens). It supersedes the old
-// standalone "Sync Schedule" button (ScheduleEditorDrawer) and the standalone Tags card by folding both into
-// one panel. Every field AUTO-SAVES on change (no explicit Save): Name is debounced, Tags persist on toggle,
-// and the schedule is debounced — matching the PlaylistStatusDrawer posture. Self-contained like TagPicker:
-// it reads CRON_JOBS for the paired sync job and re-pulls the shared stores after each write so the list rows
-// and the detail header reflect edits without a page reload.
-//
-// The Sync schedule section only applies to sources with a re-fetchable upstream: it is HIDDEN for 'xml file'
-// (one-shot upload) and playlist-bound sources (their playlist owns the cadence), and DISABLED for the
-// built-in source. Name + Tags remain editable for those. See EPGDetailScreen / ScheduleEditorDrawer for the
-// original cron write shape (PUT|DELETE /api/cronjobs/:id?targetType=epg-source + the interval/auto mirror).
 import { ref, reactive, computed, onMounted, nextTick, watch } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
@@ -26,15 +14,11 @@ import { defaultFrequency, buildCron, summarizeFrequency } from '../composables/
 const props = defineProps<{ source: EpgSource }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-// Source-kind gates (mirror EPGDetailScreen): 'xml file' is a one-shot upload (no sync cadence); a
-// playlist-bound row's guide is driven by its playlist; the built-in source ships preconfigured.
 const isXmlFile = computed(() => props.source.source === 'xml file');
 const isPlaylistBound = computed(() => !!props.source.playlistBinding);
 const builtin = computed(() => !!props.source.builtin);
 const showSchedule = computed(() => !isXmlFile.value && !isPlaylistBound.value);
 
-// Shared PUT for the EpgSource row's user-owned fields (name / tags / interval / auto). Re-pulls the store so
-// every screen derived from EPG_SOURCES refreshes. Best-effort — the local field keeps its optimistic value.
 async function putEpg(patch: Record<string, unknown>): Promise<boolean> {
   try {
     const res = await fetch(`/api/epg-sources/${encodeURIComponent(props.source.id)}`, {
@@ -49,7 +33,6 @@ async function putEpg(patch: Record<string, unknown>): Promise<boolean> {
   }
 }
 
-// ── Name — debounced rename (like PlaylistStatusDrawer.onName) ─────────────────────────────────────────
 const name = ref(props.source.name);
 let nameTimer: ReturnType<typeof setTimeout> | null = null;
 function onName(v: string): void {
@@ -61,16 +44,12 @@ function onName(v: string): void {
   }, 400);
 }
 
-// ── Tags — persist immediately on toggle (like EPGDetailScreen.saveTags) ───────────────────────────────
 const tags = ref<string[]>([...(props.source.tags ?? [])]);
 function onTags(v: string[]): void {
   tags.value = v;
   void putEpg({ tags: v });
 }
 
-// ── Sync schedule — the shared FrequencyBuilder, auto-saved (debounced) on change ──────────────────────
-// The schedule lives in a cronjobs doc keyed epg-source:<id>; Automatic upserts it, Manual deletes it. We
-// also mirror the friendly interval label + auto flag onto the EpgSource row (the header pill reads it).
 const job = computed<CronJob | null>(() =>
   CRON_JOBS.value.find((j) => j.targetType === 'epg-source' && j.targetId === props.source.id) || null,
 );
@@ -80,8 +59,6 @@ const rawCron = ref('0 */6 * * *');
 const cron = computed(() => buildCron(freq, rawCron.value));
 const summary = computed(() => summarizeFrequency(freq, rawCron.value));
 
-// `hydrated` guards the auto-save watcher so seeding the builder from the existing job (below) doesn't fire a
-// spurious write on open. Flipped true after the initial hydration settles.
 const hydrated = ref(false);
 onMounted(async () => {
   const j = job.value;
@@ -98,7 +75,6 @@ onMounted(async () => {
 
 async function saveSchedule(): Promise<void> {
   if (!showSchedule.value || builtin.value) return;
-  // Auto mode needs a compiled cron; a half-typed custom expression writes nothing until it's valid.
   if (isAuto.value && !cron.value.trim()) return;
   const path = `/api/cronjobs/${encodeURIComponent(props.source.id)}?targetType=epg-source`;
   try {
@@ -116,17 +92,13 @@ async function saveSchedule(): Promise<void> {
         }),
       });
     } else {
-      // DELETE is idempotent — a 404 (already manual) is fine.
       await fetch(path, { method: 'DELETE' });
     }
     await reloadCronjobs();
   } catch {
-    /* best-effort; the builder keeps its local state and the next change retries */
   }
 }
 
-// Debounce schedule writes so toggling Manual/Automatic or tweaking the frequency doesn't fire per keystroke.
-// Deep-watch `freq` via a serialized snapshot (it's mutated in place by the builder).
 let schedTimer: ReturnType<typeof setTimeout> | null = null;
 watch(
   () => [isAuto.value, rawCron.value, JSON.stringify(freq)],
@@ -154,7 +126,6 @@ watch(
       </div>
 
       <div class="drawer-body">
-        <!-- Name -->
         <div class="form-row">
           <div class="field-lbl">Name</div>
           <div class="input">
@@ -163,7 +134,6 @@ watch(
           </div>
         </div>
 
-        <!-- Sync schedule — only for sources with a re-fetchable upstream; disabled for the built-in source. -->
         <template v-if="showSchedule">
           <div class="divider" />
           <div :style="builtin ? 'opacity: 0.55; pointer-events: none;' : ''">
@@ -178,7 +148,6 @@ watch(
 
         <div class="divider" />
 
-        <!-- Tags -->
         <div class="form-row">
           <div class="field-lbl">Tags</div>
           <div class="muted" style="font-size: var(--fs-xs); margin: 0 0 8px;">

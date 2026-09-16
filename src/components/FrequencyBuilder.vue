@@ -1,10 +1,4 @@
 <script setup lang="ts">
-// Shared Manual/Automatic schedule frequency builder — the single source of truth for the cron-frequency
-// UI used by every schedule editor: the EPG source Edit drawer (sync schedule) and the Playlist
-// status drawer (Sync + Compose m3u). Renders the Manual/Automatic toggle and, when Automatic, the
-// frequency-mode picker + per-mode inputs + a live summary/cron preview. State is owned by the parent:
-// `freq` is a reactive CronFrequency mutated in place; `auto` and `rawCron` are v-model bindings. The
-// parent compiles the cron it persists via buildCron(freq, rawCron). See useSchedule.ts + schemas.md §3.13.
 import { computed } from 'vue';
 import Icon from './Icon.vue';
 import Segmented from './Segmented.vue';
@@ -12,16 +6,14 @@ import { type CronFrequency } from '../data';
 import { WEEKDAYS, FREQUENCY_MODES, buildCron, summarizeFrequency } from '../composables/useSchedule';
 
 const props = defineProps<{
-  freq: CronFrequency; // reactive frequency object, mutated in place
-  auto: boolean;       // Automatic (true) vs Manual (false) — v-model:auto
-  rawCron: string;     // custom-mode cron string — v-model:rawCron
-  label: string;       // toggle-row label, e.g. 'Sync schedule' | 'Interval type'
-  icon: string;        // preview-row icon
-  manualHint: string;  // muted text shown when Manual
-  modes?: { value: string; label: string; icon: string }[]; // override the frequency-mode set (e.g. the
-  //                     probe schedule omits 'minutes'/'custom' to enforce its once-per-hour floor). Default: all.
-  hideMode?: boolean;  // hide the Manual/Automatic toggle — the PARENT owns enable/disable (e.g. a master
-  //                     toggle that mounts this only when enabled), so the cadence editor renders directly.
+  freq: CronFrequency;
+  auto: boolean;
+  rawCron: string;
+  label: string;
+  icon: string;
+  manualHint: string;
+  modes?: { value: string; label: string; icon: string }[];
+  hideMode?: boolean;
 }>();
 const modeOptions = computed(() => props.modes ?? FREQUENCY_MODES);
 const emit = defineEmits<{

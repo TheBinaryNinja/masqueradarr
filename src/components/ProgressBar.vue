@@ -1,8 +1,4 @@
 <script setup lang="ts">
-// Thin progress-bar primitive over the global .progress classes (styles.css), matching the
-// Btn/Pill/Stat house pattern (no scoped styles). `value` 0..1 renders a determinate bar; a null /
-// undefined value renders an indeterminate (animated) sliver. Used by the Playlists screens to show
-// a per-row Sync/Compose busy bar between the name and the action buttons.
 import { computed } from 'vue';
 
 const props = defineProps<{

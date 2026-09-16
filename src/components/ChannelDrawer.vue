@@ -20,36 +20,20 @@ import { bus } from '../composables/bus';
 const props = defineProps<{ ch: Channel }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
-// The owning playlist (a (Default) playlist's id === source). `builtin` decides whether the stream entry
-// url is editable (built-in source playlists resolve their own urls; only mock/custom ones expose it).
 const playlist = computed(() => PLAYLISTS.value.find((p) => p.id === props.ch.source));
 const builtin = computed(() => playlist.value?.builtin === true);
 
-// Editable copies (seeded from the channel). The Status toggle persists immediately; the other fields are
-// persisted on Save. Only changed fields are sent.
 const displayName = ref(props.ch.tvg_name);
 const channelNo = ref(props.ch.channelNo ?? '');
 const group = ref(props.ch.group ?? '');
 const tvgId = ref(props.ch.tvg_id ?? '');
 const streamUrl = ref(props.ch.streamEntryUrl ?? '');
-// DaddyLive-family sources (dlhd) expose several interchangeable upstream "players" per channel; the
-// picker below lets the operator prefer one for THIS channel (0 = Auto → inherit the source-wide default).
 const player = ref(props.ch.playerPref ?? 0);
-// Operator-assigned custom tags (persisted on Save, alongside the other editable fields).
 const tags = ref<string[]>([...(props.ch.tags ?? [])]);
 
-// A failover CHILD mirrors its parent's EPG identity (the server rejects direct EPG edits on it with
-// 409 failover_child_epg_locked), so the TVG-ID field is locked with an "inherited" hint.
 const isFailoverChild = computed(() => props.ch.failoverRole === 'child');
-// Only sources that declare several interchangeable upstream players carry this picker — read the
-// capability off the /api/sources manifest rather than hardcoding a source-id list.
 const supportsPlayer = computed(() => playerSelectable(props.ch));
 
-// Persist an edit to this channel via PUT /api/playlists/<source>/channels/<id>, then reflect it locally
-// so the open lists update. (Channels are keyed by deterministic id; source === the (Default) playlist id.)
-// A nested `stream` patch is MERGED into the existing stream object so live-field PUTs don't clobber siblings.
-// A failover PARENT's EPG edit cascades server-side; the returned `_cascadedChildren` are merged into the
-// global CHANNELS union and rebroadcast on the bus so a screen holding a LOCAL list (PlaylistDetail) syncs.
 async function putChannel(patch: Record<string, unknown>): Promise<void> {
   const { source, id } = props.ch;
   if (!source) return;
@@ -71,7 +55,6 @@ async function putChannel(patch: Record<string, unknown>): Promise<void> {
       }
     }
   } catch {
-    // best-effort
   }
 }
 
@@ -87,19 +70,14 @@ function save() {
   if (!builtin.value && (streamUrl.value || null) !== (props.ch.streamEntryUrl ?? null)) {
     patch.streamEntryUrl = streamUrl.value || null;
   }
-  // Failover children never send EPG edits (locked field; the server would 409 them anyway).
   if (!isFailoverChild.value && (tvgId.value || null) !== (props.ch.tvg_id ?? null)) {
     patch.tvg_id = tvgId.value || null;
-    // Changing the EPG link factor unlinks any prior match (mirrors MappingScreen.unlink).
     patch.epg = null;
     patch.epgState = 'unmatched';
   }
-  // DaddyLive player override (playerSelectable sources only). 0 = Auto → send null to clear it (inherit the
-  // source-wide default). Compared against the stored pref so an unchanged Auto never sends a needless patch.
   if (supportsPlayer.value && (player.value || null) !== (props.ch.playerPref ?? null)) {
     patch.playerPref = player.value || null;
   }
-  // Custom tags — send only when the set actually changed (order-independent compare on unique ids).
   const curTags = props.ch.tags ?? [];
   const sameTags = tags.value.length === curTags.length && tags.value.every((t) => curTags.includes(t));
   if (!sameTags) patch.tags = tags.value;
@@ -107,9 +85,6 @@ function save() {
   emit('close');
 }
 
-// Hard-delete this single channel (two-step confirm). Tombstoned server-side (survives re-sync); the bus
-// event lets an open PlaylistDetailScreen drop the row from its LOCAL list without a refetch. Mirrors the
-// bulk editor's "Delete N channels" for single-channel parity.
 const confirmRemove = ref(false);
 async function removeChannel() {
   const { source, id } = props.ch;
@@ -123,34 +98,18 @@ async function removeChannel() {
   }
 }
 
-// Live HLS resolution → persist stream.res when it actually changes (drawer open).
 function onResolution(res: string) {
   if (res !== props.ch.stream.res) putChannel({ stream: { res } });
 }
 
-// Ultimate Player launch (videoPlayer === 'ultimate'): open the standalone player.html window on THIS
-// channel. `ch.source` IS the owning playlist id for both playlist kinds (a custom playlist's channels are
-// keyed by its id; a (Default) playlist is provisioned with id === source), which is what lets the popup
-// load the right channel list + guide — the same lookup `playlist` above relies on.
-//
-// The window.open itself (synchronous-call rule, fixed window name, features string, pop-up-blocked toast)
-// lives in the shared openUltimatePlayer helper, which the Playlists/Dashboard rows also call — they launch
-// a playlist with no channel argument, which lands the player on that playlist's first channel.
 function launchUpl() {
   const { source, id } = props.ch;
   if (!source || !id) return;
   openUltimatePlayer(source, id);
 }
 
-// Persisted per-channel technical snapshot. The deep decode-metadata probe + its live poll (the removed
-// GET /api/sources/:id/{channel-status,stream-details}) were removed with the old transcode engine; the scheduled
-// channel probe (Settings → Advanced) now refreshes stream.status/stream.res on the doc, and the live decode
-// metadata (codec/res/…) is surfaced on Active Streams. Seeded from the doc; null → the tech rows show '—'.
 const details = ref<StreamProbe | null>(props.ch.stream.probe ?? null);
 
-// Status chip: prefer the LIVE phase from telemetry (the rebuilt data plane drives it accurately while a
-// viewer — including this drawer's embedded player — is watching), falling back to the PERSISTED status the
-// channel probe keeps fresh. No polling: the phase rides the shared /api/stream-stats WS (liveStream below).
 const statusChip = computed(() => {
   switch (liveStream.value?.phase ?? props.ch.stream.status) {
     case 'live':
@@ -166,7 +125,6 @@ const statusChip = computed(() => {
   }
 });
 
-// Compact one-line presenters for the decode-metadata technical details (null → row shows '—').
 const videoLine = computed(() => {
   const v = details.value?.video;
   if (!v || !v.codec) return null;
@@ -195,11 +153,6 @@ const timingLine = computed(() => {
   return parts.length ? parts.join(' · ') : null;
 });
 
-// Live "liveline" bitrate for THIS channel, off the same /api/stream-stats telemetry the Active Streams
-// screen uses (useStreamStats is a ref-counted singleton — subscribe on mount, release on unmount). The
-// embedded HlsPlayer streams through the proxy, so opening the drawer registers this channel as a viewer
-// and its per-channel bitrate series fills within ~2.5s. Everything is keyed by the channel's deterministic
-// id (= ActiveStream.channelId = PlaylistChannel._id), so the readout is scoped to this channel alone.
 const { subscribe, release, bitrateSeries } = useStreamStats();
 const liveStream = computed(() => ACTIVE_STREAMS.value.find((s) => s.channelId === props.ch.id));
 const bitrateSamples = computed(() => bitrateSeries(props.ch.id).filter(Number.isFinite));
@@ -244,12 +197,6 @@ onBeforeUnmount(() => {
       </div>
 
       <div class="drawer-body chd-body">
-        <!-- Media + details stack vertically: player → liveline → tech details → status chips.
-             With the Ultimate Player selected (Settings → Video Config → Video player), the whole media
-             block above Technical Details collapses to one launch button — playback and its telemetry move
-             to the standalone player window. Everything from Technical Details down is identical in all
-             three modes, and `subscribe()`/`liveStream` stay wired either way so the Stream Live pill and
-             status chip keep working. -->
         <template v-if="videoPlayer === 'ultimate'">
           <div class="chd-upl">
             <Btn v-if="ch.streamEntryUrl" variant="cyan" icon="play" @click="launchUpl">
@@ -263,8 +210,6 @@ onBeforeUnmount(() => {
         </template>
 
         <template v-else>
-          <!-- Source-playlist channels stream live through the proxy; legacy mock channels keep the
-               non-functional placeholder. -->
           <div class="player chd-player" v-if="ch.streamEntryUrl" style="overflow: hidden;">
             <ChannelPlayer :src="appPlayerProxyPath(ch)" @resolution="onResolution" />
           </div>
@@ -280,17 +225,14 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <!-- Live "liveline" bitrate for this channel — self-contained 250px chart, same as Active Streams. -->
           <div class="chd-bitrate">
             <div class="field-lbl">Bitrate · live</div>
             <LivelineChart :series="bitrateSamples" :target="bitrateTarget" />
           </div>
         </template>
 
-        <!-- Blank spacer between the media block and Technical Details. -->
         <div style="height: 15px" />
 
-        <!-- Technical detail (labeled kv rows). Decode-metadata rows appear once the channel has been probed. -->
         <div class="chd-tech">
           <div class="field-lbl">Technical Details</div>
           <div class="kv-list">
@@ -317,8 +259,6 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <!-- Status chips: labels dropped, collected into a single row beneath Technical Details. Only
-             Playable gains a descriptive word since its bare true/false isn't self-explanatory. -->
         <div class="chd-chip-row">
           <Pill :tone="statusChip.tone">
             <StatusDot :status="statusChip.dot" :pulse="statusChip.pulse" /> {{ statusChip.label }}
@@ -381,8 +321,6 @@ onBeforeUnmount(() => {
           <TagPicker v-model="tags" />
         </div>
 
-        <!-- DaddyLive-family only: pick which upstream player this channel prefers (redundant feeds of the
-             same stream). Auto follows the source-wide default; a specific player still falls back on failure. -->
         <div v-if="supportsPlayer" class="form-row">
           <div class="field-lbl">Player source</div>
           <div class="select fill">
@@ -408,7 +346,6 @@ onBeforeUnmount(() => {
 
         <div class="divider" />
 
-        <!-- Whole-playlist group management (rename / delete / add-empty) — shared with the bulk editor. -->
         <GroupManager :playlist-id="ch.source" />
 
         <div class="row" style="margin-top: 6px;">

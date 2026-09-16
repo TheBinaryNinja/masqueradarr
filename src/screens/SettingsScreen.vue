@@ -26,15 +26,8 @@ import {
 
 const toast = useToast();
 
-// Settings is split into three tabs: General (General + Data), Video Config (Channel Probe Scheduler,
-// In-app Video Player, Video Proxy Engine) and Advanced (Geolocation, Playlist Domain / Configuration,
-// Dulo.tv Authentication, Custom Tags).
 const activeTab = ref<'general' | 'video' | 'advanced'>('general');
 
-// Time zone dropdown — the full IANA zone list at runtime (Intl.supportedValuesOf, no dependency), grouped by
-// the region prefix for the <optgroup>s. Falls back to a small common set on the rare runtime without the API.
-// The persisted value is always force-included so the <select> never renders blank on a custom TZ (e.g. one
-// seeded from a non-listed TZ env var). This is the operator's default scheduling zone (croner cronjobs).
 const FALLBACK_TZS = [
   'UTC',
   'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles', 'America/Anchorage', 'America/Sao_Paulo',
@@ -44,7 +37,6 @@ const FALLBACK_TZS = [
 ];
 
 const timezoneGroups = computed(() => {
-  // Access via a cast so we don't depend on the TS lib shipping the (newer) Intl.supportedValuesOf typing.
   const supported = (Intl as { supportedValuesOf?: (key: string) => string[] }).supportedValuesOf;
   const all = typeof supported === 'function' ? supported('timeZone') : FALLBACK_TZS;
   const zones = all.includes(timezone.value) ? all : [timezone.value, ...all];
@@ -61,10 +53,6 @@ const timezoneGroups = computed(() => {
     .map(([region, list]) => ({ region, zones: list.sort((a, b) => a.localeCompare(b)) }));
 });
 
-// The DST-aware UTC offset ('±HHMM') of the selected zone right now — shown next to the dropdown so the
-// operator sees what gets stored (the server derives + persists the same value on save, and stamps it onto
-// synced programs). Mirrors server/src/settings/zoneOffset.ts. Recomputes only on selection (not per render),
-// so the one Intl.DateTimeFormat construction is negligible.
 const tzOffsetLabel = computed(() => {
   try {
     const parts = new Intl.DateTimeFormat('en-US', {
@@ -82,8 +70,6 @@ const tzOffsetLabel = computed(() => {
   }
 });
 
-// MaxMind GeoIP credentials. accountId binds to the auto-persist ref; the license key is write-only — typed
-// into a local field and PUT explicitly on Save (the API never returns it, only `maxmindLicenseKeySet`).
 const licenseKeyInput = ref('');
 const keySaveState = ref<'idle' | 'saving' | 'saved' | 'error'>('idle');
 async function saveLicenseKey() {
@@ -102,12 +88,7 @@ async function clearLicenseKey() {
   setTimeout(() => (keySaveState.value = 'idle'), 2200);
 }
 
-// ── Data card ──────────────────────────────────────────────────────────────
-// Maintenance, full-workspace backup (generate/restore + a scheduled write to disk), and the danger-zone
-// reset. The backup schedule is the SAME cronjob mechanism the probe sweep uses (targetType:'backup',
-// targetId:'app'), managed via /api/cronjobs with the daily/weekly/hourly modes.
 
-// Rebuild MongoDB indexes across every collection.
 const rebuildingIndex = ref(false);
 async function rebuildIndex() {
   rebuildingIndex.value = true;
@@ -127,7 +108,6 @@ async function rebuildIndex() {
   }
 }
 
-// Generate + download a full backup. The server streams a gzip file with a Content-Disposition filename.
 const generating = ref(false);
 async function generateBackup() {
   generating.value = true;
@@ -156,8 +136,6 @@ async function generateBackup() {
 const restoreModalOpen = ref(false);
 function onRestored() { window.location.reload(); }
 
-// Scheduled on-disk backup — mirrors the probe schedule (cronjob targetType:'backup'), modes limited to
-// hourly/daily/weekly (no minutes/custom).
 const BACKUP_MODES = [
   { value: 'hourly', label: 'Hourly', icon: 'refresh' },
   { value: 'daily', label: 'Daily', icon: 'sync' },
@@ -170,7 +148,6 @@ const backupSaving = ref(false);
 const backupSaveState = ref<'idle' | 'saved' | 'error'>('idle');
 
 onMounted(async () => {
-  // Hydrate from the persisted backup cronjob, if one exists (else the daily-at-03:00 defaults stand).
   try {
     const res = await fetch('/api/cronjobs/app?targetType=backup');
     if (res.ok) {
@@ -180,7 +157,6 @@ onMounted(async () => {
       if (typeof job.cron === 'string' && job.cron) backupRawCron.value = job.cron;
     }
   } catch {
-    /* no schedule yet — defaults stand */
   }
 });
 
@@ -203,7 +179,6 @@ async function saveBackupSchedule() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } else {
-      // Manual → unschedule (idempotent; a 404 just means there was nothing to remove).
       const res = await fetch(path, { method: 'DELETE' });
       if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
     }
@@ -216,9 +191,6 @@ async function saveBackupSchedule() {
   }
 }
 
-// Scheduled channel probe (PRB) — cronjob targetType:'channel-probe', targetId:'app'. Modes are limited to
-// hourly/daily/weekly (a probe resolves + checks EVERY channel upstream, so there's a once-per-hour floor —
-// no minutes/custom). Mirrors the backup-schedule pattern; adds a "Run now" one-off (POST /api/probe/run).
 const PROBE_MODES = [
   { value: 'hourly', label: 'Hourly', icon: 'refresh' },
   { value: 'daily', label: 'Daily', icon: 'sync' },
@@ -230,16 +202,12 @@ const probeRawCron = ref('0 */6 * * *');
 const probeSaving = ref(false);
 const probeSaveState = ref<'idle' | 'saved' | 'error'>('idle');
 const probeRunning = ref(false);
-// Sources the sweep skips (manifest `probeExempt` — an upstream that polices bulk access), limited to the
-// ones actually added here: the card says "every active channel", so it must name the exceptions an operator
-// can see, and only those. A built-in playlist's id IS its source id, which is what the lookup relies on.
 const probeExemptLabels = computed(() => {
   const added = new Set(PLAYLISTS.value.map((p) => p.id));
   return SOURCES.value.filter((s) => s.probeExempt === true && added.has(s.id)).map((s) => s.label);
 });
 
 onMounted(async () => {
-  // Hydrate the probe schedule from its cronjob, if one exists (else the every-6-hours defaults stand).
   try {
     const res = await fetch('/api/cronjobs/app?targetType=channel-probe');
     if (res.ok) {
@@ -249,14 +217,11 @@ onMounted(async () => {
       if (typeof job.cron === 'string' && job.cron) probeRawCron.value = job.cron;
     }
   } catch {
-    /* no schedule yet — defaults stand */
   }
-  // Reflect an already-running sweep (kicked elsewhere) in the button state.
   try {
     const res = await fetch('/api/probe/status');
     if (res.ok) probeRunning.value = !!(await res.json()).running;
   } catch {
-    /* ignore */
   }
 });
 
@@ -279,7 +244,6 @@ async function saveProbeSchedule() {
       });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } else {
-      // Manual → unschedule (idempotent; a 404 just means there was nothing to remove).
       const res = await fetch(path, { method: 'DELETE' });
       if (!res.ok && res.status !== 404) throw new Error(`HTTP ${res.status}`);
     }
@@ -292,7 +256,6 @@ async function saveProbeSchedule() {
   }
 }
 
-// Fire an immediate sweep, then poll status so the button clears when it finishes (no progress WS in P1.3).
 async function runProbeNow() {
   probeRunning.value = true;
   try {
@@ -323,7 +286,6 @@ async function runProbeNow() {
   setTimeout(poll, 3000);
 }
 
-// Danger zone — wipe the entire workspace, then reload into the fresh state.
 const resetting = ref(false);
 const resetConfirm = ref(false);
 async function fireReset() {
@@ -342,10 +304,6 @@ async function fireReset() {
 
 <template>
   <div>
-    <!-- Wider than the original 760px because the Video Config panels are two-column and each column has to
-         carry a multi-line help paragraph — but well short of the 1520px that was tried first, which only
-         stretched the measure without adding information. At 940px each column lands near 440px, which is
-         where the two-column grid stops feeling cramped. This is a MAX — narrower viewports still shrink. -->
     <div class="col settings-col" :style="{ maxWidth: '940px' }">
     <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
       { value: 'general', label: 'General' },
@@ -487,8 +445,6 @@ async function fireReset() {
       </SettingsRow>
     </div>
 
-    <!-- Durable video engine — the (Default) proxy config applied to every playlist (per-playlist Custom
-         overrides live in the playlist editor drawer). Auto-saves on change. [UICFG] -->
     <ProxyConfigPanel v-if="activeTab === 'video'" config-id="app" title="Video Proxy Engine (Default)" />
 
     <div class="card" v-if="activeTab === 'advanced'">
@@ -526,11 +482,8 @@ async function fireReset() {
       </div>
     </div>
 
-    <!-- Per-source enable / domain / extendedProperties for DaddyLive, dulo and ZLive, edited as raw JSON with a
-         Test probe. Saved explicitly (a changed dulo domain signs the dulo session out). -->
     <PlaylistConfigPanel v-if="activeTab === 'advanced'" />
 
-    <!-- Hidden while the playlist configuration has dulo disabled (enable: false). -->
     <DuloAuthPanel v-if="activeTab === 'advanced' && playlistConfig.dulo.enable" />
 
     <div class="card" v-if="activeTab === 'advanced'">

@@ -1,19 +1,12 @@
 <script setup lang="ts">
-// Global custom-tag manager (Settings → Custom Tags). Create / rename / delete over the shared TAGS registry
-// (server: Tag collection + /api/tags). Modeled on GroupManager.vue but app-wide: no playlistId, no bus events
-// — the TAGS store is reactive, so a rename/delete reflects on every row automatically (tagNames() resolves
-// ids → names). A per-tag usage count is derived from the three taggable stores; the delete confirm surfaces
-// how many records will lose the tag.
 import { ref, computed, onMounted } from 'vue';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import Pill from './Pill.vue';
 import { TAGS, PLAYLISTS, EPG_SOURCES, CHANNELS, reloadTags, createTag, renameTag, deleteTag, type Tag } from '../data';
 
-// Fresh-load on open (cheap; TAGS is also bootstrapped) so concurrent edits from another admin are reflected.
 onMounted(() => reloadTags().catch(() => {}));
 
-// Usage count per tag id across every taggable record — one pass, memoized on the stores.
 const usage = computed(() => {
   const m = new Map<string, number>();
   const bump = (ids?: string[]) => ids?.forEach((id) => m.set(id, (m.get(id) ?? 0) + 1));
@@ -29,7 +22,6 @@ const sorted = computed(() =>
 
 const opError = ref('');
 
-// ── Rename (inline, 3-state row) ──
 const renaming = ref<string | null>(null);
 const renameVal = ref('');
 function startRename(t: Tag) {
@@ -50,7 +42,6 @@ async function commitRename() {
   }
 }
 
-// ── Delete (inline confirm) — cascades a $pull across all records ──
 const confirmDelete = ref<string | null>(null);
 async function doDelete(id: string) {
   confirmDelete.value = null;
@@ -61,7 +52,6 @@ async function doDelete(id: string) {
   }
 }
 
-// ── Add ──
 const newName = ref('');
 const creating = ref(false);
 async function addTag() {

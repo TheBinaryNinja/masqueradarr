@@ -1,7 +1,4 @@
 <script setup lang="ts">
-// Toast Lower-Right host — renders lower-right-positioned toasts (newest at the bottom). Mounted once in
-// App.vue; reads the shared useToast queue. Also carries the scheduled-sync (cron) toasts. See
-// styles.css `.toasts-br`.
 import { computed } from 'vue';
 import ToastCard from './ToastCard.vue';
 import { useToast } from '../composables/useToast';

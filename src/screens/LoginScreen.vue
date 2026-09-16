@@ -13,9 +13,6 @@ const password = ref('');
 const error = ref('');
 const loading = ref(false);
 
-// Deterministic Code128-style barcode strip — same seed, same bars (the brand
-// card's barcode generator, masqueradarr-card "The deterministic barcode").
-// Offline / self-contained: the login screen never calls out for artwork.
 const barcode = (() => {
     const rects: { x: number; w: number }[] = [];
     let seed = 20240624, x = 0, ink = true;
@@ -54,7 +51,6 @@ async function handleLogin() {
 
 <template>
     <div class="auth-stage">
-        <!-- decorative UPLINK micrographic plate behind the card (masqueradarr-micrographics MK-07.2) -->
         <svg class="auth-plate" viewBox="0 0 360 230" aria-hidden="true">
             <g stroke="var(--bracket)" stroke-width="1.5" fill="none">
                 <path d="M14 28 V14 H28" /><path d="M346 28 V14 H332" />
@@ -80,11 +76,9 @@ async function handleLogin() {
         </svg>
 
         <div class="auth-card card">
-            <!-- corner brackets -->
             <span class="corner tl" /><span class="corner tr" />
             <span class="corner bl" /><span class="corner br" />
 
-            <!-- top micro row -->
             <div class="micro-row">
                 <span class="micro-hi">MASQUERADARR // ACCESS</span>
                 <span>MK-SYS / SECURE</span>
@@ -103,7 +97,6 @@ async function handleLogin() {
                 <p class="muted auth-tagline">Sign in to manage your IPTV feeds and channels.</p>
             </div>
 
-            <!-- ticked divider -->
             <div class="divider">
                 <span class="div-fill" />
                 <span class="tick" style="left:0" /><span class="tick" style="left:25%" />
@@ -140,7 +133,6 @@ async function handleLogin() {
                 </Btn>
             </form>
 
-            <!-- foot: deterministic barcode + spec strip -->
             <div class="auth-foot">
                 <svg class="barcode" :viewBox="`0 0 ${barcode.width} 30`" preserveAspectRatio="none" aria-hidden="true">
                     <rect v-for="(r, i) in barcode.rects" :key="i" :x="r.x" y="0" :width="r.w" height="30" />
@@ -156,10 +148,6 @@ async function handleLogin() {
 </template>
 
 <style scoped>
-/* Full-bleed masqueradarr brand stage — the same teal-aurora + vignette field
-   shared with the Dashboard (.mq-stage in styles.css). The gradient runs
-   edge-to-edge: no padding on the stage itself; the 20px inset lives on the
-   centered card wrapper (.auth-stage > * below) so the field never insets. */
 .auth-stage {
     position: relative;
     display: grid;
@@ -171,7 +159,6 @@ async function handleLogin() {
         var(--bg-0);
     overflow: hidden;
 }
-/* edge vignette — deepens the periphery so the lit card reads as elevated */
 .auth-stage::before {
     content: '';
     position: absolute;
@@ -180,7 +167,6 @@ async function handleLogin() {
     z-index: 0;
     background: radial-gradient(125% 105% at 50% 36%, transparent 56%, rgb(0 0 0 / 0.28) 100%);
 }
-/* the centered card carries the inset; the gradient stays full-bleed */
 .auth-stage > .auth-card { margin: 20px; }
 .auth-plate {
     position: absolute;
@@ -203,7 +189,6 @@ async function handleLogin() {
     backdrop-filter: blur(10px);
 }
 
-/* corner brackets */
 .corner {
     position: absolute;
     width: 14px;

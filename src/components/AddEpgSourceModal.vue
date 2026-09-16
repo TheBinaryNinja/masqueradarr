@@ -23,8 +23,6 @@ const emit = defineEmits<{ (e: 'close'): void }>();
 const router = useRouter();
 const toast = useToast();
 
-// The created EpgSource doc rides back with an extra `offsetDefaulted` flag: warn when the operator's Time zone
-// offset was unset, so the source's guide times were stamped UTC. See server/src/settings/programOffset.ts.
 function warnIfOffsetDefaulted(result: unknown): void {
   if (result && typeof result === 'object' && (result as { offsetDefaulted?: boolean }).offsetDefaulted) {
     toast.lowerRight({
@@ -56,7 +54,6 @@ const error = ref('');
 
 function providerKey(p: Provider) { return `${p.headendId}:${p.lineupId}`; }
 
-// ── EPG-PW tab state (kept separate so the two tabs don't collide) ─────────
 interface Region { label: string; href: string; code: string }
 interface PwSampleItem { channelNo: string | null; callSign: string | null; title: string; start: number; end: number }
 interface PwSummary { regionName: string | null; channelCount: number; sample: PwSampleItem[] }
@@ -71,32 +68,18 @@ let regionsLoaded = false;
 
 const selectedRegion = () => regions.value.find((r) => r.href === selectedHref.value) || null;
 
-// ── Jesmann tab state (a guided picker over the hardcoded epg.guru catalog) ─────────
-// The user picks a Region + Download type; the pair resolves to one concrete .xml URL that is created as a
-// 'jesmann'-kind XMLTV source. It re-fetches exactly like a 'remote url' source (the backend treats both as
-// re-fetchable XMLTV URLs), but carries its own 'jesmann' source type so 'remote url' stays reserved for the
-// genuine Remote URL feature in the Custom tab.
 const jesmannRegionId = ref('');
 const jesmannTypeId = ref('');
 
-// Live size-probe state. A region's variant URLs are HEAD-probed on the SERVER (the SPA can't reach
-// epg.guru directly — CORS + the outbound DNS override lives server-side) so the picker can list every
-// download with its real size and grey out ones that aren't available. Keyed by the absolute variant URL.
 const jesmannProbing = ref(false);
 const jesmannProbeError = ref('');
 const jesmannProbe = ref<Record<string, { available: boolean; size: number | null; gzip: boolean }>>({});
 const jesmannProbed = computed(() => Object.keys(jesmannProbe.value).length > 0);
 
-// Shared live execution feedback for EVERY Add tab, driven by the streaming NDJSON response. `importPhase`
-// advances idle → downloading → importing → error (a `done` line closes the modal); `importPercent` is the
-// 0..100 completion when the server can compute it, else null (indeterminate bar). `jesmannError` stays a
-// DEDICATED error ref — the Jesmann tab shows its failure in the footer; the other tabs use their body refs.
 const importPhase = ref<'idle' | 'downloading' | 'importing' | 'error'>('idle');
 const importPercent = ref<number | null>(null);
 const jesmannError = ref('');
 
-// Shared success tail: every tab does the same thing once a source is created — surface the UTC-offset
-// warning, refresh the (lazily-loaded) source list, close the modal, and open the EPG Sources screen.
 async function finishImport(source: unknown) {
   warnIfOffsetDefaulted(source);
   await reloadEpgSources();
@@ -104,10 +87,6 @@ async function finishImport(source: unknown) {
   router.push('/epg-sources');
 }
 
-// Shared streaming-import engine behind EVERY Add tab. POSTs with `Accept: application/x-ndjson` so the
-// server streams `{ phase, percent }` lines (one JSON object per line); updates the shared importPhase /
-// importPercent as they arrive. Returns the `done` payload's source on success, or throws a mapped message
-// on a pre-stream failure / an `{ phase:'error' }` line. (Generalized from the original Jesmann-only reader.)
 async function runNdjsonImport(
   input: string,
   init: RequestInit,
@@ -119,13 +98,10 @@ async function runNdjsonImport(
     ...init,
     headers: { ...((init.headers as Record<string, string>) || {}), Accept: 'application/x-ndjson' },
   });
-  // A pre-stream failure (e.g. a 400 validation / 502 before the NDJSON body opens) arrives as a JSON error.
   if (!res.ok || !res.body) {
     const body = await res.json().catch(() => ({}));
     throw new Error(mapError(body.error, body.message));
   }
-  // Read the NDJSON stream line by line: phase/percent drive the footer + bar; the done payload carries the
-  // created source; an error line yields a mapped failure message thrown after the stream ends.
   const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buf = '';
@@ -161,8 +137,6 @@ async function runNdjsonImport(
   return donePayload.source;
 }
 
-// Per-tab error-code → friendly message mappers (the precedent set by jesmannErrorMessage). An unmapped /
-// unknown code falls back to the generic add failure.
 function gracenoteErrorMessage(code: unknown): string {
   if (code === 'gracenote_unreachable') return 'Could not reach Gracenote — please try again.';
   return 'Could not add the source — please try again.';
@@ -171,8 +145,6 @@ function epgpwErrorMessage(code: unknown): string {
   if (code === 'epgpw_unreachable') return 'Could not reach EPG-PW — please try again.';
   return 'Could not add the source — please try again.';
 }
-// The server now categorizes XMLTV failures (see classifyXmltvError) and rides a short, URL-free `message`
-// (an errno like ENOTFOUND, or "HTTP 403") so the user sees WHY it failed instead of a catch-all.
 function customErrorMessage(code: unknown, message?: unknown): string {
   const detail = typeof message === 'string' && message ? ` (${message})` : '';
   switch (code) {
@@ -196,17 +168,11 @@ function customErrorMessage(code: unknown, message?: unknown): string {
 }
 
 const jesmannSelectedRegion = computed<JesmannRegion | null>(() => jesmannRegion(jesmannRegionId.value));
-// EVERY download-type variant this region offers (14d / 7d / 3d × Standard / IPTV, plus the specials — Team
-// Sports image variants, Individual Markets 14d-only, Legacy). No client-side filtering: the picker lists all
-// available downloads and lets the user pick by size.
 const jesmannTypes = computed<JesmannType[]>(() => jesmannSelectedRegion.value?.types || []);
 const jesmannSelectedType = computed<JesmannType | null>(
   () => jesmannTypes.value.find((t) => t.id === jesmannTypeId.value) || null,
 );
 
-// The picker rows: each catalog variant joined with its probe result. Before/without a probe a variant is
-// assumed available with an unknown size, so the list renders immediately and degrades gracefully if the probe
-// fails.
 const jesmannOptions = computed(() => {
   const region = jesmannSelectedRegion.value;
   if (!region) return [];
@@ -225,8 +191,6 @@ const jesmannOptions = computed(() => {
 });
 const jesmannHasAvailable = computed(() => jesmannOptions.value.some((o) => o.available));
 
-// Human-readable byte size (e.g. '412.3 MB'). Local copy — the repo keeps a small per-component formatter
-// (HistoryMetricsScreen / RestoreBackupModal / DashboardScreen) rather than a shared util.
 function formatBytes(n: number | null): string {
   if (n == null || !Number.isFinite(n) || n <= 0) return 'unknown';
   const k = 1024;
@@ -235,9 +199,6 @@ function formatBytes(n: number | null): string {
   return `${parseFloat((n / k ** i).toFixed(1))} ${units[i]}`;
 }
 
-// On region change, probe all of that region's variant URLs for availability + size, then default-select the
-// first AVAILABLE variant. The probe is an ENHANCEMENT: if it fails, every variant stays selectable with an
-// unknown size so the user can still add a source.
 async function onJesmannRegionChange() {
   jesmannTypeId.value = '';
   jesmannProbe.value = {};
@@ -269,7 +230,6 @@ async function onJesmannRegionChange() {
   selectFirstAvailableJesmann();
 }
 
-// Default-select the first AVAILABLE variant, preferring the region's usual default type order.
 function selectFirstAvailableJesmann() {
   const region = jesmannSelectedRegion.value;
   if (!region) { jesmannTypeId.value = ''; return; }
@@ -279,8 +239,6 @@ function selectFirstAvailableJesmann() {
   jesmannTypeId.value = def?.id || available[0].type.id;
 }
 
-// Map a tagged server error code to a friendly message (the precedent in runValidate). Jesmann's only
-// expected failure is an unreachable / temporarily-missing guide.
 function jesmannErrorMessage(code: unknown, message?: unknown): string {
   const detail = typeof message === 'string' && message ? ` (${message})` : '';
   switch (code) {
@@ -303,9 +261,6 @@ function jesmannErrorMessage(code: unknown, message?: unknown): string {
   }
 }
 
-// Create a Jesmann source via the shared NDJSON reader so the footer shows the live status + percent
-// (Downloading… → Importing & parsing… N%). On {phase:'done'} we close the modal; on any failure the modal
-// stays open, the buttons re-enable, and the reason shows in the footer.
 async function addJesmann() {
   const r = jesmannSelectedRegion.value;
   const t = jesmannSelectedType.value;
@@ -330,7 +285,6 @@ async function addJesmann() {
   }
 }
 
-// ── Custom tab state (Upload XML / Remote URL — an XMLTV file or a re-fetchable URL) ─────────
 interface XmltvSampleItem { channelNo: string | null; callSign: string | null; title: string; start: number; end: number }
 interface XmltvValidation { ok: boolean; channelCount: number; programmeCount: number; sample: XmltvSampleItem[]; errors: string[] }
 
@@ -338,8 +292,8 @@ const customMode = ref<'file' | 'url'>('file');
 const customName = ref('');
 const customFileInput = ref<HTMLInputElement | null>(null);
 const customFileName = ref('');
-const customBody = ref<XmltvBody | null>(null); // gzipped (or raw) file body, reused for validate + create
-const customUrl = ref(''); // remote XMLTV URL (url mode)
+const customBody = ref<XmltvBody | null>(null);
+const customUrl = ref('');
 const xmltvValid = ref<XmltvValidation | null>(null);
 const xmltvError = ref('');
 const validating = ref(false);
@@ -363,9 +317,6 @@ function switchCustomMode(m: 'file' | 'url') {
   resetCustom();
 }
 
-// Validate-only pre-flight against the backend → honest channel/program counts + a sample, or a list of
-// specific issues, before the user commits. (The XMLTV analogue of the M3U import preview.) The file path
-// POSTs the gzipped body; the url path POSTs a tiny JSON { url } the server re-fetches.
 async function runValidate(init: RequestInit) {
   validating.value = true;
   xmltvError.value = '';
@@ -393,7 +344,7 @@ async function onCustomFileChange(e: Event) {
   xmltvError.value = '';
   xmltvValid.value = null;
   try {
-    customBody.value = await fileToXmltvBody(f); // gzip in-stream (or pass a .xml.gz through)
+    customBody.value = await fileToXmltvBody(f);
   } catch (e) {
     xmltvError.value = (e as Error).message;
     validating.value = false;
@@ -411,9 +362,6 @@ async function checkXmltvUrl() {
   });
 }
 
-// Create the Custom source: 'xml file' (POST the gzipped guide body, metadata in the query) or 'remote url'
-// (POST a tiny JSON { url } the server re-fetches). Then refresh the EPG stores + the mapping screen's
-// channel list and open the list.
 async function addCustom() {
   if (!customReady.value || adding.value) return;
   adding.value = true;
@@ -466,9 +414,9 @@ async function loadRegions() {
 }
 
 function onTabChange(v: string) {
-  if (adding.value) return; // Segmented is :value-controlled, so a no-op keeps the current tab while busy.
+  if (adding.value) return;
   tab.value = v as 'gracenote' | 'jesmann' | 'epg-pw' | 'custom';
-  importPhase.value = 'idle'; // clear any stale status/percent from a prior tab's failed attempt
+  importPhase.value = 'idle';
   importPercent.value = null;
   if (tab.value === 'epg-pw') loadRegions();
 }
@@ -613,7 +561,6 @@ async function add() {
           @change="onTabChange"
         />
 
-        <!-- Gracenote -->
         <div v-if="tab === 'gracenote'" style="display: flex; flex-direction: column; gap: 14px; max-height: 58vh; overflow-y: auto;">
           <div class="form-grid-2">
             <div class="form-row">
@@ -639,7 +586,6 @@ async function add() {
 
           <div v-if="error" class="muted" style="color: var(--bad); font-size: var(--fs-sm);">{{ error }}</div>
 
-          <!-- Provider list -->
           <div v-if="providers.length" style="display: flex; flex-direction: column; gap: 6px;">
             <div class="field-lbl">Choose a provider</div>
             <button
@@ -666,7 +612,6 @@ async function add() {
             </button>
           </div>
 
-          <!-- Preview summary -->
           <div v-if="loadingPreview" class="muted" style="font-size: var(--fs-sm);">Loading listings…</div>
           <div v-else-if="summary" class="card" style="background: var(--bg-2); padding: 14px; display: flex; flex-direction: column; gap: 10px;">
             <div class="row" style="gap: 8px; align-items: center;">
@@ -686,7 +631,6 @@ async function add() {
           </div>
         </div>
 
-        <!-- Jesmann (guided picker → a single 'jesmann' XMLTV source) -->
         <div v-else-if="tab === 'jesmann'" style="display: flex; flex-direction: column; gap: 14px; max-height: 58vh; overflow-y: auto;">
           <div class="form-row">
             <div class="field-lbl">Region</div>
@@ -700,7 +644,6 @@ async function add() {
             </div>
           </div>
 
-          <!-- Available downloads for the region, each with its live-probed size — pick by size -->
           <div v-if="jesmannSelectedRegion" style="display: flex; flex-direction: column; gap: 6px;">
             <div class="field-lbl">
               Available downloads
@@ -751,7 +694,6 @@ async function add() {
           </div>
         </div>
 
-        <!-- EPG-PW -->
         <div v-else-if="tab === 'epg-pw'" style="display: flex; flex-direction: column; gap: 14px; max-height: 58vh; overflow-y: auto;">
           <div class="form-row">
             <div class="field-lbl">Region</div>
@@ -770,7 +712,6 @@ async function add() {
 
           <div v-if="pwError" class="muted" style="color: var(--bad); font-size: var(--fs-sm);">{{ pwError }}</div>
 
-          <!-- Preview summary -->
           <div v-if="loadingPwPreview" class="muted" style="font-size: var(--fs-sm);">Loading listings…</div>
           <div v-else-if="pwSummary" class="card" style="background: var(--bg-2); padding: 14px; display: flex; flex-direction: column; gap: 10px;">
             <div class="row" style="gap: 8px; align-items: center;">
@@ -793,7 +734,6 @@ async function add() {
           </div>
         </div>
 
-        <!-- Custom (Upload XML / Remote URL) -->
         <div v-else-if="tab === 'custom'" style="display: flex; flex-direction: column; gap: 14px; max-height: 58vh; overflow-y: auto;">
           <div class="form-row">
             <div class="field-lbl">Source name</div>
@@ -818,7 +758,6 @@ async function add() {
             @change="onCustomFileChange"
           />
 
-          <!-- Upload XML -->
           <template v-if="customMode === 'file'">
             <div v-if="!customFileName" class="dropzone" @click="customFileInput?.click()">
               <div class="icon-circle"><Icon name="upload" :size="20" /></div>
@@ -835,7 +774,6 @@ async function add() {
             </div>
           </template>
 
-          <!-- Remote URL -->
           <template v-else>
             <div class="row">
               <div class="input" style="flex: 1;">
@@ -852,7 +790,6 @@ async function add() {
             </div>
           </template>
 
-          <!-- Validation feedback: success summary or the specific issues found -->
           <div v-if="validating" class="muted" style="font-size: var(--fs-sm);">Validating XMLTV…</div>
           <div
             v-else-if="xmltvValid && xmltvValid.ok"
@@ -886,9 +823,6 @@ async function add() {
       </div>
 
       <div class="modal-ft">
-        <!-- Live execution status (all tabs): phase text + % while importing, pushed to the LEFT of the
-             buttons. A Jesmann failure also surfaces here (its tab has no body error slot); the other tabs
-             show their failure in-body, so for them this only renders while `adding`. -->
         <span
           v-if="adding || (tab === 'jesmann' && importPhase === 'error' && jesmannError)"
           class="muted"
@@ -944,8 +878,6 @@ async function add() {
         </Btn>
       </div>
 
-      <!-- Thin import progress bar beneath the footer (the shared ProgressBar primitive): determinate when the
-           server reports a percent, otherwise indeterminate. Only present while a create/sync is running. -->
       <div v-if="adding" style="padding: 2px 16px 14px;">
         <ProgressBar :value="importPercent != null ? importPercent / 100 : null" />
       </div>

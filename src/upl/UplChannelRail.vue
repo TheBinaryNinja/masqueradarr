@@ -1,15 +1,4 @@
 <script setup lang="ts">
-// UplChannelRail — the non-obtrusive channel switcher: an overlay rail on the right edge, hidden until you
-// want it (hover the edge, press C, or use the shell's Channels button), auto-hiding again once you stop
-// interacting. It deliberately renders NO handle of its own: an absolutely-positioned tab against .upl-root
-// lands inside the header band and collides with that Channels button.
-//
-// Virtualized with useVirtualList, which requires a FIXED row height — hence ROW_H here and the matching
-// locked height in CSS. A playlist can hold thousands of channels, and only the rows actually on screen are
-// rendered (and only those have their guide data fetched, via the `visibleKeys` emit).
-//
-// Each row carries a brief EPG summary — what's on now, how long is left, and an elapsed bar — so you can
-// scan the list without leaving the picture. The row under the keyboard cursor expands to add what's next.
 import { ref, computed, watch, onMounted, nextTick } from 'vue';
 import type { Channel, Program } from '../data';
 import ChannelLogo from '../components/ChannelLogo.vue';
@@ -17,7 +6,7 @@ import Icon from '../components/Icon.vue';
 import { useVirtualList } from '../composables/useVirtualList';
 import { now, nowNext, progressOf, epgKey, fmtClock, fmtRemaining, sortKey } from './useUplData';
 
-const ROW_H = 58; // MUST match .upl-rail-row height in CSS — useVirtualList is pure arithmetic on this
+const ROW_H = 58;
 
 const props = defineProps<{
   channels: Channel[];
@@ -43,15 +32,10 @@ const shown = computed<Channel[]>(() => {
 });
 
 const vl = useVirtualList(scroller, () => shown.value.length, ROW_H);
-// Lift the computeds into top-level bindings so the template auto-unwraps them (a plain object's nested refs
-// are NOT unwrapped in templates) — same pattern as MappingScreen.vue / EPGDetailScreen.vue.
 const vStart = vl.start, vPad = vl.padTop, vTotal = vl.totalHeight;
 
-// The keyboard cursor — separate from what's playing, so you can browse ahead without tuning.
 const cursor = ref(0);
 
-// One pass over the visible slice, with the guide summary baked in: the template would otherwise call a
-// summary helper five or six times per row on every clock tick.
 const sliceRows = computed(() => {
   const at = now.value;
   return shown.value.slice(vStart.value, vl.end.value).map((ch, i) => {
@@ -69,22 +53,14 @@ const sliceRows = computed(() => {
   });
 });
 
-// Tell the parent which guide keys are on screen; it batches/debounces the actual fetch.
 watch(sliceRows, (rows) => emit('visibleKeys', rows.map((r) => epgKey(r.ch))), { immediate: true });
 
-// Reset the virtual window when the filter changes the list out from under it.
 watch(shown, () => { void nextTick(() => vl.measure()); });
-// A reorder moves every index, so the cursor must be re-pinned to what is actually playing. Deliberately NOT
-// folded into the watcher above: that one also fires on every filter keystroke, where yanking the cursor back
-// to the playing channel would fight the person typing.
 watch(sortKey, () => { void nextTick(() => syncCursorToCurrent()); });
 
-// --- keyboard cursor movement, driven by the parent's global keymap ------------------------------------
 function move(delta: number): void {
   if (shown.value.length === 0) return;
   cursor.value = Math.min(shown.value.length - 1, Math.max(0, cursor.value + delta));
-  // Keep the cursor in view. scrollToIndex puts a row at the TOP, so only nudge when the cursor has
-  // actually left the rendered window — otherwise every keypress would jerk the list.
   const first = vl.topIndex();
   const rows = Math.max(1, Math.floor((scroller.value?.clientHeight ?? ROW_H) / ROW_H));
   if (cursor.value < first) vl.scrollToIndex(cursor.value);
@@ -94,7 +70,6 @@ function tuneCursor(): void {
   const c = shown.value[cursor.value];
   if (c) emit('tune', c);
 }
-// Sync the cursor onto whatever is playing whenever the rail opens, so ↑/↓ starts from "here".
 function syncCursorToCurrent(): void {
   const i = shown.value.findIndex((c) => c.id === props.currentId);
   if (i >= 0) {
@@ -109,7 +84,6 @@ defineExpose({ move, tuneCursor });
 </script>
 
 <template>
-  <!-- Edge hover target: a thin invisible strip that reveals the rail without any visible furniture. -->
   <div class="upl-rail-edge" @mouseenter="emit('update:open', true)" />
 
   <aside class="glass upl-rail" :class="{ open }" @mouseleave="emit('update:open', false)">
@@ -117,8 +91,6 @@ defineExpose({ move, tuneCursor });
       <Icon name="tv" :size="14" />
       <span class="upl-rail-count mono">{{ shown.length }}</span>
       <input v-model="filter" class="input upl-rail-search" placeholder="Filter channels…" />
-      <!-- Sort toggle. A pressed-state text button rather than a Segmented, mirroring the Playlists screen's
-           A-Z button: the rail is only 340px wide and the filter box owns flex:1. -->
       <button
         type="button"
         class="upl-rail-sort"
@@ -146,8 +118,6 @@ defineExpose({ move, tuneCursor });
             @click="emit('tune', row.ch)"
           >
             <ChannelLogo :ch="row.ch" />
-            <!-- `||`, not `??`: a blank channelNo is unnumbered as far as this rail is concerned (the sort
-                 treats it as such), so it reads '—' like a null one instead of leaving a gap in the column. -->
             <span class="upl-rail-no mono">{{ row.ch.channelNo || '—' }}</span>
             <span class="upl-rail-body">
               <span class="upl-rail-name">{{ row.ch.tvg_name }}</span>
@@ -162,7 +132,6 @@ defineExpose({ move, tuneCursor });
               <span v-if="row.live" class="upl-rail-bar">
                 <span class="upl-rail-fill" :style="{ width: row.pct + '%' }" />
               </span>
-              <!-- The cursored row earns one extra line: what's on after this. -->
               <span v-if="row.index === cursor && row.next" class="upl-rail-then mono muted">
                 then {{ fmtClock(row.next.start) }} {{ row.next.title }}
               </span>
@@ -177,7 +146,6 @@ defineExpose({ move, tuneCursor });
 </template>
 
 <style scoped>
-/* A standalone window has no app shell, so this overlay owns its own positioning. */
 .upl-rail-edge {
   position: absolute;
   inset: 0 0 0 auto;
@@ -218,7 +186,6 @@ defineExpose({ move, tuneCursor });
   cursor: pointer;
 }
 .upl-rail-close:hover { color: var(--text-0); background: oklch(1 0 0 / 0.06); }
-/* Same metrics as the close button, but text-width rather than square (the label is 'A-Z' or '#'). */
 .upl-rail-sort {
   display: grid;
   place-items: center;
@@ -238,7 +205,6 @@ defineExpose({ move, tuneCursor });
 
 .upl-rail-list { flex: 1; min-height: 0; overflow-y: auto; }
 
-/* Height is load-bearing: it must equal ROW_H in the script for virtualization to line up. */
 .upl-rail-row {
   box-sizing: border-box;
   height: 58px;

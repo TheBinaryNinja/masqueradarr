@@ -7,15 +7,12 @@ import Btn from './Btn.vue';
 import { currentUser } from '../composables/useAuth';
 import { DOC_SECTIONS, DOC_GROUPS, defaultSectionFor, sectionVisibleTo, type DocSection } from '../docs';
 
-// An optional section id to open to (deep-link via the tvapp:docs-open bus event); when absent the panel
-// defaults to the section that documents the current screen.
 const props = defineProps<{ section?: string }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const route = useRoute();
 const isAdmin = computed(() => currentUser.value?.role === 'admin');
 
-// Sections this role may see (panel order), grouped for the TOC — mirrors the SPA's own role gating.
 const sections = computed<DocSection[]>(() => DOC_SECTIONS.filter((s) => sectionVisibleTo(s, isAdmin.value)));
 const groups = computed(() =>
   DOC_GROUPS
@@ -38,7 +35,6 @@ function scrollToSection(id: string, smooth = true) {
   activeId.value = id;
 }
 
-// Scroll-spy: the active TOC entry is the last section whose top has passed the scroll line.
 function onScroll() {
   const el = body.value;
   if (!el) return;

@@ -15,20 +15,12 @@ import {
 } from '../data';
 import { useVirtualList } from '../composables/useVirtualList';
 
-// Refresh the stores this screen reads on every mount, so navigating to /mapping always reflects
-// current Mongo state (e.g. an EPG source deleted elsewhere disappears here too) — the boot snapshot
-// alone goes stale. EPG guide channels are NO LONGER loaded wholesale; they're fetched per-selected
-// source (see the selectedEpgSource watch) so a large guide doesn't flood the screen. The immediate
-// watch on CHANNELS below rebuilds `mappings` once the reload lands.
 onMounted(() => {
   Promise.all([reloadChannels(), reloadEpgSources()]).catch((err) =>
     console.error('[mapping] refresh failed:', err));
   nextTick(() => { vL.measure(); vR.measure(); });
 });
 
-// The channel↔EPG link is the 2-factor pair (tvg_id = epgchannels.channelId, epg = epgchannels.source) —
-// tracked here per channel id. Seeded from the persisted CHANNELS (only the 'matched' ones with both
-// factors) and kept in sync as link/unlink/auto-match persist. Rebuilt whenever CHANNELS is (re)loaded.
 const mappings = reactive<Record<string, { tvg_id: string; epg: string }>>({});
 watch(CHANNELS, (list) => {
   for (const k of Object.keys(mappings)) delete mappings[k];
@@ -39,27 +31,18 @@ watch(CHANNELS, (list) => {
 
 const selL = ref<string | null>(null);
 const filter = ref<'all' | 'unmatched' | 'matched'>('unmatched');
-// Left-list Active/Disabled status filter — mirrors PlaylistDetailScreen's `stateFilter`. Defaults to
-// 'Active' so the M3U list opens showing only Active channels; filters on the top-level 'Active' |
-// 'Disabled' governor (playlistchannels.status). Composes with selectedPlaylist + filter + leftSearch.
 const stateFilter = ref<'Active' | 'Disabled'>('Active');
 const selectedPlaylist = ref<string>('all');
-// Default 'none' — the right list shows nothing until an EPG source is picked (see epgFiltered).
 const selectedEpgSource = ref<string>('none');
 
-// Per-column free-text search (left filters M3U channel names; right filters EPG name/id — see epgSorted,
-// kept out of epgFiltered so auto-match/scoring/the count Pill stay on the full source set).
 const leftSearch = ref<string>('');
 const rightSearch = ref<string>('');
 
-// Scroll containers for the A–Z jump bars (scroll-to-letter; see jumpTo/jumpLeft/jumpRight).
 const leftListRef = ref<HTMLElement | null>(null);
 const rightListRef = ref<HTMLElement | null>(null);
-// The letter currently at the top of each scrolled list — highlighted cyan in its A–Z bar.
 const activeLeftLetter = ref<string>('');
 const activeRightLetter = ref<string>('');
 
-// Sort state — one key + direction per column. Clicking the active key reverses direction.
 const sortKey = ref<'name' | 'playlist'>('name');
 const sortDir = ref<'asc' | 'desc'>('asc');
 const epgSortKey = ref<'name' | 'id' | 'intelligent'>('name');
@@ -74,26 +57,17 @@ function toggleEpgSort(key: 'name' | 'id') {
   else { epgSortKey.value = key; epgSortDir.value = 'asc'; }
 }
 
-// Toggle the right-hand EPG list into (or back out of) the composite match-score ranking (see matchScore
-// below): rows are ordered highest-score-first against the selected M3U channel. This is selectable at ANY
-// time — with no left channel selected the mode is still active but epgSorted falls back to name-asc and no
-// per-row scores show, so picking a channel afterward immediately ranks the list without a re-click. Clicking
-// while already in intelligent mode returns to the default Name (asc) sort. The Name/ID modes deselect
-// automatically because they key off epgSortKey; per-row scores show only while this mode is active.
 function intelligentSort() {
   if (epgSortKey.value === 'intelligent') { epgSortKey.value = 'name'; epgSortDir.value = 'asc'; }
   else epgSortKey.value = 'intelligent';
 }
 
-// Resolve a channel's owning playlist name from its `source` (a source playlist's id === channel.source);
-// falls back to the raw source id if no playlist row is loaded yet.
 const playlistNameById = computed(() => {
   const m: Record<string, string> = {};
   for (const p of PLAYLISTS.value) m[p.id] = p.name;
   return m;
 });
 
-// Resolve an EPG source's display name from its id (for the right-hand source filter + row context).
 const epgSourceNameById = computed(() => {
   const m: Record<string, string> = {};
   for (const s of EPG_SOURCES.value) m[s.id] = s.name;
@@ -101,9 +75,6 @@ const epgSourceNameById = computed(() => {
 });
 function epgSourceName(id: string): string { return epgSourceNameById.value[id] || id; }
 
-// The visible left-list set: narrowed by the Playlist dropdown (a source playlist's id === channel.source)
-// AND the Unmatched/Matched/All segmented filter, then ordered by the Sort controls. Single source of
-// truth for both the render and Auto-match (.filter() returns a fresh array, so .sort() is in-place safe).
 const channelsView = computed(() => {
   const dir = sortDir.value === 'asc' ? 1 : -1;
   const q = leftSearch.value.trim().toLowerCase();
@@ -123,26 +94,18 @@ const channelsView = computed(() => {
     });
 });
 
-// The EPG source options for the right-hand filter — the real epgsources collection (EPG_SOURCES), so a
-// deleted/added source is reflected immediately (not the distinct sources lingering in EPG_CHANNELS).
 const epgSourceOptions = computed(() => EPG_SOURCES.value.map((s) => ({ id: s.id, name: s.name })));
 
-// The right-list set: real epgchannels narrowed to the ONE selected source. 'none' (the default) shows
-// nothing — only an explicitly picked source populates the list.
 const epgFiltered = computed(() =>
   selectedEpgSource.value === 'none'
     ? []
     : EPG_CHANNELS.value.filter((e) => e.source === selectedEpgSource.value));
 
-// The selected left (M3U) channel object (or null) — the reference the intelligent match scores rank against.
 const selectedLeft = computed(() => CHANNELS.value.find((c) => c.id === selL.value) ?? null);
-// Composite match scores (0–100) keyed by "<source>:<channelId>", computed ONLY in Intelligent Sorting
-// mode with a left channel selected — so Name/ID modes and the no-selection state cost nothing. See matchScore.
 const epgScores = computed(() => {
   const m = new Map<string, number>();
   const ch = selectedLeft.value;
   if (epgSortKey.value !== 'intelligent' || !ch) return m;
-  // The variant set depends only on the selected left channel — build it once, reuse across the EPG list.
   const variants = m3uVariants(ch.tvg_name);
   const allTokens = new Set(variants.flatMap((v) => v.tokens));
   for (const e of epgFiltered.value) m.set(`${e.source}:${e.channelId}`, scoreVariants(variants, allTokens, ch, e));
@@ -154,8 +117,6 @@ const epgSorted = computed(() => {
   const q = rightSearch.value.trim().toLowerCase();
   const list = epgFiltered.value.filter((e) =>
     q === '' || e.affiliateName.toLowerCase().includes(q) || e.channelId.toLowerCase().includes(q));
-  // Intelligent: rank by composite match score (highest first), tie-break by name. With no left channel
-  // selected there's nothing to score against, so fall back to name-asc until one is picked.
   if (epgSortKey.value === 'intelligent') {
     if (!selectedLeft.value) return list.sort((a, b) => a.affiliateName.localeCompare(b.affiliateName));
     return list.sort((a, b) => scoreFor(b) - scoreFor(a) || a.affiliateName.localeCompare(b.affiliateName));
@@ -167,33 +128,20 @@ const epgSorted = computed(() => {
       : a.affiliateName.localeCompare(b.affiliateName)) * dir);
 });
 
-// Load the picked EPG source's guide channels on demand (scoped `?source=` fetch) — replaces the old
-// boot-wide load of every source's channels. EPG_CHANNELS then holds just this source's rows;
-// epgFiltered/epgScores/epgSorted/auto-match all keep operating on the full in-memory set (one source
-// is bounded), and only the DOM is windowed (see the virtual lists below). Reset scroll on a switch.
 watch(selectedEpgSource, (id) => {
   fetchEpgChannelsForSource(id).catch((err) => console.error('[mapping] epg channels load failed:', err));
   if (rightListRef.value) rightListRef.value.scrollTop = 0;
 }, { immediate: true });
 
-// Fixed-height virtual lists — the DOM holds only the visible rows (+ overscan), so a huge source no
-// longer materializes tens of thousands of nodes. ROW_H MUST match .map-item height in styles.css.
 const ROW_H = 50;
 const vL = useVirtualList(leftListRef, () => channelsView.value.length, ROW_H);
 const vR = useVirtualList(rightListRef, () => epgSorted.value.length, ROW_H);
 const lStart = vL.start, lEnd = vL.end, lPad = vL.padTop, lTotal = vL.totalHeight;
 const rStart = vR.start, rEnd = vR.end, rPad = vR.padTop, rTotal = vR.totalHeight;
 
-// Left-row selection is gated on the right list having rows to link to: with no EPG source picked (or a
-// source with no channels) there is nothing to map, so selecting a left channel is quietly inert. Clear a
-// stale selection if the right list empties (e.g. the Source dropdown is switched back to None).
 const canSelectLeft = computed(() => epgSorted.value.length > 0);
 watch(canSelectLeft, (ok) => { if (!ok) selL.value = null; });
 
-// Persist a channel's EPG link via PUT /api/playlists/<source>/channels/<id>, then reflect it locally on the
-// CHANNELS entry (mirrors ChannelDrawer.vue's putChannel). Returns whether it persisted. Linking a failover
-// PARENT cascades to its children server-side — the returned `_cascadedChildren` are merged into CHANNELS
-// (the immediate watch above rebuilds `mappings` from the new list, so the children flip to matched too).
 async function putChannelLink(ch: Channel, patch: Record<string, unknown>): Promise<boolean> {
   if (!ch.source) return false;
   try {
@@ -212,37 +160,27 @@ async function putChannelLink(ch: Channel, patch: Record<string, unknown>): Prom
       return true;
     }
   } catch {
-    // best-effort
   }
   return false;
 }
 
-// Link a channel to an EPG channel: persist the 2-factor pair + epgState:'matched', then track it locally.
 async function link(ch: Channel, e: EpgChannel): Promise<void> {
   if (await putChannelLink(ch, { tvg_id: e.channelId, epg: e.source, epgState: 'matched' })) {
     mappings[ch.id] = { tvg_id: e.channelId, epg: e.source };
   }
 }
-// Click-to-link from the right list: link the currently selected left channel, then clear the selection.
 async function linkSelected(e: EpgChannel): Promise<void> {
   const ch = CHANNELS.value.find((c) => c.id === selL.value);
   if (!ch) return;
   await link(ch, e);
   selL.value = null;
 }
-// Unlink: clear both factors + flip epgState to 'unmatched' (the channel WAS matched, so not back to null).
 async function unlink(ch: Channel): Promise<void> {
   if (await putChannelLink(ch, { tvg_id: null, epg: null, epgState: 'unmatched' })) {
     delete mappings[ch.id];
   }
 }
 
-// MATCHED totals are scoped to BOTH the active status filter (Active/Disabled) AND the Playlist dropdown
-// (a source playlist's id === channel.source; 'all' = no narrowing), so the header reflects the same set
-// the M3U list shows: `total` = channels in scope; `matched` = those of them currently linked (a `mappings`
-// entry). The progress bar reads the same scoped pair. The numerator color keys off stateFilter — green
-// (var(--good)) for Active, amber (var(--warn)) for Disabled — matching the Active/Disabled Segmented
-// control's seg-green/seg-amber tones; the denominator keeps the default theme.
 function inMatchScope(c: Channel): boolean {
   return c.status === stateFilter.value &&
     (selectedPlaylist.value === 'all' || c.source === selectedPlaylist.value);
@@ -253,15 +191,10 @@ const total = computed(() =>
   CHANNELS.value.filter((c) => inMatchScope(c)).length);
 const matchedColor = computed(() => (stateFilter.value === 'Disabled' ? 'var(--warn)' : 'var(--good)'));
 
-// --- A–Z jump bars ------------------------------------------------------------------------------------
-// Scroll-to-letter index under each list: only letters actually present (in the current display order)
-// are shown, and clicking one scrolls that list to the first row whose name starts with that letter.
-// First A–Z letter of a name, uppercased; digits/symbols bucket into '#'.
 function firstLetter(name: string): string {
   const c = (name || '').trim().charAt(0).toUpperCase();
   return c >= 'A' && c <= 'Z' ? c : '#';
 }
-// Distinct present letters in render order, sorted A→Z with '#' last.
 function letterSet(names: string[]): string[] {
   const set = new Set(names.map(firstLetter));
   return [...set].sort((a, b) => (a === '#' ? 1 : b === '#' ? -1 : a.localeCompare(b)));
@@ -269,10 +202,6 @@ function letterSet(names: string[]): string[] {
 const leftLetters = computed(() => letterSet(channelsView.value.map((c) => c.tvg_name)));
 const rightLetters = computed(() => letterSet(epgSorted.value.map((e) => e.affiliateName)));
 
-// Jump the list so the first row whose name starts with `letter` sits at the top. With the lists now
-// virtualized (the DOM holds only visible rows) the old children[index]/bounding-rect math can't work —
-// but the FULL sorted array is still in memory, so the index comes from a plain findIndex and the
-// fixed row height turns the scroll into arithmetic (scrollTop = index * ROW_H, in useVirtualList).
 function jumpLeft(letter: string): void {
   vL.scrollToIndex(channelsView.value.findIndex((c) => firstLetter(c.tvg_name) === letter));
   updateLeftActive();
@@ -282,8 +211,6 @@ function jumpRight(letter: string): void {
   updateRightActive();
 }
 
-// The first letter of the row currently at the top of each list — derived arithmetically from the
-// virtual list's top index (no DOM measurement). Drives the active A–Z highlight.
 function updateLeftActive(): void {
   const names = channelsView.value;
   activeLeftLetter.value = names.length ? firstLetter(names[vL.topIndex()]?.tvg_name ?? '') : '';
@@ -292,62 +219,42 @@ function updateRightActive(): void {
   const names = epgSorted.value;
   activeRightLetter.value = names.length ? firstLetter(names[vR.topIndex()]?.affiliateName ?? '') : '';
 }
-// Keep the virtual window + active letter current as the user scrolls.
 function onLeftScroll(): void { vL.measure(); updateLeftActive(); }
 function onRightScroll(): void { vR.measure(); updateRightActive(); }
-// Refresh window + active letter on initial render and whenever the visible list changes (filter/search/
-// sort/source) — scroll events keep them current as the user scrolls; nextTick lets the new rows lay out.
 watch(channelsView, () => nextTick(() => { vL.measure(); updateLeftActive(); }), { immediate: true });
 watch(epgSorted, () => nextTick(() => { vR.measure(); updateRightActive(); }), { immediate: true });
 
-// How many M3U channels currently link to this EPG channel — matched on the full 2-factor pair so the same
-// channelId published by two EPG sources stays distinct. EPG channels may be linked by many M3U channels,
-// so this is a count (shown per row), not a one-shot "used" flag.
 function linkCount(e: EpgChannel): number {
   return Object.values(mappings).filter((v) => v.tvg_id === e.channelId && v.epg === e.source).length;
 }
 
-// --- Intelligent match scoring -------------------------------------------------------------------------
-// A composite name-similarity score (0–100) ranking an EPG channel against a selected M3U channel:
-// Sørensen–Dice bigram overlap (primary) + token Jaccard + normalized Levenshtein, plus call-sign and
-// channel-number bonuses. To absorb messy provider naming, the SELECTED M3U name is standardized into a
-// SET of normalized variants (m3uVariants) and the EPG candidate is scored against each, keeping the max —
-// so the most-specific form wins and no real match is ever lost. The EPG side stays canonical (normEpg).
-// See the design notes in the Channel Mapping plan; weights are tunable here.
 const QUALITY_TAGS = new Set(['hd', 'fhd', 'uhd', 'sd', '4k', '8k', 'hevc', 'h265', 'h264', 'hq']);
-const COUNTRY_TOKENS = new Set(['us', 'usa', 'uk', 'ca']); // token-based, NOT substring (protects "Music"/"Plus")
-const GENERIC = new Set([...COUNTRY_TOKENS, 'tv', 'channel', 'network', 'the']); // a variant of ONLY these is non-identifying → discarded
-const PAREN_RE = /\([^)]*\)/g; // remove "(...)" + inner text
-const BRACKET_RE = /\[[^\]]*\]/g; // remove "[...]" + inner text
+const COUNTRY_TOKENS = new Set(['us', 'usa', 'uk', 'ca']);
+const GENERIC = new Set([...COUNTRY_TOKENS, 'tv', 'channel', 'network', 'the']);
+const PAREN_RE = /\([^)]*\)/g;
+const BRACKET_RE = /\[[^\]]*\]/g;
 
 type NormForm = { str: string; tokens: string[] };
 
-// EPG (Gracenote) names are clean — strip structural noise + quality tags, but KEEP every meaningful token
-// (so "USA Network" / "TV Land" stay intact). No dash split, no country/TV drop on this side.
 function normEpg(s: string): NormForm {
   const cleaned = (s || '').toLowerCase().replace(/&/g, ' and ').replace(PAREN_RE, ' ').replace(BRACKET_RE, ' ');
   const tokens = cleaned.split(/[^a-z0-9]+/).filter((t) => t && !QUALITY_TAGS.has(t));
   return { str: tokens.join(''), tokens };
 }
 
-// Standardize a messy M3U name into a SET of normalized variants. Each transform that could destroy a real
-// match is offered BOTH ways (paren kept/removed, dash first-segment/full, country+TV kept/dropped); scoring
-// takes the max, so the most-specific form wins and nothing is ever lost. Returns deduped, non-degenerate forms.
-// Ordering is load-bearing: parens/brackets and the dash are handled at string level BEFORE the tokenizer
-// (split on non-alphanumeric) strips the remaining special characters — otherwise the dash would be gone first.
 function m3uVariants(s: string): NormForm[] {
   const base = (s || '').toLowerCase().replace(/&/g, ' and ');
-  const structural = new Set([base, base.replace(PAREN_RE, ' ').replace(BRACKET_RE, ' ')]); // (...)/[...] kept + removed
+  const structural = new Set([base, base.replace(PAREN_RE, ' ').replace(BRACKET_RE, ' ')]);
   const out: NormForm[] = [];
   const seen = new Set<string>();
   for (const v of structural) {
-    const dashForms = v.includes('-') ? [v, v.split('-')[0]] : [v]; // dash: full + first-index-only
+    const dashForms = v.includes('-') ? [v, v.split('-')[0]] : [v];
     for (const d of dashForms) {
-      const raw = d.split(/[^a-z0-9]+/).filter(Boolean); // tokenizer drops remaining special chars
-      const kept = raw.filter((t) => !QUALITY_TAGS.has(t)); // always drop quality tags
-      const dropped = kept.filter((t) => !COUNTRY_TOKENS.has(t) && t !== 'tv'); // country/TV "drop" variant
+      const raw = d.split(/[^a-z0-9]+/).filter(Boolean);
+      const kept = raw.filter((t) => !QUALITY_TAGS.has(t));
+      const dropped = kept.filter((t) => !COUNTRY_TOKENS.has(t) && t !== 'tv');
       for (const toks of [kept, dropped]) {
-        if (!toks.length || toks.every((t) => GENERIC.has(t))) continue; // discard empty / generic-only
+        if (!toks.length || toks.every((t) => GENERIC.has(t))) continue;
         const str = toks.join('');
         if (str.length < 2 || seen.has(str)) continue;
         seen.add(str);
@@ -358,7 +265,6 @@ function m3uVariants(s: string): NormForm[] {
   return out;
 }
 
-// Sørensen–Dice coefficient over character bigrams (0–1) — order-tolerant, ideal for short names.
 function dice(a: string, b: string): number {
   if (a.length < 2 || b.length < 2) return a === b ? 1 : 0;
   const ba = new Map<string, number>();
@@ -372,7 +278,6 @@ function dice(a: string, b: string): number {
   return (2 * overlap) / (a.length - 1 + (b.length - 1));
 }
 
-// Jaccard overlap of word-token sets (0–1) — catches reordering / abbreviation that bigrams miss.
 function jaccard(ta: string[], tb: string[]): number {
   if (!ta.length && !tb.length) return 1;
   const sa = new Set(ta), sb = new Set(tb);
@@ -382,7 +287,6 @@ function jaccard(ta: string[], tb: string[]): number {
   return union ? inter / union : 0;
 }
 
-// Classic edit distance — small DP, only ever run on short collapsed names.
 function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (!a.length) return b.length;
@@ -399,8 +303,6 @@ function levenshtein(a: string, b: string): number {
   return prev[b.length];
 }
 
-// Score one EPG candidate against a precomputed M3U variant set: max base similarity across variants, then
-// add the callsign / channel-number bonuses once. The callsign bonus tests the UNION of all variant tokens.
 function scoreVariants(variants: NormForm[], allTokens: Set<string>, ch: Channel, e: EpgChannel): number {
   const E = normEpg(e.affiliateName);
   if (!E.str || !variants.length) return 0;
@@ -415,26 +317,19 @@ function scoreVariants(variants: NormForm[], allTokens: Set<string>, ch: Channel
     }
     if (base > best) best = base;
   }
-  // Bonus: the EPG call sign appears as a whole token in the M3U name.
   if (e.callSign) {
     const cs = e.callSign.toLowerCase().replace(/[^a-z0-9]/g, '');
     if (cs && allTokens.has(cs)) best += 0.12;
   }
-  // Bonus: both sides carry the same channel number.
   if (ch.channelNo && e.channelNo && ch.channelNo === e.channelNo) best += 0.05;
   return Math.round(Math.min(1, best) * 100);
 }
 
-// Thin single-pair wrapper (builds the variant set, then scores). epgScores precomputes the set once per
-// selection — see there — so this is only for one-off callers.
 function matchScore(ch: Channel, e: EpgChannel): number {
   const variants = m3uVariants(ch.tvg_name);
   return scoreVariants(variants, new Set(variants.flatMap((v) => v.tokens)), ch, e);
 }
 
-// Auto-match progress modal state. `autoMatchOpen` shows the modal; `autoMatchTotal` is the number of EPG
-// matches found to persist, `autoMatchDone` rises as each PUT resolves (so the bar reflects real persistence
-// progress, not just dispatch). `autoMatchRunning` keeps the Close button out until the run settles.
 const autoMatchOpen = ref(false);
 const autoMatchRunning = ref(false);
 const autoMatchTotal = ref(0);
@@ -442,22 +337,14 @@ const autoMatchDone = ref(0);
 const autoMatchProgress = computed(() =>
   autoMatchTotal.value ? autoMatchDone.value / autoMatchTotal.value : 0);
 
-// Best-effort name-based auto-match over the currently visible left rows, claiming from the currently
-// filtered EPG source: for each still-unmatched channel, claim + persist the first EPG channel whose
-// canonical name EXACTLY equals one of the M3U name's standardized variants. Exact-only (not substring) so
-// auto-linking never mis-claims near-names like "ESPN" → "ESPN2". EPG channels may be shared across multiple
-// M3U channels, so a match is NOT reserved exclusively; a failed PUT just drops the optimistic local entry.
-// A modal opens for the duration showing a progress bar (found matches persisted / total found).
 async function autoMatch(): Promise<void> {
   autoMatchOpen.value = true;
   autoMatchRunning.value = true;
   autoMatchDone.value = 0;
   autoMatchTotal.value = 0;
-  // First pass: find all matches up front so the bar has a stable denominator.
   const hits: { c: Channel; hit: EpgChannel }[] = [];
   for (const c of channelsView.value) {
     if (mappings[c.id]) continue;
-    // Failover children mirror their parent's link (the server 409s a direct write) — never auto-match them.
     if (c.failoverRole === 'child') continue;
     const variants = m3uVariants(c.tvg_name).map((v) => v.str);
     if (!variants.length) continue;
@@ -465,9 +352,8 @@ async function autoMatch(): Promise<void> {
     if (hit) hits.push({ c, hit });
   }
   autoMatchTotal.value = hits.length;
-  // Second pass: persist each match in parallel, advancing the bar as each PUT settles.
   const tasks = hits.map(({ c, hit }) => {
-    mappings[c.id] = { tvg_id: hit.channelId, epg: hit.source }; // optimistic reserve
+    mappings[c.id] = { tvg_id: hit.channelId, epg: hit.source };
     return putChannelLink(c, { tvg_id: hit.channelId, epg: hit.source, epgState: 'matched' })
       .then((ok) => { if (!ok) delete mappings[c.id]; })
       .finally(() => { autoMatchDone.value += 1; });
@@ -515,8 +401,6 @@ async function autoMatch(): Promise<void> {
       </div>
     </div>
 
-    <!-- Auto-match progress modal: a popup that opens for the duration of an Auto-match run and shows the
-         live persistence progress (found matches saved / total found), reusing the global .modal* surface. -->
     <div v-if="autoMatchOpen" class="modal-bg" role="dialog" aria-modal="true" aria-labelledby="automatch-title"
          @click="!autoMatchRunning && (autoMatchOpen = false)">
       <div class="modal automatch-modal" @click.stop>

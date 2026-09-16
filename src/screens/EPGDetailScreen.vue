@@ -32,11 +32,7 @@ const { syncingIds, syncEpgSource } = useEpgActions();
 
 const epg = computed(() => EPG_SOURCES.value.find((e) => e.id === props.id) || EPG_SOURCES.value[0]);
 
-// Custom source kinds: 'xml file' is a one-shot upload (Sync → Upload, no sync schedule); 'remote url' is a
-// re-fetchable XMLTV URL (normal Sync + schedules). See AddEpgSourceModal.vue / restapi.md.
 const isXmlFile = computed(() => epg.value?.source === 'xml file');
-// Playlist-bound sources (tubi/dlhd self-EPG) are managed by their playlist's sync — hide manual sync + the
-// schedule section; the "Playlist-bound" chip is the only affordance.
 const isPlaylistBound = computed(() => !!epg.value?.playlistBinding);
 const uploadOpen = ref(false);
 function onUploaded() {
@@ -44,9 +40,6 @@ function onUploaded() {
   refreshGuide();
 }
 
-// ── Summary dashboard derivations ─────────────────────────────────────────
-// The EPG source's sync schedule (keyed epg-source:<id>) — carries the structured frequency +
-// scheduler-maintained nextRun.
 const syncJob = computed<CronJob | null>(() =>
   CRON_JOBS.value.find((j) => j.targetType === 'epg-source' && j.targetId === props.id) || null,
 );
@@ -59,13 +52,8 @@ const nextSync = computed(() => fmtRun(syncJob.value?.nextRun));
 const syncSuccess = computed(() => epg.value?.syncSuccessCount ?? 0);
 const syncFail = computed(() => epg.value?.syncFailCount ?? 0);
 
-// Interval-type for the sync schedule, read from MongoDB (the EpgSource.auto/interval + the paired cron doc).
 const syncIsAuto = computed(() => !!syncJob.value || !!epg.value?.auto);
 
-// ── Waffle menu + row surfaces ────────────────────────────────────────────
-// The header actions (Sync / Upload XML / Delete) + the old "Sync Schedule" button + Tags card are collapsed
-// into one anchored waffle menu and a single Edit slide-out (Name + Sync schedule + Tags). A computed item set
-// keeps the labels/disabled live while the menu is open. Playlist-bound + built-in rows get Edit only.
 const menuOpen = ref(false);
 const editOpen = ref(false);
 const confirmDelete = ref(false);
@@ -92,15 +80,11 @@ function onDeleted(): void {
   router.push('/epg-sources');
 }
 
-// Channels (playlistchannels) linked to THIS EPG source via the 2-factor link factor `epg === id`.
 const linkedChannels = computed(() => CHANNELS.value.filter((c) => c.epg === props.id));
 
-// Status filter for the linked-channels guide (Active vs Disabled), mirroring PlaylistDetailScreen.
 const statusFilter = ref<'Active' | 'Disabled'>('Active');
 const activeCount = computed(() => linkedChannels.value.filter((c) => c.status === 'Active').length);
 const disabledCount = computed(() => linkedChannels.value.filter((c) => c.status === 'Disabled').length);
-// Free-text channel search (case-insensitive substring over tvg_name + tvg_id + group), ANDed with the
-// status toggle. Debounced via the shared SearchInput so a large linked-channel set stays responsive.
 const search = ref('');
 const filteredChannels = computed(() => {
   const q = search.value.trim().toLowerCase();
@@ -111,7 +95,6 @@ const filteredChannels = computed(() => {
   });
 });
 watch(() => props.id, () => { statusFilter.value = 'Active'; search.value = ''; spanHours.value = WINDOW_HOURS; });
-// The playlists those linked channels belong to (grouped by channel.source = playlist id), with a count.
 const linkedPlaylists = computed(() => {
   const byPlaylist = new Map<string, number>();
   for (const c of linkedChannels.value) byPlaylist.set(c.source, (byPlaylist.get(c.source) ?? 0) + 1);
@@ -122,8 +105,6 @@ const linkedPlaylists = computed(() => {
   }));
 });
 
-// Real wall-clock in epoch-ms — programs are stored epoch-ms (Gracenote/EPG-PW sync + the epoch-ms mock
-// seed), so the whole timeline runs off one uniform time model. Ticked each minute to advance the now-line.
 const HOUR_MS = 3_600_000;
 const now = ref(Date.now());
 function tick() { now.value = Date.now(); }
@@ -131,27 +112,18 @@ let id: number | null = null;
 onMounted(() => {
   tick();
   id = window.setInterval(tick, 60000);
-  // `epg` is a find() over the shared EPG_SOURCES store; the screen mounts fresh on every nav-in, so re-pull
-  // the store here — otherwise a scheduled sync or an edit elsewhere leaves this header row's channels /
-  // programs / lastSync / success-fail counts stale until a full page reload.
   void reloadEpgSources();
 });
 onBeforeUnmount(() => { if (id) clearInterval(id); });
 
-// The timeline is a ROLLING window anchored at "now" (not the calendar day): LEAD_HOURS of recent past at the
-// left, then the rest forward. Anchored to the top of the current local hour so axis ticks land on clean
-// HH:00 and the now-line tracks across them. This keeps live + upcoming programs on screen regardless of time
-// zone or which UTC day the (forward-looking, UTC-day-aligned) guide data was synced for.
-const WINDOW_HOURS = 24; // initial visible span — grows as the user scrolls forward (continuous fetch-on-scroll)
-const MAX_SPAN_HOURS = 24 * 7; // cap the extendable canvas at a week so it can't grow unbounded
-const SPAN_STEP_HOURS = 24; // how much further the window extends each time the user nears the right edge
-const LEAD_HOURS = 1; // recent past shown to the left of "now"
-// The timeline span is REACTIVE and extendable: it starts at WINDOW_HOURS and grows on scroll
-// (maybeGrowSpan), with the newly-revealed programs fetched on demand. windowStart stays anchored at "now".
+const WINDOW_HOURS = 24;
+const MAX_SPAN_HOURS = 24 * 7;
+const SPAN_STEP_HOURS = 24;
+const LEAD_HOURS = 1;
 const spanHours = ref(WINDOW_HOURS);
 const windowStart = computed(() => {
   const d = new Date(now.value);
-  d.setMinutes(0, 0, 0); // top of the current local hour
+  d.setMinutes(0, 0, 0);
   return d.getTime() - LEAD_HOURS * HOUR_MS;
 });
 const windowEnd = computed(() => windowStart.value + spanHours.value * HOUR_MS);
@@ -164,8 +136,6 @@ const viewing = ref<{ channel: Channel; prog: Program } | null>(null);
 function open(channel: Channel, prog: Program) { viewing.value = { channel, prog }; }
 function close() { viewing.value = null; }
 
-// Manual re-sync via the shared single-source helper (which owns the inflight flag + store re-pull); we add
-// the guide-program refresh and the "time zone offset not set" toast the detail screen surfaces.
 async function syncNow() {
   const src = epg.value;
   if (!src) return;
@@ -180,15 +150,10 @@ async function syncNow() {
   }
 }
 
-// Card-level schedule summary (the friendly label) read off a paired cron job, or '—' when manual.
 function scheduleSummary(job: CronJob | null): string {
   return job ? summarizeFrequency(job.frequency, job.cron) : '—';
 }
 
-// The timeline renders in the VIEWER'S LOCAL browser time zone (matching the Active Streams screen), so
-// display is cheap local Date math with NO Intl and no per-program offset.
-// formatTime an absolute epoch-ms instant → local HH:MM; humanizeDur/humanizeDelta take a duration in ms
-// (zone-independent).
 function formatTime(ms: number) {
   const d = new Date(ms);
   return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
@@ -208,28 +173,20 @@ function humanizeDelta(ms: number) {
 
 const HOUR_W = 140;
 const totalW = computed(() => spanHours.value * HOUR_W);
-// Axis ticks: local HH:00 of windowStart + i hours (replaces the static 00:00–23:00 EPG_HOURS axis).
 const axisLabels = computed(() =>
   Array.from({ length: spanHours.value }, (_, i) => formatTime(windowStart.value + i * HOUR_MS)),
 );
-// Timeline X-positioning: epoch-ms → px within the rolling WINDOW_HOURS axis, clamped so out-of-window
-// programs stay on-canvas.
 function progLeft(p: Program): number { return clampDay(dayHours(p.start)) * HOUR_W + 2; }
 function progWidth(p: Program): number {
   return Math.max(2, (clampDay(dayHours(p.end)) - clampDay(dayHours(p.start))) * HOUR_W - 4);
 }
 function nowLeft(): number { return clampDay(dayHours(now.value)) * HOUR_W; }
 
-// ── Timeline horizontal scroll: keep the hour header in step with the body, and align "now" near the left ──
 const bodyRef = ref<HTMLElement | null>(null);
 const headInnerRef = ref<HTMLElement | null>(null);
-// The hour header (.head-r) is laid out separately from the scrolling body, so mirror the body's horizontal
-// offset onto it — keeps the hour ticks aligned with the program columns beneath them as the body scrolls.
 function syncHeadScroll() {
   if (headInnerRef.value) headInnerRef.value.style.transform = `translateX(${-(bodyRef.value?.scrollLeft ?? 0)}px)`;
 }
-// Scroll the timeline so the now-line sits just inside the left edge, so the forward guide fills the view.
-// Run on load, when guide data arrives, and when the user switches into Timeline view.
 function centerOnNow() {
   const el = bodyRef.value;
   if (!el) return;
@@ -242,29 +199,18 @@ async function recenterTimeline() {
   centerOnNow();
 }
 onMounted(recenterTimeline);
-// Re-center when guide data loads after mount, or when the user toggles back to the Timeline view. Deliberately
-// NOT keyed on `now`, so the per-minute tick never yanks the user's scroll position.
 watch(() => [props.id, tweaks.epgMode, linkedChannels.value.length], recenterTimeline);
 
-// ── Vertical virtual windowing of the channel rows + lazy, scroll-driven program fetch ──────────────
-// The Timeline body keeps only the visible channel rows in the DOM (fixed .epg-row height), and programs
-// are fetched on demand — scoped to the visible channels and the current time window — instead of every
-// program being preloaded at boot. ROW_H MUST match .epg-row height in styles.css.
 const ROW_H = 76;
 const vt = useVirtualList(bodyRef, () => filteredChannels.value.length, ROW_H);
 const vStart = vt.start, vEnd = vt.end, vPad = vt.padTop, vTotal = vt.totalHeight;
 
-// The channels whose guide we currently need: in Timeline only the windowed slice; in List the full
-// filtered set (List shows 6 progs/channel and isn't virtualized). Returns their composite link keys.
 function neededKeys(): string[] {
   const chans = tweaks.epgMode === 'timeline'
     ? filteredChannels.value.slice(vStart.value, vEnd.value)
     : filteredChannels.value;
   return chans.map(chKey).filter((k): k is string => !!k);
 }
-// Fetch + merge programs for the needed channels across the current window. Deduped by a signature of
-// (windowEnd + keys) so scrolling/the minute tick don't refetch the same data; each fetch covers the FULL
-// current window and REPLACES those channels' cached arrays, so growing the span just re-loads them wider.
 let lastFetchSig = '';
 let fetchTimer: number | null = null;
 function ensureProgramsLoaded(): void {
@@ -280,10 +226,8 @@ function scheduleEnsure(): void {
   if (fetchTimer) clearTimeout(fetchTimer);
   fetchTimer = window.setTimeout(ensureProgramsLoaded, 150);
 }
-// Force a guide reload after the data changed under us (sync / upload), bypassing the dedupe.
 function refreshGuide(): void { lastFetchSig = ''; scheduleEnsure(); }
 
-// Grow the timeline span when the user scrolls near the right edge — the continuous fetch-on-scroll.
 function maybeGrowSpan(): void {
   const el = bodyRef.value;
   if (!el || spanHours.value >= MAX_SPAN_HOURS) return;
@@ -291,14 +235,12 @@ function maybeGrowSpan(): void {
     spanHours.value = Math.min(MAX_SPAN_HOURS, spanHours.value + SPAN_STEP_HOURS);
   }
 }
-// Body scroll drives header alignment (X), the vertical virtual window, span growth, and the fetch.
 function onBodyScroll(): void {
   syncHeadScroll();
   vt.measure();
   maybeGrowSpan();
   scheduleEnsure();
 }
-// (Re)load the guide whenever the source, mode, filtered set, or span changes. immediate covers first paint.
 watch(
   () => [props.id, tweaks.epgMode, filteredChannels.value.length, spanHours.value, windowEnd.value],
   () => nextTick(() => { vt.measure(); scheduleEnsure(); }),
@@ -306,7 +248,6 @@ watch(
 );
 onBeforeUnmount(() => { if (fetchTimer) clearTimeout(fetchTimer); });
 
-// The day chip — today's date in the viewer's local time zone.
 const dayLabel = computed(() =>
   'Today, ' +
   new Date(now.value).toLocaleDateString(undefined, {
@@ -344,8 +285,6 @@ const blurbs: Record<string, string> = {
   'Feature': "A standalone feature presentation tonight. Tune in for an unmissable story.",
 };
 
-// Resolve a linked channel's guide via the 2-factor link key `${epg}:${tvg_id}` — this equals the program
-// row's channelId AND epgchannels._id (composite for both EPG sources). Null link factors → no guide.
 function chKey(c: Channel): string | null {
   return c.epg && c.tvg_id ? `${c.epg}:${c.tvg_id}` : null;
 }
@@ -392,8 +331,6 @@ function livePr(c: Channel) {
         <Stat label="Programs" :value="epg.programs.toLocaleString()" />
         <Stat label="Synced" :value="formatSyncTime(epg.lastSync)" small />
       </div>
-      <!-- Row actions — one waffle for Sync / Edit / Delete (Upload XML replaces Sync for an 'xml file'
-           source). @click.stop keeps the trigger clear of the document outside-click listener. -->
       <div style="position: relative;" @click.stop>
         <Btn
           variant="cyan"
@@ -408,12 +345,10 @@ function livePr(c: Channel) {
       </div>
     </div>
 
-    <!-- Summary dashboard -->
     <div class="card">
       <div class="row" style="margin-bottom: 14px;">
         <Icon name="dashboard" :size="15" style="color: var(--accent);" />
         <span style="font-weight: 600; font-size: var(--fs-base); margin-left: 8px;">Overview</span>
-        <!-- Read-only sync-schedule summary. Editing the schedule now lives in the Edit slide-out (waffle → Edit). -->
         <template v-if="!isXmlFile && !isPlaylistBound">
           <span class="spacer" />
           <Pill v-if="syncIsAuto" tone="cyan"><Icon name="refresh" :size="10" />{{ scheduleSummary(syncJob) }}</Pill>
@@ -460,7 +395,6 @@ function livePr(c: Channel) {
       </div>
     </div>
 
-    <!-- Linked playlists + linked channels -->
     <div class="epg-schedules-row">
       <div class="card">
         <div class="row" style="margin-bottom: 12px;">
@@ -536,7 +470,6 @@ function livePr(c: Channel) {
         ]" />
       </div>
 
-      <!-- Empty state: no playlist channels are linked to this EPG source yet -->
       <div v-if="!linkedChannels.length" class="muted" style="flex: 1; display: grid; place-items: center; text-align: center; padding: 40px;">
         <div>
           <Icon name="epg" :size="32" />
@@ -545,7 +478,6 @@ function livePr(c: Channel) {
         </div>
       </div>
 
-      <!-- Timeline -->
       <div v-else-if="tweaks.epgMode === 'timeline'" class="epg" style="flex: 1; overflow: hidden;">
         <div class="epg-head">
           <div class="head-l">Channel</div>
@@ -583,7 +515,6 @@ function livePr(c: Channel) {
         </div>
       </div>
 
-      <!-- List -->
       <div v-else style="overflow-y: auto; flex: 1;">
         <div v-for="c in filteredChannels" :key="c.id" style="border-bottom: 1px solid var(--hairline); padding: 14px var(--pad-card);">
           <div class="row" style="gap: 10px; margin-bottom: 10px;">
@@ -620,7 +551,6 @@ function livePr(c: Channel) {
       </div>
     </div>
 
-    <!-- Program panel -->
     <div v-if="viewing" class="stream-view-bg" @click="close">
       <div class="glass stream-view" @click.stop>
         <div class="stream-view-hd">
@@ -728,7 +658,6 @@ function livePr(c: Channel) {
       </div>
     </div>
 
-    <!-- Delete confirmation (shared with the list screen) -->
     <DeleteEpgSourceModal
       v-if="confirmDelete"
       :source="epg"
@@ -736,14 +665,12 @@ function livePr(c: Channel) {
       @deleted="onDeleted"
     />
 
-    <!-- Edit slide-out — Name + Sync schedule + Tags, auto-saved per field -->
     <EditEpgSourceDrawer
       v-if="editOpen"
       :source="epg"
       @close="editOpen = false"
     />
 
-    <!-- Re-upload an XMLTV file for an 'xml file' source (the Sync replacement) -->
     <UploadXmlModal
       v-if="uploadOpen"
       :source-id="epg.id"

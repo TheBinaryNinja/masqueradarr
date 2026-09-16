@@ -13,16 +13,6 @@ import {
 } from '../composables/useUserAccess';
 import { USERS, ensureUsers, type User } from '../composables/useUsers';
 
-// ── Per-playlist "Get access" modal ─────────────────────────────────────────────────────────────────────
-// Scoped to ONE playlist (opened from that row's waffle menu): the published URLs (M3U + EPG/Guide) for THIS
-// playlist, one row per user who has access to it. URLs come from the shared pure buildPublishedGroups()
-// (the same derivation the Users screen / Dashboard use), filtered to the single group that matches this
-// playlist:
-//   • Global playlist → the Global union group (kind:'Global'). Every global playlist shares the SAME URL
-//     pair, so opening this from any global row lists the same URLs + everyone who holds global access.
-//   • Custom playlist → that playlist's own group (key `custom-<id>`).
-// Admins are synthesized as full access so their URLs appear too. Reads the shared USERS singleton, so it
-// reflects assignments made in the Assign-access modal or the Users screen live.
 
 const props = defineProps<{ playlist: Playlist }>();
 const emit = defineEmits<{ (e: 'close'): void }>();
@@ -33,7 +23,6 @@ const search = ref('');
 
 const isGlobal = computed(() => props.playlist.endpoint === 'global');
 
-// Expand an admin to full access; a normal user maps 1:1 to its stored allow-lists.
 function toPublishedUser(u: User): PublishedUrlUser {
     if (u.role === 'admin') {
         return {
@@ -51,8 +40,6 @@ function toPublishedUser(u: User): PublishedUrlUser {
     };
 }
 
-// One AccessUserRows per user who has access to THIS playlist, carrying only the matching group so the table
-// shows a single URL pair per user. Users without the group (no access) are skipped.
 const rows = computed<AccessUserRows[]>(() => {
     const q = search.value.trim().toLowerCase();
     const out: AccessUserRows[] = [];
@@ -61,7 +48,7 @@ const rows = computed<AccessUserRows[]>(() => {
         const g = isGlobal.value
             ? groups.find((x) => x.kind === 'Global')
             : groups.find((x) => x.key === `custom-${props.playlist.id}`);
-        if (!g) continue; // no access to this playlist
+        if (!g) continue;
         if (q && !u.username.toLowerCase().includes(q)) continue;
         out.push({ id: u._id, username: u.username, role: u.role, groups: [g] });
     }
@@ -121,11 +108,8 @@ onMounted(async () => {
 
 <style scoped>
 .get-modal {
-    /* Responsive: grows to a comfy ceiling on wide screens, shrinks to 94vw when the screen won't allow.
-       Paired with the table's percentage columns, content always fits — no horizontal scrollbar. */
     width: min(1200px, 94vw);
 }
-/* Header/search/footer sit OUTSIDE the scroll region; only the URL table scrolls (bounded below). */
 .get-body {
     gap: 12px;
     max-height: 76vh;
@@ -149,8 +133,6 @@ onMounted(async () => {
     padding: 28px;
     text-align: center;
 }
-/* Bound the table's OWN scroll container (where its sticky <thead> is anchored) so the sticky header keeps
-   working and the modal header/footer stay in view. */
 .get-body :deep(.access-wrap) {
     max-height: 60vh;
 }

@@ -12,14 +12,12 @@ import { pushToast } from '../composables/useToast';
 const emit = defineEmits<{ (e: 'close'): void }>();
 
 const paused = ref(false);
-const filter = ref('all'); // 'all' | 'info' | 'issues' (issues = warn ∨ error)
-const cat = ref('all'); // category filter (one of LOG_CATEGORIES, or 'all')
+const filter = ref('all');
+const cat = ref('all');
 const search = ref('');
 const autoscroll = ref(true);
 const body = ref<HTMLDivElement | null>(null);
 
-// Live tail: the shared LOGS store is fed by useLogStream (a module singleton). While paused we render a
-// frozen snapshot so the view holds still even as new lines keep arriving into LOGS in the background.
 const frozen = ref<Log[] | null>(null);
 watch(paused, (p) => {
   frozen.value = p ? [...LOGS.value] : null;
@@ -34,10 +32,7 @@ function onKey(e: KeyboardEvent) {
 
 onMounted(() => {
   stream.subscribe();
-  // Refresh the initial snapshot (the bootstrap already seeded LOGS, but re-pull on open so a long-lived
-  // tab shows the latest persisted lines under the live tail).
   reloadLogs().catch(() => {
-    /* best-effort — the live tail still works without the re-pull */
   });
   window.addEventListener('keydown', onKey);
 });
@@ -46,8 +41,6 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', onKey);
 });
 
-// LOGS is newest-first; render oldest→newest so the existing autoscroll-to-live (bottom) UX is preserved —
-// a freshly prepended line lands at the end and the watcher scrolls to it.
 const visible = computed(() =>
   [...sourceLogs.value].reverse().filter((l) =>
     (filter.value === 'all'
@@ -94,7 +87,6 @@ function levelColor(l: string) {
   return 'var(--text-2)';
 }
 
-// Admin clear → DELETE /api/logs (the global fetch wrapper attaches the bearer token), then re-pull + toast.
 async function clearLogs() {
   try {
     const res = await fetch('/api/logs', { method: 'DELETE' });
@@ -109,7 +101,6 @@ async function clearLogs() {
   }
 }
 
-// Download the currently-visible lines as a plain-text log.
 function exportLogs() {
   const text = visible.value
     .map((l) => `${fmtTime(l.ts)}  ${l.level.toUpperCase().padEnd(5)}  [${l.tag}] ${l.message}`)
