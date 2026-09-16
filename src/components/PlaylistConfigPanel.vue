@@ -11,6 +11,9 @@ import {
   testPlaylistConfig,
   type PlaylistConfigTestResult,
 } from '../composables/useSettings';
+import { dec } from '../codec';
+
+const exampleDomain = dec('ZGxpdmUuc3g=');
 
 const pretty = (v: unknown): string => JSON.stringify(v, null, 2);
 
@@ -253,7 +256,7 @@ onMounted(refreshDuloStatus);
         </dd>
         <dt><code class="mono">domain</code></dt>
         <dd>
-          The site the provider runs on today, as a bare host (<code class="mono">dlive.sx</code>). When a provider
+          The site the provider runs on today, as a bare host (<code class="mono">{{ exampleDomain }}</code>). When a provider
           moves, change it here and re-Sync the playlist. <b>Test</b> checks domains without saving them.
         </dd>
         <dt><code class="mono">daddylive.extendedProperties.defaultPlayer</code></dt>

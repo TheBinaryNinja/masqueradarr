@@ -2,6 +2,7 @@ import { ref, computed, watch, nextTick } from 'vue';
 import { useTweaks } from './useTweaks';
 import { bus } from './bus';
 import { reloadPlaylists, reloadSources } from '../data';
+import { dec } from '../codec';
 
 export const displayName = ref('TVApp2');
 export const domain = ref('http://localhost:3000');
@@ -22,9 +23,9 @@ export interface PlaylistConfig {
   zlive: PlaylistSourceConfig<{ concurrency: number }>;
 }
 export const playlistConfig = ref<PlaylistConfig>({
-  daddylive: { enable: true, domain: 'dlive.sx', extendedProperties: { defaultPlayer: 'auto' } },
-  dulo: { enable: true, domain: 'dulo.gd', extendedProperties: {} },
-  zlive: { enable: true, domain: 'zlive.st', extendedProperties: { concurrency: 2 } },
+  daddylive: { enable: true, domain: dec('ZGxpdmUuc3g='), extendedProperties: { defaultPlayer: 'auto' } },
+  dulo: { enable: true, domain: dec('ZHVsby5nZA=='), extendedProperties: {} },
+  zlive: { enable: true, domain: dec('emxpdmUuc3Q='), extendedProperties: { concurrency: 2 } },
 });
 export const epgPath = ref('/_global/epg/playlist.xml');
 export const nameservers = ref('');
