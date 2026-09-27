@@ -224,6 +224,14 @@ pub async fn serve_stream(
         }
     }
 
+    let seen_target = if is_hop { state.current_target(source, &stream_entry) } else { None };
+    if is_hop && is_playlist_url(&fetch_url) {
+        if let Some(swapped) = state.graft_known(source, &stream_entry, &fetch_url) {
+            log::trace("proxy", &rid, || "child playlist carries a rotated token — fetching it with the renewed target's".to_string());
+            fetch_url = swapped;
+        }
+    }
+
     let allowed = if is_hop {
         ssrf_ok(&policy, &fetch_url)
     } else {
@@ -332,7 +340,7 @@ pub async fn serve_stream(
         }
     }
 
-    let resp = match resp {
+    let mut resp = match resp {
         Some(r) => r,
         None => {
             log::error("proxy", &rid, || "upstream fetch failed after retries + failover → 502".to_string());
@@ -342,6 +350,29 @@ pub async fn serve_stream(
             return text(502, "upstream fetch failed (after retries)");
         }
     };
+
+    if is_hop
+        && !stream_entry.is_empty()
+        && matches!(resp.status().as_u16(), 401 | 403 | 410)
+        && is_playlist_url(&fetch_url)
+    {
+        if let Some((p, url, r)) = recover_rejected_hop(
+            &state,
+            source,
+            &stream_entry,
+            pl.as_deref(),
+            &fetch_url,
+            seen_target.as_deref(),
+            read_timeout_ms,
+            &rid,
+        )
+        .await
+        {
+            policy = p;
+            fetch_url = url;
+            resp = r;
+        }
+    }
 
     let status = resp.status().as_u16();
     if !(200..300).contains(&status) {
@@ -710,17 +741,88 @@ fn build_child_query(token: Option<&str>, pl: Option<&str>, e: &str) -> String {
 }
 
 fn is_manifest(final_url: &Url, orig: &str, ct: &str) -> bool {
-    if ct.contains("mpegurl") {
-        return true;
-    }
-    let ends_m3u8 = |p: &str| p.to_ascii_lowercase().ends_with(".m3u8");
-    if ends_m3u8(final_url.path()) {
-        return true;
-    }
-    match Url::parse(orig) {
+    ct.contains("mpegurl") || ends_m3u8(final_url.path()) || is_playlist_url(orig)
+}
+
+fn ends_m3u8(path: &str) -> bool {
+    path.to_ascii_lowercase().ends_with(".m3u8")
+}
+
+fn is_playlist_url(url: &str) -> bool {
+    match Url::parse(url) {
         Ok(u) => ends_m3u8(u.path()),
-        Err(_) => ends_m3u8(orig),
+        Err(_) => ends_m3u8(url),
     }
+}
+
+pub(crate) fn graft_query(hop: &Url, target: &Url, only: Option<&[String]>) -> Option<(Url, Vec<String>)> {
+    if hop.origin() != target.origin() {
+        return None;
+    }
+    let fresh: Vec<(&str, &str)> = target.query()?.split('&').filter_map(|p| p.split_once('=')).collect();
+    let mut grafted: Vec<String> = Vec::new();
+    let pairs: Vec<String> = hop
+        .query()?
+        .split('&')
+        .map(|pair| {
+            let Some((k, v)) = pair.split_once('=') else {
+                return pair.to_string();
+            };
+            let wanted = only.is_none_or(|keys| keys.iter().any(|x| x == k));
+            match fresh.iter().find(|(fk, _)| *fk == k) {
+                Some((_, fv)) if wanted && *fv != v => {
+                    if !grafted.iter().any(|g| g == k) {
+                        grafted.push(k.to_string());
+                    }
+                    format!("{k}={fv}")
+                }
+                _ => pair.to_string(),
+            }
+        })
+        .collect();
+    if grafted.is_empty() {
+        return None;
+    }
+    let mut out = hop.clone();
+    out.set_query(Some(&pairs.join("&")));
+    Some((out, grafted))
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn recover_rejected_hop(
+    state: &AppState,
+    source: &str,
+    entry: &str,
+    pl: Option<&str>,
+    hop: &str,
+    seen: Option<&str>,
+    read_timeout_ms: u64,
+    rid: &str,
+) -> Option<(Arc<SourcePolicy>, String, reqwest::Response)> {
+    let (policy, target) = state.renew_rejected(source, entry, pl, seen).await?;
+    let (grafted, keys) = graft_query(&Url::parse(hop).ok()?, &Url::parse(&target).ok()?, None)?;
+    let grafted = grafted.to_string();
+    if !ssrf_ok(&policy, &grafted) {
+        return None;
+    }
+    let client = state.client_for(
+        policy.connect_timeout_ms.load(Ordering::Relaxed),
+        policy.max_redirects.load(Ordering::Relaxed),
+    );
+    let resp = fetch_with_retry(&client, &grafted, &build_headers(&policy), read_timeout_ms, rid, "hop-renewed", 0)
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        log::warn("proxy", rid, || {
+            format!("hop-renewed: the renewed token was refused too ({}) — forwarding the rejection", resp.status().as_u16())
+        });
+        return None;
+    }
+    state.learn_graft_keys(source, entry, &keys);
+    log::info("proxy", rid, || {
+        format!("hop-renewed: child playlist token rotated ({}) on {}", keys.join(","), host_of(&grafted))
+    });
+    Some((policy, grafted, resp))
 }
 
 fn sniff_m3u8(bytes: &[u8]) -> bool {
@@ -1069,6 +1171,136 @@ mod tests {
         assert!(manifest.contains("/api/v1/zl/o/"), "segments come from the ring:\n{manifest}");
         assert!(!manifest.contains("/api/v1/zl/h/"), "not the backup's playlist rewritten pass-through:\n{manifest}");
         assert!(up.calls().iter().any(|c| c.attempt == 1), "precondition: the walk reached the backup");
+    }
+
+    #[tokio::test]
+    async fn a_ttl_renewal_after_a_failover_recovery_is_not_another_advance() {
+        let dead = serde_json::json!({ "target": "http://127.0.0.1:1/dead.m3u8", "proxyConfig": { "originEnabled": false } });
+        let up = Mock::start(Seam::grant_with("/unused", dead)).await;
+        up.script(|s| {
+            s.by_attempt.insert(1, Seam::grant("/pl/live.m3u8", false));
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(crate::testkit::media_playlist(100, 4, 1)));
+        });
+        let state = up.state();
+        assert_eq!(play(&state).await.status().as_u16(), 200, "recovered on the alternate");
+        state.invalidate_target("zl", "zl://abc");
+        assert_eq!(play(&state).await.status().as_u16(), 200, "still served after the TTL lapse");
+        let calls = up.calls();
+        let last = calls.last().expect("resolves happened");
+        assert_eq!((last.attempt, last.renew, last.reason.clone()), (1, true, None), "the lapse renews in place");
+        assert_eq!(calls.iter().filter(|c| c.attempt == 1 && !c.renew).count(), 1, "one advance: the walk's own");
+    }
+
+    #[test]
+    fn a_rotated_query_value_is_grafted_verbatim_onto_a_same_origin_hop() {
+        let u = |s: &str| Url::parse(s).unwrap();
+        let hop = u("https://cdn.test/ESPN/tracks/mono.m3u8?a=1&token=old%3D&b=2");
+        let target = u("https://cdn.test/ESPN/index.m3u8?token=new%3D%3D&x=9");
+        let (out, keys) = graft_query(&hop, &target, None).expect("the token rotated");
+        assert_eq!(out.as_str(), "https://cdn.test/ESPN/tracks/mono.m3u8?a=1&token=new%3D%3D&b=2");
+        assert_eq!(keys, vec!["token".to_string()]);
+
+        assert_eq!(graft_query(&hop, &u("https://cdn.test:8443/i.m3u8?token=new"), None), None, "another port is another origin");
+        assert_eq!(graft_query(&hop, &u("https://other.test/i.m3u8?token=new"), None), None);
+        assert_eq!(graft_query(&hop, &target, Some(&["sig".to_string()])), None, "only the keys it was told about");
+        assert_eq!(graft_query(&hop, &u("https://cdn.test/i.m3u8?token=old%3D"), None), None, "nothing rotated");
+        assert_eq!(graft_query(&u("https://cdn.test/m.m3u8"), &target, None), None, "no query to graft onto");
+    }
+
+    async fn body_text(r: Response) -> String {
+        String::from_utf8_lossy(&axum::body::to_bytes(r.into_body(), 1 << 20).await.unwrap()).into_owned()
+    }
+
+    fn tokened_master(t: &str) -> String {
+        format!("#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1000\nmono.m3u8?token={t}\n")
+    }
+
+    fn rotate(up: &Mock, grant: &str, accept: &str) {
+        let (grant, accept) = (grant.to_string(), accept.to_string());
+        up.script(move |s| {
+            s.seam = Seam::grant(&format!("/pl/index.m3u8?token={grant}"), false);
+            s.paths.insert("/pl/index.m3u8".into(), Serve::Tokened(accept.clone(), tokened_master(&accept)));
+            s.paths.insert("/pl/mono.m3u8".into(), Serve::Tokened(accept, crate::testkit::media_playlist(100, 4, 1)));
+        });
+    }
+
+    async fn child_hop(state: &AppState) -> (String, String) {
+        let resp = play(state).await;
+        assert_eq!(resp.status().as_u16(), 200);
+        let manifest = body_text(resp).await;
+        let hop = manifest.lines().find(|l| l.starts_with("/api/v1/zl/h/")).expect("a child hop").to_string();
+        let (path, query) = hop.split_once('?').expect("the hop carries its entry");
+        (path.to_string(), query.to_string())
+    }
+
+    #[tokio::test]
+    async fn a_child_playlist_whose_token_rotated_is_renewed_once_then_swapped_up_front() {
+        let up = Mock::start(Seam::grant("/unused", false)).await;
+        rotate(&up, "T1", "T1");
+        let state = up.state();
+        let (path, query) = child_hop(&state).await;
+        let get = || serve_stream(state.clone(), Method::GET, &path, &query, viewer());
+        assert_eq!(get().await.status().as_u16(), 200);
+
+        rotate(&up, "T2", "T2");
+        let r = get().await;
+        assert_eq!(r.status().as_u16(), 200, "renewed and retried with the rotated token");
+        assert!(body_text(r).await.contains("#EXTINF"), "the child playlist, rewritten as usual");
+        assert_eq!(up.resolves(), 2);
+        let last = up.calls().last().cloned().expect("a renewal");
+        assert_eq!(
+            (last.attempt, last.renew, last.reason),
+            (0, true, Some(crate::state::RETIRE_TARGET_REJECTED.to_string())),
+            "a fresh renewal, never an advance"
+        );
+        assert_eq!(up.hits("/pl/mono.m3u8"), 3, "the stale fetch, then the grafted retry");
+
+        assert_eq!(get().await.status().as_u16(), 200, "the stale hop keeps working");
+        assert_eq!((up.resolves(), up.hits("/pl/mono.m3u8")), (2, 4), "swapped up front: no 403, no resolve");
+    }
+
+    #[tokio::test]
+    async fn concurrent_rejected_child_polls_share_one_renewal() {
+        let up = Mock::start(Seam::grant("/unused", false)).await;
+        rotate(&up, "T1", "T1");
+        let state = up.state();
+        let (path, query) = child_hop(&state).await;
+        rotate(&up, "T2", "T2");
+        let (a, b) = tokio::join!(
+            serve_stream(state.clone(), Method::GET, &path, &query, viewer()),
+            serve_stream(state.clone(), Method::GET, &path, &query, viewer()),
+        );
+        assert_eq!((a.status().as_u16(), b.status().as_u16()), (200, 200));
+        assert_eq!(up.resolves(), 2, "one renewal for both");
+    }
+
+    #[tokio::test]
+    async fn a_token_the_renewal_cannot_fix_is_forwarded_and_not_retried_every_poll() {
+        let up = Mock::start(Seam::grant("/unused", false)).await;
+        rotate(&up, "T1", "T1");
+        let state = up.state();
+        let (path, query) = child_hop(&state).await;
+        rotate(&up, "T2", "T3");
+        for poll in 1..=2 {
+            let r = serve_stream(state.clone(), Method::GET, &path, &query, viewer()).await;
+            assert_eq!(r.status().as_u16(), 403, "poll {poll}: the rejection is forwarded");
+        }
+        assert_eq!(up.resolves(), 2, "one renewal per window, however often the client polls");
+    }
+
+    #[tokio::test]
+    async fn a_rejected_segment_hop_is_forwarded_without_a_renewal() {
+        let up = Mock::start(Seam::grant("/pl/live.m3u8", false)).await;
+        up.script(|s| {
+            let body = "#EXTM3U\n#EXT-X-TARGETDURATION:4\n#EXT-X-MEDIA-SEQUENCE:1\n#EXTINF:4.0,\n/pl/s1.ts?token=T1\n";
+            s.paths.insert("/pl/live.m3u8".into(), Serve::Body(body.into()));
+            s.paths.insert("/pl/s1.ts".into(), Serve::Status(403));
+        });
+        let state = up.state();
+        let (path, query) = child_hop(&state).await;
+        let r = serve_stream(state.clone(), Method::GET, &path, &query, viewer()).await;
+        assert_eq!(r.status().as_u16(), 403);
+        assert_eq!(up.resolves(), 1, "segments never trigger a renewal");
     }
 
     #[tokio::test]

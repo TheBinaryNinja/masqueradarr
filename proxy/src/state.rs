@@ -27,6 +27,8 @@ pub const RETIRE_TARGET_REJECTED: &str = "target_rejected";
 
 pub const RETIRE_REFRESH_FAILED: &str = "refresh_failed";
 
+const MAX_GRAFT_KEYS: usize = 8;
+
 const FAILOVER_CURSOR_IDLE: Duration = Duration::from_secs(300);
 
 pub const MAX_FAILOVER_ATTEMPTS: u32 = 12;
@@ -70,6 +72,8 @@ pub struct TargetEntry {
     expires_at_ms: Option<u64>,
     rejected_at: Option<Instant>,
     retire_hint: Option<&'static str>,
+    graft_keys: Vec<String>,
+    renew_gate: Arc<tokio::sync::Mutex<()>>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -371,7 +375,7 @@ impl AppState {
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let key = target_key(source, entry);
         let now = Instant::now();
-        let (cached, attempt) = {
+        let (cached, attempt, renew) = {
             let mut m = self.targets.lock_ok();
             match m.get_mut(&key) {
                 Some(e) => {
@@ -379,13 +383,14 @@ impl AppState {
                         e.attempt = 0;
                     }
                     e.last_access = now;
+                    let renew = !e.target.is_empty();
                     if e.expires > now {
-                        (Some((e.target.clone(), e.policy_key.clone())), e.attempt)
+                        (Some((e.target.clone(), e.policy_key.clone())), e.attempt, renew)
                     } else {
-                        (None, e.attempt)
+                        (None, e.attempt, renew)
                     }
                 }
-                None => (None, 0),
+                None => (None, 0, false),
             }
         };
         if let Some((target, policy_key)) = cached {
@@ -393,7 +398,7 @@ impl AppState {
                 return Ok((policy, target));
             }
         }
-        self.resolve_at(source, entry, pl, attempt, None).await
+        self.resolve_recorded(source, entry, pl, attempt, None, renew).await
     }
 
     pub async fn resolve_at(
@@ -404,9 +409,21 @@ impl AppState {
         attempt: u32,
         reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
+        self.resolve_recorded(source, entry, pl, attempt, reason, false).await
+    }
+
+    async fn resolve_recorded(
+        &self,
+        source: &str,
+        entry: &str,
+        pl: Option<&str>,
+        attempt: u32,
+        reason: Option<&str>,
+        renew: bool,
+    ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let pending = self.take_retire_hint(source, entry);
         let reason = reason.or(pending);
-        let g = match self.resolve(source, entry, pl, attempt, reason).await {
+        let g = match self.resolve(source, entry, pl, attempt, reason, renew).await {
             Ok(g) => g,
             Err(ResolveErr::Refused(why)) => {
                 self.invalidate_target(source, entry);
@@ -430,7 +447,10 @@ impl AppState {
         let now = Instant::now();
         let key = target_key(source, entry);
         let mut m = self.targets.lock_ok();
-        let rejected_at = m.get(&key).and_then(|e| e.rejected_at);
+        let (rejected_at, graft_keys, renew_gate) = match m.get(&key) {
+            Some(e) => (e.rejected_at, e.graft_keys.clone(), e.renew_gate.clone()),
+            None => (None, Vec::new(), Arc::default()),
+        };
         m.insert(
             key,
             TargetEntry {
@@ -442,6 +462,8 @@ impl AppState {
                 expires_at_ms,
                 rejected_at,
                 retire_hint: None,
+                graft_keys,
+                renew_gate,
             },
         );
     }
@@ -464,7 +486,7 @@ impl AppState {
         reason: Option<&str>,
     ) -> Result<(Arc<SourcePolicy>, String), ResolveErr> {
         let attempt = self.cursor_attempt(source, entry);
-        self.resolve_at(source, entry, pl, attempt, reason).await
+        self.resolve_recorded(source, entry, pl, attempt, reason, true).await
     }
 
     pub async fn resolve_advance(
@@ -512,6 +534,8 @@ impl AppState {
                         expires_at_ms: None,
                         rejected_at: None,
                         retire_hint: None,
+                        graft_keys: Vec::new(),
+                        renew_gate: Arc::default(),
                     },
                 );
                 1
@@ -539,6 +563,47 @@ impl AppState {
         e.expires = now;
         e.retire_hint = Some(RETIRE_TARGET_REJECTED);
         true
+    }
+
+    pub fn current_target(&self, source: &str, entry: &str) -> Option<String> {
+        let m = self.targets.lock_ok();
+        m.get(&target_key(source, entry)).map(|e| e.target.clone()).filter(|t| !t.is_empty())
+    }
+
+    pub fn learn_graft_keys(&self, source: &str, entry: &str, keys: &[String]) {
+        if let Some(e) = self.targets.lock_ok().get_mut(&target_key(source, entry)) {
+            for k in keys {
+                if e.graft_keys.len() < MAX_GRAFT_KEYS && !e.graft_keys.contains(k) {
+                    e.graft_keys.push(k.clone());
+                }
+            }
+        }
+    }
+
+    pub fn graft_known(&self, source: &str, entry: &str, hop: &str) -> Option<String> {
+        let (target, keys) = {
+            let m = self.targets.lock_ok();
+            let e = m.get(&target_key(source, entry)).filter(|e| !e.graft_keys.is_empty() && !e.target.is_empty())?;
+            (e.target.clone(), e.graft_keys.clone())
+        };
+        let (hop, target) = (Url::parse(hop).ok()?, Url::parse(&target).ok()?);
+        crate::proxy::graft_query(&hop, &target, Some(&keys)).map(|(u, _)| u.to_string())
+    }
+
+    pub async fn renew_rejected(
+        &self,
+        source: &str,
+        entry: &str,
+        pl: Option<&str>,
+        seen: Option<&str>,
+    ) -> Option<(Arc<SourcePolicy>, String)> {
+        let gate = self.targets.lock_ok().get(&target_key(source, entry)).map(|e| e.renew_gate.clone())?;
+        let _turn = gate.lock().await;
+        let current = self.current_target(source, entry)?;
+        if seen == Some(current.as_str()) && self.invalidate_rejected_target(source, entry) {
+            return self.resolve_entry(source, entry, pl).await.ok();
+        }
+        Some((self.hop_policy(source, entry)?, current))
     }
 
     pub fn cursor_attempt(&self, source: &str, entry: &str) -> u32 {
@@ -605,16 +670,18 @@ impl AppState {
         pl: Option<&str>,
         attempt: u32,
         reason: Option<&str>,
+        renew: bool,
     ) -> Result<Granted, ResolveErr> {
         let rid = crate::log::rid(source, entry_url);
         crate::log::trace("resolve", &rid, || {
             format!(
-                "seam POST /resolve source={source} attempt={attempt} entry={}",
+                "seam POST /resolve source={source} attempt={attempt}{} entry={}",
+                if renew { " renew" } else { "" },
                 crate::proxy::host_of(entry_url)
             )
         });
         let body = serde_json::json!({
-            "source": source, "url": entry_url, "pl": pl, "attempt": attempt, "reason": reason,
+            "source": source, "url": entry_url, "pl": pl, "attempt": attempt, "reason": reason, "renew": renew,
         });
         let resp = self
             .node_client
@@ -956,6 +1023,34 @@ mod tests {
             reasons,
             vec![None, Some(RETIRE_TARGET_REJECTED.to_string()), None, Some(RETIRE_REFRESH_FAILED.to_string())],
             "the hint rides the one resolve that replaces the refused target, and no other"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_renewal_says_so_and_a_failover_step_never_does() {
+        use crate::testkit::{Mock, Seam};
+        let mock = Mock::start(Seam::grant("/pl/a.m3u8", false)).await;
+        let s = mock.state();
+        assert!(s.resolve_entry("zl", "zl://abc", None).await.is_ok(), "first sight: nothing to renew");
+        assert!(s.resolve_advance("zl", "zl://abc", None, None).await.is_ok(), "the advance lands on attempt 1");
+        s.invalidate_target("zl", "zl://abc");
+        assert!(s.resolve_entry("zl", "zl://abc", None).await.is_ok(), "a TTL lapse renews the target it has");
+        assert!(s.resolve_fresh("zl", "zl://abc", None, None).await.is_ok(), "a fresh resolve renews too");
+        assert!(s.resolve_at("zl", "zl://abc", None, 1, None).await.is_ok(), "a walk step is not a renewal");
+        assert!(s.invalidate_rejected_target("zl", "zl://abc"));
+        assert!(s.resolve_entry("zl", "zl://abc", None).await.is_ok());
+        let seen: Vec<(u32, bool, Option<String>)> = mock.calls().into_iter().map(|c| (c.attempt, c.renew, c.reason)).collect();
+        assert_eq!(
+            seen,
+            vec![
+                (0, false, None),
+                (1, false, None),
+                (1, true, None),
+                (1, true, None),
+                (1, false, None),
+                (1, true, Some(RETIRE_TARGET_REJECTED.to_string())),
+            ],
+            "only a real failover step may read as an advance"
         );
     }
 
