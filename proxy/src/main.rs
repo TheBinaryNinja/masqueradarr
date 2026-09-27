@@ -1,4 +1,5 @@
 
+mod disguise;
 mod dns;
 mod edge;
 mod log;

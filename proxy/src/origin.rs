@@ -328,16 +328,19 @@ impl Origin {
         }
     }
 
-    fn unwrap_disguise(&self, body: Bytes) -> (Bytes, Option<(&'static str, usize)>) {
-        let Some(n) = crate::tsseg::disguise_prefix_len(&body) else {
-            return (body, None);
+    fn unwrap_disguise(&self, body: Bytes) -> (Bytes, Option<(&'static str, usize, usize)>) {
+        let before = body.len();
+        let (clean, how) = crate::tsseg::unwrap_segment(body);
+        let Some(u) = how else {
+            return (clean, None);
         };
-        let label = crate::tsseg::disguise_label(&body);
+        let label = u.kind.label();
         let first = self.segment_wrapper.read_ok().as_deref() != Some(label);
         if first {
             *self.segment_wrapper.write_ok() = Some(label.to_string());
         }
-        (body.slice(n..), first.then_some((label, n)))
+        let after = clean.len();
+        (clean, first.then_some((label, before, after)))
     }
 
     fn demuxed_audio(&self) -> Option<DemuxedMaster> {
@@ -1607,10 +1610,10 @@ fn push_cut(ctx: &IngestCtx, cut: crate::tsseg::CutSegment, discontinuity: bool)
 
 fn unwrap_logged(ctx: &IngestCtx, rid: &str, body: Bytes) -> Bytes {
     let (clean, first) = ctx.origin.unwrap_disguise(body);
-    if let Some((label, n)) = first {
+    if let Some((label, before, after)) = first {
         log::info("iop", rid, || {
             format!(
-                "{}: segments arrive disguised ({label}, {n} B before the first TS packet) — unwrapping at ingest, so the ring and both renderers carry clean TS",
+                "{}: segments arrive disguised ({label}, {before} B wrapper → {after} B of TS) — unwrapping at ingest, so the ring and both renderers carry clean TS",
                 ctx.source
             )
         });
@@ -2473,7 +2476,7 @@ mod tests {
         let (clean, first) = o.unwrap_disguise(body.clone());
         assert_eq!(&clean[..], &ts[..], "the ring gets the stream, byte for byte");
         assert_eq!(clean.as_ptr(), body[42..].as_ptr(), "…as a slice of the fetched buffer");
-        assert_eq!(first, Some(("riff-webp", 42)), "the first sighting is announced");
+        assert_eq!(first, Some(("riff-webp", body.len(), ts.len())), "the first sighting is announced");
         assert_eq!(o.segment_wrapper.read_ok().as_deref(), Some("riff-webp"));
 
         let (_, again) = o.unwrap_disguise(Bytes::from(crate::tsseg::webp_disguise(&ts)));

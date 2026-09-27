@@ -545,11 +545,60 @@ pub(crate) fn disguise_prefix_len(bytes: &[u8]) -> Option<usize> {
         .or_else(|| (1..=MAX_DISGUISE_PREFIX.min(head.len())).find(|&p| proven_sync_at(head, p)))
 }
 
-pub(crate) fn disguise_label(bytes: &[u8]) -> &'static str {
-    if is_riff_webp(bytes) {
-        "riff-webp"
+const MAX_DISGUISED_BODY: usize = 16 << 20;
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum Disguise {
+    RiffWebp,
+    OpaquePrefix,
+    PngTrailer,
+    PngPixels,
+    TiktikRaw,
+    TiktikGzip,
+}
+
+impl Disguise {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Disguise::RiffWebp => "riff-webp",
+            Disguise::OpaquePrefix => "opaque-prefix",
+            Disguise::PngTrailer => "png-trailer",
+            Disguise::PngPixels => "png-pixels",
+            Disguise::TiktikRaw => "tiktik-raw",
+            Disguise::TiktikGzip => "tiktik-gzip",
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) struct Unwrapped {
+    pub(crate) kind: Disguise,
+    pub(crate) wrapper: usize,
+}
+
+pub(crate) fn unwrap_segment(body: Bytes) -> (Bytes, Option<Unwrapped>) {
+    use crate::disguise::{is_png, markers, png, Reveal, MAX_UNWRAPPED};
+    if body.first().is_none_or(|&b| b == SYNC) {
+        return (body, None);
+    }
+    let found = if is_png(&body) {
+        png(&body, MAX_UNWRAPPED).or_else(|| markers(&body, MAX_UNWRAPPED))
+    } else if let Some(n) = disguise_prefix_len(&body) {
+        let kind = if is_riff_webp(&body) { Disguise::RiffWebp } else { Disguise::OpaquePrefix };
+        return (body.slice(n..), Some(Unwrapped { kind, wrapper: n }));
     } else {
-        "opaque-prefix"
+        markers(&body, MAX_UNWRAPPED)
+    };
+    match found {
+        Some((Reveal::Slice(start, end), kind)) => {
+            let wrapper = start + (body.len() - end);
+            (body.slice(start..end), Some(Unwrapped { kind, wrapper }))
+        }
+        Some((Reveal::Owned(ts), kind)) => {
+            let wrapper = body.len();
+            (Bytes::from(ts), Some(Unwrapped { kind, wrapper }))
+        }
+        None => (body, None),
     }
 }
 
@@ -577,17 +626,33 @@ fn riff_exif_payload(head: &[u8]) -> Option<usize> {
 
 pub(crate) struct DisguiseStripper {
     held: Option<Vec<u8>>,
-    stripped: usize,
+    whole: Option<Vec<u8>>,
+    cap: usize,
+    unwrapped: Option<Unwrapped>,
 }
 
 impl DisguiseStripper {
     pub(crate) fn new() -> Self {
-        Self { held: Some(Vec::new()), stripped: 0 }
+        Self::capped(MAX_DISGUISED_BODY)
+    }
+
+    pub(crate) fn capped(cap: usize) -> Self {
+        Self { held: Some(Vec::new()), whole: None, cap, unwrapped: None }
     }
 
     pub(crate) fn push(&mut self, chunk: Bytes) -> Option<Bytes> {
         if chunk.is_empty() {
             return None;
+        }
+        if let Some(whole) = self.whole.as_mut() {
+            if whole.len() + chunk.len() <= self.cap {
+                whole.extend_from_slice(&chunk);
+                return None;
+            }
+            let mut all = self.whole.take()?;
+            all.extend_from_slice(&chunk);
+            self.unwrapped = None;
+            return Some(Bytes::from(all));
         }
         let nothing_held = match &self.held {
             None => return Some(chunk),
@@ -613,21 +678,58 @@ impl DisguiseStripper {
     }
 
     pub(crate) fn finish(&mut self) -> Option<Bytes> {
+        if let Some(whole) = self.whole.take() {
+            return self.settle(whole);
+        }
         let held = self.held.take()?;
         if held.is_empty() {
             return None;
         }
-        self.decide(Bytes::from(held))
+        if let Some(out) = self.decide(Bytes::from(held)) {
+            return Some(out);
+        }
+        let whole = self.whole.take()?;
+        self.settle(whole)
     }
 
+    #[cfg(test)]
     pub(crate) fn stripped(&self) -> usize {
-        self.stripped
+        self.unwrapped.map_or(0, |u| u.wrapper)
+    }
+
+    pub(crate) fn unwrapped(&self) -> Option<Unwrapped> {
+        self.unwrapped
+    }
+
+    pub(crate) fn is_buffering(&self) -> bool {
+        self.whole.is_some()
+            || self.held.as_deref().is_some_and(|h| !h.is_empty() && crate::disguise::needs_whole_body(h))
+    }
+
+    pub(crate) fn discard(&mut self) {
+        self.whole = None;
+        self.held = None;
+        self.unwrapped = None;
     }
 
     fn decide(&mut self, head: Bytes) -> Option<Bytes> {
-        self.stripped = disguise_prefix_len(&head).unwrap_or(0);
-        let rest = head.slice(self.stripped..);
+        if crate::disguise::needs_whole_body(&head) {
+            self.whole = Some(head.to_vec());
+            return None;
+        }
+        let n = disguise_prefix_len(&head);
+        self.unwrapped = n.map(|wrapper| {
+            let kind = if is_riff_webp(&head) { Disguise::RiffWebp } else { Disguise::OpaquePrefix };
+            Unwrapped { kind, wrapper }
+        });
+        let rest = head.slice(n.unwrap_or(0)..);
         (!rest.is_empty()).then_some(rest)
+    }
+
+    fn settle(&mut self, whole: Vec<u8>) -> Option<Bytes> {
+        let (out, how) = unwrap_segment(Bytes::from(whole));
+        self.unwrapped = how;
+        (!out.is_empty()).then_some(out)
     }
 }
 
@@ -1272,7 +1374,7 @@ mod tests {
         assert_eq!(disguise_prefix_len(&body), Some(42));
         assert_eq!(&body[42..], &ts[..], "the remainder is the stream, byte for byte");
         assert_eq!(inspect_segment(&body[42..]), None, "…and a healthy one");
-        assert_eq!(disguise_label(&body), "riff-webp");
+        assert_eq!(unwrap_segment(Bytes::from(body)).1.map(|u| u.kind.label()), Some("riff-webp"));
     }
 
     #[test]
@@ -1351,7 +1453,7 @@ mod tests {
         };
         assert_eq!(disguise_prefix_len(&behind(MAX_DISGUISE_PREFIX)), Some(MAX_DISGUISE_PREFIX));
         assert_eq!(disguise_prefix_len(&behind(MAX_DISGUISE_PREFIX + 1)), None);
-        assert_eq!(disguise_label(&behind(7)), "opaque-prefix");
+        assert_eq!(unwrap_segment(Bytes::from(behind(7))).1.map(|u| u.kind.label()), Some("opaque-prefix"));
     }
 
     #[test]
@@ -1386,8 +1488,11 @@ mod tests {
 
     #[test]
     fn the_streaming_unwrap_is_chunking_invariant() {
+        use crate::disguise::tests::{noisy_ts, png_of, png_pixel_disguise, PngSpec};
         let mut opaque = vec![0u8; 600];
         opaque.extend_from_slice(&null_ts(8));
+        let mut trailer = png_of(&noise(20_000, 8), &PngSpec::default());
+        trailer.extend_from_slice(&clean_ts());
         let bodies = [
             webp_disguise(&clean_ts()),
             webp_disguise(&null_ts(97)),
@@ -1395,13 +1500,71 @@ mod tests {
             clean_ts(),
             noise(20_000, 3),
             b"WEBVTT\n\n".to_vec(),
+            png_pixel_disguise(&noisy_ts(120, 5), &PngSpec { width: 64, ..PngSpec::default() }),
+            png_pixel_disguise(&noisy_ts(40, 6), &PngSpec { width: 17, bpp: 4, ..PngSpec::default() }),
+            png_pixel_disguise(&null_ts(3), &PngSpec::default()),
+            trailer,
+            png_of(&noise(20_000, 10), &PngSpec::default()),
         ];
         for body in &bodies {
-            let want = &body[disguise_prefix_len(body).unwrap_or(0)..];
+            let want = unwrap_segment(Bytes::copy_from_slice(body)).0;
             for n in [1, 7, 97, PKT, 1000, DISGUISE_HEAD_BYTES - 1, DISGUISE_HEAD_BYTES, 65_536] {
                 assert_eq!(stream_through(body, n), want, "chunks of {n} changed the output");
             }
         }
+    }
+
+    #[test]
+    fn a_png_disguise_is_decoded_whole_and_labelled() {
+        use crate::disguise::tests::{noisy_ts, png_pixel_disguise, PngSpec};
+        let ts = noisy_ts(200, 21);
+        let body = png_pixel_disguise(&ts, &PngSpec { width: 64, ..PngSpec::default() });
+        assert!(body.len() > MAX_DISGUISE_PREFIX, "fixture sanity: past the prefix window");
+        let (out, how) = unwrap_segment(Bytes::from(body.clone()));
+        assert_eq!(&out[..], &ts[..]);
+        assert_eq!(how, Some(Unwrapped { kind: Disguise::PngPixels, wrapper: body.len() }));
+        assert_eq!(inspect_segment(&out), None, "a clean stream, not a suspect one");
+    }
+
+    #[test]
+    fn a_stream_behind_a_large_png_is_a_slice_of_the_fetched_buffer() {
+        use crate::disguise::tests::{png_of, PngSpec};
+        let image = png_of(&noise(30_000, 12), &PngSpec::default());
+        assert!(image.len() > MAX_DISGUISE_PREFIX, "fixture sanity: past the prefix window");
+        let mut body = image.clone();
+        body.extend_from_slice(&clean_ts());
+        let body = Bytes::from(body);
+        assert_eq!(disguise_prefix_len(&body), None, "the prefix scan alone would miss it");
+        let (out, how) = unwrap_segment(body.clone());
+        assert_eq!(out.as_ptr(), body[image.len()..].as_ptr(), "zero-copy");
+        assert_eq!(&out[..], &clean_ts()[..]);
+        assert_eq!(how, Some(Unwrapped { kind: Disguise::PngTrailer, wrapper: image.len() }));
+    }
+
+    #[test]
+    fn a_genuine_image_passes_through_as_the_same_buffer() {
+        use crate::disguise::tests::{png_of, PngSpec};
+        let body = Bytes::from(png_of(&noise(50_000, 13), &PngSpec::default()));
+        let (out, how) = unwrap_segment(body.clone());
+        assert_eq!((out.as_ptr(), out.len(), how), (body.as_ptr(), body.len(), None));
+    }
+
+    #[test]
+    fn a_whole_body_past_the_cap_is_released_untouched() {
+        use crate::disguise::tests::{noisy_ts, png_pixel_disguise, PngSpec};
+        let body = png_pixel_disguise(&noisy_ts(200, 22), &PngSpec { width: 64, ..PngSpec::default() });
+        let mut s = DisguiseStripper::capped(body.len() - 1);
+        let mut out = Vec::new();
+        for c in body.chunks(1000) {
+            if let Some(b) = s.push(Bytes::copy_from_slice(c)) {
+                out.extend_from_slice(&b);
+            }
+        }
+        if let Some(b) = s.finish() {
+            out.extend_from_slice(&b);
+        }
+        assert_eq!(out, body, "byte-exact, never half-decoded");
+        assert_eq!(s.unwrapped(), None);
     }
 
     #[test]

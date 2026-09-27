@@ -908,6 +908,7 @@ dependencies = [
  "axum",
  "bytes",
  "cbc",
+ "flate2",
  "hex",
  "hickory-resolver",
  "http-body-util",

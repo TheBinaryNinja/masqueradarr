@@ -25,9 +25,9 @@ impl TelemetryCtx {
         let (total, errored) = (p.sent, p.errored);
         if errored {
             log::warn("stream", &self.rid, || format!("segment ended on an upstream stall/error after {total} bytes"));
-        } else if p.stripped > 0 {
+        } else if let Some(u) = p.unwrapped {
             log::trace("stream", &self.rid, || {
-                format!("segment done ({total} bytes, {}-byte disguise stripped)", p.stripped)
+                format!("segment done ({total} bytes of TS from a {}-byte {} disguise)", u.wrapper, u.kind.label())
             });
         } else {
             log::trace("stream", &self.rid, || format!("segment done ({total} bytes)"));
@@ -89,7 +89,7 @@ async fn pump(
 struct Pumped {
     sent: u64,
     errored: bool,
-    stripped: usize,
+    unwrapped: Option<crate::tsseg::Unwrapped>,
 }
 
 async fn forward<S, E>(
@@ -124,7 +124,7 @@ where
                 };
                 if let Some(b) = out {
                     if !send_counted(tx, b, &mut sent).await {
-                        return Pumped { sent, errored: false, stripped: stripped_by(&strip) };
+                        return Pumped { sent, errored: false, unwrapped: unwrapped_by(&strip) };
                     }
                 }
             }
@@ -136,19 +136,20 @@ where
         }
     }
     let errored = failure.is_some();
-    if let Some(b) = strip.as_mut().and_then(crate::tsseg::DisguiseStripper::finish) {
+    let truncated_whole = errored && strip.as_ref().is_some_and(crate::tsseg::DisguiseStripper::is_buffering);
+    if let Some(b) = strip.as_mut().filter(|_| !truncated_whole).and_then(crate::tsseg::DisguiseStripper::finish) {
         if !send_counted(tx, b, &mut sent).await {
-            return Pumped { sent, errored, stripped: stripped_by(&strip) };
+            return Pumped { sent, errored, unwrapped: unwrapped_by(&strip) };
         }
     }
     if let Some(err) = failure {
         let _ = tx.send(Err(err)).await;
     }
-    Pumped { sent, errored, stripped: stripped_by(&strip) }
+    Pumped { sent, errored, unwrapped: unwrapped_by(&strip) }
 }
 
-fn stripped_by(strip: &Option<crate::tsseg::DisguiseStripper>) -> usize {
-    strip.as_ref().map_or(0, |s| s.stripped())
+fn unwrapped_by(strip: &Option<crate::tsseg::DisguiseStripper>) -> Option<crate::tsseg::Unwrapped> {
+    strip.as_ref().and_then(crate::tsseg::DisguiseStripper::unwrapped)
 }
 
 async fn send_counted(tx: &mpsc::Sender<Result<Bytes, io::Error>>, b: Bytes, sent: &mut u64) -> bool {
@@ -219,7 +220,51 @@ mod tests {
         let (got, err) = received(rx).await;
         assert_eq!(got, ts, "the client gets the stream, byte for byte");
         assert!(!err && !p.errored);
-        assert_eq!((p.sent, p.stripped), (ts.len() as u64, 42));
+        assert_eq!(p.sent, ts.len() as u64);
+        assert_eq!(p.unwrapped.map(|u| (u.kind.label(), u.wrapper)), Some(("riff-webp", 42)));
+    }
+
+    #[tokio::test]
+    async fn a_flagged_pump_decodes_a_png_disguised_segment_across_chunks() {
+        use crate::disguise::tests::{png_pixel_disguise, PngSpec};
+        for ts in [crate::disguise::tests::null_ts(400), crate::disguise::tests::noisy_ts(400, 11)] {
+            let body = png_pixel_disguise(&ts, &PngSpec { width: 64, ..PngSpec::default() });
+            let (tx, rx) = mpsc::channel(4096);
+            let p = forward(upstream(&body, 1000), &tx, None, true).await;
+            drop(tx);
+            let (got, err) = received(rx).await;
+            assert_eq!(got, ts, "the client gets the decoded stream, not the image ({} B PNG)", body.len());
+            assert!(!err && !p.errored);
+            assert_eq!(p.sent, ts.len() as u64, "billed for what it sent");
+            assert_eq!(p.unwrapped.map(|u| (u.kind.label(), u.wrapper)), Some(("png-pixels", body.len())));
+        }
+    }
+
+    #[tokio::test]
+    async fn a_png_disguised_segment_cut_off_upstream_is_not_forwarded_as_an_image() {
+        use crate::disguise::tests::{png_pixel_disguise, PngSpec};
+        for ts in [crate::disguise::tests::null_ts(400), crate::disguise::tests::noisy_ts(400, 12)] {
+            let body = png_pixel_disguise(&ts, &PngSpec { width: 64, ..PngSpec::default() });
+            let items: Vec<Result<Bytes, String>> =
+                vec![Ok(Bytes::copy_from_slice(&body[..body.len() / 2])), Err("reset by peer".into())];
+            let (tx, rx) = mpsc::channel(16);
+            let p = forward(tokio_stream::iter(items), &tx, None, true).await;
+            drop(tx);
+            let (got, err) = received(rx).await;
+            assert!(got.is_empty(), "half an image is never written as TS ({} B PNG)", body.len());
+            assert!(err && p.errored);
+        }
+    }
+
+    #[tokio::test]
+    async fn an_unflagged_pump_passes_a_png_through_untouched() {
+        use crate::disguise::tests::{png_pixel_disguise, PngSpec};
+        let body = png_pixel_disguise(&crate::disguise::tests::null_ts(40), &PngSpec::default());
+        let (tx, rx) = mpsc::channel(4096);
+        let p = forward(upstream(&body, 1000), &tx, None, false).await;
+        drop(tx);
+        assert_eq!(received(rx).await.0, body);
+        assert_eq!(p.unwrapped, None);
     }
 
     #[tokio::test]
@@ -229,7 +274,7 @@ mod tests {
         let p = forward(upstream(&body, 1000), &tx, None, false).await;
         drop(tx);
         assert_eq!(received(rx).await.0, body);
-        assert_eq!((p.sent, p.stripped), (body.len() as u64, 0));
+        assert_eq!((p.sent, p.unwrapped), (body.len() as u64, None));
     }
 
     #[tokio::test]

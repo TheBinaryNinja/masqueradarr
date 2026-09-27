@@ -19,7 +19,7 @@ use crate::log;
 use crate::proxy::{build_headers, failover_walk, fetch_with_retry, is_private_host, WalkOutcome, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, SourcePolicy};
 use crate::sync::RwExt;
-use crate::tsseg::{disguise_prefix_len, DisguiseStripper};
+use crate::tsseg::{unwrap_segment, DisguiseStripper, Unwrapped};
 
 type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
 
@@ -529,6 +529,27 @@ const JOIN_FIRST_PROBE: usize = 64 << 10;
 
 const JOIN_HOLD_CAP: usize = 8 << 20;
 
+async fn renewed_media(ctx: &mut TsContext, media_url: &Url) -> Option<reqwest::Response> {
+    let seen = ctx.state.current_target(&ctx.source, &ctx.entry);
+    let (policy, _, resp) = crate::proxy::recover_rejected_hop(
+        &ctx.state,
+        &ctx.source,
+        &ctx.entry,
+        ctx.pl.as_deref(),
+        media_url.as_str(),
+        seen.as_deref(),
+        ctx.read_timeout_ms,
+        &ctx.rid,
+    )
+    .await?;
+    ctx.policy = policy;
+    ctx.client = ctx.state.client_for(
+        ctx.policy.connect_timeout_ms.load(Ordering::Relaxed),
+        ctx.policy.max_redirects.load(Ordering::Relaxed),
+    );
+    Some(resp)
+}
+
 async fn reresolve_media(ctx: &mut TsContext) -> Result<(Url, String), &'static str> {
     log::info("failover", &ctx.rid, || "media playlist unreachable — walking failover candidates".to_string());
     let walk_children = ctx.policy.failover_enabled.load(Ordering::Relaxed);
@@ -626,9 +647,15 @@ async fn ts_producer(
             break 'outer;
         }
         if !first {
-            match fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-media", MAX_UPSTREAM_RETRIES)
-                .await
-            {
+            let mut polled =
+                fetch_with_retry(&ctx.client, media_url.as_str(), &build_headers(&ctx.policy), ctx.read_timeout_ms, &ctx.rid, "ts-media", MAX_UPSTREAM_RETRIES)
+                    .await;
+            if matches!(&polled, Ok(r) if matches!(r.status().as_u16(), 401 | 403 | 410)) {
+                if let Some(r) = renewed_media(&mut ctx, &media_url).await {
+                    polled = Ok(r);
+                }
+            }
+            match polled {
                 Ok(resp) if resp.status().is_success() => {
                     ctx.state.touch_stream(&ctx.source, &ctx.entry);
                     media_url = resp.url().clone();
@@ -774,6 +801,7 @@ async fn ts_producer(
                             let mut strip = unwrap.then(DisguiseStripper::new);
                             let mut held: Option<Vec<u8>> = trim_join.then(Vec::new);
                             let mut probe_at = JOIN_FIRST_PROBE;
+                            let mut complete = false;
                             loop {
                                 let chunk = match idle {
                                     Some(d) => match tokio::time::timeout(d, s.next()).await {
@@ -809,8 +837,17 @@ async fn ts_producer(
                                         joined = true;
                                     }
                                     Some(Err(_)) => break,
-                                    None => break,
+                                    None => {
+                                        complete = true;
+                                        break;
+                                    }
                                 }
+                            }
+                            if let Some(st) = strip.as_mut().filter(|st| !complete && st.is_buffering()) {
+                                log::warn("tsmux", &ctx.rid, || {
+                                    format!("disguised segment seq={seq} ended early — dropping it rather than writing the wrapper into the stream")
+                                });
+                                st.discard();
                             }
                             if let Some(st) = strip.as_mut() {
                                 if let Some(out) = st.finish() {
@@ -826,7 +863,7 @@ async fn ts_producer(
                                         joined = true;
                                     }
                                 }
-                                note_unwrap(&ctx, &mut unwrap_logged, st.stripped());
+                                note_unwrap(&ctx, &mut unwrap_logged, st.unwrapped());
                             }
                             if let Some(h) = held.take().filter(|h| !h.is_empty()) {
                                 let out = join_at_keyframe(&ctx, seq, Bytes::from(h));
@@ -866,12 +903,12 @@ async fn ts_producer(
                             match decrypt_aes128_cbc(&key, &iv, &cipher_buf) {
                                 Some(plain) => {
                                     let plain = Bytes::from(plain);
-                                    let out = match unwrap.then(|| disguise_prefix_len(&plain)).flatten() {
-                                        Some(n) => {
-                                            note_unwrap(&ctx, &mut unwrap_logged, n);
-                                            plain.slice(n..)
-                                        }
-                                        None => plain,
+                                    let out = if unwrap {
+                                        let (out, how) = unwrap_segment(plain);
+                                        note_unwrap(&ctx, &mut unwrap_logged, how);
+                                        out
+                                    } else {
+                                        plain
                                     };
                                     let out = if trim_join { join_at_keyframe(&ctx, seq, out) } else { out };
                                     let n = out.len() as u64;
@@ -927,13 +964,17 @@ async fn ts_producer(
     ctx.state.report(serde_json::json!({ "kind": "close", "streamId": stream_id, "reason": close_reason }));
 }
 
-fn note_unwrap(ctx: &TsContext, logged: &mut bool, stripped: usize) {
-    if stripped == 0 || *logged {
+fn note_unwrap(ctx: &TsContext, logged: &mut bool, how: Option<Unwrapped>) {
+    let Some(u) = how.filter(|_| !*logged) else {
         return;
-    }
+    };
     *logged = true;
     log::info("tsmux", &ctx.rid, || {
-        format!("segments arrive disguised ({stripped} B ahead of the transport stream) — unwrapping each into the raw-TS socket")
+        format!(
+            "segments arrive disguised ({}, {} B wrapper) — unwrapping each into the raw-TS socket",
+            u.kind.label(),
+            u.wrapper
+        )
     });
 }
 

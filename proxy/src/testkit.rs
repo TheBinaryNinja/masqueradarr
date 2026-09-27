@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, RawQuery, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -38,6 +38,7 @@ pub(crate) enum Serve {
     Stall { head: Vec<u8>, hold: Duration },
     Endless(Vec<u8>),
     Status(u16),
+    Tokened(String, String),
 }
 
 #[derive(Clone, Debug)]
@@ -45,6 +46,7 @@ pub(crate) struct Call {
     pub(crate) at: Duration,
     pub(crate) attempt: u32,
     pub(crate) reason: Option<String>,
+    pub(crate) renew: bool,
 }
 
 pub(crate) struct Script {
@@ -129,10 +131,11 @@ impl Mock {
 async fn resolve(State(s): State<Shared>, Json(asked): Json<serde_json::Value>) -> Response {
     let attempt = asked.get("attempt").and_then(|a| a.as_u64()).unwrap_or(0) as u32;
     let reason = asked.get("reason").and_then(|r| r.as_str()).map(str::to_string);
+    let renew = asked.get("renew").and_then(|r| r.as_bool()).unwrap_or(false);
     let (seam, exhausted) = {
         let mut sc = s.script.lock_ok();
         sc.resolves += 1;
-        sc.calls.push(Call { at: s.started.elapsed(), attempt, reason });
+        sc.calls.push(Call { at: s.started.elapsed(), attempt, reason, renew });
         let seam = sc.by_attempt.get(&attempt).cloned().unwrap_or_else(|| sc.seam.clone());
         (seam, sc.exhaust_advances && attempt >= 1)
     };
@@ -165,7 +168,7 @@ async fn sink(State(s): State<Shared>) -> Json<serde_json::Value> {
     Json(s.script.lock_ok().echo.clone())
 }
 
-async fn playlist(State(s): State<Shared>, Path(name): Path<String>) -> Response {
+async fn playlist(State(s): State<Shared>, Path(name): Path<String>, RawQuery(query): RawQuery) -> Response {
     let path = format!("/pl/{name}");
     let serve = {
         let mut sc = s.script.lock_ok();
@@ -196,6 +199,14 @@ async fn playlist(State(s): State<Shared>, Path(name): Path<String>) -> Response
             ([("content-type", "video/mp2t")], body).into_response()
         }
         Some(Serve::Status(code)) => StatusCode::from_u16(code).unwrap_or(StatusCode::BAD_GATEWAY).into_response(),
+        Some(Serve::Tokened(valid, b)) => {
+            let presented = query.unwrap_or_default();
+            if presented.split('&').any(|p| p == format!("token={valid}")) {
+                ([("content-type", "application/vnd.apple.mpegurl")], b).into_response()
+            } else {
+                StatusCode::FORBIDDEN.into_response()
+            }
+        }
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }

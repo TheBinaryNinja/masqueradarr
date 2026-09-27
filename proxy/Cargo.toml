@@ -47,6 +47,9 @@ bytes = "1"
 aes = "0.8"
 cbc = { version = "0.1", features = ["alloc"] }
 hex = "0.4"
+# Inflate + gunzip for segments disguised as images (tsseg/disguise.rs: a PNG whose pixels carry gzip'd MPEG-TS).
+# Already in the tree via reqwest's `gzip`; the pure-Rust backend matches it, so the lock gains no package.
+flate2 = { version = "1.1", default-features = false, features = ["rust_backend"] }
 # The Settings nameservers, in the data plane (dns.rs): a custom reqwest resolver that asks the operator's
 # servers first and falls back to the OS resolver. Plain DNS over UDP/TCP only — default features off, which
 # drops the system-config reader (the servers come from Settings, never /etc/resolv.conf) and every
