@@ -44,7 +44,7 @@ bytes = "1"
 # each segment server-side and concatenate it into the continuous video/mp2t stream (e.g. Pluto's ts_aes
 # channels). Pure-Rust RustCrypto — no system OpenSSL, matching the reqwest rustls choice above; `aes` uses
 # hardware AES-NI where present. `cbc` needs `alloc` for decrypt_padded_vec_mut; `hex` parses the KEY IV=0x… .
-aes = "0.8"
+aes = "0.9"
 cbc = { version = "0.1", features = ["alloc"] }
 hex = "0.4"
 # Inflate + gunzip for segments disguised as images (tsseg/disguise.rs: a PNG whose pixels carry gzip'd MPEG-TS).
