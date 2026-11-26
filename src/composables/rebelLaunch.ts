@@ -12,7 +12,7 @@ export function rebelUiOrigin(): string | null {
   const ui = FEATURES.value.rebelIptv.ui;
   if (!ui) return null;
   if (ui.publicUrl) return ui.publicUrl.replace(/\/+$/, '');
-  return `${location.protocol}//${location.hostname}:${ui.port}`;
+  return `http://${location.hostname}:${ui.port}`;
 }
 
 export async function openRebelIptv(): Promise<void> {
