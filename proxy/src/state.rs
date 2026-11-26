@@ -46,6 +46,8 @@ struct AuthDecision {
     expires: Instant,
 }
 
+type ClientKey = (u64, u32, bool);
+
 #[derive(Clone)]
 pub struct AppState {
     pub client: reqwest::Client,
@@ -56,7 +58,7 @@ pub struct AppState {
     pub secret: String,
     cache: Arc<Mutex<HashMap<String, Arc<SourcePolicy>>>>,
     targets: Arc<Mutex<HashMap<String, TargetEntry>>>,
-    upstream_clients: Arc<Mutex<HashMap<(u64, u32), reqwest::Client>>>,
+    upstream_clients: Arc<Mutex<HashMap<ClientKey, reqwest::Client>>>,
     telemetry_tx: mpsc::Sender<serde_json::Value>,
     stream_seq: Arc<AtomicU64>,
     auth_cache: Arc<Mutex<HashMap<AuthKey, AuthDecision>>>,
@@ -301,7 +303,7 @@ impl AppState {
             .build()
             .expect("failed to build reqwest client");
         let client = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(10))
+            .redirect(crate::guard::redirect_policy(10, true))
             .connect_timeout(Duration::from_secs(15))
             .dns_resolver(dns.clone())
             .build()
@@ -348,9 +350,9 @@ impl AppState {
         &self.origins
     }
 
-    pub fn client_for(&self, connect_timeout_ms: u64, max_redirects: u32) -> reqwest::Client {
+    pub fn client_for(&self, connect_timeout_ms: u64, max_redirects: u32, allow_private: bool) -> reqwest::Client {
         let connect_ms = if connect_timeout_ms == 0 { 15000 } else { connect_timeout_ms };
-        let key = (connect_ms, max_redirects);
+        let key = (connect_ms, max_redirects, allow_private);
         {
             let m = self.upstream_clients.lock_ok();
             if let Some(c) = m.get(&key) {
@@ -358,7 +360,7 @@ impl AppState {
             }
         }
         let built = reqwest::Client::builder()
-            .redirect(reqwest::redirect::Policy::limited(max_redirects as usize))
+            .redirect(crate::guard::redirect_policy(max_redirects as usize, allow_private))
             .connect_timeout(Duration::from_millis(connect_ms))
             .dns_resolver(self.dns.clone())
             .build()
@@ -1084,7 +1086,7 @@ mod tests {
         let default = s.client.get(&url).send().await.expect("the default client reaches the upstream");
         assert_eq!(default.status().as_u16(), 200);
         assert_eq!(asked_now(), 1, "…through the shared resolver");
-        let knobbed = s.client_for(2_500, 3).get(&url).send().await.expect("a client_for client reaches it too");
+        let knobbed = s.client_for(2_500, 3, false).get(&url).send().await.expect("a client_for client reaches it too");
         assert_eq!(knobbed.status().as_u16(), 200);
         assert_eq!(asked_now(), 2, "…through the same resolver");
 

@@ -16,7 +16,7 @@ use url::Url;
 use aes::cipher::{block_padding::Pkcs7, BlockDecryptMut, KeyIvInit};
 
 use crate::log;
-use crate::proxy::{build_headers, failover_walk, fetch_with_retry, is_private_host, WalkOutcome, MAX_UPSTREAM_RETRIES};
+use crate::proxy::{build_headers, failover_walk, fetch_with_retry, WalkOutcome, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, SourcePolicy};
 use crate::sync::RwExt;
 use crate::tsseg::{unwrap_segment, DisguiseStripper, Unwrapped};
@@ -546,6 +546,7 @@ async fn renewed_media(ctx: &mut TsContext, media_url: &Url) -> Option<reqwest::
     ctx.client = ctx.state.client_for(
         ctx.policy.connect_timeout_ms.load(Ordering::Relaxed),
         ctx.policy.max_redirects.load(Ordering::Relaxed),
+        ctx.policy.allow_private.load(Ordering::Relaxed),
     );
     Some(resp)
 }
@@ -575,6 +576,7 @@ async fn reresolve_media(ctx: &mut TsContext) -> Result<(Url, String), &'static 
             ctx.client = ctx.state.client_for(
                 ctx.policy.connect_timeout_ms.load(Ordering::Relaxed),
                 ctx.policy.max_redirects.load(Ordering::Relaxed),
+                ctx.policy.allow_private.load(Ordering::Relaxed),
             );
             log::trace("failover", &ctx.rid, || "raw-TS producer swapped onto the winning candidate's policy".to_string());
             r
@@ -713,7 +715,7 @@ async fn ts_producer(
                 Err(_) => continue,
             };
             if let Some(h) = seg_url.host_str() {
-                if !ctx.policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                if crate::guard::host_blocked(h, ctx.policy.allow_private.load(Ordering::Relaxed)) {
                     if !private_logged {
                         private_logged = true;
                         log::warn("tsmux", &ctx.rid, || format!("segment host {h} private/blocked — skipping its segments"));
@@ -734,7 +736,7 @@ async fn ts_producer(
                         }
                     };
                     if let Some(h) = key_url.host_str() {
-                        if !ctx.policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                        if crate::guard::host_blocked(h, ctx.policy.allow_private.load(Ordering::Relaxed)) {
                             log::warn("tsmux", &ctx.rid, || format!("AES key host {h} private/blocked — dropping segment seq={seq}"));
                             continue;
                         }
@@ -1452,7 +1454,7 @@ mod tests {
             entry: "zl://abc".into(),
             pl: None,
             rid: "t".into(),
-            client: state.client_for(15_000, 10),
+            client: state.client_for(15_000, 10, false),
             read_timeout_ms: 0,
             ip: "127.0.0.1".into(),
             ua: "test".into(),

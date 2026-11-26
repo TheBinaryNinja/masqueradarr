@@ -258,6 +258,7 @@ pub async fn serve_stream(
             let client = state.client_for(
                 policy.connect_timeout_ms.load(Ordering::Relaxed),
                 policy.max_redirects.load(Ordering::Relaxed),
+                policy.allow_private.load(Ordering::Relaxed),
             );
             fetch_with_retry(
                 &client,
@@ -449,6 +450,7 @@ pub async fn serve_stream(
                 client: state.client_for(
                     policy.connect_timeout_ms.load(Ordering::Relaxed),
                     policy.max_redirects.load(Ordering::Relaxed),
+                    policy.allow_private.load(Ordering::Relaxed),
                 ),
                 read_timeout_ms,
                 ip: ip.clone(),
@@ -630,6 +632,7 @@ pub(crate) async fn failover_walk(
                 let client = state.client_for(
                     p.connect_timeout_ms.load(Ordering::Relaxed),
                     p.max_redirects.load(Ordering::Relaxed),
+                    p.allow_private.load(Ordering::Relaxed),
                 );
                 let read_timeout_ms = p.read_timeout_ms.load(Ordering::Relaxed);
                 let retries = if tried == 1 { MAX_UPSTREAM_RETRIES } else { 0 };
@@ -808,6 +811,7 @@ pub(crate) async fn recover_rejected_hop(
     let client = state.client_for(
         policy.connect_timeout_ms.load(Ordering::Relaxed),
         policy.max_redirects.load(Ordering::Relaxed),
+        policy.allow_private.load(Ordering::Relaxed),
     );
     let resp = fetch_with_retry(&client, &grafted, &build_headers(&policy), read_timeout_ms, rid, "hop-renewed", 0)
         .await
@@ -869,7 +873,7 @@ fn ssrf_public_ok(policy: &SourcePolicy, url: &str) -> bool {
         Some(h) => h.to_lowercase(),
         None => return false,
     };
-    policy.allow_private.load(Ordering::Relaxed) || !is_private_host(&host)
+    !crate::guard::host_blocked(&host, policy.allow_private.load(Ordering::Relaxed))
 }
 
 fn ssrf_ok(policy: &SourcePolicy, url: &str) -> bool {
