@@ -210,7 +210,7 @@ async fn lookup(
     if let Some(ip) = ip_literal(host) {
         return Ok(vec![ip]);
     }
-    if in_localhost_zone(host) {
+    if in_localhost_zone(host) || is_single_label(host) {
         return Ok(os(host.to_string()).await?);
     }
     let Some(resolver) = &active.resolver else {
@@ -356,6 +356,11 @@ pub(crate) fn in_localhost_zone(host: &str) -> bool {
     let h = host.strip_suffix('.').unwrap_or(host).as_bytes();
     const ZONE: &[u8] = b"localhost";
     h.eq_ignore_ascii_case(ZONE) || (h.len() > ZONE.len() + 1 && h[h.len() - ZONE.len() - 1..].eq_ignore_ascii_case(b".localhost"))
+}
+
+pub(crate) fn is_single_label(host: &str) -> bool {
+    let h = host.strip_suffix('.').unwrap_or(host);
+    !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn admit_trace(seen: &Mutex<HashMap<String, String>>, level: u8, host: &str, key: &str) -> bool {
@@ -679,6 +684,27 @@ mod tests {
         }
         for h in ["localhost.example.com", "notlocalhost", "xlocalhost.", "localhost.com", "cdn.example.test", ""] {
             assert!(!in_localhost_zone(h), "{h} is not");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_label_name_is_the_os_resolvers_to_answer() {
+        let r = Responder::start(|_, _| Answer::NxDomain).await;
+        let (os, os_calls) = fake_os(&[("rebel-iptv", "172.20.0.3"), ("rebel-iptv.", "172.20.0.3")]);
+        let dns = dns_via(&r, os);
+        assert_eq!(resolve(&dns, "rebel-iptv").await, Ok(ips(&["172.20.0.3"])));
+        assert_eq!(resolve(&dns, "rebel-iptv.").await, Ok(ips(&["172.20.0.3"])), "a trailing dot is still one label");
+        assert!(r.asked().is_empty(), "the configured servers were never asked about a single-label name");
+        assert_eq!(os_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn single_labels_are_matched_on_the_whole_name() {
+        for h in ["rebel-iptv", "mongo", "rebel-iptv.", "NAS"] {
+            assert!(is_single_label(h), "{h} is a single label");
+        }
+        for h in ["cdn.example.test", "nas.lan", "a.b", "", ".", "[::1]"] {
+            assert!(!is_single_label(h), "{h} is not");
         }
     }
 

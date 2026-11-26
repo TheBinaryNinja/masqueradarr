@@ -1,5 +1,6 @@
 
 import { ref } from 'vue';
+import { apiWsUrl } from './wsUrl';
 import { SYSTEM_STATS, type SystemStats } from '../data';
 
 const SERIES_MAX = 60;
@@ -25,8 +26,7 @@ function ingest(s: SystemStats): void {
 
 function connect(): void {
   if (ws) return;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/api/system-stats`);
+  ws = new WebSocket(apiWsUrl('/api/system-stats'));
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
     try {

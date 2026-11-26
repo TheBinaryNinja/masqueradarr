@@ -1,6 +1,7 @@
 <script setup lang="ts">
 
 import { ref, computed, onMounted, onBeforeUnmount } from 'vue';
+import { apiWsUrl } from '../composables/wsUrl';
 import Icon from './Icon.vue';
 import Btn from './Btn.vue';
 import StatusDot from './StatusDot.vue';
@@ -131,8 +132,7 @@ onMounted(() => {
     canvas.value.height = remoteH;
     ctx = canvas.value.getContext('2d');
   }
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/api/dulo/login-stream`);
+  ws = new WebSocket(apiWsUrl('/api/dulo/login-stream'));
   ws.binaryType = 'blob';
   ws.onmessage = (ev) => {
     if (typeof ev.data === 'string') handleControl(ev.data);

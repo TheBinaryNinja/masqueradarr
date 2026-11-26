@@ -1,5 +1,6 @@
 
 import { LOGS, type Log } from '../data';
+import { apiWsUrl } from './wsUrl';
 
 const LOGS_MAX = 1000;
 const RECONNECT_MS = 3000;
@@ -14,8 +15,7 @@ function ingestLog(log: Log): void {
 
 function connect(): void {
   if (ws) return;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/api/logs-stream`);
+  ws = new WebSocket(apiWsUrl('/api/logs-stream'));
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
     try {
