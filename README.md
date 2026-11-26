@@ -215,6 +215,9 @@ masqueradarr ships as Docker images. There are two deployment shapes.
    **self-provisions** its `config.json` from the `.env` on every boot — there is no host config file to
    manage.
 
+> **Optional — Rebel IPTV companion.** Set `REBEL_IPTV=1` in `.env` to run Rebel IPTV beside masqueradarr and
+> fold its channels and guide into your catalog. See [Rebel IPTV integration](#rebel-iptv-integration-optional).
+
 ### Option B — All-in-one (single container)
 
 A second image bundles **app + MongoDB + config bootstrap** into one container, so the whole stack runs
@@ -232,6 +235,10 @@ from a single `docker run` with no external database — ideal for a quick trial
 
 To publish on a different host port, change the left side of the `-p` mapping — e.g. `-p 8080:3000`
 (the container always serves on `3000` internally; `MASQUERADARR_PORT` only applies to the compose stack).
+
+> **Optional — Rebel IPTV companion.** The AIO image can create and manage a Rebel IPTV container beside
+> itself (`-e REBEL_IPTV_ENABLED=true -e DOCKER_SOCK_ACCESS=1`, the Docker socket mounted, `-p 3080:3080`), or
+> adopt one you run yourself. See [Rebel IPTV integration](#rebel-iptv-integration-optional).
 
 ## First run
 
@@ -295,9 +302,33 @@ boot**:
 | `MONGO_URI` / `MONGO_HOST` | Optional — point the app at an external / Atlas MongoDB instead of the compose `mongo` service. |
 | `DNS_LOG_LEVEL` | Outbound-DNS trace verbosity (`1`–`3`); seeds the setting on first boot. |
 | `MASQ_EDGE` | Optional (default off). `1` inverts the topology so the Rust proxy owns the public port and Node runs behind it on a loopback internal port — same public port, reversible. Enable for scale / high concurrency. See [Public edge mode](#public-edge-mode-masq_edge). |
+| `DOCKER_SOCK_ACCESS` | **App-wide** Docker socket access, `0` (default) or `1` only. `1` lets masqueradarr call the Docker Engine API — **root-equivalent on the host**. See [Docker socket access](#docker-socket-access-docker_sock_access). |
+| `DOCKER_SOCK_PATH` | Host Docker socket path, only if non-standard (rootless Docker). Default `/var/run/docker.sock`. |
+| `REBEL_IPTV_*` | Optional Rebel IPTV companion (`…_ENABLED`, `…_URL`, `…_IMAGE`, `…_UI_PORT`, `…_UI_PUBLIC_URL`, …). See [Rebel IPTV integration](#rebel-iptv-integration-optional). |
 
 > App-settings vars are seeded with `$setOnInsert` — they apply on the **first provision only**. Change
 > them in the Settings UI afterward; a redeploy won't clobber UI changes.
+
+#### Docker socket access (`DOCKER_SOCK_ACCESS`)
+
+One switch gates **every** Docker-dependent feature, now and in future. It is **off by default** because
+Docker API access is **root-equivalent on the host**: anything that compromises masqueradarr could start a
+privileged container.
+
+- **`1` (on)** — compose starts a restricted `docker-sock-proxy` (`tecnativa/docker-socket-proxy`, only the
+  containers / images / networks sections, on an internal-only network) and points the app at it; the AIO
+  entrypoint adds the app's `node` user to the mounted socket's group. The app logs one boot `WARN`
+  (`Docker socket access enabled … host-root-equivalent`). The proxy narrows which endpoints exist — it is
+  **not** a security boundary — and the app additionally refuses to create privileged containers, host
+  namespaces, devices or binds other than Rebel's `/app/data`.
+- **`0` (off)** — no socket is mounted (the proxy has `scale: 0`, so it is never created) and the AIO never
+  grants one even if you mount it (it logs that it refused). Docker-dependent features run in their reduced
+  mode, which the `.env.example` entry spells out — today: Rebel IPTV can't be updated, restarted or have its
+  logs read from masqueradarr; you force-pull its new images by hand.
+
+Only `0`/`1` are accepted — the value doubles as the proxy's `scale`, so `true` makes `docker compose config`
+fail. Features that depend on it today: **Rebel IPTV** (updates, auto-update, restart, logs, AIO-managed
+provisioning).
 
 > [!IMPORTANT]
 > This sample enviornment variable is also included in the release notes and the `main` branch repository: `.env.example` \
@@ -1125,3 +1156,139 @@ every streamed byte is handled twice (Rust → Node → client); edge mode remov
   has a smaller blast radius (Rust is critical-path only for streaming, not everything). Edge mode is build-
   and unit-verified, but a full runtime end-to-end pass on a live stack is still pending — treat it as an
   opt-in scale / performance topology, not the default.
+
+# Rebel IPTV integration (optional)
+
+[Rebel IPTV](https://github.com/rebeliptv/iptv) is a self-hosted IPTV server (480+ US/CA/UK/AU linear
+channels plus live sports, its own M3U/XMLTV and dashboard). masqueradarr can run it as an **opt-in companion
+service**: its channels and guide join your catalog, it is kept updated and health-checked from
+**Settings → Rebel IPTV**, and **Open Rebel IPTV** pops its own dashboard up *through* masqueradarr for deep
+configuration.
+
+> **License.** Rebel IPTV is closed-source and licensed for **personal, non-commercial** use, in binary /
+> container form only — no modification, redistribution or reverse-engineering. masqueradarr therefore never
+> bundles, extracts or rebuilds it: Rebel always runs as its **own, unmodified `rebeliptv/iptv` container**,
+> pulled by your Docker, and its dashboard is served at its own root, byte-for-byte.
+
+<img src="docs/diagrams/topology-rebel-iptv.svg" alt="Rebel IPTV topology: admin browser and IPTV clients reach masqueradarr; the Node API ingests Rebel's playlist and guide over the private rebel-net network, the Rust origin ingests Rebel's raw-TS streams, the :3080 UI gate reverse-proxies Rebel's dashboard, and — only with DOCKER_SOCK_ACCESS=1 — a restricted docker-socket-proxy lets masqueradarr pull and recreate the Rebel container.">
+
+## Enabling it
+
+**Compose stack** — flip one line in `.env`:
+
+```dotenv
+REBEL_IPTV=1
+```
+
+then `docker compose up -d`. The `rebel-iptv` service already lives in `docker-compose.yml` at `scale: 0`
+(the same switch pattern as `docker-sock-proxy`); `REBEL_IPTV=1` scales it to one container and enables
+masqueradarr's side of the integration. Rebel sits on a private `rebel-net` network — **no host port, no
+Docker socket, not on `masqueradarr-net`** (it can't reach MongoDB). masqueradarr's Rebel dashboard gate is
+published on `REBEL_IPTV_UI_PORT` (default `3080`) whether or not Rebel is on — nothing listens behind it at
+`0`, so move it if `3080` is taken. Setting `REBEL_IPTV` back to `0` and running `docker compose up -d`
+removes the Rebel container but keeps its data volume.
+
+**All-in-one image, managed sibling** (`DOCKER_SOCK_ACCESS=1`) — masqueradarr creates the network
+`masq-rebel-net`, the volume `masq-rebel-iptv-data` and the container `masq-rebel-iptv`, then connects itself:
+
+```bash
+docker run -d --name masqueradarr -p 3000:3000 -p 3080:3080 \
+  -e REBEL_IPTV_ENABLED=true -e DOCKER_SOCK_ACCESS=1 \
+  -v masqueradarr-data:/data -v /var/run/docker.sock:/var/run/docker.sock \
+  iflip721/masqueradarr-aio:latest
+```
+
+**All-in-one image, no socket** (`DOCKER_SOCK_ACCESS=0`) — run Rebel yourself on a shared network and point
+masqueradarr at it (`REBEL_IPTV_URL` set = *adopt* mode; unset = *managed* mode, which needs Docker access):
+
+```bash
+docker network create rebel-net
+docker run -d --name rebel-iptv --network rebel-net --network-alias rebel-iptv \
+  -v rebel-iptv-data:/app/data --restart unless-stopped rebeliptv/iptv:latest
+docker run -d --name masqueradarr --network rebel-net -p 3000:3000 -p 3080:3080 \
+  -e REBEL_IPTV_ENABLED=true -e REBEL_IPTV_URL=http://rebel-iptv:8080 \
+  -v masqueradarr-data:/data iflip721/masqueradarr-aio:latest
+```
+
+**First run.** Rebel's playlist is empty until its own setup wizard (or *Skip setup*) has run and its first
+refresh has finished — open **Settings → Rebel IPTV → Open Rebel IPTV**, finish the wizard, wait for the
+channels to come online, then **Add Rebel IPTV playlist**. If you turned on Rebel's *playlist key*, paste it
+into the tab's **Playlist API key** field (stored as a secret, never logged; backups strip it like the other
+credentials).
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `REBEL_IPTV_ENABLED` | `false` | Master switch (compose: set from `REBEL_IPTV`). |
+| `REBEL_IPTV_URL` | unset | Set → **adopt** an existing Rebel (`http://rebel-iptv:8080` in the compose stack). Unset → **managed** (AIO sibling; needs `DOCKER_SOCK_ACCESS=1`). |
+| `REBEL_IPTV_IMAGE` | `rebeliptv/iptv:latest` | A non-`latest` tag is **pinned** — new releases are shown, never installed. |
+| `REBEL_IPTV_CONTAINER` | `masq-rebel-iptv` (managed) | Container name override; adopt mode finds it by the `io.masqueradarr.role=rebel-iptv` label. |
+| `REBEL_IPTV_UI_PORT` | `3080` | Host port of the dashboard gate (the container always listens on 3080). |
+| `REBEL_IPTV_UI_PUBLIC_URL` | unset | Full origin of the gate behind TLS / a reverse proxy, e.g. `https://rebel.example.com`. |
+| `REBEL_IPTV_PUBLISH_PORT` | unset | Managed only — also publish Rebel's `:8080` (its HDHomeRun emulation) to the LAN. |
+| `REBEL_IPTV_TRUSTED_PROXIES`, `REBEL_IPTV_DATA_PATH` | see `docker-compose.yml` | Rebel's `X-Forwarded-*` trust list (narrow it if you publish Rebel) and its `/app/data` location. |
+
+## Catalog
+
+Rebel is a first-class `rebel` source adapter. A sync fetches `/playlist` over the internal network and stores
+each channel as `rebel://channel/<tvg-id>` — **no Rebel host, port or key is ever stored**. At play time the
+adapter looks the tvg-id up in a fresh playlist, re-bases the stream URL onto Rebel's current address and
+refuses anything that points off Rebel's own host. Rebel serves continuous MPEG-TS, so the adapter forces the
+**local origin** (`originRequired`): one raw-TS ingest per channel feeds the RAM ring, which gives in-app (HLS)
+playback, Active Streams, telemetry and the per-source stream cap (**Max simultaneous streams** in the tab —
+match Rebel's own *Simultaneous streams*, default 4). The guide comes from `/epg.gz` and self-links to every
+channel (tvg-ids are Rebel's stable ids such as `us-espn`). If Rebel is down or rejects the key, a sync keeps
+your existing channels and flags the playlist `warn`.
+
+## Docker access on vs off
+
+| Capability | `DOCKER_SOCK_ACCESS=1` | `DOCKER_SOCK_ACCESS=0` (default) |
+|---|---|---|
+| Socket exposure | compose: `docker-sock-proxy` on an internal network; AIO: `node` joins the socket's group | none |
+| Catalog, guide, playback, pop-up, reachability | ✓ | ✓ |
+| Container state, Docker health, healthcheck output, logs, restart | ✓ | ✗ — the tab shows HTTP reachability only |
+| Installed Rebel version | image label | unknown — Rebel's own dashboard (System) shows it |
+| Latest release (GitHub) | ✓ | ✓, with the manual command |
+| Update now / auto-update / rollback | ✓ | ✗ — **force-pull by hand**: `docker compose pull rebel-iptv && docker compose up -d rebel-iptv` (AIO / external: `docker pull rebeliptv/iptv:latest`, then recreate) |
+| AIO managed provisioning | ✓ | ✗ — run Rebel yourself and set `REBEL_IPTV_URL` |
+
+> [!WARNING]
+> `DOCKER_SOCK_ACCESS=1` is **root-equivalent** on the host (see
+> [Docker socket access](#docker-socket-access-docker_sock_access)). Rebel itself **never** gets the socket.
+
+## Updates
+
+With Docker access on, **masqueradarr is Rebel's update path** (Rebel's own *Update* button needs a socket it
+doesn't have, so it showing manual instructions is expected either way). *Check now* compares the running
+image's digest with the registry and shows the latest GitHub release (notes as plain text). **Update now**
+pulls the image, stops Rebel (two instances never share `/app/data`), recreates it with the same config,
+volume, networks and labels, waits for Docker to report it **healthy**, then removes the old container and
+image — and **rolls back** to the previous container if the new one doesn't come up. An update interrupted by
+a masqueradarr restart is resolved at the next boot. **Auto-update** is on by default when Docker access is on:
+nightly at 04:00 (editable), **only when idle** — it waits while anyone watches a Rebel channel, and runs
+anyway after 3 deferrals because a stale Rebel stops serving channels. Pinned tags are info-only.
+
+## The dashboard pop-up (port 3080)
+
+Rebel serves everything at `/` with no base-path option, so its dashboard can't live under masqueradarr's
+`/api`. Instead a **second Node listener on 3080** reverse-proxies Rebel at its own root: *Open Rebel IPTV*
+mints a **one-time, 60-second ticket** (admin session only), the pop-up redeems it for an `HttpOnly`,
+`SameSite=Strict` cookie (`Secure` + `__Host-` behind https), and every request is checked against your
+masqueradarr session — signing out, deleting or demoting the admin revokes it within 30 seconds. The `Host`
+header is preserved, so Rebel's CSRF guard and URL building work unchanged. Behind TLS, publish the gate on
+its own vhost and set `REBEL_IPTV_UI_PUBLIC_URL`; leave Rebel's own dashboard login off (masqueradarr's gate is
+in front of it).
+
+## Troubleshooting
+
+- **Pop-up blocked** — allow pop-ups for masqueradarr's address; the window is opened inside your click.
+- **"Rebel IPTV — sign in through masqueradarr" / Rebel shows its own sign-in** — the gate session ended
+  (expired, signed out, or masqueradarr restarted). Reopen it from the tab.
+- **"Rebel IPTV is restarting…"** — the container is down or mid-update; the page retries every 5 s. A fresh
+  Rebel can take up to its **3-minute** healthcheck start period.
+- **Empty playlist** — Rebel's first refresh hasn't finished (or its wizard hasn't run).
+- **401 on sync / Test** — Rebel's playlist key is on; paste the current key (Rebel → Settings → Security).
+- **Playlist URLs inside Rebel's dashboard** point at the gate's address and don't work for external players —
+  give players masqueradarr's own playlist.
+- **Managed mode error in the tab** — `REBEL_IPTV_URL` is unset but `DOCKER_SOCK_ACCESS` isn't `1`; enable it or
+  run Rebel yourself and set the URL.
+

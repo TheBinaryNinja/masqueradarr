@@ -269,6 +269,22 @@ export interface SystemStats {
 export const PLAYLISTS: Ref<Playlist[]> = ref([]);
 export const EPG_SOURCES: Ref<EpgSource[]> = ref([]);
 export const SOURCES: Ref<SourceManifestEntry[]> = ref([]);
+
+export interface Features {
+  dockerSockAccess: boolean;
+  rebelIptv: {
+    enabled: boolean;
+    mode?: 'adopt' | 'managed';
+    ui?: { port: number; publicUrl: string | null };
+  };
+}
+
+export const FEATURES_DEFAULT: Features = { dockerSockAccess: false, rebelIptv: { enabled: false } };
+export const FEATURES: Ref<Features> = ref({ ...FEATURES_DEFAULT });
+
+export async function reloadFeatures(): Promise<void> {
+  FEATURES.value = await getJson<Features>('/api/features').catch(() => ({ ...FEATURES_DEFAULT }));
+}
 export const CHANNELS: Ref<Channel[]> = ref([]);
 export const EPG_CHANNELS: Ref<EpgChannel[]> = ref([]);
 export const ACTIVE_STREAMS: Ref<ActiveStream[]> = ref([]);
@@ -312,6 +328,7 @@ let bootstrapPromise: Promise<void> | null = null;
 export function bootstrapData(): Promise<void> {
   if (bootstrapPromise) return bootstrapPromise;
   bootstrapPromise = (async () => {
+    void reloadFeatures();
     const [
       playlists, epgSources, sources, activeStreams,
       customPlaylists, viewSessions, logs, cronjobs, tags,

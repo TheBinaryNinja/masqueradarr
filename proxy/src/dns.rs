@@ -185,6 +185,13 @@ impl UpstreamDns {
     }
 }
 
+fn refused(host: &str) -> BoxError {
+    Box::new(io::Error::new(
+        io::ErrorKind::PermissionDenied,
+        format!("{host}: resolves to the Docker control endpoint — refused as an upstream"),
+    ))
+}
+
 impl Resolve for UpstreamDns {
     fn resolve(&self, name: Name) -> Resolving {
         let host = name.as_str().to_string();
@@ -193,7 +200,14 @@ impl Resolve for UpstreamDns {
         let os = self.os.clone();
         let down_window = self.down_window;
         Box::pin(async move {
+            if crate::guard::is_control_host(&host) {
+                return Err(refused(&host));
+            }
             let ips = lookup(&host, &active, &os, &seen, down_window).await?;
+            let ips: Vec<IpAddr> = ips.into_iter().filter(|ip| !crate::guard::is_control_ip(*ip)).collect();
+            if ips.is_empty() {
+                return Err(refused(&host));
+            }
             let addrs: Addrs = Box::new(ips.into_iter().map(|ip| SocketAddr::new(ip, 0)));
             Ok(addrs)
         })
@@ -210,7 +224,7 @@ async fn lookup(
     if let Some(ip) = ip_literal(host) {
         return Ok(vec![ip]);
     }
-    if in_localhost_zone(host) {
+    if in_localhost_zone(host) || is_single_label(host) {
         return Ok(os(host.to_string()).await?);
     }
     let Some(resolver) = &active.resolver else {
@@ -356,6 +370,11 @@ pub(crate) fn in_localhost_zone(host: &str) -> bool {
     let h = host.strip_suffix('.').unwrap_or(host).as_bytes();
     const ZONE: &[u8] = b"localhost";
     h.eq_ignore_ascii_case(ZONE) || (h.len() > ZONE.len() + 1 && h[h.len() - ZONE.len() - 1..].eq_ignore_ascii_case(b".localhost"))
+}
+
+pub(crate) fn is_single_label(host: &str) -> bool {
+    let h = host.strip_suffix('.').unwrap_or(host);
+    !h.is_empty() && h.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 fn admit_trace(seen: &Mutex<HashMap<String, String>>, level: u8, host: &str, key: &str) -> bool {
@@ -679,6 +698,40 @@ mod tests {
         }
         for h in ["localhost.example.com", "notlocalhost", "xlocalhost.", "localhost.com", "cdn.example.test", ""] {
             assert!(!in_localhost_zone(h), "{h} is not");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_single_label_name_is_the_os_resolvers_to_answer() {
+        let r = Responder::start(|_, _| Answer::NxDomain).await;
+        let (os, os_calls) = fake_os(&[("rebel-iptv", "172.20.0.3"), ("rebel-iptv.", "172.20.0.3")]);
+        let dns = dns_via(&r, os);
+        assert_eq!(resolve(&dns, "rebel-iptv").await, Ok(ips(&["172.20.0.3"])));
+        assert_eq!(resolve(&dns, "rebel-iptv.").await, Ok(ips(&["172.20.0.3"])), "a trailing dot is still one label");
+        assert!(r.asked().is_empty(), "the configured servers were never asked about a single-label name");
+        assert_eq!(os_calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_name_that_resolves_to_the_docker_control_endpoint_is_refused() {
+        crate::guard::add_control_endpoint("docker-sock-proxy.dns-test", 2375);
+        crate::guard::add_control_ip("203.0.113.251".parse().unwrap());
+        let r = Responder::start(|_, _| Answer::NxDomain).await;
+        let (os, _) = fake_os(&[("alias-of-the-proxy", "203.0.113.251"), ("docker-sock-proxy.dns-test", "198.51.100.9"), ("fine-host", "198.51.100.8")]);
+        let dns = dns_via(&r, os);
+        let err = resolve(&dns, "alias-of-the-proxy").await.expect_err("an alias onto the control IP is refused");
+        assert!(err.contains("Docker control endpoint"), "{err}");
+        assert!(resolve(&dns, "docker-sock-proxy.dns-test").await.is_err(), "the control name itself is refused");
+        assert_eq!(resolve(&dns, "fine-host").await, Ok(ips(&["198.51.100.8"])), "everything else resolves as before");
+    }
+
+    #[test]
+    fn single_labels_are_matched_on_the_whole_name() {
+        for h in ["rebel-iptv", "mongo", "rebel-iptv.", "NAS"] {
+            assert!(is_single_label(h), "{h} is a single label");
+        }
+        for h in ["cdn.example.test", "nas.lan", "a.b", "", ".", "[::1]"] {
+            assert!(!is_single_label(h), "{h} is not");
         }
     }
 

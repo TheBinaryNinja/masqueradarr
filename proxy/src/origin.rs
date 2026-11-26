@@ -10,7 +10,7 @@ use tokio_stream::StreamExt;
 use url::Url;
 
 use crate::log;
-use crate::proxy::{build_headers, fetch_with_retry, is_private_host, MAX_UPSTREAM_RETRIES};
+use crate::proxy::{build_headers, fetch_with_retry, MAX_UPSTREAM_RETRIES};
 use crate::state::{AppState, ResolveErr, SourcePolicy};
 use crate::sync::{LockExt, RwExt};
 use crate::tsmux::{
@@ -826,6 +826,7 @@ async fn ingest(ctx: IngestCtx) {
         let client = ctx.state.client_for(
             policy.connect_timeout_ms.load(Ordering::Relaxed),
             policy.max_redirects.load(Ordering::Relaxed),
+            policy.allow_private.load(Ordering::Relaxed),
         );
         let io = ingest_io(policy.read_timeout_ms.load(Ordering::Relaxed), mp.target_duration);
 
@@ -885,7 +886,7 @@ async fn ingest(ctx: IngestCtx) {
                 Err(_) => continue,
             };
             if let Some(h) = seg_url.host_str() {
-                if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                if crate::guard::host_blocked(h, policy.allow_private.load(Ordering::Relaxed)) {
                     log::warn("iop", &rid, || format!("segment host {h} private/blocked — skipping"));
                     continue;
                 }
@@ -913,7 +914,7 @@ async fn ingest(ctx: IngestCtx) {
                         Err(_) => continue,
                     };
                     if let Some(h) = aseg_url.host_str() {
-                        if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+                        if crate::guard::host_blocked(h, policy.allow_private.load(Ordering::Relaxed)) {
                             log::warn("iop", &rid, || format!("audio segment host {h} private/blocked — skipping"));
                             continue;
                         }
@@ -1317,6 +1318,7 @@ async fn resolve_media(
     let client = ctx.state.client_for(
         policy.connect_timeout_ms.load(Ordering::Relaxed),
         policy.max_redirects.load(Ordering::Relaxed),
+        policy.allow_private.load(Ordering::Relaxed),
     );
     let io = ingest_io(policy.read_timeout_ms.load(Ordering::Relaxed), ctx.origin.target_duration());
     let resp = fetch_with_retry(&client, &target, &build_headers(&policy), io.header_ms, rid, "iop-entry", MAX_UPSTREAM_RETRIES)
@@ -1672,7 +1674,7 @@ async fn fetch_segment(
 
     let key_url = media_url.join(&key.uri).ok()?;
     if let Some(h) = key_url.host_str() {
-        if !policy.allow_private.load(Ordering::Relaxed) && is_private_host(h) {
+        if crate::guard::host_blocked(h, policy.allow_private.load(Ordering::Relaxed)) {
             log::warn("iop", rid, || format!("AES key host {h} private/blocked — dropping seq={upstream_seq}"));
             return None;
         }

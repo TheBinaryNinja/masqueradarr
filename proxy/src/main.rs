@@ -2,6 +2,7 @@
 mod disguise;
 mod dns;
 mod edge;
+mod guard;
 mod log;
 mod manifest;
 mod origin;
@@ -43,6 +44,7 @@ async fn main() {
         .expect("MASQ_PROXY_HOST/MASQ_PROXY_PORT do not form a valid socket address");
 
     let state = AppState::new(node_url.clone(), secret);
+    guard::init_from_env();
 
     let internal = Router::new()
         .route("/health", get(health))

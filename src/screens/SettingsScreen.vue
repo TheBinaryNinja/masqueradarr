@@ -12,7 +12,8 @@ import Segmented from '../components/Segmented.vue';
 import FrequencyBuilder from '../components/FrequencyBuilder.vue';
 import RestoreBackupModal from '../components/RestoreBackupModal.vue';
 import TagManager from '../components/TagManager.vue';
-import { type CronFrequency, SOURCES, PLAYLISTS } from '../data';
+import RebelIptvPanel from '../components/RebelIptvPanel.vue';
+import { type CronFrequency, SOURCES, PLAYLISTS, FEATURES } from '../data';
 import { buildCron } from '../composables/useSchedule';
 import { useToast } from '../composables/useToast';
 import {
@@ -26,7 +27,13 @@ import {
 
 const toast = useToast();
 
-const activeTab = ref<'general' | 'video' | 'advanced'>('general');
+const activeTab = ref<'general' | 'video' | 'advanced' | 'rebel'>('general');
+const tabOptions = computed(() => [
+  { value: 'general', label: 'General' },
+  { value: 'video', label: 'Video Config' },
+  { value: 'advanced', label: 'Advanced' },
+  ...(FEATURES.value.rebelIptv.enabled ? [{ value: 'rebel', label: 'Rebel IPTV' }] : []),
+]);
 
 const FALLBACK_TZS = [
   'UTC',
@@ -305,11 +312,9 @@ async function fireReset() {
 <template>
   <div>
     <div class="col settings-col" :style="{ maxWidth: '940px' }">
-    <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="[
-      { value: 'general', label: 'General' },
-      { value: 'video', label: 'Video Config' },
-      { value: 'advanced', label: 'Advanced' },
-    ]" style="margin-bottom: 4px;" />
+    <Segmented :value="activeTab" @change="(v) => activeTab = v as any" :options="tabOptions" style="margin-bottom: 4px;" />
+
+    <RebelIptvPanel v-if="activeTab === 'rebel' && FEATURES.rebelIptv.enabled" />
 
     <div class="card" v-if="activeTab === 'general'">
       <h3 class="section-title">General</h3>

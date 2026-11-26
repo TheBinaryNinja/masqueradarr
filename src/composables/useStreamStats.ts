@@ -1,5 +1,6 @@
 
 import { reactive } from 'vue';
+import { apiWsUrl } from './wsUrl';
 import { ACTIVE_STREAMS, VIEW_SESSIONS, type ActiveStream, type ViewSession } from '../data';
 
 const SERIES_MAX = 60;
@@ -90,8 +91,7 @@ function ingestBufferEvent(m: { channelId?: string | null; channelKey?: string; 
 
 function connect(): void {
   if (ws) return;
-  const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${proto}://${location.host}/api/stream-stats`);
+  ws = new WebSocket(apiWsUrl('/api/stream-stats'));
   ws.onmessage = (ev) => {
     if (typeof ev.data !== 'string') return;
     try {

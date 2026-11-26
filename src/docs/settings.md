@@ -93,6 +93,19 @@ actually need authentication.
 > **Caution:** Because the domain change rewrites all playlist URLs, any links your users have already
 > saved in their players will point at the old address until they re-copy the updated URLs.
 
+## Rebel IPTV tab
+
+Appears only when the optional Rebel IPTV companion is enabled (`REBEL_IPTV=1` in the compose
+stack's `.env`, or `REBEL_IPTV_ENABLED` on the all-in-one image). It shows the companion's **status** (container state, Docker
+health, reachability, viewers), **updates** (installed vs. latest release, *Check now*, *Update now* with
+automatic rollback, an auto-update window that waits while anyone watches), the **connection & catalog**
+(playlist API key, max simultaneous streams, *Test*, *Add Rebel IPTV playlist* / *Sync now*), and
+**actions** — *Open Rebel IPTV* pops its own dashboard up through an admin-only gate on port 3080.
+
+Updating, restarting and reading logs need app-wide Docker socket access (`DOCKER_SOCK_ACCESS=1`, which
+is root-equivalent on the host). With it off the tab says so, disables those buttons, and shows the
+command to pull new Rebel images by hand.
+
 ## Related screens
 
 - **Playlists** — whose URLs the domain setting rewrites.

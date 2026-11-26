@@ -18,15 +18,78 @@ services:
       # Set MASQ_EDGE=1 to invert — Rust binds the public :3000 and reverse-proxies to Node on a loopback
       # internal port. Same public port + no other change; fully reversible by clearing it. See .env.example.
       MASQ_EDGE: ${MASQ_EDGE:-}
+      # App-wide Docker socket access (0 = off, the default; 1 = on, host-root-equivalent). The one switch for
+      # every Docker-dependent feature (today: Rebel IPTV updates/restarts/logs). See .env.example.
+      DOCKER_SOCK_ACCESS: ${DOCKER_SOCK_ACCESS:-0}
+      # Only used when DOCKER_SOCK_ACCESS=1 — the restricted socket proxy below (never the raw socket).
+      MASQ_DOCKER_HOST: tcp://docker-sock-proxy:2375
+      # Rebel IPTV companion (0 = off, the default; 1 = on). The same switch sizes the rebel-iptv service below.
+      REBEL_IPTV_ENABLED: ${REBEL_IPTV:-0}
+      REBEL_IPTV_URL: http://rebel-iptv:8080
+      REBEL_IPTV_IMAGE: ${REBEL_IPTV_IMAGE:-rebeliptv/iptv:latest}
+      REBEL_IPTV_UI_PORT: ${REBEL_IPTV_UI_PORT:-3080}
+      REBEL_IPTV_UI_PUBLIC_URL: ${REBEL_IPTV_UI_PUBLIC_URL:-}
     ports:
       - "${MASQUERADARR_PORT:-3000}:3000"
+      # Admin-gated Rebel IPTV dashboard pop-up. Always published; nothing listens behind it while REBEL_IPTV=0.
+      - "${REBEL_IPTV_UI_PORT:-3080}:3080"
     volumes:
       - ${COMPOSE_PATH:-./compose}:/app/compose:rw
       - ${BACKUPS_PATH:-./backups}:/backups:rw
     depends_on:
       mongo:
         condition: service_healthy
-    networks: [masqueradarr-net]
+    networks: [masqueradarr-net, docker-sock, rebel-net]
+    restart: unless-stopped
+
+  # Rebel IPTV — optional companion service (https://github.com/rebeliptv/iptv), created ONLY when REBEL_IPTV=1
+  # (scale 0 = no container). Closed-source, licensed for personal non-commercial use; it runs as its own
+  # UNMODIFIED container. masqueradarr ingests its playlist + guide over the private rebel-net network and serves
+  # Rebel's dashboard through the admin-gated pop-up above. Rebel publishes NO host port, never sees the Docker
+  # socket, and is not on masqueradarr-net (it cannot reach MongoDB).
+  # Updates: with DOCKER_SOCK_ACCESS=1 masqueradarr pulls + recreates it (Settings → Rebel IPTV); with 0,
+  # force-pull by hand:  docker compose pull rebel-iptv && docker compose up -d rebel-iptv
+  rebel-iptv:
+    image: ${REBEL_IPTV_IMAGE:-rebeliptv/iptv:latest}
+    scale: ${REBEL_IPTV:-0}
+    hostname: rebel-iptv
+    labels:
+      io.masqueradarr.role: rebel-iptv
+    environment:
+      TZ: ${TZ:-America/New_York}
+      # Who may set X-Forwarded-* for Rebel. Broad private ranges are safe while Rebel publishes no port;
+      # narrow this to rebel-net's subnet if you ever publish 8080.
+      TRUSTED_PROXIES: ${REBEL_IPTV_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+    volumes:
+      - ${REBEL_IPTV_DATA_PATH:-rebel-iptv-data}:/app/data
+    networks: [rebel-net]
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+  # Restricted Docker API proxy — created ONLY when DOCKER_SOCK_ACCESS=1 (scale 0 = no container, no socket
+  # mount). Least-privilege sections for today's only consumer (Rebel IPTV): containers, images, networks.
+  # It narrows which endpoints exist; it is NOT a security boundary (POST + CONTAINERS can start a privileged
+  # container). A future Docker-dependent feature that needs more widens these explicitly.
+  docker-sock-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    scale: ${DOCKER_SOCK_ACCESS:-0}
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      POST: 1
+      EVENTS: 0
+      INFO: 0
+      EXEC: 0
+      VOLUMES: 0
+    volumes:
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+    networks: [docker-sock]
     restart: unless-stopped
 
   mongo:
@@ -51,6 +114,13 @@ services:
 volumes:
   # Fallback named volume — used only when MONGO_DATA_PATH is unset.
   mongo-data:
+  # Fallback named volume for Rebel IPTV — used only when REBEL_IPTV=1 and REBEL_IPTV_DATA_PATH is unset.
+  rebel-iptv-data:
 
 networks:
   masqueradarr-net:
+  # Internal-only lane between masqueradarr and the socket proxy (no outside connectivity).
+  docker-sock:
+    internal: true
+  # Private lane between masqueradarr and Rebel IPTV (empty while REBEL_IPTV=0).
+  rebel-net:

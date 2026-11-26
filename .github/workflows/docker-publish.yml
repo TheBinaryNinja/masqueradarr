@@ -292,6 +292,7 @@ jobs:
             echo
             echo "**Deploy (compose stack):** download \`docker-compose.yml\` + \`.env.example\` below,"
             echo "rename \`.env.example\` to \`.env\`, set \`MONGO_ROOT_USER\`/\`MONGO_ROOT_PASS\`, then \`docker compose up -d\`."
+            echo "Optional Rebel IPTV companion: set \`REBEL_IPTV=1\` in \`.env\`."
             echo
             echo "Built from \`${GITHUB_SHA}\` by GitHub Actions."
           } > release-notes.md

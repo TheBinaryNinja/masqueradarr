@@ -252,7 +252,7 @@ async function create() {
 
 <template>
   <div class="modal-bg" @click="emit('close')">
-    <div class="modal" @click.stop>
+    <div class="modal add-source-modal" @click.stop>
       <div class="modal-hd">
         <Icon name="playlist" :size="18" />
         <h2>Add playlist</h2>
@@ -266,7 +266,7 @@ async function create() {
         </div>
 
         <div class="field-lbl">Import channels from</div>
-        <div class="segmented" style="margin-bottom: 12px;">
+        <div class="segmented import-seg" style="margin-bottom: 12px;">
           <button :class="mode === 'builtin' ? 'active' : ''" @click="switchMode('builtin')">
             <Icon name="check" :size="13" />Built-In
           </button>
@@ -436,6 +436,18 @@ async function create() {
 </template>
 
 <style scoped>
+.add-source-modal {
+  width: 640px;
+  max-width: calc(100vw - 32px);
+}
+.import-seg {
+  overflow-x: auto;
+}
+.import-seg button {
+  flex: 1 0 auto;
+  justify-content: center;
+  white-space: nowrap;
+}
 .city-results {
   margin-top: 8px;
   display: flex;
