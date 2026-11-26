@@ -286,7 +286,7 @@ topology({
 
 {
   const W = 1000, H = 772;
-  let b = header(W, 'Rebel IPTV — optional companion container', 'docker-compose.rebel-iptv.yml · server/src/rebel/');
+  let b = header(W, 'Rebel IPTV — optional companion container', 'docker-compose.yml (REBEL_IPTV=1) · server/src/rebel/');
 
   b += lane({ x: 32, y: 76, w: 936, h: 104, label: 'CLIENTS' });
   const browser = card({ x: 60, y: 100, w: 300, rail: C.ash, title: 'Admin browser', sub: ['SPA on :3000 · Rebel pop-up on :3080'] });

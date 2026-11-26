@@ -260,7 +260,6 @@ jobs:
           primary="${{ needs.prepare.outputs.primary }}"
           mkdir -p bundle
           cp .env.example bundle/.env.example
-          cp docker-compose.rebel-iptv.yml bundle/docker-compose.rebel-iptv.yml
           # Point the app service at the just-published image; drop the local build block
           # so the bundle is pull-only and deployable as-is.
           IMG="$ns/masqueradarr:$primary" \
@@ -293,7 +292,7 @@ jobs:
             echo
             echo "**Deploy (compose stack):** download \`docker-compose.yml\` + \`.env.example\` below,"
             echo "rename \`.env.example\` to \`.env\`, set \`MONGO_ROOT_USER\`/\`MONGO_ROOT_PASS\`, then \`docker compose up -d\`."
-            echo "Optional Rebel IPTV companion: also download \`docker-compose.rebel-iptv.yml\` and uncomment \`COMPOSE_FILE\` in \`.env\`."
+            echo "Optional Rebel IPTV companion: set \`REBEL_IPTV=1\` in \`.env\`."
             echo
             echo "Built from \`${GITHUB_SHA}\` by GitHub Actions."
           } > release-notes.md
@@ -306,9 +305,9 @@ jobs:
           release_title="${{ needs.prepare.outputs.release_title }}"
           if gh release view "$primary" >/dev/null 2>&1; then
             gh release edit "$primary" --title "$release_title" --notes-file release-notes.md
-            gh release upload "$primary" bundle/docker-compose.yml bundle/docker-compose.rebel-iptv.yml bundle/.env.example --clobber
+            gh release upload "$primary" bundle/docker-compose.yml bundle/.env.example --clobber
           else
             gh release create "$primary" --target "$GITHUB_SHA" --title "$release_title" \
               --notes-file release-notes.md \
-              bundle/docker-compose.yml bundle/docker-compose.rebel-iptv.yml bundle/.env.example
+              bundle/docker-compose.yml bundle/.env.example
           fi

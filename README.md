@@ -215,8 +215,7 @@ masqueradarr ships as Docker images. There are two deployment shapes.
    **self-provisions** its `config.json` from the `.env` on every boot — there is no host config file to
    manage.
 
-> **Optional — Rebel IPTV companion.** Add one line to `.env`
-> (`COMPOSE_FILE=docker-compose.yml:docker-compose.rebel-iptv.yml`) to run Rebel IPTV beside masqueradarr and
+> **Optional — Rebel IPTV companion.** Set `REBEL_IPTV=1` in `.env` to run Rebel IPTV beside masqueradarr and
 > fold its channels and guide into your catalog. See [Rebel IPTV integration](#rebel-iptv-integration-optional).
 
 ### Option B — All-in-one (single container)
@@ -1175,16 +1174,19 @@ configuration.
 
 ## Enabling it
 
-**Compose stack** — add one line to `.env` (Windows: also `COMPOSE_PATH_SEPARATOR=;` and use `;`):
+**Compose stack** — flip one line in `.env`:
 
 ```dotenv
-COMPOSE_FILE=docker-compose.yml:docker-compose.rebel-iptv.yml
+REBEL_IPTV=1
 ```
 
-then `docker compose up -d`. The additive overlay (`docker-compose.rebel-iptv.yml`, shipped in every release
-bundle) adds a `rebel-iptv` service on a private `rebel-net` network — **no host port, no Docker socket, not
-on `masqueradarr-net`** (it can't reach MongoDB) — and publishes masqueradarr's Rebel dashboard gate on
-`REBEL_IPTV_UI_PORT` (default `3080`). Nothing else in the base compose changes.
+then `docker compose up -d`. The `rebel-iptv` service already lives in `docker-compose.yml` at `scale: 0`
+(the same switch pattern as `docker-sock-proxy`); `REBEL_IPTV=1` scales it to one container and enables
+masqueradarr's side of the integration. Rebel sits on a private `rebel-net` network — **no host port, no
+Docker socket, not on `masqueradarr-net`** (it can't reach MongoDB). masqueradarr's Rebel dashboard gate is
+published on `REBEL_IPTV_UI_PORT` (default `3080`) whether or not Rebel is on — nothing listens behind it at
+`0`, so move it if `3080` is taken. Setting `REBEL_IPTV` back to `0` and running `docker compose up -d`
+removes the Rebel container but keeps its data volume.
 
 **All-in-one image, managed sibling** (`DOCKER_SOCK_ACCESS=1`) — masqueradarr creates the network
 `masq-rebel-net`, the volume `masq-rebel-iptv-data` and the container `masq-rebel-iptv`, then connects itself:
@@ -1216,14 +1218,14 @@ credentials).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `REBEL_IPTV_ENABLED` | `false` | Master switch (the overlay sets it). |
-| `REBEL_IPTV_URL` | unset | Set → **adopt** an existing Rebel (`http://rebel-iptv:8080` in the overlay). Unset → **managed** (AIO sibling; needs `DOCKER_SOCK_ACCESS=1`). |
+| `REBEL_IPTV_ENABLED` | `false` | Master switch (compose: set from `REBEL_IPTV`). |
+| `REBEL_IPTV_URL` | unset | Set → **adopt** an existing Rebel (`http://rebel-iptv:8080` in the compose stack). Unset → **managed** (AIO sibling; needs `DOCKER_SOCK_ACCESS=1`). |
 | `REBEL_IPTV_IMAGE` | `rebeliptv/iptv:latest` | A non-`latest` tag is **pinned** — new releases are shown, never installed. |
 | `REBEL_IPTV_CONTAINER` | `masq-rebel-iptv` (managed) | Container name override; adopt mode finds it by the `io.masqueradarr.role=rebel-iptv` label. |
 | `REBEL_IPTV_UI_PORT` | `3080` | Host port of the dashboard gate (the container always listens on 3080). |
 | `REBEL_IPTV_UI_PUBLIC_URL` | unset | Full origin of the gate behind TLS / a reverse proxy, e.g. `https://rebel.example.com`. |
 | `REBEL_IPTV_PUBLISH_PORT` | unset | Managed only — also publish Rebel's `:8080` (its HDHomeRun emulation) to the LAN. |
-| `REBEL_IPTV_TRUSTED_PROXIES`, `REBEL_IPTV_DATA_PATH` | see overlay | Rebel's `X-Forwarded-*` trust list (narrow it if you publish Rebel) and its `/app/data` location. |
+| `REBEL_IPTV_TRUSTED_PROXIES`, `REBEL_IPTV_DATA_PATH` | see `docker-compose.yml` | Rebel's `X-Forwarded-*` trust list (narrow it if you publish Rebel) and its `/app/data` location. |
 
 ## Catalog
 
