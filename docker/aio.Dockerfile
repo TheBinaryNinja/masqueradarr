@@ -204,7 +204,8 @@ COPY docker/aio-entrypoint.sh /usr/local/bin/aio-entrypoint.sh
 RUN chmod +x /usr/local/bin/aio-entrypoint.sh
 
 VOLUME ["/data"]
-EXPOSE 3000
+# 3080 = the admin-gated Rebel IPTV dashboard pop-up (only listens when REBEL_IPTV_ENABLED=true).
+EXPOSE 3000 3080
 # 27017 deliberately NOT exposed — mongod is loopback-only (--bind_ip 127.0.0.1 in the entrypoint).
 
 # Same HTTP liveness as the standard image (the body also reports mongo connected/disconnected). Longer

@@ -37,6 +37,30 @@ log() { printf '[aio] %s\n' "$*"; }
 mkdir -p "$DB_DIR" "$COMPOSE_DIR" "$BACKUPS_DIR"
 chown "$NODE_UID:$NODE_UID" "$DATA_DIR" "$DB_DIR" "$COMPOSE_DIR" "$BACKUPS_DIR" 2>/dev/null || true
 
+# 1b. App-wide Docker socket access (DOCKER_SOCK_ACCESS, default 0). ONLY with exactly "1" does the node
+#     user join the mounted socket's group (gosu applies supplementary groups) — that is host-root-equivalent.
+#     The bind-mounted socket itself is never chmod/chown'ed. With access off a mounted socket is left
+#     unusable and logged. Independent of REBEL_IPTV_ENABLED: this is the one switch for every
+#     Docker-dependent feature. gid 0 (Docker Desktop) is joined only when the socket is group-writable.
+SOCK="${DOCKER_SOCK_PATH:-/var/run/docker.sock}"
+if [ "${DOCKER_SOCK_ACCESS:-0}" = "1" ]; then
+  if [ -S "$SOCK" ]; then
+    SGID="$(stat -c %g "$SOCK")"
+    SMODE="$(stat -c %a "$SOCK")"
+    if [ "$SGID" = "0" ] && [ $(( 8#$SMODE & 8#020 )) -eq 0 ]; then
+      log "docker.sock is root:root and not group-writable (mode $SMODE) — cannot grant it to node; use a socket proxy and MASQ_DOCKER_HOST=tcp://<proxy>:2375"
+    else
+      GRP="$(getent group "$SGID" | cut -d: -f1 || true)"
+      [ -n "$GRP" ] || { groupadd -g "$SGID" dockersock; GRP=dockersock; }
+      usermod -aG "$GRP" node && log "docker.sock gid $SGID -> node joined '$GRP' (DOCKER_SOCK_ACCESS=1, host-root-equivalent)"
+    fi
+  else
+    log "DOCKER_SOCK_ACCESS=1 but no socket at $SOCK — mount it (-v /var/run/docker.sock:$SOCK)"
+  fi
+elif [ -S "$SOCK" ]; then
+  log "docker.sock is mounted but DOCKER_SOCK_ACCESS!=1 — NOT granted to the app; remove the mount or set it to 1"
+fi
+
 # 2. Start mongod — always --auth, bound to loopback only (never port-exposed).
 #    NO --logpath: mongod treats --logpath as a *rotatable* file (it reopens/seeks it for rotation),
 #    so /dev/stdout (a pipe under Docker's logging driver, reopened via /proc/self/fd/1 after gosu drops

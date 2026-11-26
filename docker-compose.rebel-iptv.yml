@@ -1,0 +1,51 @@
+# Rebel IPTV — optional companion service (https://github.com/rebeliptv/iptv).
+#
+# Additive overlay: switch it on with ONE line in .env
+#     COMPOSE_FILE=docker-compose.yml:docker-compose.rebel-iptv.yml
+# (Windows: also set COMPOSE_PATH_SEPARATOR=;  and use ';' between the files.)
+#
+# Rebel IPTV is closed-source, licensed for personal non-commercial use, and runs here as its own UNMODIFIED
+# container. masqueradarr ingests its playlist + guide over the private rebel-net network and serves Rebel's
+# dashboard through an admin-gated pop-up on REBEL_IPTV_UI_PORT (default 3080). Rebel publishes NO host port,
+# never sees the Docker socket, and is not on masqueradarr-net (it cannot reach MongoDB).
+#
+# Updates: with DOCKER_SOCK_ACCESS=1 (base compose) masqueradarr pulls + recreates it (Settings → Rebel IPTV);
+# with 0, force-pull by hand:  docker compose pull rebel-iptv && docker compose up -d rebel-iptv
+services:
+  masqueradarr:
+    environment:
+      REBEL_IPTV_ENABLED: "true"
+      REBEL_IPTV_URL: http://rebel-iptv:8080
+      REBEL_IPTV_IMAGE: ${REBEL_IPTV_IMAGE:-rebeliptv/iptv:latest}
+      REBEL_IPTV_UI_PORT: ${REBEL_IPTV_UI_PORT:-3080}
+      REBEL_IPTV_UI_PUBLIC_URL: ${REBEL_IPTV_UI_PUBLIC_URL:-}
+    ports:
+      - "${REBEL_IPTV_UI_PORT:-3080}:3080"
+    networks: [masqueradarr-net, rebel-net]
+
+  rebel-iptv:
+    image: ${REBEL_IPTV_IMAGE:-rebeliptv/iptv:latest}
+    hostname: rebel-iptv
+    labels:
+      io.masqueradarr.role: rebel-iptv
+    environment:
+      TZ: ${TZ:-America/New_York}
+      # Who may set X-Forwarded-* for Rebel. Broad private ranges are safe while Rebel publishes no port;
+      # narrow this to rebel-net's subnet if you ever publish 8080.
+      TRUSTED_PROXIES: ${REBEL_IPTV_TRUSTED_PROXIES:-172.16.0.0/12,10.0.0.0/8,192.168.0.0/16}
+    volumes:
+      - ${REBEL_IPTV_DATA_PATH:-rebel-iptv-data}:/app/data
+    networks: [rebel-net]
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+    restart: unless-stopped
+
+volumes:
+  rebel-iptv-data:
+
+networks:
+  rebel-net:

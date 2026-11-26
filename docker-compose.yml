@@ -18,6 +18,11 @@ services:
       # Set MASQ_EDGE=1 to invert — Rust binds the public :3000 and reverse-proxies to Node on a loopback
       # internal port. Same public port + no other change; fully reversible by clearing it. See .env.example.
       MASQ_EDGE: ${MASQ_EDGE:-}
+      # App-wide Docker socket access (0 = off, the default; 1 = on, host-root-equivalent). The one switch for
+      # every Docker-dependent feature (today: Rebel IPTV updates/restarts/logs). See .env.example.
+      DOCKER_SOCK_ACCESS: ${DOCKER_SOCK_ACCESS:-0}
+      # Only used when DOCKER_SOCK_ACCESS=1 — the restricted socket proxy below (never the raw socket).
+      MASQ_DOCKER_HOST: tcp://docker-sock-proxy:2375
     ports:
       - "${MASQUERADARR_PORT:-3000}:3000"
     volumes:
@@ -26,7 +31,28 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
-    networks: [masqueradarr-net]
+    networks: [masqueradarr-net, docker-sock]
+    restart: unless-stopped
+
+  # Restricted Docker API proxy — created ONLY when DOCKER_SOCK_ACCESS=1 (scale 0 = no container, no socket
+  # mount). Least-privilege sections for today's only consumer (Rebel IPTV): containers, images, networks.
+  # It narrows which endpoints exist; it is NOT a security boundary (POST + CONTAINERS can start a privileged
+  # container). A future Docker-dependent feature that needs more widens these explicitly.
+  docker-sock-proxy:
+    image: tecnativa/docker-socket-proxy:v0.5.0
+    scale: ${DOCKER_SOCK_ACCESS:-0}
+    environment:
+      CONTAINERS: 1
+      IMAGES: 1
+      NETWORKS: 1
+      POST: 1
+      EVENTS: 0
+      INFO: 0
+      EXEC: 0
+      VOLUMES: 0
+    volumes:
+      - ${DOCKER_SOCK_PATH:-/var/run/docker.sock}:/var/run/docker.sock:ro
+    networks: [docker-sock]
     restart: unless-stopped
 
   mongo:
@@ -54,3 +80,6 @@ volumes:
 
 networks:
   masqueradarr-net:
+  # Internal-only lane between masqueradarr and the socket proxy (no outside connectivity).
+  docker-sock:
+    internal: true

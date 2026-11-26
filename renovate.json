@@ -13,6 +13,7 @@
   "rebaseLabel": "AC › Needs Rebase",
   "gitAuthor": "EuropaServ <161414668+EuropaServ@users.noreply.github.com>",
   "updatePinnedDependencies": false,
+  "ignoreDeps": ["rebeliptv/iptv"],
   "dependencyDashboard": true,
   "dependencyDashboardTitle": "📁 Dependency Dashboard",
   "dependencyDashboardLabels": ["📰 Progress Report"],

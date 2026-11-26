@@ -152,7 +152,8 @@ COPY docker/app-entrypoint.sh /usr/local/bin/app-entrypoint.sh
 RUN chmod +x /usr/local/bin/app-entrypoint.sh
 
 USER node
-EXPOSE 3000
+# 3080 = the admin-gated Rebel IPTV dashboard pop-up (only listens when REBEL_IPTV_ENABLED=true).
+EXPOSE 3000 3080
 
 # Liveness: HTTP server up (body also reports mongo connected/disconnected). Uses Node's global fetch since
 # this slim image ships no wget/curl.
