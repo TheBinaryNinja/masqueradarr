@@ -5,13 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
 <title>Architecture — masqueradarr docs</title>
-<meta name="description" content="The masqueradarr architecture: two independently-built npm packages, the primary container topology, the boot sequence, the REST + 4 WebSocket surface, the two Docker images, MASQ_EDGE, and the roadmap.">
+<meta name="description" content="The masqueradarr architecture: two npm packages and a Rust crate, the container topology, declared adapter capabilities, the internal seams and data-plane DNS, the boot sequence, the REST + 4 WebSocket surface, the Docker images, MASQ_EDGE, and the roadmap.">
 <link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
 <link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
 <link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
 <meta property="og:type" content="article">
 <meta property="og:title" content="Architecture — masqueradarr">
-<meta property="og:description" content="Two-package build, the container topology, the boot sequence, REST + 4 WebSockets, the two Docker images, MASQ_EDGE, and the roadmap.">
+<meta property="og:description" content="Three builds, the container topology, adapter capabilities, the boot sequence, REST + 4 WebSockets, the Docker images, MASQ_EDGE, and the roadmap.">
 <meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -44,7 +44,7 @@
       <noscript>
         <div class="nav-group">
           <a class="nav-link" href="../index.html">Home</a>
-          <a class="nav-link" href="operations.html">Operations</a>
+          <a class="nav-link" href="rebel-iptv.html">Rebel IPTV</a>
           <a class="nav-link" href="architecture.html" aria-current="page">Architecture</a>
         </div>
       </noscript>
@@ -59,31 +59,36 @@
     <div class="doc">
 
       <header class="page-head">
-        <div class="eyebrow"><b>architecture</b> · 11 <span class="rule"></span> under the hood</div>
-        <h1>Two packages, <span class="em">one image</span></h1>
-        <p class="lede">A reference for how masqueradarr is built: the two-package layout, the container topology, the load-bearing boot order, the REST + WebSocket surface, the two Docker images, and what's still on the roadmap.</p>
+        <div class="eyebrow"><b>architecture</b> · 12 <span class="rule"></span> under the hood</div>
+        <h1>Three builds, <span class="em">one image</span></h1>
+        <p class="lede">A reference for how masqueradarr is built: the three-build layout, the container topology, the declared-capability contract, the internal seams and DNS, the load-bearing boot order, the REST + WebSocket surface, the Docker images, and what's still on the roadmap.</p>
       </header>
 
-      <!-- TWO PACKAGES ─────────────────────────────────────────────────── -->
+      <!-- THREE BUILDS ─────────────────────────────────────────────────── -->
       <section id="two-packages">
-        <div class="sec-tag"><span class="n">01</span> Two packages, not a workspace</div>
+        <div class="sec-tag"><span class="n">01</span> Three builds, not a monorepo</div>
         <h2>Built and versioned independently</h2>
-        <p class="col">masqueradarr is <strong>two separate npm packages</strong> — <em>not</em> a workspace, and they never import across the boundary. The Docker image stitches them together.</p>
-        <div class="pair">
-          <div class="fcard accent">
-            <span class="badge">● / (root)</span>
-            <h3>Vue 3 + Vite SPA</h3>
-            <p>The management front end (<code>hls.js</code>, <code>vue-router</code>, <code>mitt</code>). TypeScript <code>strict: false</code>; imports carry <strong>no</strong> <code>.js</code> extension. Built with <code>vue-tsc -b &amp;&amp; vite build</code> → <code>/dist</code>.</p>
+        <p class="col">masqueradarr is <strong>two npm packages plus one Rust crate</strong> — <em>not</em> a workspace, and the two packages never import across the boundary. The Docker image stitches all three together.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
+          <div class="tile">
+            <div class="ic">● / (root) · SPA</div>
+            <h3>Vue 3 + Vite</h3>
+            <p>The management front end (<code>hls.js</code>, <code>vue-router</code>, <code>mitt</code>; Video.js for the pop-out Ultimate Video Player; <code>react</code> / <code>react-dom</code> only for the live-chart bridge). TypeScript <code>strict: false</code>. <code>npm run build</code> (<code>vue-tsc -b &amp;&amp; vite build</code>) is its type-check.</p>
           </div>
-          <div class="fcard ts">
-            <span class="badge">● server/</span>
-            <h3>Express 4 + Mongoose 8 API</h3>
-            <p>ESM (<code>type: module</code>), TypeScript <code>strict: true</code>; every relative import carries an explicit <strong><code>.js</code></strong> extension even from <code>.ts</code> source. Serves the built SPA, the <code>/api/*</code> REST surface, and the WebSockets.</p>
+          <div class="tile ts">
+            <div class="ic">● server/ · API</div>
+            <h3>Express 4 + Mongoose 8</h3>
+            <p>ESM, TypeScript <code>strict: true</code>, explicit <code>.js</code> extensions on every relative import. Its <code>npm run build</code> is an esbuild bundle + minify that does <strong>no</strong> type-checking — <code>npm run typecheck</code> is the gate.</p>
+          </div>
+          <div class="tile warn">
+            <div class="ic">● proxy/ · masq-proxy</div>
+            <h3>Rust data plane</h3>
+            <p>axum / tokio / reqwest. CI builds it, lints it with <code>cargo clippy -- -D warnings</code>, and runs its in-file <code>cargo test</code> suites.</p>
           </div>
         </div>
         <div class="aha">
           <div class="lbl">development</div>
-          <p>Two dev servers side by side: the SPA on <code>:5173</code> (Vite, proxies <code>/api</code> → <code>:3000</code>) and the API on <code>:3000</code> (<code>tsx watch</code>, needs a reachable MongoDB). There is <strong>no test runner and no linter</strong> — correctness is verified by <code>npm run build</code> (type-check) in each package and by running the app.</p>
+          <p>Two dev servers side by side: the SPA on <code>:5173</code> (Vite, proxies <code>/api</code> and its WebSockets → <code>:3000</code>) and the API on <code>:3000</code> (<code>tsx watch</code>, needs a reachable MongoDB). There is <strong>no test runner and no linter</strong> — the type-check is the test. The root CI builds the SPA and the Rust crate; the backend's gate runs in its own repository's CI.</p>
         </div>
       </section>
 
@@ -107,7 +112,7 @@
                 <div class="nm-group">
                   <div class="nm-glabel">one image · two processes</div>
                   <div class="nm-card node-c"><div class="t">Express API — Node</div><div class="s">control plane</div><span class="tag">gate + relay ↓</span></div>
-                  <div class="nm-card rust-c"><div class="t">masq-proxy — Rust</div><div class="s">data-plane sidecar</div><span class="tag">internal seams ↑ loopback</span></div>
+                  <div class="nm-card rust-c"><div class="t">masq-proxy — Rust</div><div class="s">data-plane sidecar · SSRF gate · upstream DNS</div><span class="tag">internal seams ↑ loopback</span></div>
                   <div class="nm-card data-c"><div class="t">MongoDB</div><div class="s">all the state</div></div>
                 </div>
               </div>
@@ -115,43 +120,89 @@
               <div class="nm-zone">
                 <div class="nm-label">upstream</div>
                 <div class="nm-card up-c"><div class="t">Upstream IPTV sources</div><div class="s">dulo · DaddyLive · Pluto · …</div></div>
+                <div class="nm-card up-c"><div class="t">Rebel IPTV</div><div class="s">optional companion · private network</div></div>
               </div>
             </div>
           </div>
         </div>
         <div class="col">
           <ul>
-            <li><strong>Sources adapter framework</strong> — a source-agnostic core (sync → normalize → dedupe → resolve) with ~17 adapters plus proxy-only <code>direct</code> / <code>hdhomerun</code> / <code>local</code> sources. See <a href="sources.html">Sources</a>.</li>
+            <li><strong>Node — the brains.</strong> Per-source auth, scraping, vetting upstream-supplied URLs, per-source stream limits, the stream-token gate, telemetry authority and config storage.</li>
+            <li><strong>Rust — the muscle.</strong> Fetch upstream, follow redirects, rewrite <code>.m3u8</code>, <strong>enforce the SSRF gate</strong> and pipe segments. It is driven per stream by a <em>grant</em> from Node and <strong>never branches on which provider it is serving</strong> — what a source needs arrives as declared grant fields. Every redirect hop passes the same SSRF check as the first request.</li>
+            <li><strong>Sources adapter framework</strong> — a source-agnostic core (sync → normalize → dedupe → resolve) with ~17 built-in adapters, the proxy-only <code>direct</code> / <code>hdhomerun</code> / <code>local</code> sources, and a <code>rebel</code> adapter registered only while the <a href="rebel-iptv.html">Rebel IPTV companion</a> is enabled. See <a href="sources.html">Sources</a>.</li>
             <li><strong>Channel model</strong> — a pristine <code>sourcechannels</code> reference projected into an editable <code>playlistchannels</code>; edits survive re-syncs. Channels can be grouped into <a href="failover.html">failover groups</a> — one parent, ordered backups. See <a href="playlists.html">Playlists</a>.</li>
             <li><strong>EPG + scheduler</strong> — multiple ingesters behind one sync path, driven by a <code>croner</code> scheduler over <code>cronjobs</code>. See <a href="epg.html">EPG</a>.</li>
             <li><strong>Video proxy engine</strong> — the remux-free Rust data plane. See <a href="proxy-engine.html">Video proxy engine</a>.</li>
-            <li><strong>Local origin</strong> — an opt-in inversion of the data plane: one shared ingest per channel fills a RAM ring and masqueradarr publishes a playlist it authored itself. On a demuxed source each ring entry carries both the video and its audio partner, and raw TS is woven from the pair. See <a href="local-origin.html">Local origin</a>.</li>
+            <li><strong>Local origin</strong> — an opt-in inversion of the data plane: one shared ingest per channel fills a RAM ring and masqueradarr publishes a playlist it authored itself. Forced on for any source that declares <code>originRequired</code>. See <a href="local-origin.html">Local origin</a>.</li>
           </ul>
+        </div>
+      </section>
+
+      <!-- CAPABILITIES ─────────────────────────────────────────────────── -->
+      <section id="capabilities">
+        <div class="sec-tag"><span class="n">03</span> Declared capabilities</div>
+        <h2>No <code style="font-size:0.8em">source === '…'</code>, anywhere</h2>
+        <p class="col">When a source needs different behaviour from the core, it <strong>declares a capability</strong> rather than being special-cased by id. Neither the Node core nor the Rust engine ever tests which source it is handling.</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Capability</th><th>Declared on</th><th class="h-accent">What the core does with it</th></tr></thead>
+            <tbody>
+              <tr><td>playerSelectable</td><td>adapter</td><td>An alternate-upstream stage before failover children; the player picker in the UI.</td></tr>
+              <tr><td>probeExempt</td><td>adapter</td><td>The scheduled probe sweep skips the source's channels (per channel, on <code>origin ?? source</code>).</td></tr>
+              <tr><td>maxConcurrentStreams()</td><td>adapter</td><td>The resolve seam counts each live stream against the adapter serving it (failover backups included) and refuses a <em>new</em> one over the cap — a definitive <code>429 source_stream_cap</code>, or a walkable <code>502</code> when a failover backup elsewhere could carry it.</td></tr>
+              <tr><td>applyEpgLinks()</td><td>adapter</td><td>Re-run after every successful Gracenote / Jesmann guide sync — and after such a guide is added — for built-ins that crosswalk onto guides they don't own.</td></tr>
+              <tr><td>adSignature</td><td><code>proxy</code> bag</td><td>Rides the grant; the local origin's ad classifier for sources with no cue tags.</td></tr>
+              <tr><td>originRequired</td><td><code>proxy</code> bag</td><td>Forced into the grant's <code>proxyConfig.originEnabled</code>, whatever the proxy config says.</td></tr>
+              <tr><td>segmentUnwrap</td><td><code>proxy</code> bag</td><td>Rides the grant; the pass-through byte paths strip a disguised segment's container prefix.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="col" style="margin-top:14px;">The <code>/api/sources</code> manifest publishes the flags the SPA needs (<code>playerSelectable</code>, <code>probeExempt</code>, <code>originRequired</code>), so the UI never hardcodes a source list either.</p>
+      </section>
+
+      <!-- SEAMS + DNS ──────────────────────────────────────────────────── -->
+      <section id="seams">
+        <div class="sec-tag"><span class="n">04</span> The internal seams &amp; DNS</div>
+        <h2>One loopback channel, one set of nameservers</h2>
+        <p class="col">Rust calls Node over <code>POST /api/internal/*</code> on loopback, guarded by a shared <code>x-masq-secret</code>: <strong>resolve</strong> (the per-stream grant), <strong>telemetry</strong> and <strong>log</strong> (batched), and — in edge mode only — <strong>authorize</strong>. Rust never reads MongoDB. The full grant shape is on the <a href="proxy-engine.html">Video proxy engine</a> page.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● live config, no restart</span>
+            <h3>Echoed on every flush</h3>
+            <p>The telemetry and log responses echo <code>{ logLevel, nameservers }</code>, and both are stamped into the sidecar's environment at spawn (<code>MASQ_LOG_LEVEL</code>, <code>MASQ_NAMESERVERS</code>). Changing verbosity or DNS on the Settings screen reaches the data plane within one flush.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● data-plane dns</span>
+            <h3>Same rules as Node's resolver</h3>
+            <p>The Settings nameservers drive Rust's <strong>upstream</strong> lookups: configured servers first, the OS resolver on any failure (NXDOMAIN included, so <code>.local</code> / LAN names keep working), IP literals never resolved, A before AAAA. Single-label names such as Docker service names go straight to the OS resolver, and Rust's own loopback calls to Node always stay on the system resolver — no DNS setting can cut the data plane off from its control plane.</p>
+          </div>
         </div>
       </section>
 
       <!-- BOOT ─────────────────────────────────────────────────────────── -->
       <section id="boot">
-        <div class="sec-tag"><span class="n">03</span> Boot sequence</div>
+        <div class="sec-tag"><span class="n">05</span> Boot sequence</div>
         <h2>The mount order is load-bearing</h2>
         <p class="col"><code>server/src/index.ts</code> wires the app in a specific order. Mongo is the one <strong>fatal</strong> dependency; every subsystem after it must not crash boot.</p>
         <div class="panel">
           <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> index.ts · boot &amp; mount order</div>
           <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">0</div></div><div class="body"><div class="who">import './dns.js'</div><div class="act">Install the outbound DNS dispatcher first</div><div class="note">It must be the first import, so every outbound <code>fetch</code> resolves through the Settings nameservers.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">config → mongo</div><div class="act">Load config, connect MongoDB</div><div class="note"><span class="branch risk">fatal on failure</span> A single no-retry connect; nothing runs without the DB.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">startLogStore · bootInitSources · startScheduler · telemetry / statsHub</div><div class="act">Start the subsystems</div><div class="note"><span class="branch ts">all non-fatal — must not crash boot</span> Logging sink, index/migration reconcile, the scheduler, and the telemetry + stats hubs.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">startLogStore · bootInitSources · startScheduler · telemetry / statsHub · rebel manager</div><div class="act">Start the subsystems</div><div class="note"><span class="branch ts">all non-fatal — must not crash boot</span> Logging sink, index/migration reconcile, the scheduler, the telemetry + stats hubs, and — when the companion is enabled — the Rebel IPTV manager.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">app.use('/api', authenticate)</div><div class="act">Global auth — never blocks</div><div class="note">Populates <code>req.user</code> from a session or stream token; it identifies, it doesn't gate.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">/api/auth · /api/users · admin gates</div><div class="act">Mount auth, then guard</div><div class="note"><code>requireAdmin</code> on the <code>adminOnlyRoutes</code> prefixes + <code>PUT /api/settings</code>.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">/api/* resource routers · sourcesRouter</div><div class="act">Mount the REST surface</div><div class="note">Each router is a thin Express layer over one Mongoose model; <code>sourcesRouter</code> mounts at root (paths span <code>/api/sources</code>).</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">/api/auth · /api/users · admin gates</div><div class="act">Mount auth, then guard</div><div class="note"><code>requireAdmin</code> on the <code>adminOnlyRoutes</code> prefixes (now including <code>/api/rebel-iptv</code>) + <code>PUT /api/settings</code>.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">/api/* resource routers · sourcesRouter</div><div class="act">Mount the REST surface</div><div class="note">Each router is a thin Express layer over one Mongoose model; <code>sourcesRouter</code> mounts at root (paths span <code>/api/sources</code>). The Rebel router mounts only when the companion is enabled.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">SPA static + catch-all · error middleware</div><div class="act">Serve the app, catch errors</div><div class="note">Catch-all <code>/^\/(?!api\/).*/</code> serves the SPA for non-<code>/api</code> routes; a 4-arg middleware is the only place a 500 (<code>{ error: 'internal_error' }</code>) is produced.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">listen · server.on('upgrade')</div><div class="act">Listen, then dispatch WebSockets</div><div class="note">Upgrades are routed by pathname to the four WebSockets (below).</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">listen → sidecar · rebel UI gate</div><div class="act">Listen, then start what depends on it</div><div class="note"><span class="branch ts">non-fatal</span> The Rust sidecar is spawned <em>after</em> <code>app.listen()</code> (edge-mode ordering). With the companion on, a second Node listener on <code>:3080</code> fronts <a href="rebel-iptv.html#gate">Rebel's dashboard</a>.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">8</div></div><div class="body"><div class="who">server.on('upgrade')</div><div class="act">Authenticate, then dispatch WebSockets</div><div class="note">Same-origin check, known pathname, admin session token — then routed by pathname to the four WebSockets (below).</div></div></div>
           </div>
         </div>
       </section>
 
       <!-- REST + WS ────────────────────────────────────────────────────── -->
       <section id="websockets">
-        <div class="sec-tag"><span class="n">04</span> REST + 4 WebSockets</div>
+        <div class="sec-tag"><span class="n">06</span> REST + 4 WebSockets</div>
         <h2>The request surface</h2>
         <p class="col">Every <code>routes/*.ts</code> is a thin router over one model. Handlers are <code>async (req,res,next)</code> wrapped in <code>try/catch(next)</code>; reads use <code>.lean()</code> + <code>{ _id: 0 }</code>; error bodies are <code>{ error: '&lt;snake_case&gt;' }</code>. Live data is <strong>pushed over WebSockets</strong>, not polled.</p>
         <div class="panel scroll">
@@ -165,48 +216,57 @@
             </tbody>
           </table>
         </div>
+        <div class="aha">
+          <div class="lbl">websockets carry the session token</div>
+          <p>A browser can't set an <code>Authorization</code> header on a WebSocket, so the SPA appends its session token as <code>?token=</code>. The upgrade handler refuses a cross-origin request, an unknown path, or anything but an <strong>admin session</strong> (a stream token is not enough) with a <code>401</code> before any of the four sockets is attached.</p>
+        </div>
       </section>
 
       <!-- IMAGES ───────────────────────────────────────────────────────── -->
       <section id="images">
-        <div class="sec-tag"><span class="n">05</span> Two Docker images</div>
-        <h2>One release publishes two products</h2>
-        <p class="col">Both are 3-stage builds (SPA → server → runtime) on <strong>Debian bookworm (glibc)</strong> under <code>tini</code>. They share the base and the apt Chromium; the one intentional divergence is the config bootstrap / supervisor.</p>
+        <div class="sec-tag"><span class="n">07</span> The Docker images</div>
+        <h2>One release, two products — plus a no-AVX variant</h2>
+        <p class="col">Both are multi-stage builds (SPA → server → Rust proxy → runtime) on <strong>Debian bookworm (glibc)</strong> with Node 22 under <code>tini</code>. They share the base and the apt Chromium; the one intentional divergence is the config bootstrap / supervisor.</p>
         <div class="pair">
           <div class="fcard accent">
             <span class="badge">● app.Dockerfile</span>
             <h3>The standard image</h3>
-            <p>App only, for the compose stack — pairs with an external <code>mongo</code> service. The container self-provisions its <code>config.json</code> from <code>.env</code> on boot (<code>docker/app-entrypoint.sh</code>). No host config mount.</p>
+            <p>App only, for the compose stack — pairs with an external <code>mongo</code> service. The container self-provisions its <code>config.json</code> from <code>.env</code> on boot (<code>docker/app-entrypoint.sh</code>). No host config mount. The compose file also carries the optional <code>rebel-iptv</code> and <code>docker-sock-proxy</code> services at <code>scale: 0</code>.</p>
           </div>
           <div class="fcard warn">
             <span class="badge">● aio.Dockerfile</span>
             <h3>The all-in-one image</h3>
-            <p>App + <code>mongod</code> 7.0 + config bootstrap in one container. A root supervisor (<code>aio-entrypoint.sh</code>) writes config, starts mongod (<code>--auth</code>, loopback-only), waits for it, then starts node. One <code>/data</code> volume persists everything.</p>
+            <p>App + <code>mongod</code> 7.0 + config bootstrap in one container. A root supervisor (<code>aio-entrypoint.sh</code>) writes config, starts mongod (<code>--auth</code>, loopback-only), waits for it, then starts node. One <code>/data</code> volume persists everything. With <code>DOCKER_SOCK_ACCESS=1</code> it can also manage a Rebel IPTV sibling container.</p>
           </div>
         </div>
-        <p class="col" style="margin-top:14px;">Multi-arch build &amp; push (amd64 + arm64) is the <code>/docker-build-all &lt;tag&gt;</code> skill — it publishes both images in one release. The runtime layout (<code>/app/dist</code>, <code>/app/public</code>, <code>/app/compose</code>, <code>/app/config</code>, <code>/app/seed-data</code>) is load-bearing and stays in sync with <code>server/src/paths.ts</code>.</p>
+        <div class="note-block">
+          <div class="lbl">no-avx hosts · mongo4.4- tags</div>
+          <p>On amd64, MongoDB 7.0 needs a CPU with AVX; without it <code>mongod</code> dies at boot with <code>Illegal instruction</code> (Synology NAS, Atom / Celeron, older Xeons, <code>kvm64</code> / <code>qemu64</code> VMs). The AIO image is also built with MongoDB 4.4 under the <code>mongo4.4-</code> tags (e.g. <code>mongo4.4-latest</code>). It needs a <strong>fresh <code>/data</code> volume</strong> — 4.4 can't open a 7.0 database — so move data with a backup from <strong>Settings → Data</strong> and a restore.</p>
+        </div>
+        <p class="col" style="margin-top:14px;">Multi-arch build &amp; push (amd64 + arm64) publishes the images in one release. The runtime layout (<code>/app/dist</code>, <code>/app/public</code>, <code>/app/compose</code>, <code>/app/config</code>, <code>/app/seed-data</code>) is load-bearing and stays in sync with <code>server/src/paths.ts</code>.</p>
       </section>
 
       <!-- EDGE ─────────────────────────────────────────────────────────── -->
       <section id="edge">
-        <div class="sec-tag"><span class="n">06</span> MASQ_EDGE topology</div>
+        <div class="sec-tag"><span class="n">08</span> MASQ_EDGE topology</div>
         <h2>An opt-in inversion of the public socket</h2>
-        <p class="col">By default Node owns the public port and Rust is a loopback sidecar. <code>MASQ_EDGE=1</code> inverts it — Rust binds the public port, serves streams in-process (token-gated via <code>POST /api/internal/authorize</code>, 30-second revocation TTL), and reverse-proxies the SPA, <code>/api/*</code>, downloads and all four WebSockets back to Node on a loopback port. Same public port and <code>DOMAIN</code>; reversible by clearing the flag. The topology diagrams and the "when to turn it on" guidance are on the <a href="proxy-engine.html#edge">Video proxy engine</a> page.</p>
+        <p class="col">By default Node owns the public port and Rust is a loopback sidecar. <code>MASQ_EDGE=1</code> inverts it — Rust binds the public port, serves streams in-process (token-gated via <code>POST /api/internal/authorize</code>, 30-second revocation TTL), and reverse-proxies the SPA, <code>/api/*</code>, downloads and all four WebSockets back to Node on a loopback port. Same public port and <code>DOMAIN</code>; reversible by clearing the flag. The Rebel dashboard gate keeps its own port either way. The topology diagrams and the "when to turn it on" guidance are on the <a href="proxy-engine.html#edge">Video proxy engine</a> page.</p>
       </section>
 
       <!-- ROADMAP ──────────────────────────────────────────────────────── -->
       <section id="roadmap">
-        <div class="sec-tag"><span class="n">07</span> Roadmap</div>
+        <div class="sec-tag"><span class="n">09</span> Roadmap</div>
         <h2>What's live, and what's next</h2>
-        <p class="col">The rename and re-architecture are effectively complete — codebase, brand, runtime and images are all masqueradarr, and playback is live over the Rust engine (HLS + raw-TS). The data plane has since grown an opt-in <a href="local-origin.html">local origin</a> that decrypts AES-128 and segments bare MPEG-TS in-engine, which retired most of what used to sit behind “needs a remux”. What genuinely remains:</p>
+        <p class="col">The rename and re-architecture are effectively complete — codebase, brand, runtime and images are all masqueradarr, and playback is live over the Rust engine (HLS + raw-TS). The data plane has since grown an opt-in <a href="local-origin.html">local origin</a> that decrypts AES-128, unwraps disguised segments and segments bare MPEG-TS in-engine, which retired most of what used to sit behind “needs a remux”. What genuinely remains:</p>
         <div class="pair">
           <div class="fcard ts">
             <span class="badge">● live today</span>
             <h3>Working now</h3>
             <ul>
-              <li>Resolve-on-demand catalog + ~17 adapters</li>
-              <li>Rust HLS + raw-TS proxy (retry, mirror rotation, buffer)</li>
+              <li>Resolve-on-demand catalog + ~17 adapters, and the optional Rebel IPTV companion</li>
+              <li>Rust HLS + raw-TS proxy (retry, re-resolve, signed-URL renewal, buffer)</li>
               <li>Failover groups — ordered channel backups, cross-provider</li>
+              <li>Per-source stream limits; data-plane DNS + SSRF gate</li>
               <li>Users, roles, tokenized M3U / XMLTV export</li>
               <li>Live telemetry, logs, scheduler, backup / restore</li>
             </ul>
@@ -218,21 +278,22 @@
               <li>Remux / transcode — still no <code>ffmpeg</code>. <span style="color:var(--text-3)">(HDHomeRun TS→HLS no longer needs one: see <a href="local-origin.html">local origin</a>.)</span></li>
               <li>Seamless mid-stream failover splice (today: establish-time)</li>
               <li>HDHomeRun-tuner &amp; Xtream-panel emulation</li>
-              <li><code>?fmt=ts</code> per-request override; <code>segmentCacheTtlSec</code></li>
+              <li><code>?fmt=ts</code> per-request override; <code>segmentCacheTtlSec</code> (shipped in the grant, not yet enforced)</li>
+              <li>A full runtime end-to-end pass of edge mode on a live stack</li>
             </ul>
           </div>
         </div>
         <div class="refs">
-          <span class="ref"><b>README</b> · Primary Architecture · Public edge · Development</span>
+          <span class="ref"><b>README</b> · Primary Architecture · Channel Adapter Architecture · Public edge · Development</span>
           <span class="ref"><b>CLAUDE.md</b> · boot sequence · Docker contract</span>
-          <span class="ref"><b>restapi</b> / <b>styles-backend</b> skills</span>
+          <span class="ref"><b>server/src/sources/types.ts</b> · capabilities</span>
           <span class="ref">back to → <b>Home</b></span>
         </div>
       </section>
 
       <footer class="doc-foot">
         <span>masqueradarr · architecture</span>
-        <span>two packages · one image</span>
+        <span>three builds · one image</span>
       </footer>
 
     </div>

@@ -170,6 +170,7 @@
           <div class="lbl">iop and oop are tags, not categories</div>
           <p>There are still <strong>14 categories</strong>. <a href="local-origin.html#observe"><code>iop</code></a> (input operation — resolve, poll, fetch, decrypt, ring push/evict) and <code>oop</code> (output operation — manifest render, segment serve, TS concat) are <em>tags</em> that both resolve to <code>proxy</code>. The split is attribution <em>within</em> the engine, not a new bucket: once one ingest feeds many viewers, “the channel is stuttering” has two possible causes, and the tag says which side to look at. Filter to <code>proxy</code> as before, then read the tag.</p>
         </div>
+        <p class="col" style="margin-top:14px;">The same rule holds for the <a href="rebel-iptv.html">Rebel IPTV</a> companion: its <code>rebel</code> and <code>docker</code> tags (reachability, update checks, pull / recreate / rollback) file under <code>settings</code>, where the tab that drives them lives — still 14 categories.</p>
       </section>
 
       <!-- SCHEDULER ────────────────────────────────────────────────────── -->
@@ -194,16 +195,31 @@
       <!-- SETTINGS ─────────────────────────────────────────────────────── -->
       <section id="settings">
         <div class="sec-tag"><span class="n">06</span> Settings, at a glance</div>
-        <h2>Three tabs, and what lives on each</h2>
-        <p class="col">Settings is split into <strong>General</strong>, <strong>Video Config</strong> and <strong>Advanced</strong>. Knowing which is which saves a hunt — in particular, the <a href="proxy-engine.html#tuning">video engine's <strong>(Default)</strong> config</a> is on <strong>Video Config</strong>, not Advanced.</p>
+        <h2>Three tabs (four with Rebel IPTV), and what lives on each</h2>
+        <p class="col">Settings is split into <strong>General</strong>, <strong>Video Config</strong> and <strong>Advanced</strong> — plus a fourth, <strong>Rebel IPTV</strong>, only when that optional companion is enabled. Knowing which is which saves a hunt — in particular, the <a href="proxy-engine.html#tuning">video engine's <strong>(Default)</strong> config</a> is on <strong>Video Config</strong>, not Advanced.</p>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
-          <div class="tile"><div class="ic">● General</div><h3>The install itself</h3><p><strong>Domain</strong> — the load-bearing one, woven into every published playlist URL — plus the global <strong>log level</strong>, outbound DNS nameservers, and backup / restore / maintenance.</p></div>
-          <div class="tile ts"><div class="ic">● Video Config</div><h3>How video is served and watched</h3><p>The <strong>Video Proxy Engine (Default)</strong> panel — every knob on the <a href="proxy-engine.html#tuning">tuning table</a>, including <a href="local-origin.html#tuning">Local origin</a>, <strong>Ring size</strong> and <strong>Smooth ad transitions</strong> — and the <strong>Video player</strong> choice below.</p></div>
-          <div class="tile"><div class="ic">● Advanced</div><h3>Per-provider and workspace-wide</h3><p><strong>DaddyLive Player Source</strong> (the <a href="sources.html#dlhd-players">default provider</a> for dlhd channels), Geolocation, the dulo login capture panel, and the <strong>Custom Tags</strong> registry.</p></div>
+          <div class="tile"><div class="ic">● General</div><h3>The install itself</h3><p><strong>Domain</strong> — the load-bearing one, woven into every published playlist URL — plus display name, time zone, the global <strong>log level</strong>, the DNS nameservers (they govern both Node's fetches and the Rust data plane's upstream lookups, live), and backup / restore / maintenance.</p></div>
+          <div class="tile ts"><div class="ic">● Video Config</div><h3>How video is served and watched</h3><p>The <strong>channel probe</strong> schedule (a source that opts out of bulk checks, such as DaddyLive, is named there as never probed), the <strong>Video player</strong> choice below, and the <strong>Video Proxy Engine (Default)</strong> panel — every knob on the <a href="proxy-engine.html#tuning">tuning table</a>, including <a href="local-origin.html#tuning">Local origin</a>, <strong>Ring size</strong> and <strong>Smooth ad transitions</strong>.</p></div>
+          <div class="tile"><div class="ic">● Advanced</div><h3>Per-provider and workspace-wide</h3><p>Geolocation, the <strong>Playlist Domain / Configuration</strong> JSON (below), the dulo sign-in panel (hidden while dulo's <code>enable</code> is <code>false</code>), and the <strong>Custom Tags</strong> registry.</p></div>
+          <div class="tile warn"><div class="ic">● Rebel IPTV</div><h3>Only when the companion is on</h3><p>Status, updates (<em>Check now</em>, <em>Update now</em> with automatic rollback, an idle-only auto-update window), the playlist API key and stream cap, and <strong>Open Rebel IPTV</strong>. See <a href="rebel-iptv.html">Rebel IPTV</a>.</p></div>
         </div>
 
+        <h3 id="playlist-config" style="margin-top:26px;">Playlist Domain / Configuration</h3>
+        <p class="col">One JSON document, shown with syntax colouring, holds the per-provider settings for the providers whose home moves or needs tuning. It replaces the old <em>DaddyLive Player Source</em> control. Each entry has three keys:</p>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Key</th><th class="h-accent">What it does</th></tr></thead>
+            <tbody>
+              <tr><td>enable</td><td><code>false</code> <strong>hides</strong> the provider: it leaves the Add Playlist picker (provisioning refuses it) and its settings card is hidden — for dulo, the sign-in panel. A visibility switch only: a playlist you already added keeps syncing and playing.</td></tr>
+              <tr><td>domain</td><td>The site the provider runs on today, as a bare host. DaddyLive's is its <strong>content mirror</strong>, pinned — there is no mirror auto-picker, so when DaddyLive moves, change it here and re-Sync. dulo's drives every dulo-facing hop; saving a <em>changed</em> dulo domain <strong>signs the dulo session out</strong> (you're warned first), because a session belongs to the site it came from.</td></tr>
+              <tr><td>extendedProperties</td><td>The provider's own options — DaddyLive's <code>defaultPlayer</code> (<code>"auto"</code> or a player number; a <a href="sources.html#dlhd-players">per-channel choice</a> in the channel drawer still wins).</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <p class="col" style="margin-top:14px;"><strong>Test</strong> probes every listed domain using the editor's current text, saved or not, and reports per provider the address tried, the HTTP status, the response time and how many channels it serves. <strong>Save</strong> validates the whole document strictly — every problem listed by its path, nothing saved until it's clean — then applies it live. The saved document lives in the Settings record (so backups carry it) and is mirrored to <code>playlist-config.json</code> beside the infra config (<code>/app/config/</code>; <code>/data/</code> on the all-in-one; <code>MASQUERADARR_PLAYLIST_CONFIG</code> overrides the path). The file is a mirror, rewritten on every boot and save — edit the document in the UI, not the file.</p>
+
         <h3 id="player" style="margin-top:26px;">The Video player choice</h3>
-        <p class="col"><strong>Settings → Video Config → Video player</strong> decides what the channel slide-out gives you. It has three positions:</p>
+        <p class="col"><strong>Settings → Video Config → Video player</strong> decides what the channel slide-out gives you — and only the slide-out. It has three positions:</p>
         <div class="panel scroll">
           <table>
             <thead><tr><th>Player</th><th class="h-accent">What the channel drawer shows</th><th>Best for</th></tr></thead>
@@ -215,6 +231,11 @@
           </table>
         </div>
         <p class="col" style="margin-top:16px;">The <strong>Ultimate</strong> window is a full-size picture with the launching playlist's channel list pulled out from the right edge and a <em>what's on now / next</em> strip under the video. Keyboard: <strong>F</strong> full screen, <strong>M</strong> mute, <strong>C</strong> channels. Your volume and mute choice are remembered between channels and windows.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));margin-top:14px;">
+          <div class="tile ts"><div class="ic">● play button</div><h3>Launch from any playlist row</h3><p>Every playlist row — on <strong>Playlists</strong> and on the Dashboard's <strong>Playlists</strong> panel — carries a play button that opens the Ultimate player scoped to that playlist, starting on its first channel. It's there <strong>whatever the Video player setting says</strong>, so you can keep the slide-out on the in-app player and still launch the big one. It's greyed out on a playlist with no channels yet (a built-in before its first sync).</p></div>
+          <div class="tile"><div class="ic">● one window</div><h3>Relaunching reuses it</h3><p>A second launch reuses the same player window rather than piling up pop-ups — it simply switches to the new playlist.</p></div>
+          <div class="tile"><div class="ic">● A–Z / #</div><h3>Channel-rail order</h3><p>The channel switcher lists channels <strong>A–Z by name</strong>; the <strong>A–Z</strong> button in its header flips it to <strong>channel-number</strong> order (<strong>#</strong>), unnumbered channels last. Provider numbers are often meaningless in a clone playlist, hence the name-order default. The choice is remembered in this browser, and a row launch lands on the first channel of the current order.</p></div>
+        </div>
         <div class="note-block">
           <div class="lbl">two things that will bite you once</div>
           <p><strong>Allow pop-ups for this site, or the window can't open.</strong> A blocked launch reports <em>“Pop-up blocked — allow pop-ups for this site to open the Ultimate Video Player.”</em></p>
@@ -222,7 +243,7 @@
         </div>
         <div class="aha">
           <div class="lbl">the Ultimate window always uses the Default engine config</div>
-          <p>It requests streams without a playlist qualifier, exactly as the in-app player does — so it resolves against the <strong>(Default)</strong> proxy config every time. Enabling <a href="local-origin.html">local origin</a> on one playlist's <em>Custom</em> override does not change what you see in the Ultimate player; only the Default does.</p>
+          <p>It requests streams without a playlist qualifier, exactly as the in-app player does — so it resolves against the <strong>(Default)</strong> proxy config every time. Enabling <a href="local-origin.html">local origin</a> on one playlist's <em>Custom</em> override does not change what you see in the Ultimate player; only the Default does. (A source that declares <code>originRequired</code> — <a href="rebel-iptv.html">Rebel IPTV</a> — runs through the origin regardless.)</p>
         </div>
       </section>
 
@@ -231,7 +252,7 @@
         <div class="sec-tag"><span class="n">07</span> Backup, restore &amp; maintenance</div>
         <h2>One-click snapshots of the whole system</h2>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
-          <div class="tile"><div class="ic">● backup</div><h3>Full-system gzip</h3><p>A gzipped snapshot of every collection — downloaded, or written to a configured backup directory on a schedule.</p></div>
+          <div class="tile"><div class="ic">● backup</div><h3>Full-system gzip</h3><p>A gzipped snapshot of every collection — downloaded, or written to a configured backup directory on a schedule. Secrets are stripped: password hashes, stream tokens, provider session tokens, the MaxMind licence key, <code>headerOverrides</code> and the Rebel IPTV playlist key.</p></div>
           <div class="tile"><div class="ic">● restore</div><h3>In-place re-orchestration</h3><p>Restore from an uploaded backup or a saved file; the restore re-orchestrates the dependent subsystems (boot init, DNS, scheduler) in place.</p></div>
           <div class="tile"><div class="ic">● maintenance</div><h3>Indexes &amp; reset</h3><p>From Settings: rebuild MongoDB indexes, or reset the workspace (wipe content, keep users / settings).</p></div>
         </div>
@@ -239,17 +260,21 @@
           <div class="lbl">the load-bearing setting</div>
           <p><strong>Domain</strong> (Settings) is built into every published playlist URL — changing it <strong>cascades and rewrites the URL of every playlist</strong>. Set it to your real public address once; any links users already saved point at the old address until they re-copy the updated URLs. Outbound-fetch DNS nameservers and the global <code>logLevel</code> also live in Settings.</p>
         </div>
+        <div class="note-block">
+          <div class="lbl">moving to a no-AVX host</div>
+          <p>Backup / restore is also the migration path onto the all-in-one image's <a href="getting-started.html#deploy"><code>mongo4.4-</code> tags</a>: a database written by MongoDB 7.0 can't be opened by 4.4, so take a backup on the 7.0 image, boot the 4.4 image on a <strong>fresh</strong> <code>/data</code> volume, then restore.</p>
+        </div>
         <div class="refs">
           <span class="ref"><b>README</b> · Observability · Scheduling · Backup &amp; restore</span>
           <span class="ref"><b>logs</b> skill · the 14 categories · the log seam</span>
           <span class="ref"><b>src/docs</b> · active-streams · history-metrics · settings</span>
-          <span class="ref">next → <b>Architecture</b></span>
+          <span class="ref">next → <b>Rebel IPTV</b></span>
         </div>
       </section>
 
       <footer class="doc-foot">
         <span>masqueradarr · operations</span>
-        <span>next → architecture</span>
+        <span>next → rebel iptv</span>
       </footer>
 
     </div>

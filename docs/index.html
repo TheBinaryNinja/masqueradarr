@@ -84,22 +84,61 @@
           <div class="tile">
             <div class="ic">● aggregate &amp; normalize</div>
             <h3>Many providers → one catalog</h3>
-            <p>Pulls M3U playlists and EPG/XMLTV guides from ~17 provider adapters plus your own URL / file / HDHomeRun imports, and normalizes them into a single, deduplicated channel catalog.</p>
+            <p>Pulls M3U playlists and EPG/XMLTV guides from ~17 provider adapters plus your own URL / file / HDHomeRun imports — and, optionally, a <a href="pages/rebel-iptv.html">Rebel IPTV</a> companion — and normalizes them into a single, deduplicated channel catalog.</p>
           </div>
           <div class="tile">
             <div class="ic">● resolve on demand</div>
             <h3>No dead URLs on disk</h3>
-            <p>Every stream is resolved at play time, which is what makes authenticated, token-gated and rotating-mirror sources possible — captured logins, per-play signed URLs, live mirror failover.</p>
+            <p>Every stream is resolved at play time, which is what makes authenticated, token-gated and rotating-mirror sources possible — captured logins, per-play signed URLs renewed before they expire, and failover to ordered backup channels.</p>
           </div>
           <div class="tile">
             <div class="ic">● deliver anywhere</div>
             <h3>One endpoint for every client</h3>
-            <p>An in-app player plus per-user, tokenized <code>.m3u</code> + XMLTV export for TiviMate, VLC, Plex, Jellyfin and Emby — bytes served by a durable Rust proxy engine.</p>
+            <p>An in-app player, a pop-out Ultimate Video Player launched straight from any playlist row, and per-user, tokenized <code>.m3u</code> + XMLTV export for TiviMate, VLC, Plex, Jellyfin and Emby — bytes served by a durable Rust proxy engine.</p>
           </div>
           <div class="tile">
             <div class="ic">● own the whole stack</div>
             <h3>Users, telemetry, schedule</h3>
             <p>scrypt users with roles and per-user access lists, live viewer/bandwidth telemetry, MongoDB-backed logs, a cron scheduler, and full-system backup / restore.</p>
+          </div>
+        </div>
+      </section>
+
+      <!-- RECENT ──────────────────────────────────────────────────────── -->
+      <section id="recent">
+        <div class="sec-tag"><span class="n">◊</span> Recently added</div>
+        <h2>What's new since the last docs pass</h2>
+        <p class="col">The headline changes on <code>main</code>, each documented on the page it belongs to.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));margin-top:10px;">
+          <div class="tile">
+            <div class="ic">● rebel iptv companion</div>
+            <h3>A second server, folded in</h3>
+            <p>Run Rebel IPTV beside masqueradarr with one switch: its channels and guide join your catalog, it's updated (with rollback) from Settings, and its dashboard pops up behind your admin login. <a href="pages/rebel-iptv.html">Rebel IPTV →</a></p>
+          </div>
+          <div class="tile warn">
+            <div class="ic">● playlist domain / configuration</div>
+            <h3>Providers that move, in one JSON</h3>
+            <p>Settings → Advanced holds one validated JSON document with each moving provider's <code>enable</code>, <code>domain</code> and options (DaddyLive's mirror and default player, dulo's domain). <em>Test</em> probes the unsaved text. <a href="pages/getting-started.html">Getting started →</a></p>
+          </div>
+          <div class="tile ts">
+            <div class="ic">● ultimate video player</div>
+            <h3>Play a whole playlist</h3>
+            <p>A play button on every playlist row — on Playlists and the Dashboard — opens the pop-out Ultimate Video Player scoped to that playlist, with an A–Z / channel-number switcher. <a href="pages/operations.html">Operations →</a></p>
+          </div>
+          <div class="tile">
+            <div class="ic">● data-plane dns</div>
+            <h3>One set of nameservers</h3>
+            <p>The Settings DNS nameservers now govern the Rust data plane's upstream lookups as well as Node's, with an OS-resolver fallback, and apply live. <a href="pages/proxy-engine.html">Video proxy engine →</a></p>
+          </div>
+          <div class="tile risk">
+            <div class="ic">● no-avx hosts</div>
+            <h3>An AIO image for older CPUs</h3>
+            <p>Synology NAS, Atom / Celeron and <code>kvm64</code> VMs lack AVX, which MongoDB 7 needs. The <code>mongo4.4-</code> tags of the all-in-one image run MongoDB 4.4 instead (fresh <code>/data</code> volume; move data via backup / restore). <a href="pages/getting-started.html">Getting started →</a></p>
+          </div>
+          <div class="tile ts">
+            <div class="ic">● stream durability</div>
+            <h3>Expiring URLs, disguised segments</h3>
+            <p>Signed targets are renewed ahead of expiry without dropping the ring, disguised segments are unwrapped, and raw-TS joins open on a keyframe. <a href="pages/local-origin.html">Local origin →</a></p>
           </div>
         </div>
       </section>
@@ -132,6 +171,7 @@
               <div class="nm-zone">
                 <div class="nm-label">upstream</div>
                 <div class="nm-card up-c"><div class="t">Upstream IPTV sources</div><div class="s">dulo · DaddyLive · Pluto · Roku · …</div></div>
+                <div class="nm-card up-c"><div class="t">Rebel IPTV</div><div class="s">optional companion container</div></div>
               </div>
             </div>
           </div>
@@ -223,10 +263,16 @@
             <p>Active Streams, metrics, logs, the scheduler, backup / restore.</p>
             <div class="go">Read →</div>
           </a>
+          <a class="card" href="pages/rebel-iptv.html">
+            <div class="c-ix"><span class="n">11</span> operate</div>
+            <h3>Rebel IPTV</h3>
+            <p>The optional companion: enabling it, Docker socket access, updates with rollback, the :3080 dashboard gate.</p>
+            <div class="go">Read →</div>
+          </a>
           <a class="card" href="pages/architecture.html">
-            <div class="c-ix"><span class="n">11</span> reference</div>
+            <div class="c-ix"><span class="n">12</span> reference</div>
             <h3>Architecture</h3>
-            <p>Two-package build, REST + 4 WebSockets, boot sequence, the two images.</p>
+            <p>Three builds, REST + 4 WebSockets, the boot sequence, the images, and the adapter capability contract.</p>
             <div class="go">Read →</div>
           </a>
         </div>

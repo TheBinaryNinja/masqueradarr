@@ -2279,3 +2279,20 @@
   .ioop .lane-meta .desc, .genbump .lane-meta .desc,
   .pairing .lane-meta .desc, .weave .lane-meta .desc { display: block; }
 }
+
+
+/* ═══ rebel-iptv.html · companion topology — .nodemap extensions ══════════
+   .nm-group.rebel-net  the private network Rebel lives on (amber = upstream role)
+   .nm-card.opt-c       a component that exists only behind an opt-in switch
+                        (DOCKER_SOCK_ACCESS=1) — dashed, with the risk rail,
+                        because socket access is root-equivalent on the host
+   .nm-card .port       a right-aligned port chip inside a card title         */
+.nm-group.rebel-net { border-color: var(--cfg-line); background: var(--cfg-soft); }
+.nm-group.rebel-net > .nm-glabel { color: var(--cfg-hi); }
+.nm-card.up-c .tag { color: var(--cfg-hi); }
+.nm-card.opt-c { border-style: dashed; background: transparent; }
+.nm-card.opt-c::before { background: var(--risk); }
+.nm-card.opt-c .tag { color: var(--risk); }
+.nm-card .t .port { float: right; margin-left: 8px; font-family: var(--mono); font-size: 10px; font-weight: 500; letter-spacing: 0.04em; color: var(--text-3); line-height: 1.9; }
+.nm-card .s code { font-size: 0.92em; white-space: normal; }
+.rebel-map .nm-zone .nm-group { height: auto; }

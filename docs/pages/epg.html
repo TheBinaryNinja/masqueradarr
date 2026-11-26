@@ -121,13 +121,36 @@
         </div>
         <div class="aha">
           <div class="lbl">either way, the binding is the same</div>
-          <p>The link between guide data and a playlist's channels is always the channel-level <strong><code>(tvg_id, epg)</code></strong> pair — set via <strong>Channel Mapping</strong> for user-added sources, self-linked for channel-adapter built-ins.</p>
+          <p>The link between guide data and a playlist's channels is always the channel-level <strong><code>(tvg_id, epg)</code></strong> pair — set via <strong>Channel Mapping</strong> for user-added sources, self-linked for channel-adapter built-ins, or <a href="#relink">crosswalked</a> by a built-in's committed map onto guides you already have.</p>
+        </div>
+      </section>
+
+      <!-- RELINK ───────────────────────────────────────────────────────── -->
+      <section id="relink">
+        <div class="sec-tag"><span class="n">04</span> Crosswalks &amp; re-linking</div>
+        <h2>Built-ins that link onto <span class="em">your</span> guides</h2>
+        <p class="col">Some built-ins don't ship a usable guide of their own — or ship one for only part of their lineup. Instead they carry a <strong>committed crosswalk</strong>: a map from their channels to the <code>(epg, tvg_id)</code> pair of the same station on a guide <em>you</em> added (Gracenote, or a Jesmann national guide). DaddyLive, dulo and Tubi (for its curated US channels) link this way; the <a href="sources.html#table">key-properties matrix</a> shows which sources have a crosswalk and which have the call wired awaiting a map.</p>
+        <div class="pair">
+          <div class="fcard accent">
+            <span class="badge">● at playlist sync</span>
+            <h3>Applied after every sync</h3>
+            <p>The crosswalk runs after the built-in's own sync and links each mapped channel onto your guide — <strong>fill-only-if-untouched</strong>, so a link you set yourself on the Mapping screen always wins.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● at guide sync</span>
+            <h3>Re-applied when your guide changes</h3>
+            <p>A crosswalk otherwise waits for the built-in's own next playlist sync to notice a guide you just added. An adapter that declares <a href="sources.html#capabilities"><code>applyEpgLinks</code></a> is re-linked after every successful <strong>gracenote</strong> or <strong>jesmann</strong> sync — manual, scheduled, or the first one that runs when you add the guide. Still fill-only-if-untouched, and it <strong>never fails the guide sync</strong>. DaddyLive, dulo and Tubi apply their crosswalk at their own sync, so after adding a guide, <strong>Sync</strong> those playlists (or wait for their next scheduled sync) to pick it up.</p>
+          </div>
+        </div>
+        <div class="note-block">
+          <div class="lbl">Rebel IPTV self-links</div>
+          <p>The optional <a href="rebel-iptv.html">Rebel IPTV</a> companion brings its own guide: its playlist sync pulls <code>/epg.gz</code> into a playlist-bound source and self-links every channel (Rebel's tvg-ids are stable ids such as <code>us-espn</code>) — no Mapping needed.</p>
         </div>
       </section>
 
       <!-- MAPPING ──────────────────────────────────────────────────────── -->
       <section id="mapping">
-        <div class="sec-tag"><span class="n">04</span> Channel Mapping</div>
+        <div class="sec-tag"><span class="n">05</span> Channel Mapping</div>
         <h2>The two-sided linking workbench</h2>
         <p class="col">Channel Mapping connects each <strong>playlist channel</strong> to the matching <strong>EPG channel</strong> so your channels display the right schedule. Your channels on one side, guide channels on the other.</p>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));">
@@ -152,7 +175,7 @@
 
       <!-- EDITOR ───────────────────────────────────────────────────────── -->
       <section id="editor">
-        <div class="sec-tag"><span class="n">05</span> Editing a source</div>
+        <div class="sec-tag"><span class="n">06</span> Editing a source</div>
         <h2>The slide-out that saves as you type</h2>
         <p class="col">A source's <strong>Edit</strong> panel folds its name, its sync schedule and its <a href="playlists.html#tags-search">tags</a> into one slide-out. There is <strong>no Save button</strong> — the footer reads <em>“Changes save automatically”</em> and <strong>Done</strong> simply closes the panel. Rows can also be dragged into the order you want to see them in.</p>
         <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr));">
@@ -164,7 +187,7 @@
 
       <!-- COMPOSE #4 ───────────────────────────────────────────────────── -->
       <section id="compose">
-        <div class="sec-tag"><span class="n">06</span> The compose pipeline</div>
+        <div class="sec-tag"><span class="n">07</span> The compose pipeline</div>
         <h2>How a guide reaches a downstream client</h2>
         <p class="col">Guide data only reaches a client at <strong>compose</strong> time, and composition is <strong>playlist-scoped</strong>: a guide is written as a <em>sibling</em> of the M3U by <code>composeGuide()</code>, which runs off the <em>same</em> Active channel set <code>composeM3u()</code> just wrote — so a guide can never drift from its M3U.</p>
         <div class="panel">

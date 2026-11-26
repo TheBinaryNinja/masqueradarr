@@ -106,7 +106,7 @@
           <div class="fcard accent">
             <span class="badge">● session token</span>
             <h3>Signing in &amp; the API</h3>
-            <p>Issued at login; carried by the SPA to authenticate <code>/api/*</code> calls. It identifies <em>who is using the management app</em> and expires like a normal session.</p>
+            <p>Issued at login; carried by the SPA as a Bearer header to authenticate <code>/api/*</code> calls — and as <code>?token=</code> on its WebSockets. It identifies <em>who is using the management app</em> and expires like a normal session.</p>
           </div>
           <div class="fcard ts">
             <span class="badge">● stream token</span>
@@ -119,6 +119,14 @@
           <li><strong>Regenerate invalidates instantly.</strong> If a user shares their links by accident, <strong>Regenerate</strong> (on their Dashboard, or by an admin on the Users screen) rotates the stream token — old URLs stop working immediately; they copy the new ones.</li>
           <li><strong>Granting is what makes an account work.</strong> A standard user with nothing granted sees an empty Dashboard, gets a channel-less M3U, and can't stream anything.</li>
         </ul>
+        <div class="aha">
+          <div class="lbl">WebSockets are admin sessions too</div>
+          <p>The four live channels — Active Streams stats, the logs stream, system stats and the dulo login stream — all share one upgrade handler, and every upgrade must carry an <strong>admin session token</strong> or it is refused with <code>401</code>. The handler also runs a <strong>full-origin check</strong>: a browser <code>Origin</code> must match the host <em>and</em> port the request arrived on (or the forwarded host), so another site — including the <a href="rebel-iptv.html">Rebel IPTV</a> dashboard gate on its own port — can't open a socket with your session.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">the Rebel IPTV pop-up rides your session</div>
+          <p>When the optional <a href="rebel-iptv.html">Rebel IPTV</a> companion is on, <em>Open Rebel IPTV</em> mints a one-time, 60-second ticket (admin session only) that the pop-up redeems for its own <code>HttpOnly</code>, <code>SameSite=Strict</code> cookie. Every request through that gate is re-checked against your masqueradarr session — signing out, or deleting or demoting the admin, revokes it within 30 seconds.</p>
+        </div>
       </section>
 
       <!-- CONNECT ──────────────────────────────────────────────────────── -->
@@ -133,7 +141,7 @@
         </div>
         <div class="aha">
           <div class="lbl">what a standard user sees</div>
-          <p>The user Dashboard pairs the channel list with a <strong>Program Guide</strong> — <em>Now playing</em> and <em>Up next</em> for whichever channel is selected, with clear <em>No Channel Selected</em> / <em>No Guide Data</em> states. Playback itself happens in their IPTV client, or — if an admin has switched the workspace to the <a href="operations.html#player">Ultimate video player</a> — in a dedicated player window.</p>
+          <p>The user Dashboard pairs the channel list with a <strong>Program Guide</strong> — <em>Now playing</em> and <em>Up next</em> for whichever channel is selected, with clear <em>No Channel Selected</em> / <em>No Guide Data</em> states. The Dashboard has no player of its own — playback happens in their IPTV client. The launchers for the <a href="operations.html#player">Ultimate Video Player</a> (the slide-out's button and the play button on each playlist row) live on admin screens; the player window itself checks the same per-playlist access list, so it never shows a playlist the account wasn't granted.</p>
         </div>
       </section>
 

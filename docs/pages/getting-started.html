@@ -78,7 +78,7 @@
           <div class="fcard warn">
             <span class="badge">● Option B · all-in-one</span>
             <h3>App + MongoDB in one container</h3>
-            <p>A second image (the AIO variant of <code>iflip721/masqueradarr</code>) bundles app + <code>mongod</code> + config bootstrap, so the whole stack runs from a single <code>docker run</code> with no external database. One <code>/data</code> volume persists everything.</p>
+            <p>A second image (<code>iflip721/masqueradarr-aio</code>) bundles app + <code>mongod</code> + config bootstrap, so the whole stack runs from a single <code>docker run</code> with no external database. One <code>/data</code> volume persists everything.</p>
           </div>
         </div>
 
@@ -93,6 +93,10 @@ docker compose up -d
 <span class="cmt"># 3 · open the app  →  http://localhost:3000  (or your DOMAIN)</span></pre>
         </div>
         <p class="col">At minimum set <code>MONGO_ROOT_USER</code> / <code>MONGO_ROOT_PASS</code>, your <code>DOMAIN</code>, and the host volume paths (<code>COMPOSE_PATH</code>, <code>BACKUPS_PATH</code>, <code>MONGO_DATA_PATH</code>). To publish on a host port other than <code>3000</code>, set <code>MASQUERADARR_PORT</code> and update <code>DOMAIN</code> to match.</p>
+        <div class="note-block">
+          <div class="lbl">optional · Rebel IPTV companion</div>
+          <p>Set <code>REBEL_IPTV=1</code> in <code>.env</code> and re-run <code>docker compose up -d</code> to run <a href="rebel-iptv.html">Rebel IPTV</a> beside masqueradarr and fold its channels and guide into your catalog. The <code>rebel-iptv</code> service already lives in <code>docker-compose.yml</code> at <code>scale: 0</code>; the switch scales it to one container on a private network. The admin-gated dashboard pop-up port (<code>REBEL_IPTV_UI_PORT</code>, default <code>3080</code>) is published even while it's off — move it if <code>3080</code> is taken.</p>
+        </div>
 
         <h3>Option B — run the all-in-one</h3>
         <div class="code-wrap">
@@ -100,11 +104,17 @@ docker compose up -d
 docker run -d \
   -p 3000:3000 \
   -v masqueradarr-data:/data \
-  iflip721/masqueradarr:latest</pre>
+  iflip721/masqueradarr-aio:latest</pre>
+        </div>
+        <p class="col">To publish on a different host port, change the left side of the <code>-p</code> mapping — e.g. <code>-p 8080:3000</code> (the container always serves on <code>3000</code> internally; <code>MASQUERADARR_PORT</code> only applies to the compose stack).</p>
+        <div class="note-block">
+          <div class="lbl">no-AVX hosts · use the <code>mongo4.4-</code> tags</div>
+          <p>On amd64 the bundled MongoDB 7.0 needs a CPU with <strong>AVX</strong> — without it <code>mongod</code> dies at boot with <code>Illegal instruction (core dumped)</code>. That bites Synology NASes, Atom / Celeron boxes, older Xeons and <code>kvm64</code> / <code>qemu64</code> VMs. Those hosts want the <strong><code>mongo4.4-</code></strong> tags — an otherwise-identical image built on MongoDB 4.4, which predates the AVX requirement: <code>iflip721/masqueradarr-aio:mongo4.4-latest</code>.</p>
+          <p style="margin-top:8px;"><strong>It needs a fresh <code>/data</code> volume</strong> — a database written by MongoDB 7.0 can't be opened by 4.4. To carry data across, take a backup from <strong>Settings → Data</strong> on the 7.0 image, boot the 4.4 image on an empty volume, then restore it. Alternatively, run the compose stack with <code>image: mongo:4.4</code>.</p>
         </div>
         <div class="note-block">
-          <div class="lbl">all-in-one caveat</div>
-          <p>On amd64 the bundled MongoDB 7.0 needs a CPU with <strong>AVX</strong>. On hosts without it (some older or low-power boxes), use the compose stack with an external Mongo instead. To publish on a different host port, change the left side of the <code>-p</code> mapping — e.g. <code>-p 8080:3000</code> (the container always serves on <code>3000</code> internally).</p>
+          <div class="lbl">optional · Rebel IPTV companion</div>
+          <p>The all-in-one image can create and manage a <a href="rebel-iptv.html">Rebel IPTV</a> container beside itself (<code>-e REBEL_IPTV_ENABLED=true -e DOCKER_SOCK_ACCESS=1</code>, the Docker socket mounted, <code>-p 3080:3080</code>), or adopt one you run yourself on a shared network (<code>REBEL_IPTV_URL</code>, no socket needed).</p>
         </div>
       </section>
 
@@ -131,8 +141,35 @@ docker run -d \
               <tr><td>MONGO_URI<br>MONGO_HOST</td><td>Optional — point the app at an external / Atlas MongoDB instead of the compose <code>mongo</code> service.</td></tr>
               <tr><td>DNS_LOG_LEVEL</td><td>Outbound-DNS trace verbosity (<code>1</code>–<code>3</code>); seeds the setting on first boot.</td></tr>
               <tr><td>MASQ_EDGE</td><td>Optional (default off). <code>1</code> inverts the topology so the Rust proxy owns the public port — see <a href="#topology">the topology section</a>.</td></tr>
+              <tr><td>DOCKER_SOCK_ACCESS</td><td><strong>App-wide</strong> Docker socket access — <code>0</code> (default) or <code>1</code> only. <code>1</code> lets masqueradarr call the Docker Engine API, which is <span class="em-accent">root-equivalent on the host</span>. See <a href="#docker-socket">below</a>.</td></tr>
+              <tr><td>DOCKER_SOCK_PATH</td><td>Host Docker socket path, only if non-standard (e.g. rootless Docker). Default <code>/var/run/docker.sock</code>.</td></tr>
+              <tr><td>REBEL_IPTV</td><td>Compose switch for the optional <a href="rebel-iptv.html">Rebel IPTV</a> companion — <code>0</code> (default) or <code>1</code>. Sizes the <code>rebel-iptv</code> service and drives <code>REBEL_IPTV_ENABLED</code>, so the two can't drift.</td></tr>
+              <tr><td>REBEL_IPTV_*</td><td>Companion tuning — <code>…_ENABLED</code> / <code>…_URL</code> (all-in-one), <code>…_IMAGE</code> (a non-<code>latest</code> tag pins it), <code>…_UI_PORT</code> (dashboard pop-up, default <code>3080</code>), <code>…_UI_PUBLIC_URL</code> (behind TLS / a reverse proxy), <code>…_TRUSTED_PROXIES</code>, <code>…_DATA_PATH</code>. See <a href="rebel-iptv.html">Rebel IPTV</a>.</td></tr>
             </tbody>
           </table>
+        </div>
+        <div class="aha">
+          <div class="lbl">DNS nameservers govern both planes</div>
+          <p>The <strong>DNS nameservers</strong> on the Settings screen apply to Node's outbound fetches <em>and</em> to the Rust data plane's upstream lookups. Both ask the configured servers first and fall back to the OS resolver on any failure — NXDOMAIN included — so <code>.local</code> / LAN names keep working. A change reaches the running sidecar on its next flush to Node; no restart.</p>
+        </div>
+
+        <h3 id="docker-socket">Docker socket access · <code style="font-size:0.85em">DOCKER_SOCK_ACCESS</code></h3>
+        <p class="col">One switch gates <strong>every</strong> Docker-dependent feature, now and in future — today that's the <a href="rebel-iptv.html">Rebel IPTV</a> companion's updates, auto-update, restart, logs and all-in-one managed provisioning. It's <strong>off by default</strong>, because Docker API access is root-equivalent: anything that compromises masqueradarr could start a privileged container.</p>
+        <div class="pair">
+          <div class="fcard warn">
+            <span class="badge">● 1 · on</span>
+            <h3>Restricted proxy, loud warning</h3>
+            <p>Compose starts a restricted <code>docker-sock-proxy</code> (containers / images / networks only, on an internal-only network) and points the app at it; the all-in-one entrypoint adds the app's <code>node</code> user to the mounted socket's group. The app logs one boot <code>WARN</code>. The proxy narrows which endpoints exist — it is <strong>not</strong> a security boundary — and the app additionally refuses privileged containers, host namespaces, devices, and any bind other than Rebel's <code>/app/data</code>. The data plane also refuses that proxy as a stream upstream.</p>
+          </div>
+          <div class="fcard accent">
+            <span class="badge">● 0 · off (default)</span>
+            <h3>No socket anywhere</h3>
+            <p>No socket is mounted (the proxy has <code>scale: 0</code>, so it is never created) and the all-in-one never grants one, even if you mount it — it logs that it refused. Docker-dependent features run in their reduced mode: Rebel IPTV still plays, but you force-pull its new images by hand.</p>
+          </div>
+        </div>
+        <div class="note-block">
+          <div class="lbl"><code>0</code> or <code>1</code> — nothing else</div>
+          <p>The value doubles as the socket proxy's <code>scale</code>, so <code>true</code> / <code>false</code> make <code>docker compose config</code> fail.</p>
         </div>
       </section>
 
@@ -215,15 +252,17 @@ mkdir mongo   &amp;&amp; chown -R  999:999  ./mongo   &amp;&amp; chmod -R 777 ./
         <h2>The one-time setup wizard</h2>
         <p class="col">On first launch there are <strong>no users</strong> — the app reports <code>needsSetup</code> and the SPA walks you through creating the first admin account. On a fresh install the database starts <strong>empty</strong>; built-in sources appear as zero-channel shells and only populate after your first <strong>Sync now</strong>. Here's the order.</p>
         <div class="panel">
-          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> first-run sequence <span class="rt">setup → domain → playlist → users</span></div>
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> first-run sequence <span class="rt">setup → domain → providers → playlist → users</span></div>
           <div class="seq" style="padding:14px 16px 6px;">
             <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">Setup screen</div><div class="act">Create the first admin account</div><div class="note">Pick a username and password on the one-time Setup screen — this becomes the administrator. You're taken to Login; sign in.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">Settings</div><div class="act">Set your Domain</div><div class="note">Set <strong>Domain</strong> to the public address your players reach this server at (e.g. <code>https://tv.example.com</code>). It's woven into every published playlist URL. <span class="branch warn">changing it later rewrites every playlist's URL</span></div></div></div>
-            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">Playlists → Add playlist</div><div class="act">Add a playlist source</div><div class="note">The Add Playlist modal offers every built-in source plus custom playlists (clone / file / URL / HDHomeRun). A built-in provisions a zero-channel shell row.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Playlist → Sync now</div><div class="act">Populate the channels</div><div class="note">Run <strong>Sync now</strong> to fetch the live catalog. Until you do, the playlist shows zero channels everywhere. For an authenticated source (dulo), capture a login session from Settings first.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">EPG Sources · Channel Mapping</div><div class="act">(Optional) add guide data &amp; link it</div><div class="note">Add EPG Sources (Gracenote / EPG-PW / Jesmann / Custom XMLTV) and sync them, then use Channel Mapping to link channels to the guide so each shows now/next.</div></div></div>
-            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">Users</div><div class="act">Create users — then grant them playlists</div><div class="note">Add each viewer with a username, password and role. <strong>Creating a user is not enough:</strong> access is granted <em>per playlist</em>, from the Playlists screen — open a playlist's row menu and use <strong>Assign access</strong> to pick who may use it, then <strong>Get access</strong> to hand that user their links. <span class="branch risk">a user with nothing granted gets an empty M3U and can't stream</span> <span style="color:var(--text-3)">— admins bypass this and see everything.</span></div></div></div>
-            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">IPTV client</div><div class="act">Connect a player</div><div class="note">Each user gets a personal, tokenized <code>.m3u</code> + XMLTV guide URL from their Dashboard. Paste the M3U into TiviMate / VLC / Plex / Jellyfin — the <strong>download is token-free</strong>, but the <strong>stream is token-gated</strong> to that user.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">Settings → Advanced</div><div class="act">(Optional) review Playlist Domain / Configuration</div><div class="note">One JSON document holds the per-provider settings for the providers whose home moves or needs tuning (DaddyLive, dulo). Per provider: <code>enable</code> — <code>false</code> <strong>hides</strong> it (it leaves the Add Playlist picker and its settings card disappears; an existing playlist keeps syncing and playing); <code>domain</code> — the site it runs on today, as a bare host (DaddyLive's is its <strong>pinned</strong> content mirror — no auto-picker; when it moves, change it here and re-Sync); <code>extendedProperties</code> — the provider's own options, e.g. DaddyLive's <code>defaultPlayer</code> (<code>"auto"</code> or a player number). <strong>Test</strong> probes every listed domain using the editor's current, <em>unsaved</em> text. <strong>Save</strong> validates strictly — every problem listed by path, nothing saved until it's clean — then applies live. <span class="branch">stored in Settings (backups carry it) · mirrored to <code>playlist-config.json</code></span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">Playlists → Add playlist</div><div class="act">Add a playlist source</div><div class="note">The Add Playlist modal offers every enabled built-in source plus custom playlists (clone / file / URL / HDHomeRun). A built-in provisions a zero-channel shell row.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">Settings · dulo sign-in</div><div class="act">(Authenticated sources) capture a session</div><div class="note">For dulo, capture a login session from Settings — a server-streamed Chromium signs you in (or pair / paste from your own browser); only tokens are stored. The server keeps the session alive on its own and auto-discovers dulo's current Supabase config, so a Supabase migration self-heals. If you captured from your own browser, <strong>close that tab — don't sign out</strong>: signing out revokes the session you handed over. <span class="branch warn">saving a changed <code>dulo</code> domain signs the session out — re-pair afterwards</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">6</div></div><div class="body"><div class="who">Playlist → Sync now</div><div class="act">Populate the channels</div><div class="note">Run <strong>Sync now</strong> to fetch the live catalog. Until you do, the playlist shows zero channels everywhere.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">7</div></div><div class="body"><div class="who">EPG Sources · Channel Mapping</div><div class="act">(Optional) add guide data &amp; link it</div><div class="note">Add EPG Sources (Gracenote / EPG-PW / Jesmann / Custom XMLTV) and sync them, then use Channel Mapping to link channels to the guide so each shows now/next. Built-ins with a committed crosswalk (DaddyLive, dulo, Tubi) link onto a Gracenote / Jesmann guide at their next sync — re-Sync them after adding the guide.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">8</div></div><div class="body"><div class="who">Users</div><div class="act">Create users — then grant them playlists</div><div class="note">Add each viewer with a username, password and role. <strong>Creating a user is not enough:</strong> access is granted <em>per playlist</em>, from the Playlists screen — open a playlist's row menu and use <strong>Assign access</strong> to pick who may use it, then <strong>Get access</strong> to hand that user their links. <span class="branch risk">a user with nothing granted gets an empty M3U and can't stream</span> <span style="color:var(--text-3)">— admins bypass this and see everything.</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">9</div></div><div class="body"><div class="who">IPTV client</div><div class="act">Connect a player</div><div class="note">Each user gets a personal, tokenized <code>.m3u</code> + XMLTV guide URL from their Dashboard. Paste the M3U into TiviMate / VLC / Plex / Jellyfin — the <strong>download is token-free</strong>, but the <strong>stream is token-gated</strong> to that user.</div></div></div>
           </div>
         </div>
         <div class="note-block">
@@ -231,7 +270,7 @@ mkdir mongo   &amp;&amp; chown -R  999:999  ./mongo   &amp;&amp; chmod -R 777 ./
           <p>There is <strong>no in-place upgrade path</strong> — masqueradarr is a new application with a new data model (MongoDB instead of flat files). Stand it up fresh and re-add your sources through the UI.</p>
         </div>
         <div class="refs">
-          <span class="ref"><b>README</b> · Getting started · First run · Configuration</span>
+          <span class="ref"><b>README</b> · Getting started · First run · Configuration · Docker socket access</span>
           <span class="ref"><b>.env.example</b> · the annotated template</span>
           <span class="ref">next → <b>Playlists</b></span>
         </div>

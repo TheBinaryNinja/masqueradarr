@@ -154,7 +154,7 @@
         <ul class="col" style="margin-top:16px;">
           <li><strong>One line out, always.</strong> The composed <code>.m3u</code> and its XMLTV guide contain the parent and nothing else. Children are filtered out of <em>every</em> export surface — the Global M3U, per-user exports, and per-playlist custom exports all run through the same filter.</li>
           <li><strong>Children stay fully visible in the app.</strong> They remain in the playlist detail view, nested under their parent and badged <span class="k-ts"><code>child</code></span>. Hiding them from a file is not the same as deleting them.</li>
-          <li><strong>Children are still health-probed.</strong> The scheduled channel probe keeps testing hidden children on their own, so a <strong>dead backup shows up as dead before failover ever needs it</strong>. Failover can never mask a dead parent as healthy either — the probe always resolves each channel itself.</li>
+          <li><strong>Children are still health-probed.</strong> The scheduled channel probe keeps testing hidden children on their own, so a <strong>dead backup shows up as dead before failover ever needs it</strong>. Failover can never mask a dead parent as healthy either — the probe always resolves each channel itself. The one exception is a child from a source that declares itself <a href="sources.html#capabilities"><code>probeExempt</code></a> — DaddyLive, for one, whose mirror rate-limits the traffic a sweep would cost — which the probe skips, child or not.</li>
           <li><strong>Status is still the governor.</strong> A <code>Disabled</code> child is <strong>skipped</strong> at failover. A <code>Disabled</code> <em>parent</em> hides the whole group from exports — nothing about that channel ships until you re-enable it.</li>
           <li><strong>The guide identity is the parent's.</strong> On save, every child's <code>tvg_id</code> and EPG link are overwritten with the parent's. That is what keeps the exported line coherent no matter which member is actually serving.</li>
         </ul>
@@ -230,7 +230,7 @@
 
             <div class="lane-meta" style="padding:2px 0 4px;">
               <span class="tag">the walk</span>
-              <span class="desc">the per-stream cursor steps down the candidates — one question to the seam per attempt, answered 200 / 502 / 410. Shown for an ordinary source; on dlhd an alternate-provider rung comes first.</span>
+              <span class="desc">the per-stream cursor steps down the candidates — one question to the seam per attempt, answered 200 / 502 / 410 — or 429, a stream-limit refusal that ends the walk. Shown for an ordinary source; on dlhd an alternate-provider rung comes first.</span>
             </div>
 
             <!-- hero: the attempt cursor + the seam's three answers -->
@@ -248,6 +248,7 @@
                 <li class="fo-k fo-ts"><span class="fo-g" aria-hidden="true">✓</span> 200 · grant → serve</li>
                 <li class="fo-k fo-warn"><span class="fo-g" aria-hidden="true">↻</span> 502 · died → next</li>
                 <li class="fo-k fo-risk"><span class="fo-g" aria-hidden="true">■</span> 410 · none left → stop</li>
+                <li class="fo-k fo-risk"><span class="fo-g" aria-hidden="true">■</span> 429 · stream cap → stop</li>
               </ul>
             </div>
 
@@ -269,7 +270,7 @@
                 <span class="fo-node" aria-hidden="true">1</span>
                 <div class="fo-main">
                   <div class="fo-idn"><span class="fo-role fo-child">child · 1</span> · <span class="fo-prov">pluto</span></div>
-                  <div class="fo-behav">its own provider's adapter — own headers, own SSRF allow-set · one shot, no backoff</div>
+                  <div class="fo-behav">its own provider's adapter — own headers, capabilities, proxy config and SSRF allow-set · one shot, no backoff</div>
                 </div>
                 <div class="fo-status">
                   <span class="fo-try" aria-hidden="true">resolving…</span>
@@ -321,16 +322,24 @@
           <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> the failover walk <span class="rt">rust data plane ⇄ node resolve seam</span></div>
           <div class="seq" style="padding:14px 16px 6px;">
             <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">attempt = 0</div><div class="act">Try the channel itself</div><div class="note">Byte-for-byte the ordinary path — the parent's own adapter resolves the stream, with the full retry-and-backoff budget. <span class="branch ts">identical to an ungrouped channel · no extra database work</span></div></div></div>
-            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">establish fails</div><div class="act">Decide whether to walk</div><div class="note"><span class="branch risk">resolve failed — dead scrape, expired token</span> <span class="branch risk">transport failure after the retry budget</span> <span class="branch warn">a definitive 4xx / 5xx — only if you opt in</span></div></div></div>
-            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">attempt = 1, 2, …</div><div class="act">Walk the children in order</div><div class="note">Each candidate is resolved through <strong>its own provider's adapter</strong> — its own headers, its own SSRF allow-set. Backups get <strong>one shot, no backoff</strong>, so a three-deep group still establishes inside a player's manifest timeout. <span class="branch warn">on dlhd, attempt 1 is an alternate provider for the same channel — children start at attempt 2</span></div></div></div>
-            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">the seam replies</div><div class="act">Three possible answers</div><div class="note"><span class="branch ts">200 · a grant — serve it</span> <span class="branch warn">502 · this one died, try the next</span> <span class="branch risk">410 · nothing left, stop walking</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">establish fails</div><div class="act">Decide whether to walk</div><div class="note"><span class="branch risk">resolve failed — dead scrape, expired token</span> <span class="branch risk">transport failure after the retry budget</span> <span class="branch warn">a definitive 4xx / 5xx — only if you opt in</span> <span class="branch">a <code>429 source_stream_cap</code> is policy, not a failure — it never starts a walk</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">attempt = 1, 2, …</div><div class="act">Walk the children in order</div><div class="note">Each candidate is resolved through <strong>its own provider's adapter</strong> — its own headers, its own declared capabilities, its own proxy config, its own SSRF allow-set. Backups get <strong>one shot, no backoff</strong>, so a three-deep group still establishes inside a player's manifest timeout. <span class="branch warn">on dlhd, attempt 1 is an alternate provider for the same channel — children start at attempt 2</span></div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">the seam replies</div><div class="act">Four possible answers</div><div class="note"><span class="branch ts">200 · a grant — serve it</span> <span class="branch warn">502 · this one died, try the next</span> <span class="branch risk">410 · nothing left, stop walking</span> <span class="branch risk">429 · a source at its stream limit — relayed to the player, no walk, no retry</span></div></div></div>
             <div class="step"><div class="rail"><div class="marker">5</div></div><div class="body"><div class="who">first candidate to answer 2xx</div><div class="act">Serve it under the parent's identity</div><div class="note">Same URL, same channel name, same guide. Active Streams badges the session <strong>failover → &lt;child&gt;</strong> so <em>you</em> know, even though the viewer doesn't.</div></div></div>
             <div class="step"><div class="rail"><div class="marker">▶</div></div><div class="body"><div class="who">stick on the winner</div><div class="act">Pin the cursor for the session</div><div class="note">The stream never walks back to the dead parent mid-play. The pin releases only after the stream sits idle — playback stopped — for about five minutes, and the next play starts from the parent again. <span class="branch">only a 2xx keeps the pin; every other exit resets it</span></div></div></div>
           </div>
         </div>
         <div class="aha">
           <div class="lbl">why a backup from another provider is safe</div>
-          <p>The data plane caches one shared <strong>policy</strong> — headers, relabel rules, allowed hosts — per provider. A child from a different service could have clobbered its parent provider's policy for every other stream in flight. It can't: the grant names the <em>serving candidate's</em> provider, and the policy is filed under <strong>that</strong> key. A <code>dlhd</code> parent backed by a <code>pluto</code> child never disturbs <code>dlhd</code>'s other viewers.</p>
+          <p>The data plane caches one shared <strong>policy</strong> — headers, relabel rules, declared capabilities, proxy config, the SSRF allow-set — per provider. A child from a different service could have clobbered its parent provider's policy for every other stream in flight. It can't: the grant names the <em>serving candidate's</em> provider (<code>policySource</code>), and the policy is filed under <strong>that</strong> key — every later playlist poll and segment fetch for the stream follows that serving policy, never the mount's. A <code>dlhd</code> parent backed by a <code>pluto</code> child never disturbs <code>dlhd</code>'s other viewers, and the child is fetched with <em>its</em> headers and timeouts, not the parent's.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">a stream limit is not a failure</div>
+          <p>A source can declare a <strong>concurrent-stream limit</strong> (<a href="sources.html#capabilities"><code>maxConcurrentStreams</code></a>). The resolve seam counts every live stream against the adapter actually serving it — <strong>failover backups included</strong>, against their <em>own</em> source's limit — and refuses a <em>new</em> channel over it. That refusal is policy, so it never starts a walk: where nothing could carry the channel instead, Node answers a definitive <code>429 source_stream_cap</code> and the player gets it, with Node's message, as plain text. But when the capped channel heads a group with a backup on <strong>another provider</strong> (and <code>failoverEnabled</code> is on), Node answers an ordinary, walkable <code>502</code> instead — and the walk plays the backup. A second viewer of a channel already playing, or a reconnect, is never refused.</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">a backup that needs the local origin</div>
+          <p>When the parent runs on the pass-through path but the backup that rescues it is served from the <a href="local-origin.html">local origin</a> (its playlist has <code>originEnabled</code> on, or its source forces it with <code>originRequired</code>), the walk re-takes the origin dispatch on the recovered candidate — so the backup is served from its one shared ring <strong>at once</strong>, not pulled pass-through per viewer until the player's next poll.</p>
         </div>
         <div class="note-block">
           <div class="lbl">bounded on purpose</div>
@@ -401,6 +410,7 @@
             </thead>
             <tbody>
               <tr><td>Back a parent with a child from a different provider</td><td><span class="em-ts">Yes</span></td><td>The child resolves through its own adapter under its own policy key.</td></tr>
+              <tr><td>Route around a source's stream limit</td><td><span class="em-ts">Yes</span></td><td>A capped parent with a backup on another provider is answered with a walkable <code>502</code>; the backup counts against its own source's limit.</td></tr>
               <tr><td>Group channels from two different playlists</td><td><span style="color:var(--risk)">No</span></td><td>A group lives inside one playlist. Bring them together with <strong>Append</strong> first.</td></tr>
               <tr><td>Put one channel in two groups</td><td><span style="color:var(--risk)">No</span></td><td>Membership is a single field on the row.</td></tr>
               <tr><td>Pull in a channel that <em>heads</em> another group</td><td><span style="color:var(--risk)">No</span> <span style="color:var(--text-3)">— 409</span></td><td>It would leave that group headless. Disband it first.</td></tr>

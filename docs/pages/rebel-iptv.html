@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script>(function(){try{var t=localStorage.getItem('masq-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t);}catch(e){}})();</script>
+<title>Rebel IPTV — masqueradarr docs</title>
+<meta name="description" content="The optional Rebel IPTV companion: running it beside masqueradarr, folding its channels and guide into your catalog, Docker socket access, updates with rollback, and the admin-gated dashboard pop-up on port 3080.">
+<link rel="icon" type="image/png" sizes="32x32" href="../icons/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="../icons/favicon-16.png">
+<link rel="apple-touch-icon" href="../icons/apple-touch-icon-180.png">
+<meta property="og:type" content="article">
+<meta property="og:title" content="Rebel IPTV — masqueradarr">
+<meta property="og:description" content="Run Rebel IPTV as an opt-in companion: catalog + guide, Docker socket access, updates with rollback, and the :3080 dashboard gate.">
+<meta property="og:image" content="https://thebinaryninja.github.io/masqueradarr/img/masqueradarr.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="../assets/masq-docs.css">
+<link rel="stylesheet" href="../assets/diagrams.css">
+</head>
+<body>
+<div class="signal" aria-hidden="true"></div>
+
+<header class="topbar">
+  <button class="hamburger" data-nav-open aria-label="Open navigation">
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+  </button>
+  <a class="tb-brand" href="../index.html">
+    <svg viewBox="0 0 120 120" width="22" height="22" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+    <span class="wm">masqueradarr</span>
+  </a>
+  <span class="spacer"></span>
+  <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+</header>
+
+<div class="shell">
+  <aside class="sidebar">
+    <a class="side-brand" href="../index.html">
+      <svg viewBox="0 0 120 120" width="26" height="26" fill="none" aria-hidden="true"><path d="M26 94 L26 30 L60 64 L94 30 L94 94" stroke="currentColor" stroke-width="14" stroke-linejoin="round" stroke-linecap="round"/></svg>
+      <span><span class="wm">masqueradarr</span><small>documentation</small></span>
+    </a>
+    <nav class="side-nav" id="side-nav" aria-label="Documentation">
+      <noscript>
+        <div class="nav-group">
+          <a class="nav-link" href="../index.html">Home</a>
+          <a class="nav-link" href="operations.html">Operations</a>
+          <a class="nav-link" href="rebel-iptv.html" aria-current="page">Rebel IPTV</a>
+          <a class="nav-link" href="architecture.html">Architecture</a>
+        </div>
+      </noscript>
+    </nav>
+    <div class="side-foot">
+      <a class="repo" href="https://github.com/TheBinaryNinja/masqueradarr" target="_blank" rel="noopener">↗ github</a>
+      <button class="theme-toggle" data-theme-toggle aria-label="Toggle theme"><span class="i-moon">☾</span><span class="i-sun">☀</span></button>
+    </div>
+  </aside>
+
+  <main class="content">
+    <div class="doc">
+
+      <header class="page-head">
+        <div class="eyebrow"><b>rebel iptv</b> · 11 <span class="rule"></span> an optional companion</div>
+        <h1>A second server, <span class="em">folded in</span></h1>
+        <p class="lede">Rebel IPTV is a self-hosted IPTV server with its own playlist, guide and dashboard. masqueradarr can run it beside itself as an opt-in companion: its channels and guide join your catalog, it is kept updated and health-checked from <strong>Settings → Rebel IPTV</strong>, and its own dashboard pops up <em>through</em> masqueradarr when you need to configure it.</p>
+      </header>
+
+      <!-- WHAT ──────────────────────────────────────────────────────────── -->
+      <section id="what">
+        <div class="sec-tag"><span class="n">01</span> What you get</div>
+        <h2>Off by default, one switch to turn on</h2>
+        <p class="col"><a href="https://github.com/rebeliptv/iptv" target="_blank" rel="noopener">Rebel IPTV</a> carries 480+ US / CA / UK / AU linear channels plus live sports, with its own M3U, XMLTV and dashboard. Nothing about it runs until you ask for it — with the switch off there is no Rebel container and masqueradarr's side of the integration stays dormant.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(230px,1fr));">
+          <div class="tile"><div class="ic">● catalog + guide</div><h3>A first-class source</h3><p>Rebel's channels arrive through a normal <code>rebel</code> source adapter and its guide self-links to every channel — no Channel Mapping needed.</p></div>
+          <div class="tile ts"><div class="ic">● playback</div><h3>Always through the origin</h3><p>Rebel serves continuous MPEG-TS, so its channels always ride the <a href="local-origin.html">local origin</a>: one ingest per channel, in-app HLS, Active Streams and telemetry.</p></div>
+          <div class="tile warn"><div class="ic">● lifecycle</div><h3>Updates with rollback</h3><p>With Docker access on, masqueradarr is Rebel's update path: check, pull, recreate, health-wait — and roll back if the new container doesn't come up.</p></div>
+          <div class="tile"><div class="ic">● dashboard</div><h3>Behind your admin login</h3><p><em>Open Rebel IPTV</em> pops its dashboard up through an admin-only gate on port <code>3080</code>, revoked within 30 s when your session ends.</p></div>
+        </div>
+        <div class="note-block">
+          <div class="lbl">license</div>
+          <p>Rebel IPTV is closed-source and licensed for <strong>personal, non-commercial</strong> use, in binary / container form only — no modification, redistribution or reverse-engineering. masqueradarr therefore never bundles, extracts or rebuilds it: Rebel always runs as its <strong>own, unmodified <code>rebeliptv/iptv</code> container</strong>, pulled by your Docker, and its dashboard is served at its own root, byte-for-byte.</p>
+        </div>
+      </section>
+
+      <!-- TOPOLOGY ──────────────────────────────────────────────────────── -->
+      <section id="topology">
+        <div class="sec-tag"><span class="n">02</span> Topology</div>
+        <h2>Rebel sits on its own private network</h2>
+        <p class="col">Rebel never faces your LAN directly. masqueradarr reaches it over a private network — for its playlist and guide (Node) and for its streams (Rust) — and fronts its dashboard with a second listener of its own.</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> the companion topology <span class="rt">dashed = only with DOCKER_SOCK_ACCESS=1</span></div>
+          <div class="scroll">
+            <div class="nodemap rebel-map">
+              <div class="nm-zone">
+                <div class="nm-label">clients</div>
+                <div class="nm-card client-c"><div class="t">Admin browser</div><div class="s">SPA · Settings → Rebel IPTV · the pop-up</div></div>
+                <div class="nm-card client-c"><div class="t">IPTV clients</div><div class="s">masqueradarr's own playlist + guide</div></div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">:3000 · :3080</span></div>
+              <div class="nm-zone grow">
+                <div class="nm-label">masqueradarr</div>
+                <div class="nm-group">
+                  <div class="nm-glabel">app container</div>
+                  <div class="nm-card node-c"><div class="t">Node API <span class="port">:3000</span></div><div class="s">syncs <code>/playlist</code> + <code>/epg.gz</code> · resolves <code>rebel://</code></div><span class="tag">control plane</span></div>
+                  <div class="nm-card node-c"><div class="t">Rebel UI gate <span class="port">:3080</span></div><div class="s">second Node listener · reverse-proxies the dashboard</div><span class="tag">admin session only</span></div>
+                  <div class="nm-card rust-c"><div class="t">masq-proxy — Rust</div><div class="s">local origin · one raw-TS ingest per channel</div><span class="tag">data plane</span></div>
+                </div>
+              </div>
+              <div class="nm-arrow"><span class="g">→</span><span class="l">rebel-net · :8080</span></div>
+              <div class="nm-zone">
+                <div class="nm-label">private network</div>
+                <div class="nm-group rebel-net">
+                  <div class="nm-glabel">rebel-net</div>
+                  <div class="nm-card up-c"><div class="t">rebel-iptv <span class="port">:8080</span></div><div class="s">unmodified container · no host port · no socket</div><span class="tag">/playlist · /epg.gz · TS</span></div>
+                  <div class="nm-card opt-c"><div class="t">docker-sock-proxy</div><div class="s">containers · images · networks only — lets masqueradarr pull &amp; recreate Rebel</div><span class="tag">optional · root-equivalent</span></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col">
+          <ul>
+            <li><strong>Rebel is isolated.</strong> In the compose stack it sits on <code>rebel-net</code> only — no host port, no Docker socket, and <strong>not</strong> on <code>masqueradarr-net</code>, so it cannot reach MongoDB.</li>
+            <li><strong>The gate port is always published.</strong> <code>REBEL_IPTV_UI_PORT</code> (default <code>3080</code>) is mapped whether or not Rebel is on; nothing listens behind it while it's off, so move it if <code>3080</code> is taken on the host.</li>
+            <li><strong>Rebel never gets the socket.</strong> Only masqueradarr talks to Docker, and only when <a href="#docker-access"><code>DOCKER_SOCK_ACCESS=1</code></a>.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- ENABLE ────────────────────────────────────────────────────────── -->
+      <section id="enable">
+        <div class="sec-tag"><span class="n">03</span> Enabling it</div>
+        <h2>Three ways to run it</h2>
+        <p class="col">Pick the shape that matches how you deploy masqueradarr. In every case masqueradarr either <strong>adopts</strong> a Rebel you run (<code>REBEL_IPTV_URL</code> set) or <strong>manages</strong> one it creates itself (<code>REBEL_IPTV_URL</code> unset — which needs Docker access).</p>
+
+        <h3>Compose stack — flip one line</h3>
+        <p class="col">The <code>rebel-iptv</code> service already lives in <code>docker-compose.yml</code> at <code>scale: 0</code> (the same switch pattern as <code>docker-sock-proxy</code>). <code>REBEL_IPTV=1</code> scales it to one container <em>and</em> enables masqueradarr's side of the integration, so the two can't drift.</p>
+        <div class="code-wrap">
+<pre class="code"><span class="cmt"># .env</span>
+REBEL_IPTV=1
+
+<span class="cmt"># then</span>
+docker compose up -d</pre>
+        </div>
+        <p class="col">Setting <code>REBEL_IPTV</code> back to <code>0</code> and running <code>docker compose up -d</code> removes the Rebel container but keeps its data volume.</p>
+
+        <h3>All-in-one image — managed sibling</h3>
+        <p class="col">With <code>DOCKER_SOCK_ACCESS=1</code> and the socket mounted, masqueradarr creates the network <code>masq-rebel-net</code>, the volume <code>masq-rebel-iptv-data</code> and the container <code>masq-rebel-iptv</code>, then connects itself to that network.</p>
+        <div class="code-wrap">
+<pre class="code">docker run -d --name masqueradarr -p 3000:3000 -p 3080:3080 \
+  -e REBEL_IPTV_ENABLED=true -e DOCKER_SOCK_ACCESS=1 \
+  -v masqueradarr-data:/data -v /var/run/docker.sock:/var/run/docker.sock \
+  iflip721/masqueradarr-aio:latest</pre>
+        </div>
+
+        <h3>All-in-one image — adopt your own (no socket)</h3>
+        <p class="col">With <code>DOCKER_SOCK_ACCESS=0</code>, run Rebel yourself on a shared network and point masqueradarr at it.</p>
+        <div class="code-wrap">
+<pre class="code">docker network create rebel-net
+docker run -d --name rebel-iptv --network rebel-net --network-alias rebel-iptv \
+  -v rebel-iptv-data:/app/data --restart unless-stopped rebeliptv/iptv:latest
+docker run -d --name masqueradarr --network rebel-net -p 3000:3000 -p 3080:3080 \
+  -e REBEL_IPTV_ENABLED=true -e REBEL_IPTV_URL=http://rebel-iptv:8080 \
+  -v masqueradarr-data:/data iflip721/masqueradarr-aio:latest</pre>
+        </div>
+
+        <h3>The variables</h3>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Variable</th><th>Default</th><th class="h-accent">Purpose</th></tr></thead>
+            <tbody>
+              <tr><td>REBEL_IPTV</td><td><code>0</code></td><td>Compose only — the one switch; scales the <code>rebel-iptv</code> service and sets <code>REBEL_IPTV_ENABLED</code>.</td></tr>
+              <tr><td>REBEL_IPTV_ENABLED</td><td><code>false</code></td><td>Master switch (compose: set from <code>REBEL_IPTV</code>).</td></tr>
+              <tr><td>REBEL_IPTV_URL</td><td>unset</td><td>Set → <strong>adopt</strong> an existing Rebel (<code>http://rebel-iptv:8080</code> in the compose stack). Unset → <strong>managed</strong> (AIO sibling; needs <code>DOCKER_SOCK_ACCESS=1</code>).</td></tr>
+              <tr><td>REBEL_IPTV_IMAGE</td><td><code>rebeliptv/iptv:latest</code></td><td>A non-<code>latest</code> tag is <strong>pinned</strong> — new releases are shown, never installed.</td></tr>
+              <tr><td>REBEL_IPTV_CONTAINER</td><td><code>masq-rebel-iptv</code> (managed)</td><td>Container name override; adopt mode finds Rebel by the <code>io.masqueradarr.role=rebel-iptv</code> label.</td></tr>
+              <tr><td>REBEL_IPTV_UI_PORT</td><td><code>3080</code></td><td>Host port of the dashboard gate (the container always listens on 3080).</td></tr>
+              <tr><td>REBEL_IPTV_UI_PUBLIC_URL</td><td>unset</td><td>Full origin of the gate behind TLS / a reverse proxy, e.g. <code>https://rebel.example.com</code>. Unset, the pop-up opens <code>http://&lt;this host&gt;:&lt;UI port&gt;</code>.</td></tr>
+              <tr><td>REBEL_IPTV_PUBLISH_PORT</td><td>unset</td><td>Managed only — also publish Rebel's <code>:8080</code> (its HDHomeRun emulation) to the LAN.</td></tr>
+              <tr><td>REBEL_IPTV_TRUSTED_PROXIES</td><td>private ranges</td><td>Rebel's <code>X-Forwarded-*</code> trust list — narrow it to <code>rebel-net</code>'s subnet if you ever publish Rebel.</td></tr>
+              <tr><td>REBEL_IPTV_DATA_PATH</td><td><code>rebel-iptv-data</code></td><td>Where Rebel's <code>/app/data</code> lives.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <!-- FIRST RUN ─────────────────────────────────────────────────────── -->
+      <section id="first-run">
+        <div class="sec-tag"><span class="n">04</span> First run</div>
+        <h2>Rebel's playlist is empty until Rebel is set up</h2>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--ts)"></span> from a fresh Rebel to a synced playlist</div>
+          <div class="seq ts" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">settings → rebel iptv</div><div class="act">Open Rebel IPTV</div><div class="note">The pop-up opens Rebel's own dashboard through the gate. Allow pop-ups for masqueradarr's address.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">rebel's dashboard</div><div class="act">Finish its setup wizard (or <em>Skip setup</em>)</div><div class="note">Then wait for its first refresh to bring channels online. Leave Rebel's own dashboard login off — masqueradarr's gate is in front of it.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">optional</div><div class="act">Paste Rebel's playlist key</div><div class="note">If you turned on Rebel's <em>playlist key</em>, paste it into the tab's <strong>Playlist API key</strong> field — stored as a secret, never logged, and stripped from backups like the other credentials.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">settings → rebel iptv</div><div class="act">Add Rebel IPTV playlist</div><div class="note"><span class="branch ts">then sync as usual</span> The playlist behaves like any other built-in: clone from it, group its channels into <a href="failover.html">failover groups</a>, grant it to users.</div></div></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- CATALOG ───────────────────────────────────────────────────────── -->
+      <section id="catalog">
+        <div class="sec-tag"><span class="n">05</span> Catalog &amp; playback</div>
+        <h2>A <code style="font-size:0.8em">rebel</code> adapter like any other</h2>
+        <p class="col">Rebel is a first-class <a href="sources.html">source adapter</a>, registered only while the companion is enabled. Nothing in the core special-cases it — what it needs, it <em>declares</em>.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(250px,1fr));">
+          <div class="tile"><div class="ic">● sync</div><h3>Host-free entries</h3><p>A sync fetches <code>/playlist</code> over the internal network and stores each channel as <code>rebel://channel/&lt;tvg-id&gt;</code>. <strong>No Rebel host, port or key is ever stored.</strong></p></div>
+          <div class="tile"><div class="ic">● resolve</div><h3>Re-based per play</h3><p>At play time the adapter looks the tvg-id up in a fresh playlist, re-bases the stream URL onto Rebel's current address, and refuses anything that points off Rebel's own host.</p></div>
+          <div class="tile ts"><div class="ic">● originRequired</div><h3>One ingest per channel</h3><p>Rebel serves continuous MPEG-TS, so the adapter forces the <a href="local-origin.html">local origin</a> whatever the proxy config says: one raw-TS ingest per channel feeds the RAM ring, giving in-app HLS playback, Active Streams and telemetry.</p></div>
+          <div class="tile warn"><div class="ic">● stream cap</div><h3>Match Rebel's own limit</h3><p><strong>Max simultaneous streams</strong> in the tab caps how many different Rebel channels play at once — set it to Rebel's own <em>Simultaneous streams</em> (default 4). A channel over the cap is refused with a <code>429</code> unless a <a href="failover.html">failover backup</a> on another provider can carry it.</p></div>
+          <div class="tile"><div class="ic">● guide</div><h3>Self-linked</h3><p>The guide comes from <code>/epg.gz</code> and self-links to every channel; tvg-ids are Rebel's stable ids such as <code>us-espn</code>.</p></div>
+          <div class="tile risk"><div class="ic">● when Rebel is down</div><h3>Your channels stay</h3><p>If Rebel is unreachable or rejects the key, a sync keeps your existing channels and flags the playlist <code>warn</code>.</p></div>
+        </div>
+      </section>
+
+      <!-- DOCKER ACCESS ─────────────────────────────────────────────────── -->
+      <section id="docker-access">
+        <div class="sec-tag"><span class="n">06</span> Docker socket access</div>
+        <h2>One switch: <code style="font-size:0.8em">DOCKER_SOCK_ACCESS</code></h2>
+        <p class="col">A single, app-wide switch gates <strong>every</strong> Docker-dependent feature, now and in future. It is <strong>off by default</strong>, because Docker API access is <strong>root-equivalent on the host</strong>: anything that compromised masqueradarr could start a privileged container.</p>
+        <div class="pair">
+          <div class="fcard risk">
+            <span class="badge">● 1 · on</span>
+            <h3>Restricted API access</h3>
+            <p>Compose starts <code>docker-sock-proxy</code> (<code>tecnativa/docker-socket-proxy</code> — only the containers, images and networks sections, on an internal-only network) and points the app at it; the AIO entrypoint adds the app's <code>node</code> user to the mounted socket's group. The app logs one boot <code>WARN</code>. The proxy narrows which endpoints exist — it is <strong>not</strong> a security boundary — so masqueradarr additionally refuses to create privileged containers, host namespaces, devices, or binds other than Rebel's <code>/app/data</code>.</p>
+          </div>
+          <div class="fcard ts">
+            <span class="badge">● 0 · off (default)</span>
+            <h3>No socket anywhere</h3>
+            <p>No socket is mounted — the proxy has <code>scale: 0</code>, so it is never created — and the AIO image never grants one even if you mount it (it logs that it refused). Docker-dependent features run in their reduced mode: for Rebel, catalog, guide, playback and the pop-up still work, but you force-pull its new images by hand.</p>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">0 or 1 — nothing else</div>
+          <p>The value doubles as the proxy's compose <code>scale</code>, so <code>true</code> makes <code>docker compose config</code> fail. <code>DOCKER_SOCK_PATH</code> overrides the host socket path for rootless Docker (default <code>/var/run/docker.sock</code>).</p>
+        </div>
+        <div class="note-block">
+          <div class="lbl">the data plane can never reach the socket proxy</div>
+          <p>With access on, the socket proxy's endpoint is refused as a stream upstream even for a grant that allows private addresses — by name, by its resolved addresses (refreshed every 60 s), and in the data plane's upstream DNS resolver, so an alias that resolves to it is refused too. Every redirect hop passes the same SSRF gate as the first request. Ordinary LAN and single-label names (a NAS, <code>rebel-iptv</code>) keep their usual verdicts.</p>
+        </div>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Capability</th><th class="h-accent">DOCKER_SOCK_ACCESS=1</th><th>DOCKER_SOCK_ACCESS=0 (default)</th></tr></thead>
+            <tbody>
+              <tr><td>Socket exposure</td><td>compose: <code>docker-sock-proxy</code> on an internal network · AIO: <code>node</code> joins the socket's group</td><td>none</td></tr>
+              <tr><td>Catalog, guide, playback, pop-up, reachability</td><td>✓</td><td>✓</td></tr>
+              <tr><td>Container state, Docker health, healthcheck output, logs, restart</td><td>✓</td><td>✗ — the tab shows HTTP reachability only</td></tr>
+              <tr><td>Installed Rebel version</td><td>image label</td><td>unknown — Rebel's own dashboard (System) shows it</td></tr>
+              <tr><td>Latest release (GitHub)</td><td>✓</td><td>✓, with the manual command</td></tr>
+              <tr><td>Update now / auto-update / rollback</td><td>✓</td><td>✗ — force-pull by hand (below)</td></tr>
+              <tr><td>AIO managed provisioning</td><td>✓</td><td>✗ — run Rebel yourself and set <code>REBEL_IPTV_URL</code></td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="code-wrap" style="margin-top:14px;">
+<pre class="code"><span class="cmt"># access off — compose stack: force-pull and recreate Rebel by hand, regularly</span>
+docker compose pull rebel-iptv &amp;&amp; docker compose up -d rebel-iptv
+
+<span class="cmt"># AIO / externally-run Rebel: pull, then recreate the container</span>
+docker pull rebeliptv/iptv:latest</pre>
+        </div>
+        <p class="col">Do this regularly — a Rebel that falls too far behind stops serving channels.</p>
+      </section>
+
+      <!-- UPDATES ───────────────────────────────────────────────────────── -->
+      <section id="updates">
+        <div class="sec-tag"><span class="n">07</span> Updates</div>
+        <h2>masqueradarr is Rebel's update path</h2>
+        <p class="col">Rebel's own <em>Update</em> button needs a socket it doesn't have, so it showing manual instructions is expected either way. With Docker access on, <strong>Check now</strong> compares the running image's digest with the registry and shows the latest GitHub release (notes as plain text), and <strong>Update now</strong> runs:</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--cfg)"></span> update now <span class="rt">rolls back if the new container isn't healthy</span></div>
+          <div class="scroll">
+            <div class="cfgflow">
+              <div class="stage"><div class="t">pull</div><div class="v">new image</div><small>from the registry</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">stop</div><div class="v">old Rebel</div><small>two never share /app/data</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">recreate</div><div class="v">same config</div><small>volume · networks · labels</small></div>
+              <div class="arr">→</div>
+              <div class="stage"><div class="t">wait</div><div class="v">healthy</div><small>Docker's own healthcheck</small></div>
+              <div class="arr">→</div>
+              <div class="stage ts"><div class="t">clean up</div><div class="v">old container + image</div><small>or roll back to it</small></div>
+            </div>
+          </div>
+        </div>
+        <div class="col">
+          <ul>
+            <li><strong>Interrupted updates resolve at boot.</strong> An update cut short by a masqueradarr restart is resolved at the next start, so Rebel is never left half-replaced.</li>
+            <li><strong>Auto-update</strong> is on by default when Docker access is on: nightly at <strong>04:00</strong> (editable), and <strong>only when idle</strong> — it waits while anyone watches a Rebel channel, and runs anyway after 3 deferrals, because a stale Rebel stops serving channels.</li>
+            <li><strong>Pinned tags are info-only.</strong> With a non-<code>latest</code> <code>REBEL_IPTV_IMAGE</code>, new releases are shown, never installed.</li>
+          </ul>
+        </div>
+      </section>
+
+      <!-- SETTINGS TAB + GATE ───────────────────────────────────────────── -->
+      <section id="settings-tab">
+        <div class="sec-tag"><span class="n">08</span> The Settings tab &amp; the pop-up</div>
+        <h2>Settings → Rebel IPTV</h2>
+        <p class="col">The tab appears only while the companion is enabled (<code>REBEL_IPTV=1</code> in the compose stack, or <code>REBEL_IPTV_ENABLED</code> on the AIO image). Updating, restarting and reading logs need Docker access; with it off the tab says so, disables those buttons, and shows the command to pull new Rebel images by hand.</p>
+        <div class="analogy" style="grid-template-columns:repeat(auto-fill,minmax(200px,1fr));">
+          <div class="tile"><div class="ic">● status</div><p>Container state, Docker health, reachability and current viewers.</p></div>
+          <div class="tile warn"><div class="ic">● updates</div><p>Installed vs. latest release, <em>Check now</em>, <em>Update now</em> with automatic rollback, and the idle-aware auto-update window.</p></div>
+          <div class="tile ts"><div class="ic">● connection &amp; catalog</div><p>Playlist API key, max simultaneous streams, <em>Test</em>, <em>Add Rebel IPTV playlist</em> / <em>Sync now</em>.</p></div>
+          <div class="tile"><div class="ic">● actions</div><p><em>Open Rebel IPTV</em> — its own dashboard, through the admin-only gate on port 3080.</p></div>
+        </div>
+
+        <h3 id="gate">The dashboard pop-up (port 3080)</h3>
+        <p class="col">Rebel serves everything at <code>/</code> with no base-path option, so its dashboard can't live under masqueradarr's <code>/api</code>. Instead a <strong>second Node listener on <code>3080</code></strong> reverse-proxies Rebel at its own root, and only an admin session gets through:</p>
+        <div class="panel">
+          <div class="panel-head"><span class="dot" style="background:var(--accent)"></span> opening the pop-up</div>
+          <div class="seq" style="padding:14px 16px 6px;">
+            <div class="step"><div class="rail"><div class="marker">1</div></div><div class="body"><div class="who">click · Open Rebel IPTV</div><div class="act">Mint a one-time ticket</div><div class="note"><span class="branch">admin session only</span> The ticket is single-use and lives 60 seconds. The window is opened inside your click, so a pop-up blocker should let it through.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">2</div></div><div class="body"><div class="who">pop-up → :3080</div><div class="act">Redeem it for a gate cookie</div><div class="note"><code>HttpOnly</code>, <code>SameSite=Strict</code>; behind https it is also <code>Secure</code> and <code>__Host-</code>-prefixed. The pop-up opens <code>http://&lt;this host&gt;:3080</code> unless <code>REBEL_IPTV_UI_PUBLIC_URL</code> names the gate's real origin.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">3</div></div><div class="body"><div class="who">every request</div><div class="act">Checked against your masqueradarr session</div><div class="note"><span class="branch risk">revoked within 30 s</span> Signing out, or deleting or demoting the admin, closes the gate.</div></div></div>
+            <div class="step"><div class="rail"><div class="marker">4</div></div><div class="body"><div class="who">gate → rebel-iptv:8080</div><div class="act">Proxied with the <code>Host</code> header preserved</div><div class="note">So Rebel's CSRF guard and URL building work unchanged.</div></div></div>
+          </div>
+        </div>
+        <div class="aha">
+          <div class="lbl">behind TLS</div>
+          <p>Publish the gate on its own vhost and set <code>REBEL_IPTV_UI_PUBLIC_URL</code> to that origin (e.g. <code>https://rebel.example.com</code>). Leave Rebel's own dashboard login off — masqueradarr's gate is in front of it.</p>
+        </div>
+      </section>
+
+      <!-- TROUBLESHOOTING ───────────────────────────────────────────────── -->
+      <section id="troubleshooting">
+        <div class="sec-tag"><span class="n">09</span> Troubleshooting</div>
+        <h2>When something looks wrong</h2>
+        <div class="panel scroll">
+          <table>
+            <thead><tr><th>Symptom</th><th class="h-accent">What it means</th></tr></thead>
+            <tbody>
+              <tr><td>Pop-up blocked</td><td>Allow pop-ups for masqueradarr's address; the window is opened inside your click.</td></tr>
+              <tr><td>“Rebel IPTV — sign in through masqueradarr”, or Rebel shows its own sign-in</td><td>The gate session ended (expired, signed out, or masqueradarr restarted). Reopen it from the tab.</td></tr>
+              <tr><td>“Rebel IPTV is restarting…”</td><td>The container is down or mid-update; the page retries every 5 s. A fresh Rebel can take up to its <strong>3-minute</strong> healthcheck start period.</td></tr>
+              <tr><td>Empty playlist</td><td>Rebel's first refresh hasn't finished, or its setup wizard hasn't run.</td></tr>
+              <tr><td><code>401</code> on sync / Test</td><td>Rebel's playlist key is on — paste the current key (Rebel → Settings → Security).</td></tr>
+              <tr><td>Playlist URLs inside Rebel's dashboard don't play elsewhere</td><td>They point at the gate's address. Give external players masqueradarr's own playlist.</td></tr>
+              <tr><td>Managed-mode error in the tab</td><td><code>REBEL_IPTV_URL</code> is unset but <code>DOCKER_SOCK_ACCESS</code> isn't <code>1</code>. Enable it, or run Rebel yourself and set the URL.</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="refs">
+          <span class="ref"><b>README</b> · Rebel IPTV integration · Docker socket access</span>
+          <span class="ref"><b>.env.example</b> · DOCKER_SOCK_ACCESS · REBEL_IPTV_*</span>
+          <span class="ref"><b>server/src/rebel/</b> · manager · updates · uiProxy</span>
+          <span class="ref">next → <b>Architecture</b></span>
+        </div>
+      </section>
+
+      <footer class="doc-foot">
+        <span>masqueradarr · rebel iptv</span>
+        <span>next → architecture</span>
+      </footer>
+
+    </div>
+  </main>
+
+  <aside class="toc" id="toc" aria-label="On this page"></aside>
+</div>
+
+<div class="scrim" aria-hidden="true"></div>
+
+<script src="../assets/nav.js"></script>
+<script src="../assets/masq-docs.js"></script>
+</body>
+</html>

@@ -32,7 +32,8 @@ window.MASQ_NAV = [
     links: [
       { ix: "09", title: "Users & access", href: "pages/users.html" },
       { ix: "10", title: "Operations", href: "pages/operations.html" },
-      { ix: "11", title: "Architecture", href: "pages/architecture.html" },
+      { ix: "11", title: "Rebel IPTV", href: "pages/rebel-iptv.html" },
+      { ix: "12", title: "Architecture", href: "pages/architecture.html" },
     ],
   },
 ];
