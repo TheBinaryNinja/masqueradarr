@@ -13,6 +13,7 @@ const ROLE = {
   store: [C.green, 'Datastore'],
   upstream: [C.dim, 'Upstream / external'],
   deny: [C.risk, 'Deny / error path'],
+  third: [C.mist, 'Third-party container (unmodified)'],
 };
 const L = (...keys) => keys.map((k) => ROLE[k]);
 
@@ -282,6 +283,54 @@ topology({
   ],
   caption: "Rust owns the public socket — Node's event loop leaves the byte path.",
 });
+
+{
+  const W = 1000, H = 772;
+  let b = header(W, 'Rebel IPTV — optional companion container', 'docker-compose.rebel-iptv.yml · server/src/rebel/');
+
+  b += lane({ x: 32, y: 76, w: 936, h: 104, label: 'CLIENTS' });
+  const browser = card({ x: 60, y: 100, w: 300, rail: C.ash, title: 'Admin browser', sub: ['SPA on :3000 · Rebel pop-up on :3080'] });
+  const iptv = card({ x: 680, y: 100, w: 260, rail: C.ash, title: 'IPTV clients', sub: ['TiviMate · VLC · Plex · Jellyfin'] });
+
+  b += lane({ x: 32, y: 230, w: 936, h: 150, label: 'MASQUERADARR', color: C.teal });
+  const gate = card({ x: 60, y: 254, w: 260, rail: C.teal, title: 'Rebel UI gate — Node :3080', sub: ['one-time ticket → HttpOnly cookie', 'admin only · revalidated every 30s'] });
+  const rust = card({ x: 370, y: 254, w: 260, rail: C.amber, title: 'masq-proxy — local origin', sub: ['one raw-TS ingest per channel', 'RAM ring → HLS + TS out'] });
+  const node = card({ x: 680, y: 254, w: 260, rail: C.teal, title: 'Express API — Node :3000', sub: ['rebel adapter · guide self-link', 'status · updates · rollback'] });
+
+  b += lane({ x: 32, y: 440, w: 588, h: 124, label: 'REBEL-NET — PRIVATE', color: C.mist });
+  const rebel = card({ x: 180, y: 466, w: 300, rail: C.mist, title: 'Rebel IPTV — :8080', sub: ['unmodified rebeliptv/iptv container', '/app/data volume · no ports · no socket'] });
+  b += lane({ x: 640, y: 440, w: 328, h: 124, label: 'DOCKER CONTROL · DOCKER_SOCK_ACCESS=1', color: C.dim });
+  const sock = card({ x: 660, y: 466, w: 280, rail: C.dim, dashed: true, fill: C.carbon, title: 'docker-sock-proxy :2375', sub: ['compose: internal network · scale 0|1', 'AIO: node joins the socket group'] });
+
+  b += lane({ x: 32, y: 600, w: 588, h: 104, label: 'UPSTREAM' });
+  const up = card({ x: 180, y: 624, w: 300, rail: C.dim, title: "Rebel IPTV's own upstreams", sub: ['US/CA/UK/AU linear · live sports'] });
+
+  b += edge([[150, 157], [150, 252]], { color: 'ash' });
+  b += edge([[290, 157], [290, 200], [740, 200], [740, 252]], { color: 'ash' });
+  b += edge([[870, 157], [870, 252]], { color: 'ash' });
+  b += edge([[678, 290], [632, 290]], { color: 'amber', head: 'both' });
+  b += edge([[220, 326], [220, 464]], { color: 'teal', dash: '4 3' });
+  b += edge([[440, 326], [440, 464]], { color: 'amber' });
+  b += edge([[760, 326], [760, 410], [470, 410], [470, 464]], { color: 'teal' });
+  b += edge([[880, 326], [880, 464]], { color: 'dim', dash: '4 3' });
+  b += edge([[658, 505], [482, 505]], { color: 'dim', dash: '4 3' });
+  b += edge([[330, 538], [330, 622]], { color: 'dim' });
+
+  b += browser.svg + iptv.svg + gate.svg + rust.svg + node.svg + rebel.svg + sock.svg + up.svg;
+
+  b += pill(150, 206, 'pop-up · :3080');
+  b += pill(515, 200, 'SPA · /api/rebel-iptv · ticket');
+  b += pill(870, 206, '.m3u · /api/ext/v1');
+  b += pill(220, 398, 'Host kept · WS', { color: C.teal });
+  b += pill(440, 398, 'raw TS', { color: C.amber });
+  b += pill(615, 410, '/playlist · /epg.gz', { color: C.teal });
+  b += pill(880, 398, 'Docker API', { color: C.dim });
+  b += pill(570, 505, 'pull · recreate', { color: C.dim });
+
+  b += text(W / 2, 730, 'With DOCKER_SOCK_ACCESS=0 the right-hand lane disappears — masqueradarr ↔ Rebel is plain HTTP on rebel-net.', { fill: C.dim, size: 9.8, anchor: 'middle' });
+  b += legend(32, 756, L('client', 'node', 'rust', 'third', 'upstream'));
+  write('topology-rebel-iptv.svg', svg(W, H, b));
+}
 
 {
   const W = 800;
