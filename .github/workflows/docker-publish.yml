@@ -139,7 +139,7 @@ jobs:
       # the `npm ci` layers persist across dispatches.
       - name: Build and push by digest
         id: build
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: ${{ matrix.dockerfile }}
