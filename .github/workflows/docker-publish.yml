@@ -112,7 +112,7 @@ jobs:
       # so it fails the main-repo clone. persist-credentials:false stops the main token's auth
       # header from overriding the PAT on the submodule fetch. SERVER_SUBMODULE_TOKEN = a
       # fine-grained PAT (or App token) with contents:read on iFlip721/masqueradarr-source.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
@@ -240,7 +240,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Download manifest digests
         uses: actions/download-artifact@v4

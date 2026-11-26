@@ -37,7 +37,7 @@ jobs:
           # gate runs in that repo's own CI. It cannot run here: fork-originated PRs have no access
           # to the private submodule (org secrets are withheld from forks). See docker/*.Dockerfile.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -66,7 +66,7 @@ jobs:
     name: Rust proxy (build + clippy + test)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:

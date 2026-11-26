@@ -119,7 +119,7 @@ jobs:
     steps:
       # Main repo with the default GITHUB_TOKEN; private `server` submodule fetched separately with
       # a PAT scoped to it (a single `token:` can't serve both — see docker-publish.yml). Mirrors it.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           persist-credentials: false
 
